@@ -2,9 +2,8 @@
 
 # agentchute
 
-**A small Markdown protocol that gives AI agents shared inboxes.**
-Senders deliver into a recipient's inbox; the recipient owns consumption.
-No central server. No broker. No SDK.
+**A small Markdown protocol that gives AI agents shared inboxes,
+so they can hand off work without a human acting as the relay.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-2a4a8a.svg)](LICENSE)
 [![Go 1.21+](https://img.shields.io/badge/go-1.21+-2a4a8a.svg)](go.mod)
@@ -22,6 +21,8 @@ No central server. No broker. No SDK.
 ---
 
 > Running multiple AI agents on a shared project is easy. Coordinating them isn't.
+
+Humans stay in the loop for decisions and steering, not for ferrying messages between terminals.
 
 ## Install
 
@@ -41,6 +42,41 @@ Or skip the binary — drop [`AGENTCHUTE.md`](AGENTCHUTE.md) into your project a
 
 <p align="center"><em>Three CLI agents — Claude Code, codex CLI, Gemini CLI — coordinating in tmux during the final pre-release cleanup pass. Real working session, 24x speedup, 62 seconds. Click for the clip.</em></p>
 
+## How a handoff works
+
+agentchute is a mailbox pattern. A sender writes a markdown message into the recipient's inbox and, when a wake adapter is available, pokes the recipient awake. The recipient reads, archives, and replies on its own time.
+
+```text
+┌──────────────────┐                        ┌──────────────────┐
+│ ALICE (Claude)   │                        │ BOB (codex)      │
+│ inbox: 0         │                        │ inbox: 0         │
+│ status: active   │                        │ status: active   │
+└──────────────────┘                        └──────────────────┘
+         │                                            ▲
+         │ 1. message lands in inbox/bob/ (bob: 1)    │
+         └────────────────────────────────────────────┘
+         │
+         │ 2. wake poke (tmux adapter)
+         └─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─▶
+                                                      │
+                                                      │ 3. check
+                                                      │    read + archive
+                                                      ▼
+┌──────────────────┐                        ┌──────────────────┐
+│ ALICE (Claude)   │◀───────────────────────│ BOB (codex)      │
+│ inbox: 1         │ 4. reply               │ inbox: 0         │
+│ status: active   │                        │ status: active   │
+└──────────────────┘                        └──────────────────┘
+```
+
+This happens entirely on your filesystem — no central server, no broker, no SDK required.
+
+## Who this is for
+
+- You run two or more agent CLIs in the same repo (Claude Code, codex, Gemini, Aider, …).
+- You want explicit handoffs and review requests without becoming the message bus yourself.
+- You do not want a server, SDK, broker, or new agent framework.
+
 ## What's in the protocol
 
 Six primitives. Full spec: [`AGENTCHUTE.md`](AGENTCHUTE.md).
@@ -51,29 +87,6 @@ Six primitives. Full spec: [`AGENTCHUTE.md`](AGENTCHUTE.md).
 - **Optional wake** — pluggable adapter (the v0.1 reference CLI ships `tmux send-keys`); self-poll fallback when no wake is reachable.
 - **Self-registration** — agents publish vendor, host, and `wake_method` + `wake_target` to a known path.
 - **Best-effort protocol correction** — malformed inbox file → quarantine + corrective message back to the inferred offender. No refusal mode.
-
-Humans stay in the loop for decisions and steering, not for ferrying messages between terminals.
-
-## Protocol vs. reference implementation
-
-The protocol is implementation-agnostic. Inbox medium, sender-to-inbox transport, and wake mechanism are all outside the spec — pick whatever fits.
-
-| Axis | Protocol says | v0.1 reference CLI picks | Alternates ([EXTENSIONS](EXTENSIONS.md)) |
-|---|---|---|---|
-| Inbox medium | per-recipient ordered stream | `.md` files on a shared filesystem | Redis/NATS queues, S3, HTTP, git-backed transport |
-| Sender → inbox transport | atomic, no-overwrite | atomic create-temp + rename | CAS, `If-None-Match`, queue dedupe |
-| Peer wake | pluggable, optional | `tmux send-keys` | wezterm, kitty, iTerm2, OS notifications, webhooks |
-| Self-poll fallback | recipient's responsibility | Claude `/loop`; codex/Gemini scheduler | wrapper-specific |
-
-That reference implementation worked well enough to be the exclusive coordination layer for the team that built the protocol.
-
-It's not a multi-agent framework — no task graphs, no retries, no role election. It covers the common case: agents sharing a project and handing work off. The hard requirement is just an inbox-checking cadence; the v0.1 reference CLI additionally needs a shared filesystem. **The simplicity is the point.**
-
-## Who this is for
-
-- You run two or more agent CLIs in the same repo (Claude Code, codex, Gemini, Aider, …).
-- You want explicit handoffs and review requests without becoming the message bus yourself.
-- You do not want a server, SDK, broker, or new agent framework.
 
 ## How it compares
 
@@ -101,6 +114,21 @@ It is also explicitly **not** a:
 - **Audit log.** The archive is local and gitignored by default. Loop messages are a transient operational trace, not an authenticated record.
 
 If you wanted any of those, this is the wrong tool, and that's fine.
+
+## Protocol vs. reference implementation
+
+The protocol is implementation-agnostic. Inbox medium, sender-to-inbox transport, and wake mechanism are all outside the spec — pick whatever fits.
+
+| Axis | Protocol says | v0.1 reference CLI picks | Alternates ([EXTENSIONS](EXTENSIONS.md)) |
+|---|---|---|---|
+| Inbox medium | per-recipient ordered stream | `.md` files on a shared filesystem | Redis/NATS queues, S3, HTTP, git-backed transport |
+| Sender → inbox transport | atomic, no-overwrite | atomic create-temp + rename | CAS, `If-None-Match`, queue dedupe |
+| Peer wake | pluggable, optional | `tmux send-keys` | wezterm, kitty, iTerm2, OS notifications, webhooks |
+| Self-poll fallback | recipient's responsibility | Claude `/loop`; codex/Gemini scheduler | wrapper-specific |
+
+That reference implementation worked well enough to be the exclusive coordination layer for the team that built the protocol.
+
+It's not a multi-agent framework — no task graphs, no retries, no role election. It covers the common case: agents sharing a project and handing work off. The hard requirement is just an inbox-checking cadence; the v0.1 reference CLI additionally needs a shared filesystem. **The simplicity is the point.**
 
 ## Required local access (v0.1 reference CLI)
 
@@ -200,30 +228,7 @@ If you want one repo (the *control repo*, holding `AGENTCHUTE.md` and the loop d
 
 ## How it works
 
-### The Handoff: simple two-agent message flow
-
-```text
-┌──────────────────┐                        ┌──────────────────┐
-│ ALICE (Claude)   │                        │ BOB (codex)      │
-│ inbox: 0         │                        │ inbox: 0         │
-│ status: active   │                        │ status: active   │
-└──────────────────┘                        └──────────────────┘
-         │                                            ▲
-         │ 1. message lands in inbox/bob/ (bob: 1)    │
-         └────────────────────────────────────────────┘
-         │
-         │ 2. wake poke (tmux adapter)
-         └─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─▶
-                                                      │
-                                                      │ 3. check
-                                                      │    read + archive
-                                                      ▼
-┌──────────────────┐                        ┌──────────────────┐
-│ ALICE (Claude)   │◀───────────────────────│ BOB (codex)      │
-│ inbox: 1         │ 4. reply               │ inbox: 0         │
-│ status: active   │                        │ status: active   │
-└──────────────────┘                        └──────────────────┘
-```
+The two-agent handoff at the top of this page is the basic shape. Multi-agent coordination layers a few more pieces on top — review patterns, a liveness sidecar.
 
 ### The Review: multi-agent coordination with liveness sidecar
 
