@@ -508,6 +508,72 @@ footer .tiny {
   margin: 0 auto;
 }
 
+/* ---------- blog article ---------- */
+
+article.blog-article p {
+  font-size: 17px;
+  line-height: 1.65;
+}
+
+article.blog-article p.lede {
+  font-size: 19px;
+  line-height: 1.55;
+}
+
+article.blog-article p.blog-meta {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 16px;
+}
+
+article.blog-article h2 {
+  margin-top: 8px;
+  margin-bottom: 20px;
+}
+
+article.blog-article figure.blog-image {
+  margin: 32px 0;
+}
+
+article.blog-article figure.blog-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+}
+
+article.blog-article figure.blog-image figcaption {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--fg-dim);
+  line-height: 1.5;
+  text-align: center;
+  font-style: italic;
+}
+
+article.blog-article blockquote.blog-quote {
+  font-family: var(--serif);
+  font-size: 22px;
+  line-height: 1.4;
+  font-style: italic;
+  color: var(--fg);
+  margin: 32px 0 32px 0;
+  padding: 0 0 0 20px;
+  border-left: 3px solid var(--accent);
+}
+
+article.blog-article pre.ascii {
+  margin: 24px 0;
+}
+
+article.blog-article pre.install {
+  margin-top: 8px;
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 520px) {
@@ -522,5 +588,13 @@ footer .tiny {
   section.hero {
     padding-top: 48px;
     padding-bottom: 40px;
+  }
+  article.blog-article p {
+    font-size: 16px;
+  }
+  article.blog-article blockquote.blog-quote {
+    font-size: 19px;
+    margin-left: 0;
+    margin-right: 0;
   }
 }

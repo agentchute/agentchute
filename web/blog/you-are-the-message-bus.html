@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>You are the message bus — agentchute</title>
+<meta name="description" content="How we stopped copy-pasting between four AI agent terminals — and accidentally shipped a coordination protocol along the way.">
+<meta property="og:title" content="You are the message bus">
+<meta property="og:description" content="How we stopped copy-pasting between four AI agent terminals — and accidentally shipped a coordination protocol along the way.">
+<meta property="og:url" content="https://agentchute.dev/blog/you-are-the-message-bus.html">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://agentchute.dev/images/blog/before.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://agentchute.dev/images/blog/before.png">
+<link rel="canonical" href="https://agentchute.dev/blog/you-are-the-message-bus.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">May 14, 2026 · agentchute team</p>
+    <h1>You are the message bus</h1>
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      How we stopped copy-pasting between four AI agent terminals — and accidentally
+      shipped a coordination protocol along the way.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+
+    <p>
+      You start with one agent because it is simple. One terminal, one model, one task.
+      Ask it to inspect the code, make a change, run tests, and explain what happened.
+    </p>
+
+    <p>
+      Then you add a second agent because the first one is good at implementation but
+      weak at review. Maybe Claude Code is working through a refactor while codex checks
+      the edge cases. Maybe Gemini is looking at docs while another agent runs the release
+      checklist. The shape is obvious: different tools, different model providers,
+      different strengths, all pointed at the same project.
+    </p>
+
+    <p>
+      The first hour feels powerful. Then the coordination tax shows up.
+    </p>
+
+    <p>
+      One pane says, "I found a possible issue in section 6. Ask the other agent if the
+      reference implementation wording should move." Another pane has the answer, but
+      it cannot deliver it. So you copy a summary out of one terminal, paste it into
+      another, wait, copy the reply back, and try to remember which agent has already
+      seen which context.
+    </p>
+
+    <figure class="blog-image">
+      <img src="../images/blog/before.png" alt="A developer sits at a desk with hands on their head, surrounded by four computer terminals each showing an AI agent character; rust-orange arrows and paper notes radiate between each agent and the human, never between the agents themselves." loading="lazy">
+    </figure>
+
+    <p>
+      At that point the agents are not really collaborating. You are collaborating with
+      each of them separately. You are the courier, the scheduler, the inbox, the
+      notification system, and the memory of the conversation. The agents can write
+      code, review wording, and catch contradictions, but they cannot hand work to each
+      other unless you stand in the middle.
+    </p>
+
+    <p>
+      That was the pain we built agentchute around.
+    </p>
+
+    <p>
+      We did not want another multi-agent framework with roles, graphs, planners,
+      retries, and dashboards. Those systems are useful for some problems, but this
+      problem was smaller and more physical. We had several CLI agents running side by
+      side in tmux. They shared a repo. They needed a way to send a message to a named
+      peer, wake that peer if possible, and let the recipient decide what to do with
+      the message.
+    </p>
+
+    <blockquote class="blog-quote">
+      The missing primitive was not orchestration. It was a mailbox.
+    </blockquote>
+
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>The protocol</h2>
+
+    <p>
+      <a href="https://github.com/agentchute/agentchute">agentchute</a> is a small
+      Markdown protocol for shared inboxes between AI agents. The spec is one file:
+      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code></a>.
+      The reference CLI is optional. The core idea is that every agent has a
+      recipient-owned inbox, and messages are plain Markdown files with a small amount
+      of optional metadata.
+    </p>
+
+    <p>
+      A sender does not call a central service. It does not ask a broker to route work.
+      It writes a message to the recipient's inbox using no-overwrite delivery. If the
+      recipient declared a wake method, the sender can also poke it. In the v0.1
+      reference CLI, that wake method is <code>tmux send-keys</code>, because our agents
+      were running in tmux panes. Without a reachable wake method, delivery still works.
+      The recipient picks up the message on its next polling cadence.
+    </p>
+
+    <p>The protocol has six practical primitives.</p>
+
+    <p>
+      <strong>First, a per-recipient inbox.</strong> Each agent owns its own ordered
+      message stream. Other agents may deliver messages into it, but consumption belongs
+      to the recipient.
+    </p>
+
+    <p>
+      <strong>Second, ordered, identified messages.</strong> Each message has a
+      <code>(timestamp, sender, nonce)</code> identity. Implementations process inbox
+      entries oldest-first with deterministic tie-breaking, and delivery avoids
+      overwriting an existing message.
+    </p>
+
+    <p>
+      <strong>Third, recipient-owned consumption.</strong> A peer can inspect inbox
+      metadata for liveness, but it does not read another agent's message body. This
+      matters because the body is context for the recipient, not a public work queue
+      to be claimed by anyone nearby.
+    </p>
+
+    <p>
+      <strong>Fourth, optional wake.</strong> Delivery and wake are separate. The message
+      landing in the inbox is the protocol event. A wake poke is a best-effort
+      convenience that reduces latency when the local environment supports it.
+    </p>
+
+    <p>
+      <strong>Fifth, self-registration.</strong> Agents publish who they are, where their
+      inbox lives in the shared substrate, and how they can be woken. In the reference
+      CLI that is a Markdown registration file under the loop directory.
+    </p>
+
+    <p>
+      <strong>Sixth, best-effort protocol correction.</strong> If an agent finds malformed
+      mail in its own inbox, it quarantines that entry and sends a corrective message
+      back to the inferred sender. The goal is to keep the loop moving while making
+      protocol mistakes visible.
+    </p>
+
+    <pre class="ascii"><code>┌──────────────────┐                        ┌──────────────────┐
+│ ALICE (Claude)   │                        │ BOB (codex)      │
+│ inbox: 0         │                        │ inbox: 0         │
+│ status: active   │                        │ status: active   │
+└──────────────────┘                        └──────────────────┘
+         │                                            ▲
+         │ 1. message lands in inbox/bob/ (bob: 1)    │
+         └────────────────────────────────────────────┘
+         │
+         │ 2. wake poke (tmux adapter)
+         └─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─▶
+                                                      │
+                                                      │ 3. check
+                                                      │    read + archive
+                                                      ▼
+┌──────────────────┐                        ┌──────────────────┐
+│ ALICE (Claude)   │◀───────────────────────│ BOB (codex)      │
+│ inbox: 1         │ 4. reply               │ inbox: 0         │
+│ status: active   │                        │ status: active   │
+└──────────────────┘                        └──────────────────┘</code></pre>
+
+    <blockquote class="blog-quote">
+      A handoff is not a graph transition. It is a message landing in a mailbox.
+    </blockquote>
+
+    <p>
+      The v0.1 CLI chooses one concrete substrate: Markdown files on a shared
+      filesystem, atomic temp-file plus rename delivery, and tmux for peer wake. Those
+      choices are intentionally boring. They are also not the protocol boundary. The
+      same primitives can map to a queue, object store, HTTP endpoint, git-backed
+      transport, or another shared medium as long as the implementation preserves the
+      inbox contract.
+    </p>
+
+    <p>
+      The important part is that agents can talk to each other without the human
+      becoming the transport.
+    </p>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>We used agentchute to build agentchute</h2>
+
+    <p>
+      The strongest test of this idea was not a staged demo. It was the release process.
+    </p>
+
+    <p>
+      While preparing v0.1.0, we had multiple CLI agents in the same pool: Claude Code,
+      codex, Gemini CLI, and later grok. They were not subagents inside one model
+      session. They were separate wrappers, separate providers, separate panes, sharing
+      one project and one coordination loop.
+    </p>
+
+    <p>
+      The protocol was still changing while we used it. That made the work uncomfortable
+      in the useful way. If the spec text was vague, the agents noticed. If the README
+      was dense, the agents noticed. If a message arrived malformed or a cross-reference
+      drifted, the coordination loop itself made the problem hard to ignore.
+    </p>
+
+    <p>
+      One concrete example was the protocol-vs-reference split in the spec.
+      <code>AGENTCHUTE.md</code> needed to distinguish the abstract protocol from the
+      filesystem reference CLI. Claude asked for an independent review. codex checked
+      the sections for places where reference paths like <code>.&lt;vendor&gt;/loop/</code>
+      had leaked into normative protocol text. Gemini and other reviewers did their own
+      passes. The results came back as messages, not as pasted summaries through a
+      human. Claude synthesized the findings and landed the cleanup.
+    </p>
+
+    <p>
+      Another example was the README redesign. Alex looked at the rendered GitHub page
+      and said it was too dense. Claude sent a consult asking the other agents to reason
+      like cold readers. codex argued that the handoff diagram needed to move above the
+      abstract protocol table, because a new reader needs the mental model before the
+      primitives. Other agents proposed their own structure and launch-page framing.
+      Claude collected the replies, made the edit, and the README got clearer.
+    </p>
+
+    <p>
+      The same loop handled launch copy. One message asked for YouTube title and
+      description feedback for the 62-second demo. Another asked for a launch tweet that
+      could stand alone on X. Later, Claude opened a four-way promotion discussion:
+      Round 1 independent brainstorms, Round 2 cross-pollination, then synthesis. Each
+      agent replied through its inbox. No one had to manually paste every answer into
+      every other pane.
+    </p>
+
+    <p>
+      This article followed the same pattern. Claude sent separate tasks: one agent for
+      the opening hook and pull quotes, one for the distribution plan, one for the main
+      body. This draft is one of those messages. The protocol being described is the
+      protocol carrying the draft.
+    </p>
+
+    <figure class="video">
+      <a
+        class="video-thumb"
+        href="https://www.youtube.com/watch?v=jwYzKtcOYl0"
+        target="_blank"
+        rel="noopener"
+        aria-label="Play video on YouTube: Real agentchute session — Claude, codex, Gemini in tmux (24x speedup, 62 seconds)">
+        <img
+          src="https://img.youtube.com/vi/jwYzKtcOYl0/maxresdefault.jpg"
+          alt="Three CLI agents (Claude Code, codex CLI, Gemini CLI) coordinating in tmux through agentchute"
+          loading="lazy">
+        <span class="video-play" aria-hidden="true">▶</span>
+      </a>
+      <figcaption>
+        62-second demo, 24× speedup of a real working session.
+        <a href="https://www.youtube.com/watch?v=jwYzKtcOYl0">Watch on YouTube</a>.
+      </figcaption>
+    </figure>
+
+    <p>
+      The video is short because the real session was not. It shows the thing that is
+      otherwise hard to explain in a screenshot: one terminal sends, another wakes, a
+      peer reads its inbox, replies, and the group converges on a decision. The human
+      is still steering. The human is still deciding what matters. But the human is no
+      longer the copy-paste bus between every pane.
+    </p>
+
+    <figure class="blog-image">
+      <img src="../images/blog/after.png" alt="A developer sits comfortably on a couch reading a book with a coffee, while on the right side of the frame four computer terminals each have small mailboxes attached and paper-airplane messages fly directly between them — no longer through the human." loading="lazy">
+    </figure>
+
+    <p>
+      That distinction is the point. We do not want agents silently inventing work for
+      each other. We do not want a hidden router assigning tasks based on vague
+      capability claims. agentchute messages are explicit. They have a sender, a
+      recipient, and a task. The recipient decides how to respond. The human can inspect
+      the files because they are Markdown.
+    </p>
+
+    <blockquote class="blog-quote">
+      It felt less like building an autonomous swarm and more like giving each worker
+      a mailbox.
+    </blockquote>
+
+  </div>
+</section>
+
+<section class="notwhat">
+  <div class="wrap">
+    <h2>What it is not</h2>
+
+    <p>
+      agentchute is not a multi-agent framework. It does not define task graphs,
+      planners, roles, elections, retries, or a global scheduler. If you need an
+      orchestration runtime, use one.
+    </p>
+
+    <p>
+      It is not a message broker with delivery guarantees. There are no acknowledgements,
+      no exactly-once semantics, no retry queue, and no durable audit log. The reference
+      CLI writes files and moves them through inbox, archive, and quarantine
+      directories. That is useful, but it is not a broker.
+    </p>
+
+    <p>
+      It is not an identity or authorization system. Messages are unsigned plain text.
+      The v0.1 reference implementation assumes cooperative peers sharing a trusted
+      local environment. If you do not trust an agent with access to the repo and the
+      loop directory, do not put that agent in the pool.
+    </p>
+
+    <p>
+      It is not a substitute for agent judgment. A message can ask for review, but it
+      cannot make the review good. A wake poke can get another pane's attention, but it
+      cannot make the model understand the code. The protocol removes relay work. It
+      does not remove the need to supervise the work.
+    </p>
+
+    <p>
+      For fully distributed, cryptographically audited coordination, use a
+      signed-envelope protocol. agentchute is the local, unsigned, cooperative-trust
+      sibling: small enough to read, boring enough to run, and explicit about the
+      guarantees it does not provide.
+    </p>
+  </div>
+</section>
+
+<section class="why">
+  <div class="wrap">
+    <h2>Why this shape</h2>
+
+    <p>
+      The industry keeps reaching for large coordination systems because multi-agent
+      work sounds like a large coordination problem. Sometimes it is. But a lot of
+      day-to-day agent work is simpler than that. One agent finds something. Another
+      agent should look at it. A third agent should verify the result. The human should
+      make the decision, not carry every message by hand.
+    </p>
+
+    <blockquote class="blog-quote">
+      For that problem, a directory can be enough.
+    </blockquote>
+
+    <p>
+      Files are easy to inspect. Markdown is easy for agents and humans to read. Atomic
+      rename is a well-understood delivery primitive on a shared filesystem. tmux is
+      already where many CLI agents live. None of those choices are glamorous, which is
+      part of why they work.
+    </p>
+
+    <p>
+      The bet behind agentchute is that the first coordination layer should be smaller
+      than the agents using it. Per-recipient inboxes. No-overwrite delivery.
+      Recipient-owned consumption. Optional wake. Self-registration. Best-effort
+      correction. Everything else can be built later, by the people who need it, on the
+      substrate that fits their environment.
+    </p>
+
+    <p>
+      We started with copy-paste fatigue. We ended up with a protocol because the same
+      tiny pattern kept solving the same practical problem: agents needed to talk to
+      each other, and the human needed to stop being the message bus.
+    </p>
+
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <h2>Try it</h2>
+
+    <p>With the optional reference CLI:</p>
+
+    <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
+
+    <p>
+      Or skip the binary — drop
+      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code></a>
+      into your project and follow the enrollment block. The whole protocol fits in one
+      file.
+    </p>
+
+    <p class="tiny">
+      Repository: <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a> ·
+      MIT license · <a href="../">home</a>
+    </p>
+  </div>
+</section>
+
+</article>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
+      ·
+      <a href="../">home</a>
+      ·
+      <a href="../blog/">blog</a>
+      ·
+      MIT license
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
