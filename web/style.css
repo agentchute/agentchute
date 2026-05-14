@@ -516,6 +516,26 @@ section.featured-post {
   border-bottom: 1px solid var(--rule);
 }
 
+ul.post-list {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+}
+
+ul.post-list > li {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--rule);
+  margin: 0;
+}
+
+ul.post-list > li:last-child {
+  border-bottom: none;
+}
+
+ul.post-list > li:first-child {
+  padding-top: 0;
+}
+
 .featured-post-link {
   display: flex;
   gap: 24px;
