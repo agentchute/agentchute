@@ -9,9 +9,16 @@
 <meta property="og:description" content="How we stopped copy-pasting between four AI agent terminals — and accidentally shipped a coordination protocol along the way.">
 <meta property="og:url" content="https://agentchute.dev/blog/you-are-the-message-bus.html">
 <meta property="og:type" content="article">
-<meta property="og:image" content="https://agentchute.dev/images/blog/before.png">
+<meta property="og:image" content="https://agentchute.dev/images/blog/before.jpg">
+<meta property="og:image:alt" content="A developer sits at a desk with hands on their head, surrounded by four computer terminals showing AI agent characters; arrows radiate between each agent and the human.">
+<meta property="og:image:width" content="1248">
+<meta property="og:image:height" content="832">
+<meta property="article:published_time" content="2026-05-14">
+<meta property="article:author" content="agentchute team">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://agentchute.dev/images/blog/before.png">
+<meta name="twitter:title" content="You are the message bus">
+<meta name="twitter:description" content="How we stopped copy-pasting between four AI agent terminals — and accidentally shipped a coordination protocol along the way.">
+<meta name="twitter:image" content="https://agentchute.dev/images/blog/before.jpg">
 <link rel="canonical" href="https://agentchute.dev/blog/you-are-the-message-bus.html">
 <link rel="stylesheet" href="../style.css">
 </head>
@@ -65,15 +72,15 @@
     </p>
 
     <p>
-      One pane says, "I found a possible issue in section 6. Ask the other agent if the
-      reference implementation wording should move." Another pane has the answer, but
-      it cannot deliver it. So you copy a summary out of one terminal, paste it into
+      One pane says, "I found a possible issue in the spec. Ask the other agent whether
+      the reference-implementation wording should move." Another pane has the answer,
+      but it cannot deliver it. So you copy a summary out of one terminal, paste it into
       another, wait, copy the reply back, and try to remember which agent has already
       seen which context.
     </p>
 
     <figure class="blog-image">
-      <img src="../images/blog/before.png" alt="A developer sits at a desk with hands on their head, surrounded by four computer terminals each showing an AI agent character; rust-orange arrows and paper notes radiate between each agent and the human, never between the agents themselves." loading="lazy">
+      <img src="../images/blog/before.jpg" alt="A developer sits at a desk with hands on their head, surrounded by four computer terminals each showing an AI agent character; rust-orange arrows and paper notes radiate between each agent and the human, never between the agents themselves." loading="lazy" width="1248" height="832">
     </figure>
 
     <p>
@@ -260,10 +267,11 @@
     </p>
 
     <p>
-      This article followed the same pattern. Claude sent separate tasks: one agent for
-      the opening hook and pull quotes, one for the distribution plan, one for the main
-      body. This draft is one of those messages. The protocol being described is the
-      protocol carrying the draft.
+      This article followed the same pattern. Claude split the work into separate
+      tasks — one agent on the opening hook, one on the distribution plan, one on the
+      main body — and the peers replied through their inboxes. The page you are reading
+      was assembled from those messages. The protocol being described is the protocol
+      that carried the writing.
     </p>
 
     <figure class="video">
@@ -294,7 +302,10 @@
     </p>
 
     <figure class="blog-image">
-      <img src="../images/blog/after.png" alt="A developer sits comfortably on a couch reading a book with a coffee, while on the right side of the frame four computer terminals each have small mailboxes attached and paper-airplane messages fly directly between them — no longer through the human." loading="lazy">
+      <img src="../images/blog/after.jpg" alt="A developer sits comfortably on a couch reading a book with a coffee, while on the right side of the frame four computer terminals each have small mailboxes attached and paper-airplane messages fly directly between them — no longer through the human." loading="lazy" width="1248" height="832">
+      <figcaption>
+        Agents pass messages directly; the human still steers decisions.
+      </figcaption>
     </figure>
 
     <p>
@@ -358,11 +369,10 @@
     <h2>Why this shape</h2>
 
     <p>
-      The industry keeps reaching for large coordination systems because multi-agent
-      work sounds like a large coordination problem. Sometimes it is. But a lot of
-      day-to-day agent work is simpler than that. One agent finds something. Another
-      agent should look at it. A third agent should verify the result. The human should
-      make the decision, not carry every message by hand.
+      Multi-agent work often sounds like a large coordination problem. Sometimes it
+      is. But a lot of day-to-day agent work is simpler than that. One agent finds
+      something. Another agent should look at it. A third agent should verify the
+      result. The human should make the decision, not carry every message by hand.
     </p>
 
     <blockquote class="blog-quote">

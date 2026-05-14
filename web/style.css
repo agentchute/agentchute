@@ -597,4 +597,8 @@ article.blog-article pre.install {
     margin-left: 0;
     margin-right: 0;
   }
+  article.blog-article pre.ascii {
+    font-size: 10.5px;
+    line-height: 1.4;
+  }
 }
