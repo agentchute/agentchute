@@ -508,6 +508,99 @@ footer .tiny {
   margin: 0 auto;
 }
 
+/* ---------- featured post (home page strip) ---------- */
+
+section.featured-post {
+  padding: 32px 0;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--rule);
+}
+
+.featured-post-link {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  text-decoration: none;
+  color: inherit;
+  transition: transform 160ms ease;
+}
+
+.featured-post-link:hover {
+  transform: translateX(2px);
+}
+
+.featured-post-thumb {
+  width: 240px;
+  height: 160px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--rule);
+  flex-shrink: 0;
+  display: block;
+}
+
+.featured-post-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.featured-post-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 6px 0;
+}
+
+.featured-post-title {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 0 0 8px 0;
+  color: var(--fg);
+  transition: color 120ms ease;
+}
+
+.featured-post-link:hover .featured-post-title {
+  color: var(--accent);
+}
+
+.featured-post-arrow {
+  color: var(--fg-dim);
+  transition: color 120ms ease, transform 160ms ease;
+  display: inline-block;
+}
+
+.featured-post-link:hover .featured-post-arrow {
+  color: var(--accent);
+  transform: translateX(3px);
+}
+
+.featured-post-excerpt {
+  font-size: 14px;
+  color: var(--fg-dim);
+  margin: 0;
+  line-height: 1.55;
+}
+
+@media (max-width: 640px) {
+  .featured-post-link {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+  }
+  .featured-post-thumb {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 2;
+  }
+  .featured-post-title {
+    font-size: 20px;
+  }
+}
+
 /* ---------- blog article ---------- */
 
 article.blog-article p {
