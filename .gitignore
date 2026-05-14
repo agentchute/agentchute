@@ -1,0 +1,35 @@
+# Binary build artifacts
+/agentchute
+/dist/
+
+# OS junk
+.DS_Store
+
+# agentchute coordination — live state is transient/local
+# Track: loop/README.md, loop/agents/README.md, loop/agents/*.example.md
+# Ignore: live registrations, per-recipient inboxes, archives, quarantine
+#
+# This repo currently dogfoods on .rehumanlabs/loop/ (no init marker —
+# repo-managed). Anyone running `agentchute init` with default options
+# writes to .agentchute/loop/, and the init marker pair below lets that
+# stanza upgrade idempotently on future init runs.
+
+# --- dogfood namespace: .rehumanlabs (repo-managed) ---
+.rehumanlabs/loop/agents/*.md
+!.rehumanlabs/loop/agents/*.example.md
+!.rehumanlabs/loop/agents/README.md
+.rehumanlabs/loop/inbox/
+.rehumanlabs/loop/archive/
+.rehumanlabs/loop/malformed/
+.rehumanlabs/loop/watchdog.log
+
+# --- default namespace: .agentchute (init-managed) ---
+# agentchute-gitignore v1 begin
+.agentchute/loop/agents/*.md
+!.agentchute/loop/agents/*.example.md
+!.agentchute/loop/agents/README.md
+.agentchute/loop/inbox/
+.agentchute/loop/archive/
+.agentchute/loop/malformed/
+.agentchute/loop/watchdog.log
+# agentchute-gitignore v1 end

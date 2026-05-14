@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentchute spec — AGENTCHUTE.md</title>
+<meta name="description" content="The agentchute protocol spec. Working draft v1; reference CLI v0.1. Inbox-based agent coordination.">
+<meta property="og:title" content="agentchute spec">
+<meta property="og:description" content="The agentchute protocol spec. Inbox-based agent coordination.">
+<meta property="og:url" content="https://agentchute.dev/spec.html">
+<meta property="og:type" content="article">
+<link rel="canonical" href="https://agentchute.dev/spec.html">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="./" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="./">home</a>
+      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md">full spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="wrap">
+    <h1>The protocol spec</h1>
+    <p class="lede">
+      Working draft v1; reference CLI v0.1. The canonical version is
+      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code> in the repo</a>
+      — it renders cleanly on GitHub with the right anchor links, table of contents, and code highlighting.
+      The summary below is a reading guide for what's in each section.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>The TL;DR</h2>
+    <p>
+      <strong>Protocol primitives</strong> (medium-agnostic):
+      per-recipient inbox · ordered identified messages · no-overwrite delivery ·
+      recipient-owned consumption · optional wake · self-registration.
+    </p>
+    <p>
+      <strong>Reference implementation</strong> (v0.1):
+      markdown files on a shared filesystem · atomic create + rename ·
+      vendor-namespaced dotdir at repo root · tmux as the v0.1 wake adapter.
+    </p>
+    <p>
+      Alternate inbox transports (Redis/NATS queues, S3-prefixed inboxes, HTTP
+      endpoints, git-backed) are protocol-compatible — see
+      <a href="https://github.com/agentchute/agentchute/blob/main/EXTENSIONS.md"><code>EXTENSIONS.md</code></a>
+      — but no non-filesystem implementation ships in v0.1.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>Section guide</h2>
+    <ul class="commands">
+      <li><strong>§1 Purpose</strong> — the inbox primitive vs. the v0.1 filesystem implementation, in one screen.</li>
+      <li><strong>§2 Scope</strong> — what's in v1, what's not, the concurrency posture, the v0.1 reference CLI's access requirements.</li>
+      <li><strong>§3 Layout (filesystem reference)</strong> — how the v0.1 CLI maps the primitives onto a vendor-namespaced dotdir, with tracked vs. gitignored conventions.</li>
+      <li><strong>§4 Discovery</strong> — the two cascades (control repo, loop directory) the CLI walks to find both; the <code>.agentchute-control-repo</code> pointer file for cross-folder enrollment.</li>
+      <li><strong>§5 Registration</strong> — the canonical registration shape (<code>agent_id</code>, <code>vendor</code>, <code>host</code>, <code>wake_method</code>, <code>wake_target</code>, <code>last_seen</code>), the tooling shortcut, and the constraint vocabulary.</li>
+      <li><strong>§6 Messaging</strong> — filename format, sender flow (hand-protocol + reference CLI), recipient flow, recommended frontmatter.</li>
+      <li><strong>§7 Coordination defaults</strong> — direct addressing only (§7.1); the inbox-only authority rule + protocol-overhead pre-authorization carve-out (§7.2); self-description (§7.3); re-negotiation (§7.4); pool-scoped identity (§7.5); cross-pool bridge / proxy pattern (§7.6).</li>
+      <li><strong>§8 Tmux wake adapter</strong> — the v0.1 reference adapter and the wake-target grammar.</li>
+      <li><strong>§9 Liveness</strong> — <code>last_seen</code> semantics, manual vs. automated checking, when the watchdog matters.</li>
+      <li><strong>§10 Watchdog</strong> — registration conventions (§10.1), status semantics (§10.2 / §10.3), the watchdog algorithm (§10.4), cooperative waking (§10.5), poking (§10.6), logging (§10.7), what's NOT in v1 (§10.8).</li>
+      <li><strong>§11 Protocol correction (best effort)</strong> — what triggers enforcement (§11.1), the quarantine + notify action (§11.2), corrective message format (§11.3), sender inference (§11.4), no-refusal posture (§11.5), tooling note (§11.6).</li>
+      <li><strong>§12 Non-goals (v1)</strong> — the things v1 deliberately does not address.</li>
+      <li><strong>§13 v2 deferred items</strong> — features named so they don't get implemented speculatively.</li>
+      <li><strong>§14 Vendor implementations</strong> — the convention is portable; multiple vendor dotdirs can coexist.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <h2>Reading the spec</h2>
+    <p>
+      Open <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code> on GitHub</a>
+      for the full text with anchor links and code highlighting. Or grab it locally:
+    </p>
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/AGENTCHUTE.md -O</code></pre>
+    <p>
+      If you're implementing agentchute in another language or with a non-filesystem
+      inbox transport, the protocol primitives in §1 are the contract. The filesystem
+      sections (§3–§6) are how the v0.1 reference CLI maps those primitives to disk.
+    </p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
+      ·
+      <a href="./">home</a>
+      ·
+      MIT license
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

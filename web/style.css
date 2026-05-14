@@ -1,0 +1,526 @@
+/* agentchute.dev — hand-crafted styles, no build chain. */
+
+:root {
+  --bg: #fbfaf7;
+  --bg-alt: #f3f0e8;
+  --fg: #1c1b18;
+  --fg-dim: #545048;
+  --accent: #b94a26;
+  --accent-fg: #ffffff;
+  --rule: #d8d2c4;
+  --code-bg: #1c1b18;
+  --code-fg: #f3f0e8;
+  --link: #2a4a8a;
+  --link-hover: #b94a26;
+  --width: 720px;
+  --mono: "JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace;
+  --serif: "Charter", "Iowan Old Style", "Palatino", "Georgia", serif;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+}
+
+.wrap {
+  max-width: var(--width);
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ---------- header ---------- */
+
+header.site {
+  border-bottom: 1px solid var(--rule);
+  background: var(--bg);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  background: rgba(251, 250, 247, 0.92);
+}
+
+header.site .wrap {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+
+.logo {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--fg);
+  letter-spacing: -0.01em;
+}
+
+header.site nav {
+  display: flex;
+  gap: 20px;
+}
+
+header.site nav a {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--fg-dim);
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+
+header.site nav a:hover {
+  color: var(--accent);
+}
+
+/* ---------- hero ---------- */
+
+main {
+  padding: 0;
+}
+
+section {
+  padding: 56px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+section:last-of-type {
+  border-bottom: none;
+}
+
+section.hero {
+  padding-top: 80px;
+  padding-bottom: 64px;
+}
+
+h1 {
+  font-family: var(--serif);
+  font-size: clamp(28px, 4.2vw, 40px);
+  line-height: 1.18;
+  letter-spacing: -0.015em;
+  margin: 0 0 24px 0;
+  font-weight: 600;
+}
+
+h1 .dim {
+  color: var(--fg-dim);
+  font-weight: 400;
+  font-style: italic;
+}
+
+h2 {
+  font-family: var(--serif);
+  font-size: clamp(22px, 2.4vw, 26px);
+  line-height: 1.25;
+  margin: 0 0 16px 0;
+  font-weight: 600;
+}
+
+h3 {
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.3;
+  margin: 24px 0 8px 0;
+  font-weight: 600;
+}
+
+p {
+  margin: 0 0 16px 0;
+}
+
+p.lede {
+  font-size: 18px;
+  line-height: 1.55;
+  color: var(--fg);
+  margin-bottom: 24px;
+}
+
+p.lede-foot {
+  font-size: 14px;
+  color: var(--fg-dim);
+  margin-top: 12px;
+}
+
+.tiny {
+  font-size: 12px;
+  color: var(--fg-dim);
+  line-height: 1.5;
+}
+
+/* ---------- code / pre ---------- */
+
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+}
+
+p code,
+li code {
+  background: var(--bg-alt);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 0.86em;
+}
+
+pre {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 18px 20px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 16px 0 24px 0;
+}
+
+pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+pre.install {
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 14px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---------- hero video (clickable thumbnail → YouTube) ---------- */
+
+figure.video {
+  margin: 32px 0 0 0;
+}
+
+a.video-thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--code-bg);
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  text-decoration: none;
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+a.video-thumb:hover {
+  border-color: var(--accent);
+}
+
+a.video-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 220ms ease, filter 220ms ease;
+}
+
+a.video-thumb:hover img {
+  transform: scale(1.015);
+  filter: brightness(0.92);
+}
+
+a.video-thumb .video-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 28px;
+  line-height: 72px;
+  text-align: center;
+  padding-left: 6px; /* optical centering for the ▶ glyph */
+  box-sizing: border-box;
+  transition: background 160ms ease, transform 160ms ease;
+  pointer-events: none;
+}
+
+a.video-thumb:hover .video-play {
+  background: var(--accent);
+  transform: translate(-50%, -50%) scale(1.05);
+}
+
+figure.video figcaption {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--fg-dim);
+  line-height: 1.5;
+  text-align: center;
+}
+
+figure.video figcaption a {
+  color: var(--fg-dim);
+  text-decoration: underline;
+}
+
+figure.video figcaption a:hover {
+  color: var(--accent);
+}
+
+pre.ascii {
+  background: var(--bg-alt);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.35;
+  border: 1px solid var(--rule);
+}
+
+pre.ascii code {
+  font-family: var(--mono);
+  white-space: pre;
+}
+
+/* ---------- animations ---------- */
+
+.anim {
+  margin: 16px 0 24px 0;
+}
+
+.anim pre.ascii-anim {
+  margin-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  transition: opacity 200ms ease;
+}
+
+/* Per-animation min-heights match the padded line count of each sequence
+ * (handoff = ~15 padded lines, review = ~20). Prevents a layout flash on
+ * the initial render before anim.js sets the first frame, and matches the
+ * steady-state height once padFrames() has equalized every frame. */
+.anim[data-anim="handoff"] pre.ascii-anim {
+  min-height: 280px;
+}
+
+.anim[data-anim="review"] pre.ascii-anim {
+  min-height: 380px;
+}
+
+.anim pre.ascii-anim > code {
+  display: block;
+  animation: ascii-fade 380ms ease;
+}
+
+@keyframes ascii-fade {
+  from {
+    opacity: 0.5;
+    transform: translateY(-1px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.anim-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--fg);
+  color: var(--code-fg);
+  border-radius: 0 0 6px 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 1px solid var(--rule);
+  border-top: none;
+}
+
+.anim-controls button {
+  background: transparent;
+  border: 1px solid rgba(243, 240, 232, 0.25);
+  color: var(--code-fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.anim-controls button:hover {
+  background: rgba(243, 240, 232, 0.08);
+  border-color: rgba(243, 240, 232, 0.55);
+}
+
+.anim-controls button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.anim-controls .anim-play {
+  min-width: 84px;
+}
+
+.anim-step-label {
+  margin-left: auto;
+  color: rgba(243, 240, 232, 0.75);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim pre.ascii-anim > code {
+    animation: none;
+  }
+}
+
+/* ---------- lists ---------- */
+
+ul {
+  margin: 0 0 16px 0;
+  padding-left: 22px;
+}
+
+ul li {
+  margin-bottom: 8px;
+}
+
+ul.grid {
+  list-style: none;
+  padding-left: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+@media (min-width: 640px) {
+  ul.grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+}
+
+ul.grid li {
+  background: var(--bg-alt);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin-bottom: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+ul.commands {
+  list-style: none;
+  padding-left: 0;
+}
+
+ul.commands li {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 14px;
+}
+
+ul.commands li:last-child {
+  border-bottom: none;
+}
+
+/* ---------- sections ---------- */
+
+section.primitives,
+section.notwhat,
+section.cli,
+section.why {
+  background: var(--bg);
+}
+
+section.flow,
+section.quickstart {
+  background: var(--bg-alt);
+}
+
+section.flow pre.ascii {
+  background: var(--bg);
+}
+
+/* ---------- links ---------- */
+
+a {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+  transition: color 120ms ease;
+}
+
+a:hover {
+  color: var(--link-hover);
+}
+
+/* ---------- footer ---------- */
+
+footer {
+  padding: 40px 0;
+  background: var(--fg);
+  color: var(--code-fg);
+}
+
+footer .wrap {
+  text-align: center;
+}
+
+footer p {
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+footer a {
+  color: var(--code-fg);
+  text-decoration: underline;
+  text-decoration-color: var(--fg-dim);
+}
+
+footer a:hover {
+  color: var(--bg);
+  text-decoration-color: var(--bg);
+}
+
+footer .tiny {
+  color: rgba(243, 240, 232, 0.65);
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 520px) {
+  header.site .wrap {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  section {
+    padding: 40px 0;
+  }
+  section.hero {
+    padding-top: 48px;
+    padding-bottom: 40px;
+  }
+}

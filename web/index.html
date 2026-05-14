@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentchute — coordinate AI agents through shared inboxes</title>
+<meta name="description" content="agentchute is a markdown-protocol convention for AI agents to coordinate through shared inboxes. No central server or broker required. No SDK.">
+<meta property="og:title" content="agentchute">
+<meta property="og:description" content="Coordinate AI agents through shared inboxes. No central server or broker required.">
+<meta property="og:url" content="https://agentchute.dev/">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://agentchute.dev/">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <div class="logo">agentchute</div>
+    <nav>
+      <a href="spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+      <a href="https://github.com/agentchute/agentchute/blob/main/EXTENSIONS.md">extensions</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="wrap">
+    <h1>Running multiple AI agents on a shared project is easy.<br><span class="dim">Coordinating them isn't.</span></h1>
+
+    <p class="lede">
+      <strong>agentchute is a small Markdown protocol that gives AI agents shared inboxes,
+      so they can message each other, request review, and hand off work without a human
+      acting as the relay.</strong> Humans stay in the loop for decisions and steering —
+      not for ferrying messages between terminals.
+    </p>
+    <p class="lede">
+      No central server or broker required. No SDK. No compiled code required.
+      Just <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code></a>
+      plus a short enrollment block your agents read and follow.
+    </p>
+
+    <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
+
+    <p class="lede-foot">
+      Or skip the binary — just drop <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md">AGENTCHUTE.md</a>
+      into your project and follow the enrollment block. The whole protocol fits in one file.
+    </p>
+
+    <figure class="video">
+      <a
+        class="video-thumb"
+        href="https://www.youtube.com/watch?v=jwYzKtcOYl0"
+        target="_blank"
+        rel="noopener"
+        aria-label="Play video on YouTube: Real agentchute session — Claude, codex, Gemini in tmux (24x speedup, 62 seconds)">
+        <img
+          src="https://img.youtube.com/vi/jwYzKtcOYl0/maxresdefault.jpg"
+          alt="Three agents coordinating in tmux — thumbnail for the launch video"
+          loading="lazy">
+        <span class="video-play" aria-hidden="true">▶</span>
+      </a>
+      <figcaption>
+        Three agents coordinating in tmux during the final pre-release cleanup pass.
+        24x speedup of a real working session. No staged prompts, no human ferrying
+        messages. <a href="https://www.youtube.com/watch?v=jwYzKtcOYl0" target="_blank" rel="noopener">Watch on YouTube</a> (62 seconds).
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>What's actually in the protocol</h2>
+    <p>
+      The protocol is a small set of <em>implementation-agnostic primitives</em>. Conforming
+      implementations are free to choose any inbox medium, any transport between sender and
+      inbox, and any wake mechanism — those are <strong>outside the protocol</strong>.
+    </p>
+    <ul class="grid">
+      <li><strong>Per-recipient inbox.</strong> Each agent owns an ordered message stream. Senders deliver into the recipient's inbox; the recipient owns consumption. <em>The inbox medium is implementation-specific.</em></li>
+      <li><strong>Ordered, identified messages.</strong> Each carries a unique <code>(timestamp, sender, nonce)</code> identity tuple; receivers process oldest-first by timestamp with deterministic tie-breaking. The reference CLI realizes this as lexicographic-sorted filenames.</li>
+      <li><strong>No-overwrite delivery.</strong> Delivery never silently clobbers an existing entry. Same-identity collisions retry with a fresh nonce. <em>Sender-to-inbox transport is implementation-specific.</em></li>
+      <li><strong>Recipient-owned consumption.</strong> Only the recipient reads its own message bodies. Liveness checks use inbox metadata only.</li>
+      <li><strong>Optional wake.</strong> Senders MAY signal a recipient via a pluggable wake adapter. The recipient's own self-poll loop is an equally valid fallback. <em>The wake mechanism is implementation-specific.</em></li>
+      <li><strong>Self-registration.</strong> Each agent publishes a small record naming itself, its wake method/target (if any), and operational metadata.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="primitives" style="background:var(--bg-alt)">
+  <div class="wrap">
+    <h2>The v0.1 reference implementation</h2>
+    <p>
+      The CLI in this repo picks one concrete answer for each implementation-specific axis.
+      It's not the protocol — it's the implementation we used while building the protocol,
+      and it worked well enough to be the exclusive coordination layer for the team that
+      shipped it. We chose tmux because it is terminal-native, widely packaged, and gives
+      each agent a stable addressable pane; with one install and a few panes, senders can
+      wake recipients immediately without adding a daemon, broker, or wrapper-specific
+      integration.
+    </p>
+    <ul class="grid">
+      <li><strong>Inbox medium:</strong> plain <code>.md</code> files on a shared filesystem, organized under <code>.&lt;vendor&gt;/loop/inbox/&lt;agent&gt;/</code>.</li>
+      <li><strong>Transport:</strong> atomic create-temp + rename (the local-filesystem realization of no-overwrite delivery).</li>
+      <li><strong>Multiplexer:</strong> tmux. See the <a href="https://github.com/agentchute/agentchute/blob/main/examples/tmux-quickstart.md">tmux starter kit</a> for a 5-minute setup if you're new to it.</li>
+      <li><strong>Peer-to-peer wake:</strong> <code>tmux send-keys</code> injecting the literal string <code>check</code> into the recipient's pane.</li>
+      <li><strong>Recipient self-poll:</strong> Claude Code's <code>/loop</code> feature is the in-wrapper path; codex CLI and Gemini CLI have no built-in self-loop, so they use an operator-owned scheduler that invokes the wrapper. Used as the fallback when no peer wake adapter is reachable.</li>
+    </ul>
+    <p>
+      <strong>Local is not baked into the protocol, and neither is speed.</strong>
+      The reference CLI uses a shared filesystem; another implementation can swap in
+      a queue, HTTP endpoint, object store, git transport, or any other inbox medium
+      that preserves the same semantics. Agents can run in one tmux session or on
+      different machines, networks, or regions — same primitives either way.
+    </p>
+    <p>
+      Alternate inbox media (Redis/NATS queues, S3-prefixed inboxes, HTTP endpoints,
+      git-backed) are protocol-compatible and discussed in
+      <a href="https://github.com/agentchute/agentchute/blob/main/EXTENSIONS.md#alternate-transports"><code>EXTENSIONS.md#alternate-transports</code></a>
+      with a worked git-as-transport sketch. Alternate wake adapters (wezterm, kitty,
+      OS notifications, SSH-based pokes) and alternate self-poll mechanisms are
+      covered in the surrounding sections.
+      None of these ship in v0.1; they ship the day someone writes them.
+    </p>
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>The Handoff: simple two-agent message flow</h2>
+    <p>The simplest case: alice sends; bob's wake adapter pokes; bob's <code>check</code> runs; bob replies.</p>
+
+    <div class="anim" data-anim="handoff">
+      <pre class="ascii ascii-anim" aria-label="Simple two-agent flow"><code></code></pre>
+      <div class="anim-controls">
+        <button type="button" class="anim-play" data-action="toggle" aria-label="Pause">⏸ Pause</button>
+        <button type="button" data-action="step-back" aria-label="Previous step">‹</button>
+        <span class="anim-step-label" aria-live="polite">step 1 / 4</span>
+        <button type="button" data-action="step-fwd" aria-label="Next step">›</button>
+        <button type="button" data-action="restart" aria-label="Restart">↺</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>The Review: multi-agent coordination with liveness sidecar</h2>
+    <p>
+      Three peers plus a watchdog. <code>claude-code</code> requests review, <code>codex</code> and
+      <code>gemini-cli</code> send findings back, claude-code consolidates and asks for sign-off.
+      The watchdog runs as a metadata-only liveness sidecar — it only wakes a peer with a
+      stale unread inbox. Same protocol; same shared inbox; no central broker.
+    </p>
+
+    <div class="anim" data-anim="review">
+      <pre class="ascii ascii-anim" aria-label="Complex multi-agent flow with watchdog sidecar"><code></code></pre>
+      <div class="anim-controls">
+        <button type="button" class="anim-play" data-action="toggle" aria-label="Pause">⏸ Pause</button>
+        <button type="button" data-action="step-back" aria-label="Previous step">‹</button>
+        <span class="anim-step-label" aria-live="polite">step 1 / 5</span>
+        <button type="button" data-action="step-fwd" aria-label="Next step">›</button>
+        <button type="button" data-action="restart" aria-label="Restart">↺</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="notwhat">
+  <div class="wrap">
+    <h2>What it isn't</h2>
+    <p>
+      agentchute is not a multi-agent framework. No task graphs, no retries, no
+      role election, no central broker, no SDK, no SaaS pricing tier.
+    </p>
+    <ul>
+      <li><strong>Not a message broker with delivery guarantees.</strong> No retries, no acknowledgments, no exactly-once. If you need queues, use a queue.</li>
+      <li><strong>Not an identity/auth system.</strong> Messages are unsigned plain-text. If you don't trust your peers, don't run them on your machine.</li>
+      <li><strong>Not a router or task-assignment engine.</strong> Agents are peers; senders pick recipients explicitly. No wildcard, no broadcast, no role election.</li>
+      <li><strong>Not an audit log.</strong> Archives are local and gitignored by default. Loop messages are a transient operational trace.</li>
+      <li><strong>Not a distributed transport with cryptographic guarantees.</strong> The v0.1 reference CLI runs over a shared filesystem and provides no signing, no acks, no exactly-once. The protocol itself is medium-agnostic — alternate inbox transports are compatible — but v0.1 ships only the local, unsigned, cooperative-trust implementation. For cryptographic audit, use a signed-envelope coordination protocol.</li>
+    </ul>
+    <p>If you wanted any of those, this is the wrong tool, and that's fine.</p>
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <h2>Quickstart — no binary</h2>
+    <p>
+      The protocol-only path: a short shell snippet scaffolds the loop, plus one
+      manual step per agent file. No <code>agentchute</code> binary required.
+    </p>
+    <pre><code># 1. Fetch the spec.
+curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/AGENTCHUTE.md -O
+
+# 2. Scaffold the loop directories at owner-only perms.
+mkdir -p .agentchute/loop/{agents,inbox,archive,malformed}
+chmod 700 .agentchute/loop/{agents,inbox,archive,malformed}
+
+# 3. Ignore live state in git.
+cat &gt;&gt; .gitignore &lt;&lt;'EOF'
+# agentchute-gitignore v1 begin
+.agentchute/loop/agents/*.md
+!.agentchute/loop/agents/*.example.md
+!.agentchute/loop/agents/README.md
+.agentchute/loop/inbox/
+.agentchute/loop/archive/
+.agentchute/loop/malformed/
+.agentchute/loop/watchdog.log
+# agentchute-gitignore v1 end
+EOF
+
+# 4. Drop the ENROLLMENT block at the top of each agent's
+#    discovered file (CLAUDE.md, CODEX.md, GEMINI.md, AGENTS.md).
+#    Templates: templates/enrollment/wrapper.md and agents.md.</code></pre>
+    <p>
+      Each agent reads its file, registers itself by writing
+      <code>.agentchute/loop/agents/&lt;its-id&gt;.md</code>, and starts checking its inbox.
+      Sending and checking are just <code>mv</code> plus an optional wake poke.
+    </p>
+  </div>
+</section>
+
+<section class="cli">
+  <div class="wrap">
+    <h2>Or, install the reference CLI</h2>
+    <p>~4000 lines of stdlib Go, no third-party dependencies.</p>
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
+# or
+go install github.com/agentchute/agentchute@latest</code></pre>
+    <p>What the CLI buys you:</p>
+    <ul class="commands">
+      <li><code>agentchute init</code> — scaffold loop directories + drop ENROLLMENT blocks into discovered wrapper files.</li>
+      <li><code>agentchute register --as &lt;id&gt; --vendor &lt;vendor&gt;</code> — write your registration.</li>
+      <li><code>agentchute check --as &lt;id&gt;</code> — pull your inbox, archive consumed messages, enforce §11 (quarantine + notify), and run §10.5 cooperative waking.</li>
+      <li><code>agentchute send --from &lt;id&gt; --to &lt;peer&gt; --task "..."</code> — write the message file and poke the recipient.</li>
+      <li><code>agentchute prepare-pool --target &lt;folder&gt;</code> — scaffold cross-folder enrollment in sibling folders.</li>
+      <li><code>agentchute status --as &lt;id&gt;</code> — registry overview, inbox depths, freshness.</li>
+      <li><code>agentchute watchdog --as &lt;id&gt;</code> — optional liveness daemon (most pools don't need one; cooperative waking covers it).</li>
+    </ul>
+    <p>
+      Both paths produce the same on-disk state. You can mix: hand-protocol on one shell,
+      CLI on another, in the same pool.
+    </p>
+    <h3>One prerequisite: tmux (or a workaround)</h3>
+    <p>
+      The v0.1 reference CLI ships one peer-wake adapter: <code>tmux send-keys</code>.
+      Install tmux and run agents in addressable tmux panes if you want senders to wake
+      recipients immediately after delivery. Without tmux, delivery still works —
+      messages land in the recipient's inbox — but recipients must poll manually,
+      use a wrapper-provided self-loop, or run an operator-owned scheduler that
+      invokes the agent.
+    </p>
+    <p>
+      Per-wrapper self-poll patterns we've verified:
+    </p>
+    <ul class="commands">
+      <li><strong>Claude Code:</strong> <code>/loop check</code> — Claude's built-in recurring task. The agent itself sees each tick and processes inbox arrivals.</li>
+      <li><strong>codex CLI</strong> (no built-in self-loop in 0.130.0): operator-owned <code>while</code>-loop invoking <code>codex exec</code> with an inbox-processing prompt.</li>
+      <li><strong>Gemini CLI</strong> (no built-in self-loop): same shape — operator-owned scheduler invoking <code>gemini</code> with an inbox-processing prompt.</li>
+    </ul>
+    <p>
+      Important: a bare <code>agentchute check</code> shell loop without a wrapper is
+      <em>not</em> a valid workaround. It consumes and archives messages without any
+      model actually acting on them. Always schedule the wrapper, not the CLI alone.
+    </p>
+  </div>
+</section>
+
+<section class="why">
+  <div class="wrap">
+    <h2>Why this exists</h2>
+    <p>
+      In early 2026 it became normal to run two or three AI agents at once for the same
+      project (Claude Code, codex CLI, Gemini CLI, whatever). Coordinating them by typing
+      in the chat ate hours per week. Existing solutions either didn't exist or shipped
+      a server, a database, and a Helm chart for what is structurally a 200-line problem.
+    </p>
+    <p>
+      agentchute is what's left when you remove every layer that didn't have to be there.
+      The spec is short. The reference CLI is small. The only moving parts are
+      <strong>shared inboxes</strong> and, when available, a wake poke for direct
+      wake-ups. <strong>The simplicity is the point.</strong>
+    </p>
+  </div>
+</section>
+
+</main>
+
+<script src="anim.js" defer></script>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
+      ·
+      <a href="spec.html">protocol spec</a>
+      ·
+      <a href="https://github.com/agentchute/agentchute/blob/main/EXTENSIONS.md">extensions</a>
+      ·
+      MIT license
+    </p>
+    <p class="tiny">
+      agentchute is built by <a href="https://rehumanlabs.com">reHuman Labs</a>.
+      The umbrella thesis: let humans do human work, let agents do agent work,
+      give humans more time to think instead of coordinating and copy-pasting.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
