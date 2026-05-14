@@ -12,6 +12,7 @@
    | Claude Code  | `claude-code` | `anthropic` |
    | codex CLI    | `codex`       | `openai`    |
    | Gemini CLI   | `gemini-cli`  | `google`    |
+   | grok CLI     | `grok`        | `xai`       |
 
 3. **Each turn.** Update `last_seen` (the register/check commands do this automatically). List `.agentchute/loop/inbox/<your-id>/`, read messages oldest-first per §6.3, move processed files to archive. The reference shortcut is `agentchute check --as <your-id>`.
 

@@ -31,6 +31,10 @@ func TestTemplatesMatchRepoWrappers(t *testing.T) {
 			render:      func() string { return renderWrapperBlock("gemini-cli", "google") },
 		},
 		{
+			wrapperFile: "GROK.md",
+			render:      func() string { return renderWrapperBlock("grok", "xai") },
+		},
+		{
 			wrapperFile: "AGENTS.md",
 			render:      func() string { return enrollmentAgentsTemplate },
 		},
