@@ -1,37 +1,106 @@
+<div align="center">
+
 # agentchute
 
-**Running multiple AI agents on a shared project is easy. Coordinating them isn't.**
+**A small Markdown protocol that gives AI agents shared inboxes.**
+Senders deliver into a recipient's inbox; the recipient owns consumption.
+No central server. No broker. No SDK.
 
-**agentchute is a small Markdown protocol that gives AI agents shared inboxes, so they can message each other, request review, and hand off work without a human acting as the relay.** Humans stay in the loop for decisions and steering, not for ferrying messages between terminals.
+[![MIT License](https://img.shields.io/badge/license-MIT-2a4a8a.svg)](LICENSE)
+[![Go 1.21+](https://img.shields.io/badge/go-1.21+-2a4a8a.svg)](go.mod)
+[![Release](https://img.shields.io/github/v/release/agentchute/agentchute?color=b94a26&label=release)](https://github.com/agentchute/agentchute/releases)
+[![Spec: AGENTCHUTE.md](https://img.shields.io/badge/spec-AGENTCHUTE.md-545048.svg)](AGENTCHUTE.md)
 
-**No central server or broker required. No SDK. No compiled code required.** When direct wake-up is available (e.g., `tmux send-keys`), senders can also poke recipients directly. At the protocol level, it's just [`AGENTCHUTE.md`](AGENTCHUTE.md) plus a short enrollment block your agents read and follow.
+[Website](https://agentchute.dev) ·
+[Spec](AGENTCHUTE.md) ·
+[Extensions](EXTENSIONS.md) ·
+[Examples](examples/) ·
+[Quickstart](#quickstart-no-binary)
 
-Install the optional reference CLI:
+</div>
+
+---
+
+> Running multiple AI agents on a shared project is easy. Coordinating them isn't.
+
+## Install
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
 ```
 
-[![Real agentchute session: Claude, codex, Gemini in tmux (24x speedup, 62 seconds)](https://img.youtube.com/vi/jwYzKtcOYl0/maxresdefault.jpg)](https://www.youtube.com/watch?v=jwYzKtcOYl0)
+Or skip the binary — drop [`AGENTCHUTE.md`](AGENTCHUTE.md) into your project and follow the enrollment block. The whole protocol fits in one file.
 
-*Three agents coordinating in tmux during the final pre-release cleanup pass — real working session, 24x speedup. Click for the 62-second clip.*
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=jwYzKtcOYl0">
+    <img src="https://img.youtube.com/vi/jwYzKtcOYl0/maxresdefault.jpg"
+         alt="Real agentchute session: Claude, codex, Gemini in tmux (24x speedup, 62 seconds)"
+         width="720">
+  </a>
+</p>
 
-The protocol doesn't assume agents are local, doesn't define delivery latency or polling cadence, and doesn't lock you to any particular substrate. Inbox medium, sender-to-inbox transport, and wake mechanism are implementation choices. The protocol boundary is the inbox contract; location and timing are properties of whatever implementation you pick.
+<p align="center"><em>Three CLI agents — Claude Code, codex CLI, Gemini CLI — coordinating in tmux during the final pre-release cleanup pass. Real working session, 24x speedup, 62 seconds. Click for the clip.</em></p>
 
-The v0.1 reference CLI makes one concrete choice per axis: filesystem inbox + atomic-rename transport + `tmux send-keys` peer wake + the wrapper's own self-poll loop as recipient fallback (Claude Code's `/loop`; codex CLI and Gemini CLI use an operator-owned scheduler). That implementation worked well enough to be the exclusive coordination layer for the team that built the protocol. Alternates (queues, object stores, HTTP, git-backed transports, other wake adapters, other self-poll mechanisms) are protocol-compatible and discussed in [`EXTENSIONS.md`](EXTENSIONS.md#alternate-transports) (with a worked git-as-transport sketch).
+## What's in the protocol
 
-- **The protocol primitive is the shared inbox.** Per-recipient ordered message stream, no-overwrite delivery, recipient-owned consumption, optional wake. See AGENTCHUTE.md §1.
-- **Per-agent inbox** at `.<vendor>/loop/inbox/<id>/` in the v0.1 reference implementation; messages are timestamped markdown files. Frontmatter is optional/recommended metadata.
-- **Cooperative waking.** Every `agentchute check` cycle opportunistically runs the watchdog algorithm against peer inboxes (metadata only) and pokes any stale peer with unread mail. Best-effort distributed liveness when at least one peer is actively polling — no dedicated process required for that path.
-- **Registration** at `.<vendor>/loop/agents/<id>.md` declares name, vendor, `host`, optional `wake_method` + `wake_target`, `last_seen`.
-- **Wake-up is pluggable.** Agents declare `wake_method` + `wake_target`; the reference CLI ships the tmux adapter today. With the filesystem-backed inbox, agents in different terminals (or different machines sharing one filesystem) can share one pool. If a sender can't invoke a recipient's wake method, the message still lands — the recipient catches it on its next poll.
-- **Best-effort protocol correction (§11).** Malformed inbox file → quarantine + corrective message. No refusal mode.
-- **Message bodies are recipient-owned.** Liveness checks (watchdog or cooperation) use inbox metadata only; no peer consumes another peer's message body.
-- **No retries, no acks, no signing, no routing.** Fire-and-forget; if peer trust isn't a given, don't run them on your machine.
-- **Reference CLI is filesystem-backed.** All participants of a v0.1 pool read/write one shared filesystem. Non-filesystem inbox transports (Redis/NATS queues, S3-prefixed inboxes, HTTP endpoints) are protocol-compatible and discussed in [`EXTENSIONS.md`](EXTENSIONS.md#alternate-transports), but do not ship in v0.1.
-- **Reference CLI is optional.** ~4000 lines of stdlib Go; ships the tmux wake adapter. Other multiplexers (wezterm, kitty, iTerm2, Terminal.app) are protocol-compatible and await community CLI adapters — see [`EXTENSIONS.md`](EXTENSIONS.md).
+Six primitives. Full spec: [`AGENTCHUTE.md`](AGENTCHUTE.md).
+
+- **Per-recipient inbox** — each agent owns an ordered, recipient-managed message stream.
+- **Ordered, identified messages** — `(timestamp, sender, nonce)` tuple; no-overwrite delivery (same-identity collisions retry with a fresh nonce).
+- **Recipient-owned consumption** — liveness checks use inbox metadata only; no peer reads another peer's message bodies.
+- **Optional wake** — pluggable adapter (the v0.1 reference CLI ships `tmux send-keys`); self-poll fallback when no wake is reachable.
+- **Self-registration** — agents publish vendor, host, and `wake_method` + `wake_target` to a known path.
+- **Best-effort protocol correction** — malformed inbox file → quarantine + corrective message back to the inferred offender. No refusal mode.
+
+Humans stay in the loop for decisions and steering, not for ferrying messages between terminals.
+
+## Protocol vs. reference implementation
+
+The protocol is implementation-agnostic. Inbox medium, sender-to-inbox transport, and wake mechanism are all outside the spec — pick whatever fits.
+
+| Axis | Protocol says | v0.1 reference CLI picks | Alternates ([EXTENSIONS](EXTENSIONS.md)) |
+|---|---|---|---|
+| Inbox medium | per-recipient ordered stream | `.md` files on a shared filesystem | Redis/NATS queues, S3, HTTP, git-backed transport |
+| Sender → inbox transport | atomic, no-overwrite | atomic create-temp + rename | CAS, `If-None-Match`, queue dedupe |
+| Peer wake | pluggable, optional | `tmux send-keys` | wezterm, kitty, iTerm2, OS notifications, webhooks |
+| Self-poll fallback | recipient's responsibility | Claude `/loop`; codex/Gemini scheduler | wrapper-specific |
+
+That reference implementation worked well enough to be the exclusive coordination layer for the team that built the protocol.
 
 It's not a multi-agent framework — no task graphs, no retries, no role election. It covers the common case: agents sharing a project and handing work off. The hard requirement is just an inbox-checking cadence; the v0.1 reference CLI additionally needs a shared filesystem. **The simplicity is the point.**
+
+## Who this is for
+
+- You run two or more agent CLIs in the same repo (Claude Code, codex, Gemini, Aider, …).
+- You want explicit handoffs and review requests without becoming the message bus yourself.
+- You do not want a server, SDK, broker, or new agent framework.
+
+## How it compares
+
+Short, factual reads of adjacent tools. None of these are wrong; they answer different questions.
+
+| Tool | What it is | When to use it instead |
+|---|---|---|
+| **OpenClaw** | A full personal-assistant runtime: gateway daemon, channels (Telegram/Slack/etc.), apps, workspace, skills, an always-on control plane. | You want a managed assistant platform with chat-app integrations and a control plane, not a coordination protocol between local CLIs. |
+| **Claude Code Channels** | Pub/sub for Claude Code agents via external IM brokers (Telegram, Discord, iMessage). Vendor-locked to Anthropic. | All your agents are Claude Code and you want IM-app delivery. agentchute coordinates Claude, codex, Gemini, and any wrapper that can run in a terminal — no broker required. |
+| **Claude Code subagents** (Claude's `/dispatch`) | In-session subagents inside one Claude Code process. Same model, parallel scratchpads, single decision-maker. | You want one agent to spawn helpers inside its own context. agentchute is across-agent across-process — different wrappers, different model providers, talking to each other. |
+| **mcp_agent_mail** | An MCP server that gives any MCP-compatible agent an inbox + delivery semantics. Closest functional sibling. | You're already in the MCP world and want a hosted broker doing the inbox work. agentchute is broker-free — the inbox is a directory on a filesystem (or any substrate that preserves the primitives). |
+
+The agentchute pitch — protocol-not-platform, no broker, no SDK, runs over a substrate you already have — is what these four don't deliver in combination.
+
+## What it isn't
+
+agentchute does not have: a web UI, a database, a server, a queue, a message broker, a webhook, a cloud component, an SDK, a SaaS pricing tier, a Slack bot, a Discord integration, telemetry, accounts, login, billing, "AI", or a roadmap with seventeen quarters of feature dates.
+
+It is also explicitly **not** a:
+
+- **Distributed transport with cryptographic guarantees.** The v0.1 reference CLI runs over a shared filesystem and provides no signing, no acks, no exactly-once. (The protocol itself is medium-agnostic; alternate inbox transports are compatible — see [`EXTENSIONS.md#alternate-transports`](EXTENSIONS.md#alternate-transports) — they just don't ship in v0.1.) Within the filesystem-backed pool, multi-machine works only when all participants share one filesystem; wake delivery remains local per recipient. For fully distributed, cryptographically-audited coordination, use a signed-envelope protocol; the v0.1 reference CLI is the local, unsigned, cooperative-trust sibling.
+- **Message broker with delivery guarantees.** No retries, no acknowledgments, no exactly-once. If you need queues, use a queue.
+- **Identity / auth system.** Messages are unsigned plain-text. If you don't trust your peers, don't run them on your machine.
+- **Routing or task-assignment engine.** Agents are peers; senders pick recipients explicitly. There is no wildcard inbox, no broadcast, no role election.
+- **Audit log.** The archive is local and gitignored by default. Loop messages are a transient operational trace, not an authenticated record.
+
+If you wanted any of those, this is the wrong tool, and that's fine.
 
 ## Required local access (v0.1 reference CLI)
 
@@ -62,39 +131,6 @@ Per-wrapper patterns we've verified:
 - **Gemini CLI** (no built-in self-loop): same shape as the codex pattern — an operator-owned `while`-loop that invokes `gemini` with an inbox-processing prompt and exits.
 
 If your wrapper isn't in the list, the rule is the same: schedule the wrapper, not the bare CLI. A recurring task that asks the agent to "process my inbox and reply if needed" preserves the protocol; a bare `agentchute check` loop drains messages into the archive without comprehension.
-
-## What it isn't
-
-agentchute does not have: a web UI, a database, a server, a queue, a message broker, a webhook, a cloud component, an SDK, a SaaS pricing tier, a Slack bot, a Discord integration, telemetry, accounts, login, billing, "AI", or a roadmap with seventeen quarters of feature dates.
-
-It is also explicitly **not** a:
-
-- **Distributed transport with cryptographic guarantees.** The v0.1 reference CLI runs over a shared filesystem and provides no signing, no acks, no exactly-once. (The protocol itself is medium-agnostic; alternate inbox transports are compatible — see [`EXTENSIONS.md#alternate-transports`](EXTENSIONS.md#alternate-transports) — they just don't ship in v0.1.) Within the filesystem-backed pool, multi-machine works only when all participants share one filesystem; wake delivery remains local per recipient. For fully distributed, cryptographically-audited coordination, use a signed-envelope protocol; the v0.1 reference CLI is the local, unsigned, cooperative-trust sibling.
-- **Message broker with delivery guarantees.** No retries, no acknowledgments, no exactly-once. If you need queues, use a queue.
-- **Identity / auth system.** Messages are unsigned plain-text. If you don't trust your peers, don't run them on your machine.
-- **Routing or task-assignment engine.** Agents are peers; senders pick recipients explicitly. There is no wildcard inbox, no broadcast, no role election.
-- **Audit log.** The archive is local and gitignored by default. Loop messages are a transient operational trace, not an authenticated record.
-
-If you wanted any of those, this is the wrong tool, and that's fine.
-
-## Who this is for
-
-- You run two or more agent CLIs in the same repo (Claude Code, codex, Gemini, Aider, …).
-- You want explicit handoffs and review requests without becoming the message bus yourself.
-- You do not want a server, SDK, broker, or new agent framework.
-
-## How it compares
-
-Short, factual reads of adjacent tools. None of these are wrong; they answer different questions.
-
-| Tool | What it is | When to use it instead |
-|---|---|---|
-| **OpenClaw** | A full personal-assistant runtime: gateway daemon, channels (Telegram/Slack/etc.), apps, workspace, skills, an always-on control plane. | You want a managed assistant platform with chat-app integrations and a control plane, not a coordination protocol between local CLIs. |
-| **Claude Code Channels** | Pub/sub for Claude Code agents via external IM brokers (Telegram, Discord, iMessage). Vendor-locked to Anthropic. | All your agents are Claude Code and you want IM-app delivery. agentchute coordinates Claude, codex, Gemini, and any wrapper that can run in a terminal — no broker required. |
-| **Claude Code subagents** (Claude's `/dispatch`) | In-session subagents inside one Claude Code process. Same model, parallel scratchpads, single decision-maker. | You want one agent to spawn helpers inside its own context. agentchute is across-agent across-process — different wrappers, different model providers, talking to each other. |
-| **mcp_agent_mail** | An MCP server that gives any MCP-compatible agent an inbox + delivery semantics. Closest functional sibling. | You're already in the MCP world and want a hosted broker doing the inbox work. agentchute is broker-free — the inbox is a directory on a filesystem (or any substrate that preserves the primitives). |
-
-The agentchute pitch — protocol-not-platform, no broker, no SDK, runs over a substrate you already have — is what these four don't deliver in combination.
 
 ## Quickstart (no binary)
 
