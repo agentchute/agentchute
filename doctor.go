@@ -59,6 +59,15 @@ var (
 //     target; --as not provided so agent-specific check skipped).
 //   - OK:      check passed.
 func cmdDoctor(args []string) error {
+	// v0.2: --generate-service emits launchd/systemd/script artifacts and
+	// returns; it does not run the diagnostic checks. Routed up front so
+	// the normal flag parser doesn't choke on the generator-only flags.
+	for _, a := range args {
+		if a == "--generate-service" || strings.HasPrefix(a, "--generate-service=") {
+			return handleGenerateService(args)
+		}
+	}
+
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
@@ -593,5 +602,19 @@ Flags:
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --json                structured JSON output
+
+Service generator (v0.2):
+  --generate-service <kind>  emit a unit/script for the preflighted-scheduler
+                             pattern (round-3 synthesis tier 2). Kind is one of:
+                             launchd | systemd-service | systemd-timer | script.
+                             Doctor emits ONLY; install/load/start is the
+                             operator's responsibility.
+  --as <id>                  required with --generate-service
+  --vendor <v>               wrapper vendor (inferred for claude-code / codex /
+                             gemini-cli)
+  --interval <n>             poll interval in seconds (default 30, min 5)
+  --repo <path>              working directory for the service (default: cwd)
+  --command <cmd>            override the full wrapper invocation (advanced)
+  --out <path>               write to file (default: stdout, mode 0600)
 `)
 }

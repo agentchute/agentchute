@@ -1,0 +1,264 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// --generate-service emits unit/script files for the preflighted-scheduler
+// pattern (round-3 synthesis tier 2): every N seconds, run a side-effect-free
+// `agentchute pending --as <id> --fail-if-any`; on rc=2 launch the wrapper.
+//
+// The generated artifacts are deliberately self-contained inline-sh so the
+// operator gets ONE file per init kind. Doctor never installs/loads/starts
+// anything itself — that remains an explicit operator action.
+
+const (
+	serviceKindLaunchd        = "launchd"
+	serviceKindSystemdService = "systemd-service"
+	serviceKindSystemdTimer   = "systemd-timer"
+	serviceKindScript         = "script"
+)
+
+type serviceParams struct {
+	Kind     string
+	AgentID  string
+	Vendor   string
+	Wrapper  string // command-line tool name (claude/codex/gemini)
+	Command  string // operator override for the full wrapper invocation
+	Interval int
+	Repo     string
+	Out      string
+}
+
+// vendorPresets maps an agent ID to its default vendor + wrapper CLI.
+// Operators can override via --vendor / --command. These match the
+// established v0.1 enrollment conventions.
+var vendorPresets = map[string]struct{ Vendor, Wrapper string }{
+	"claude-code": {"anthropic", "claude"},
+	"codex":       {"openai", "codex"},
+	"gemini-cli":  {"google", "gemini"},
+}
+
+func handleGenerateService(args []string) error {
+	fs := flag.NewFlagSet("doctor --generate-service", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var kind, agentID, vendor, command, repo, out string
+	var interval int
+	fs.StringVar(&kind, "generate-service", "", "kind: launchd | systemd-service | systemd-timer | script")
+	fs.StringVar(&agentID, "as", "", "agent id (or $AGENTCHUTE_AGENT_ID)")
+	fs.StringVar(&vendor, "vendor", "", "wrapper vendor (optional; inferred from --as for known agents)")
+	fs.StringVar(&command, "command", "", "override the full wrapper invocation (advanced)")
+	fs.IntVar(&interval, "interval", 30, "poll interval in seconds")
+	fs.StringVar(&repo, "repo", "", "working directory for the service (default: cwd)")
+	fs.StringVar(&out, "out", "", "write to file (default: stdout)")
+	// Re-declare doctor's other flags so they don't error here. They are
+	// ignored in --generate-service mode.
+	var ignoreControlRepo, ignoreLoopDir string
+	var ignoreJSON bool
+	fs.StringVar(&ignoreControlRepo, "control-repo", "", "")
+	fs.StringVar(&ignoreLoopDir, "loop-dir", "", "")
+	fs.BoolVar(&ignoreJSON, "json", false, "")
+
+	if err := fs.Parse(args); err != nil {
+		return doctorUsage(err)
+	}
+	if fs.NArg() != 0 {
+		return doctorUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
+	}
+
+	params := serviceParams{
+		Kind:     kind,
+		AgentID:  strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID"))),
+		Vendor:   strings.TrimSpace(vendor),
+		Command:  strings.TrimSpace(command),
+		Interval: interval,
+		Repo:     strings.TrimSpace(repo),
+		Out:      strings.TrimSpace(out),
+	}
+	return generateService(params)
+}
+
+func generateService(p serviceParams) error {
+	if p.AgentID == "" {
+		return fmt.Errorf("--as is required for --generate-service")
+	}
+	switch p.Kind {
+	case serviceKindLaunchd, serviceKindSystemdService, serviceKindSystemdTimer, serviceKindScript:
+	default:
+		return fmt.Errorf("--generate-service: unknown kind %q (want launchd | systemd-service | systemd-timer | script)", p.Kind)
+	}
+	if p.Interval < 5 {
+		return fmt.Errorf("--interval must be >= 5 seconds")
+	}
+	if p.Repo == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		p.Repo = cwd
+	}
+	abs, err := filepath.Abs(p.Repo)
+	if err != nil {
+		return err
+	}
+	p.Repo = abs
+
+	if preset, ok := vendorPresets[p.AgentID]; ok {
+		if p.Vendor == "" {
+			p.Vendor = preset.Vendor
+		}
+		if p.Wrapper == "" {
+			p.Wrapper = preset.Wrapper
+		}
+	}
+	if p.Command == "" {
+		if p.Wrapper == "" {
+			return fmt.Errorf("cannot infer wrapper command for agent %q; pass --vendor and a known wrapper, or use --command", p.AgentID)
+		}
+	}
+
+	var content string
+	switch p.Kind {
+	case serviceKindLaunchd:
+		content = renderLaunchdPlist(p)
+	case serviceKindSystemdService:
+		content = renderSystemdService(p)
+	case serviceKindSystemdTimer:
+		content = renderSystemdTimer(p)
+	case serviceKindScript:
+		content = renderScript(p)
+	}
+
+	if p.Out == "" {
+		_, err := io.WriteString(os.Stdout, content)
+		return err
+	}
+	// Operator picks the path; we don't second-guess. Owner-only by default.
+	if err := os.WriteFile(p.Out, []byte(content), 0o600); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "wrote %s\n", p.Out)
+	return nil
+}
+
+// wrapperInvocation returns the inline `<cmd> -p "<prompt>"` (or operator
+// override). The prompt is concrete — no placeholders — per codex's
+// signoff caveat that generated artifacts must supply concrete vendor /
+// agent identity, not template tokens for the model to interpret.
+func wrapperInvocation(p serviceParams) string {
+	if p.Command != "" {
+		return p.Command
+	}
+	prompt := fmt.Sprintf(
+		"Process agentchute mail. Run \\`agentchute check --as %s\\` first; reply to each obligation with \\`send --reply-to\\` or release it with \\`defer --message\\`. Do not declare done until your inbox is empty.",
+		p.AgentID,
+	)
+	// Each wrapper has its own flag for non-interactive prompt input.
+	switch p.Wrapper {
+	case "claude":
+		return fmt.Sprintf(`claude -p "%s"`, prompt)
+	case "codex":
+		return fmt.Sprintf(`codex exec "%s"`, prompt)
+	case "gemini":
+		return fmt.Sprintf(`gemini -p "%s"`, prompt)
+	default:
+		// Unknown wrapper but we have a name — best effort. Operator can
+		// always override with --command.
+		return fmt.Sprintf(`%s "%s"`, p.Wrapper, prompt)
+	}
+}
+
+// preflightLine is the shared inline-sh used by every kind. flock ensures
+// single-flight: a still-running wrapper from the previous tick won't get
+// raced by a second launch.
+func preflightLine(p serviceParams) string {
+	lockPath := fmt.Sprintf("/tmp/agentchute-%s.lock", p.AgentID)
+	return fmt.Sprintf(
+		`cd %q || exit 0; agentchute pending --as %s --fail-if-any >/dev/null 2>&1; rc=$?; [ "$rc" -ne 2 ] && exit 0; flock -n %s sh -c %q`,
+		p.Repo, p.AgentID, lockPath, wrapperInvocation(p),
+	)
+}
+
+func renderLaunchdPlist(p serviceParams) string {
+	label := fmt.Sprintf("com.agentchute.preflight.%s", p.AgentID)
+	logPath := fmt.Sprintf("/tmp/agentchute-%s.log", p.AgentID)
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>` + label + `</string>
+    <key>WorkingDirectory</key>
+    <string>` + p.Repo + `</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>` + preflightLine(p) + `</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>` + fmt.Sprint(p.Interval) + `</integer>
+    <key>StandardOutPath</key>
+    <string>` + logPath + `</string>
+    <key>StandardErrorPath</key>
+    <string>` + logPath + `</string>
+</dict>
+</plist>
+`
+}
+
+func renderSystemdService(p serviceParams) string {
+	return `[Unit]
+Description=agentchute preflighted scheduler for ` + p.AgentID + `
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=` + p.Repo + `
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/sh -c '` + preflightLine(p) + `'
+`
+}
+
+func renderSystemdTimer(p serviceParams) string {
+	return `[Unit]
+Description=agentchute preflighted scheduler timer for ` + p.AgentID + `
+
+[Timer]
+OnBootSec=` + fmt.Sprint(p.Interval) + `s
+OnUnitActiveSec=` + fmt.Sprint(p.Interval) + `s
+Unit=agentchute-` + p.AgentID + `.service
+
+[Install]
+WantedBy=timers.target
+`
+}
+
+func renderScript(p serviceParams) string {
+	return `#!/bin/sh
+# agentchute preflighted scheduler for ` + p.AgentID + `.
+# Run in a long-lived process (cron @reboot, tmux pane, manual sh) — the
+# script loops itself. Side-effect-free preflight; wrapper only launches
+# when work exists. Single-flight via flock.
+#
+# No 'set -e': agentchute pending intentionally exits 2 when work exists,
+# and the script needs to keep looping past every tick regardless of how
+# any subcommand exits.
+INTERVAL=` + fmt.Sprint(p.Interval) + `
+while true; do
+    ` + preflightLine(p) + `
+    sleep "$INTERVAL"
+done
+`
+}
