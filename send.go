@@ -145,13 +145,18 @@ func cmdSend(args []string) error {
 
 	now := time.Now().UTC()
 
-	// Update sender's own last_seen if registration exists.
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): refuse to send
+	// from an unregistered agent. The outbound message would carry a
+	// `from:` field naming an agent that peers can't discover, wake, or
+	// reply to.
 	selfPath := cfg.AgentRegistrationPath(fromID)
 	if _, err := os.Stat(selfPath); err == nil {
 		if err := loop.UpdateLastSeen(selfPath, now); err != nil {
 			return fmt.Errorf("update last_seen for %s: %w", fromID, err)
 		}
-	} else if !os.IsNotExist(err) {
+	} else if os.IsNotExist(err) {
+		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.7)", fromID, fromID)
+	} else {
 		return fmt.Errorf("stat own registration: %w", err)
 	}
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -464,6 +465,13 @@ func checkInboxState(cfg *loop.Config, agentID string) doctorCheck {
 	inboxDir := cfg.AgentInboxDir(agentID)
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
 	if err != nil {
+		if errors.Is(err, loop.ErrInboxMissing) {
+			return doctorCheck{
+				Name:     "inbox_state",
+				Severity: severityBlocker,
+				Message:  fmt.Sprintf("inbox directory missing for %s — run `agentchute boot --as %s --vendor <vendor>` (AGENTCHUTE.md §5.7)", agentID, agentID),
+			}
+		}
 		return doctorCheck{Name: "inbox_state", Severity: severityWarn, Message: fmt.Sprintf("inbox list error: %v", err)}
 	}
 	if len(skipped) > 0 {
