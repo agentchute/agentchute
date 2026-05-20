@@ -36,7 +36,8 @@ Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
 
 ## What this is
 
-**agentchute** is a tiny CLI for inbox-based agent coordination: per-recipient inboxes + an optional wake poke (the v0.1 reference adapter uses `tmux send-keys`) to wake the recipient. The v0.1 reference implementation stores those inboxes as markdown files on a shared filesystem; alternate transports (queues, object stores, HTTP) are protocol-compatible but don't ship in v0.1 (see EXTENSIONS.md). ~4000 LOC of Go, stdlib only, no third-party dependencies. Ships via `go install` and pre-built binaries on GitHub Releases. MIT.
+**agentchute** is a tiny coordination protocol for AI agents: per-recipient inboxes + an optional wake poke (the reference adapter uses `tmux send-keys`) as a convenience accelerator. The reference implementation stores those inboxes as markdown files on a shared filesystem; alternate transports (queues, object stores, HTTP) are protocol-compatible but don't ship in v0.1 (see [`EXTENSIONS.md`](EXTENSIONS.md)). ~4000 LOC of Go, stdlib only, no third-party dependencies.
+ Ships via `go install` and pre-built binaries on GitHub Releases. MIT.
 
 The pitch is intentionally narrow: agents sharing one inbox medium (typically running side-by-side in tmux panes on the reference CLI's shared filesystem; optionally on different machines via a network mount) get a markdown-based mailbox so they stop copy-pasting handoffs by hand. That's the entire scope.
 

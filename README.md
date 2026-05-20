@@ -19,11 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.
 
 ---
 
-You're running Claude Code, codex, and Gemini against the same repo. They have things to say to each other. Today you ferry every message between them by hand.
-
-agentchute is a small coordination protocol: each agent owns an inbox; senders deliver identified messages without overwriting; recipients consume on their own cadence; wake pokes are optional and best-effort. No server, no broker, no SDK.
-
-The v0.1 reference CLI maps the protocol onto Markdown files on a shared filesystem, with `tmux send-keys` as the wake adapter. Other substrates (queues, HTTP endpoints, object stores) preserve the same primitives — see [`EXTENSIONS.md`](EXTENSIONS.md).
+agentchute is a small coordination protocol. Each agent owns an inbox; senders write to it; recipients consume on their own cadence. The wire is medium-agnostic — the reference CLI maps the protocol onto Markdown files on a shared filesystem with optional tmux wake pokes, but the same primitives work over a queue, an HTTP endpoint, or any substrate that preserves no-overwrite per-recipient delivery (see [`EXTENSIONS.md`](EXTENSIONS.md)). No server, no broker, no SDK.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=jwYzKtcOYl0">
@@ -34,32 +30,6 @@ The v0.1 reference CLI maps the protocol onto Markdown files on a shared filesys
 </p>
 
 <p align="center"><em>Claude Code, codex, and Gemini CLI coordinating in tmux during the v0.1.1 pre-release pass. Real session, 24× speedup, 62 seconds.</em></p>
-
-## Who it's for
-
-- You run two or more agent CLIs on the same repo.
-- You want agents to ask each other for review, sign-off, or follow-up work.
-- You want coordination over local files, not a server, broker, SDK, or framework.
-- You're comfortable with cooperative-trust local tooling.
-
-agentchute is not a queue, auth layer, audit log, task router, or multi-agent framework. It's the small mailbox layer underneath those things.
-
-## A handoff in 30 seconds
-
-```text
-┌──────────────────┐                          ┌──────────────────┐
-│  ALICE (Claude)  │                          │  BOB (codex)     │
-└──────────────────┘                          └──────────────────┘
-        │ 1. deliver message to Bob's inbox (no-overwrite)
-        ├─────────────────────────────────────────▶
-        │ 2. wake poke (best-effort, if adapter is reachable)
-        ├ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶
-        │                                         │ 3. consume + archive
-        │ 4. reply lands in Alice's inbox         │
-        │◀─────────────────────────────────────────
-```
-
-Delivery is no-overwrite by contract: a sender never replaces an existing message. The wake poke is best-effort; if no adapter is reachable, the message waits in the inbox until the recipient's next poll. The v0.1 reference CLI ships `tmux send-keys` as the wake adapter; alternates fit the same shape (see [`EXTENSIONS.md`](EXTENSIONS.md)).
 
 ## Lifecycle hooks
 
@@ -133,6 +103,23 @@ malformed/    quarantined protocol violations
 state/<id>/   per-agent pending-reply ledger
 ```
 
+## A handoff in 30 seconds
+
+```text
+┌──────────────────┐                          ┌──────────────────┐
+│  ALICE (Claude)  │                          │  BOB (codex)     │
+└──────────────────┘                          └──────────────────┘
+        │ 1. deliver message to Bob's inbox (no-overwrite)
+        ├─────────────────────────────────────────▶
+        │ 2. wake poke (best-effort via declared adapter)
+        ├ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶
+        │                                         │ 3. consume + archive
+        │ 4. reply lands in Alice's inbox         │
+        │◀─────────────────────────────────────────
+```
+
+Delivery is no-overwrite by contract: a sender never replaces an existing message. The wake poke is an optional optimization; if no adapter is reachable, the message waits in the inbox until the recipient's next poll. The reference CLI ships `tmux send-keys` as the default adapter; alternates (HTTP, SSH, notifications) fit the same shape.
+
 ## Commands at a glance
 
 | Command | Purpose |
@@ -144,12 +131,12 @@ state/<id>/   per-agent pending-reply ledger
 | `pending --as <id>` | Side-effect-free peek (inbox + ledger). Hook-safe. |
 | `gate --as <id> --before <phase>` | Block declaring done if inbox/ledger has outstanding work |
 | `defer --message <id> --reason "..."` | Explicit defer; auto-acks the sender |
-| `register --as <id> --vendor <v>` | Write/refresh the agent's registration (boot supersedes for most uses) |
+| `register --as <id> --vendor <v>` | Write/refresh registration (boot supersedes for most uses) |
 | `status [--as <id>]` | Pool overview: inbox depths, `last_seen`, wake targets |
 | `doctor [--as <id>] [--json]` | Diagnostic aggregator: scaffold, binary, hook content, registration, inbox/ledger, wake target. Exit nonzero on BLOCKER. |
 | `watch --as <id> [--notify] [--print] [--exec <cmd>]` | Recipient-side non-consuming watcher for new mail; useful outside tmux |
 | `watchdog --as <id>` | Optional liveness sidecar; pokes peers with stale inboxes |
-| `prepare-pool --target <dir>` | Connect sibling folders to one control repo via pointer files |
+| `prepare-pool --target <dir>` | Connect sibling folders via pointer files |
 
 Run `agentchute <command> --help` for flags. All commands accept `--control-repo`, `--loop-dir`, and `--json` where applicable.
 
@@ -161,21 +148,21 @@ Hand-protocol agents and CLI agents share the same loop directory cleanly — mi
 
 ## Running without tmux
 
-The CLI ships one peer wake adapter in v0.1: `tmux send-keys`. Without tmux, delivery still works; messages wait in the recipient's inbox until the recipient polls.
+The protocol's discovery mechanism is **recipient-side polling**. Senders write to your inbox; you are responsible for checking it on your own cadence. Wake pokes are optional optimizations.
 
-For regular terminals, v0.1.2 adds a recipient-side watcher:
+Recommended polling tiers:
+
+1. **Native Loops**: If your wrapper supports recurring tasks, use them.
+   - **Claude Code**: run `/loop 5m` with a prompt to check inbox.
+   - **Codex App**: use native Automations.
+2. **Preflighted Scheduler**: For wrappers without a native loop (Gemini, terminal Codex). Use `agentchute doctor --generate-service` to install a persistent scheduler that runs a side-effect-free preflight (`agentchute pending --fail-if-any`) and only launches the wrapper when work exists.
+3. **In-Session Catchup**: Active sessions catch new mail at lifecycle boundaries via hooks (e.g., `gate --before continue`).
+
+For regular terminal sessions, use the non-consuming watcher:
 
 ```sh
-agentchute watch --as codex --notify
+agentchute watch --as <id> --notify
 ```
-
-`watch` is non-consuming. It peeks for new mail and can fire an OS notification (`--notify`), print a line (`--print`), or run an operator-owned command (`--exec <cmd>`). It does **not** archive, quarantine, or make mail visible to the model by itself. After the notification, the human or wrapper still runs the normal recipient flow.
-
-Per-wrapper polling patterns:
-
-- **Claude Code**: use `/loop check`, or install the hooks above.
-- **codex CLI / Gemini CLI**: use an operator-owned scheduler that invokes the wrapper with an inbox-processing prompt.
-- **Plain terminal / no wrapper hooks**: run `agentchute watch --as <id> --notify` next to the session.
 
 Schedule the wrapper, not bare `agentchute check`. `check` consumes mail; `pending`, `boot`, `doctor`, and `watch` are the safe inspection surfaces.
 
