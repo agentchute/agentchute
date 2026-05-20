@@ -126,6 +126,15 @@ func generateService(p serviceParams) error {
 			p.Wrapper = preset.Wrapper
 		}
 	}
+	// Codex re-review #3 (2026-05-20): --vendor lands inside the
+	// generated prompt; an unvalidated `bad$(rm -rf /)` evaluates in the
+	// scheduler shell before the wrapper ever sees the prompt. Validate
+	// with the same slug rule as agent_id (lowercase ASCII + dash).
+	if p.Vendor != "" {
+		if err := loop.ValidateAgentID(p.Vendor); err != nil {
+			return fmt.Errorf("--vendor %q must be a shell-safe slug (same rule as agent_id): %w", p.Vendor, err)
+		}
+	}
 	if p.Command == "" {
 		if p.Wrapper == "" {
 			return fmt.Errorf("cannot infer wrapper command for agent %q; pass --vendor and a known wrapper, or use --command", p.AgentID)

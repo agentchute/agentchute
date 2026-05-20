@@ -326,6 +326,29 @@ func TestGenerateServiceScriptLoopSurvivesIdleTick(t *testing.T) {
 	}
 }
 
+// Codex re-review #3 (2026-05-20): --vendor lands inside the generated
+// prompt and would shell-substitute if it contains $() or backticks.
+// Validate against the same slug rule as agent_id.
+func TestGenerateServiceValidatesVendor(t *testing.T) {
+	for _, malicious := range []string{
+		"bad$(touch /tmp/pwn)",
+		"bad`whoami`",
+		"bad;rm -rf /",
+		"bad vendor",
+	} {
+		err := generateService(serviceParams{
+			Kind:     serviceKindLaunchd,
+			AgentID:  "claude-code",
+			Vendor:   malicious,
+			Interval: 30,
+			Repo:     t.TempDir(),
+		})
+		if err == nil {
+			t.Errorf("expected error for shell-injection-shaped vendor %q; got nil", malicious)
+		}
+	}
+}
+
 // Codex re-review #2 (2026-05-20): the generated prompt was using
 // backticks (\`agentchute boot...\`) for command formatting. After
 // scheduler shell + preflight inline-sh both consume their layer of
