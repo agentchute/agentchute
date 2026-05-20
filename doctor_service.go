@@ -163,6 +163,12 @@ func generateService(p serviceParams) error {
 // prompt leads with `agentchute boot` so the first-run needs_boot path
 // from self-poll also lands cleanly (boot is idempotent for existing
 // registrations and bootstraps fresh ones).
+//
+// Codex re-review #2 (2026-05-20): the prompt is consumed by THREE
+// shells before reaching the model (scheduler outer-sh → preflight
+// inline-sh → wrapper -p). Every shell-special character (` $ \ " ')
+// must therefore be absent from the prompt body or one of the layers
+// will interpret it. Plain text only.
 func wrapperInvocation(p serviceParams) string {
 	if p.Command != "" {
 		return p.Command
@@ -172,7 +178,7 @@ func wrapperInvocation(p serviceParams) string {
 		vendor = "<vendor>" // unreachable: generateService refuses unknown-agent unless --command set
 	}
 	prompt := fmt.Sprintf(
-		"Process agentchute mail. Run \\`agentchute boot --as %s --vendor %s\\` first (idempotent), then reply to obligations with \\`send --reply-to\\` or release them with \\`defer --message\\`. Do not declare done until your inbox is empty.",
+		"Process agentchute mail. Start with: agentchute boot --as %s --vendor %s (idempotent). Reply to obligations using send --reply-to or release them using defer --message. Do not declare done until your inbox is empty.",
 		p.AgentID, vendor,
 	)
 	// Each wrapper has its own flag for non-interactive prompt input.

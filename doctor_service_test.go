@@ -256,6 +256,9 @@ func TestGenerateServicePromptHasConcreteAgentID(t *testing.T) {
 	if !strings.Contains(got, "agentchute boot --as claude-code --vendor anthropic") {
 		t.Errorf("generated artifact missing concrete agent id + vendor in wrapper prompt:\n%s", got)
 	}
+	if strings.Contains(got, "`agentchute") {
+		t.Errorf("backticks around agentchute commands in prompt — outer scheduler shell will command-substitute them:\n%s", got)
+	}
 }
 
 // Codex review #3 (2026-05-20): unvalidated agent ids land directly in
@@ -320,6 +323,46 @@ func TestGenerateServiceScriptLoopSurvivesIdleTick(t *testing.T) {
 	// the subshell and the `while` keeps looping.
 	if !strings.Contains(got, "( cd ") {
 		t.Errorf("script kind missing subshell wrapper around tick body — `exit 0` would kill the loop:\n%s", got)
+	}
+}
+
+// Codex re-review #2 (2026-05-20): the generated prompt was using
+// backticks (\`agentchute boot...\`) for command formatting. After
+// scheduler shell + preflight inline-sh both consume their layer of
+// backslash-escaping, the backticks become active in the outer sh —
+// command-substituting agentchute boot/send/defer before the wrapper
+// ever sees the prompt. The prompt body must contain no shell-special
+// characters at all.
+func TestGenerateServicePromptHasNoShellSpecialChars(t *testing.T) {
+	got, err := captureStdout(t, func() error {
+		return generateService(serviceParams{
+			Kind:     serviceKindScript,
+			AgentID:  "codex",
+			Interval: 30,
+			Repo:     t.TempDir(),
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Locate the wrapper invocation. For the script kind we know it sits
+	// inside `sh -c "..."` after the lock setup.
+	const marker = `sh -c "codex exec `
+	idx := strings.Index(got, marker)
+	if idx < 0 {
+		t.Fatalf("wrapper invocation not found in:\n%s", got)
+	}
+	// Take the rest of the line through the next `)` (subshell close).
+	rest := got[idx:]
+	closeIdx := strings.Index(rest, ` )`)
+	if closeIdx < 0 {
+		t.Fatalf("subshell close not found:\n%s", rest)
+	}
+	wrapperFragment := rest[:closeIdx]
+	for _, bad := range []string{"`", "$(", "\\$"} {
+		if strings.Contains(wrapperFragment, bad) {
+			t.Errorf("wrapper-invocation fragment contains shell-special %q (outer shells will interpret):\n%s", bad, wrapperFragment)
+		}
 	}
 }
 
