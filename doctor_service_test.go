@@ -65,7 +65,7 @@ func TestGenerateServiceLaunchdShape(t *testing.T) {
 		`<key>StartInterval</key>`,
 		`<integer>30</integer>`,
 		`agentchute self-poll --as claude-code`,
-		`mkdir &#34;/tmp/agentchute-claude-code.lock&#34;`,
+		`mkdir /tmp/agentchute-claude-code.lock`,
 		`claude -p`,
 		// the XML-escaped form of `2>&1`
 		`2&gt;&amp;1`,
@@ -320,6 +320,41 @@ func TestGenerateServiceScriptLoopSurvivesIdleTick(t *testing.T) {
 	// the subshell and the `while` keeps looping.
 	if !strings.Contains(got, "( cd ") {
 		t.Errorf("script kind missing subshell wrapper around tick body — `exit 0` would kill the loop:\n%s", got)
+	}
+}
+
+// Codex re-review (2026-05-20): the systemd-service ExecStart wraps
+// preflightTick in outer single quotes. A single-quoted trap action
+// inside (`trap 'rmdir ...' EXIT`) would terminate the ExecStart string
+// at the inner quote and the unit would fail to parse. Regression: the
+// generated systemd-service body must contain no inner single quotes,
+// since the wrapper is single-quoted.
+func TestGenerateServiceSystemdServiceHasNoInnerSingleQuotes(t *testing.T) {
+	got, err := captureStdout(t, func() error {
+		return generateService(serviceParams{
+			Kind:     serviceKindSystemdService,
+			AgentID:  "codex",
+			Interval: 30,
+			Repo:     t.TempDir(),
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Find ExecStart=/bin/sh -c '...' and extract the inside-single-quotes body.
+	const start = "ExecStart=/bin/sh -c '"
+	idx := strings.Index(got, start)
+	if idx < 0 {
+		t.Fatalf("ExecStart line missing in:\n%s", got)
+	}
+	body := got[idx+len(start):]
+	endIdx := strings.LastIndex(body, "'")
+	if endIdx < 0 {
+		t.Fatalf("ExecStart string not closed:\n%s", got)
+	}
+	inside := body[:endIdx]
+	if strings.Contains(inside, "'") {
+		t.Errorf("ExecStart body contains inner single quote — closes the outer quote early:\n%s", inside)
 	}
 }
 

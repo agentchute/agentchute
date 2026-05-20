@@ -188,21 +188,26 @@ func wrapperInvocation(p serviceParams) string {
 	}
 }
 
-// preflightTick is the shared inline-sh used by every kind. Codex review
-// #2/#4/#5 (2026-05-20):
-//   - POSIX `mkdir` is the lock (atomic on POSIX); `flock` is not on
-//     macOS by default. The trap rmdir releases the lock if the wrapper
-//     crashes or the script is killed.
-//   - The whole tick runs in a `(...)` subshell so the `exit 0` on the
-//     idle path only exits the subshell, not a `while`-loop script kind.
-//   - Preflight is `agentchute self-poll --as <id>` rather than
-//     `pending --fail-if-any`. self-poll exits 2 on needs_boot too, so
-//     the first-run wake actually fires the wrapper through to the boot
-//     ritual.
+// preflightTick is the shared inline-sh used by every kind.
+//
+//   - POSIX `mkdir` is the lock (atomic on POSIX). `flock` is not on
+//     macOS by default. The trap rmdir releases the lock when the
+//     subshell exits.
+//   - The whole tick runs in a `(...)` subshell so `exit 0` on the idle
+//     path only exits the subshell — `while`-loop script kind survives.
+//   - Preflight is `agentchute self-poll --as <id>`; it exits 2 on
+//     needs_boot too, so first-run wake fires the wrapper through to
+//     boot.
+//   - No inner single quotes anywhere in the body. The systemd ExecStart
+//     wrapper uses outer single quotes — a single-quoted `trap '...'`
+//     would terminate the ExecStart string at the inner quote. So the
+//     trap action is double-quoted, and the lock path is a validated
+//     ASCII string (agent_id is gated through loop.ValidateAgentID) so
+//     it's safe to inline unquoted.
 func preflightTick(p serviceParams) string {
 	lockDir := fmt.Sprintf("/tmp/agentchute-%s.lock", p.AgentID)
 	return fmt.Sprintf(
-		`( cd %q || exit 0; agentchute self-poll --as %s >/dev/null 2>&1; rc=$?; [ "$rc" -ne 2 ] && exit 0; mkdir %q 2>/dev/null || exit 0; trap 'rmdir %q' EXIT; sh -c %q )`,
+		`( cd %q || exit 0; agentchute self-poll --as %s >/dev/null 2>&1; rc=$?; [ "$rc" -ne 2 ] && exit 0; mkdir %s 2>/dev/null || exit 0; trap "rmdir %s" EXIT; sh -c %q )`,
 		p.Repo, p.AgentID, lockDir, lockDir, wrapperInvocation(p),
 	)
 }
@@ -274,12 +279,12 @@ func renderScript(p serviceParams) string {
 	return `#!/bin/sh
 # agentchute preflighted scheduler for ` + p.AgentID + `.
 # Run in a long-lived process (cron @reboot, tmux pane, manual sh) — the
-# script loops itself. Side-effect-free preflight; wrapper only launches
-# when work exists. Single-flight via flock.
+# script loops itself. Side-effect-free preflight via self-poll; wrapper
+# only launches when work exists. Single-flight via POSIX mkdir lock.
 #
-# No 'set -e': agentchute pending intentionally exits 2 when work exists,
-# and the script needs to keep looping past every tick regardless of how
-# any subcommand exits.
+# No 'set -e': agentchute self-poll intentionally exits 2 when work
+# exists, and the script needs to keep looping past every tick
+# regardless of how any subcommand exits.
 INTERVAL=` + fmt.Sprint(p.Interval) + `
 while true; do
     ` + preflightTick(p) + `
