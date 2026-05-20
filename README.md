@@ -61,7 +61,7 @@ agentchute is not a queue, auth layer, audit log, task router, or multi-agent fr
 
 Delivery is no-overwrite by contract: a sender never replaces an existing message. The wake poke is best-effort; if no adapter is reachable, the message waits in the inbox until the recipient's next poll. The v0.1 reference CLI ships `tmux send-keys` as the wake adapter; alternates fit the same shape (see [`EXTENSIONS.md`](EXTENSIONS.md)).
 
-## Lifecycle hooks (v0.1.1)
+## Lifecycle hooks
 
 Hooks are the primary integration path for the reference CLI: each wrapper has a hooks file that calls into agentchute at three points per session so you don't run `boot` / `pending` / `gate` by hand. (The protocol doesn't require hooks — they're how the reference CLI keeps the inbox contract visible during a wrapper's lifecycle events.)
 
@@ -84,10 +84,12 @@ export AGENTCHUTE_BIN=/path/to/agentchute
 Restart the wrapper. From then on:
 
 - **SessionStart** runs `boot` — registers the agent, peeks the inbox, surfaces pending-reply obligations as developer context.
-- **UserPromptSubmit** (Claude/codex) / **BeforeAgent** (Gemini) runs `pending` — side-effect-free peek that injects current obligations into the model's context per turn.
+- **UserPromptSubmit** (Claude/codex) / **BeforeAgent** (Gemini) runs `pending` — a side-effect-free peek that injects current obligations into the model's context per turn. Claude Code and codex use wrapper-specific JSON modes (`--claude-hook UserPromptSubmit`, `--codex-hook UserPromptSubmit`) so the context lands in the right field; Gemini reads plain text via `--json`.
 - **Stop** (Claude/codex) / **BeforeAgent** (Gemini, again) runs `gate --before finish` — refuses to let the agent end the turn while inbox or ledger has outstanding work. Claude and Gemini use exit-code blocking; codex uses its Stop-hook `{"decision":"block"}` JSON. This is the load-bearing one.
 
 > ⚠ **Never use `agentchute check` in a hook.** `check` archives and quarantines; `boot` and `pending` are read-only peeks. Hook templates above only use the peeks.
+
+Run `agentchute doctor --as <id>` when wiring hooks. It validates the loop scaffold, binary resolution, hook files, hook content, registration freshness, inbox/ledger state, and wake target health without consuming mail.
 
 ## Quickstart
 
@@ -143,7 +145,9 @@ state/<id>/   per-agent pending-reply ledger
 | `gate --as <id> --before <phase>` | Block declaring done if inbox/ledger has outstanding work |
 | `defer --message <id> --reason "..."` | Explicit defer; auto-acks the sender |
 | `register --as <id> --vendor <v>` | Write/refresh the agent's registration (boot supersedes for most uses) |
-| `status --as <id>` | Pool overview: inbox depths, `last_seen`, wake targets |
+| `status [--as <id>]` | Pool overview: inbox depths, `last_seen`, wake targets |
+| `doctor [--as <id>] [--json]` | Diagnostic aggregator: scaffold, binary, hook content, registration, inbox/ledger, wake target. Exit nonzero on BLOCKER. |
+| `watch --as <id> [--notify] [--print] [--exec <cmd>]` | Recipient-side non-consuming watcher for new mail; useful outside tmux |
 | `watchdog --as <id>` | Optional liveness sidecar; pokes peers with stale inboxes |
 | `prepare-pool --target <dir>` | Connect sibling folders to one control repo via pointer files |
 
@@ -157,12 +161,23 @@ Hand-protocol agents and CLI agents share the same loop directory cleanly — mi
 
 ## Running without tmux
 
-The CLI ships one wake adapter in v0.1: `tmux send-keys`. Without tmux, delivery still works; recipients just need a polling cadence that invokes the wrapper (not bare `check` — that drains mail without the model seeing it). Per-wrapper patterns we've verified:
+The CLI ships one peer wake adapter in v0.1: `tmux send-keys`. Without tmux, delivery still works; messages wait in the recipient's inbox until the recipient polls.
 
-- **Claude Code**: use `/loop check` — Claude's built-in recurring task.
-- **codex CLI / Gemini CLI**: an operator-owned `while`-loop that invokes the wrapper with an inbox-processing prompt.
+For regular terminals, v0.1.2 adds a recipient-side watcher:
 
-Schedule the wrapper, not the CLI.
+```sh
+agentchute watch --as codex --notify
+```
+
+`watch` is non-consuming. It peeks for new mail and can fire an OS notification (`--notify`), print a line (`--print`), or run an operator-owned command (`--exec <cmd>`). It does **not** archive, quarantine, or make mail visible to the model by itself. After the notification, the human or wrapper still runs the normal recipient flow.
+
+Per-wrapper polling patterns:
+
+- **Claude Code**: use `/loop check`, or install the hooks above.
+- **codex CLI / Gemini CLI**: use an operator-owned scheduler that invokes the wrapper with an inbox-processing prompt.
+- **Plain terminal / no wrapper hooks**: run `agentchute watch --as <id> --notify` next to the session.
+
+Schedule the wrapper, not bare `agentchute check`. `check` consumes mail; `pending`, `boot`, `doctor`, and `watch` are the safe inspection surfaces.
 
 ## Limitations
 

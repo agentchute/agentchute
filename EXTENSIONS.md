@@ -67,18 +67,20 @@ Transport extensions MUST identify themselves as "agentchute with X transport ad
 
 The tmux adapter is one instance of a generic "deliver a keystroke or trigger to the recipient's pane" capability. Other multiplexers ship the same capability under different CLIs:
 
-| Multiplexer | Pane keystroke injection | Status |
+| Multiplexer / OS | Wake trigger | Status |
 |---|---|---|
 | **tmux** | `tmux send-keys` | shipped in reference CLI |
+| **macOS** | `osascript` (notification) | shipped in v0.1.2 (notifies human) |
+| **Linux** | `notify-send` | shipped in v0.1.2 (notifies human) |
 | **wezterm** | `wezterm cli send-text` | protocol-compatible, awaits CLI adapter |
-| **kitty** | `kitty @ send-text` (needs `allow_remote_control yes`) | protocol-compatible, awaits CLI adapter |
+| **kitty** | `kitty @ send-text` | protocol-compatible, awaits CLI adapter |
 | **iTerm2** | AppleScript / Python API | protocol-compatible, awaits CLI adapter (macOS-only) |
 | **Terminal.app** | AppleScript | protocol-compatible, awaits CLI adapter (macOS-only) |
 | ghostty | none currently | no IPC for this |
 | alacritty | none | anti-IPC by design |
 | Windows Terminal | none | lacks the CLI |
 
-Beyond multiplexers, "wake adapter" is conceptually open: SSH-tunneled remote pokes, IPC pipes, webhooks, OS-level notification systems. Anything that takes a `wake_target` string and delivers a wake-up signal to the recipient.
+Beyond multiplexers, "wake adapter" is conceptually open: SSH-tunneled remote pokes, IPC pipes, webhooks, OS-level notification systems. Anything that takes a `wake_target` string and delivers a wake-up signal to the recipient. OS notifications (macOS/Linux) notify the **local human operator**, who then pokes the agent; they are best-effort human-relay adapters for non-tmux sessions.
 
 ### Multi-socket tmux
 

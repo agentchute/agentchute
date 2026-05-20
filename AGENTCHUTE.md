@@ -776,9 +776,13 @@ Implementations SHOULD emit one operator-facing log line per cycle event in the 
 
 - **Auto-restart of exhausted agents.** Watchdog logs and pokes only; operators restart manually.
 - **Cross-host wake delivery.** A watchdog on Machine A cannot poke a peer on Machine B — wake adapters are local. Each host supplies its own watchdog or cooperating peers when needed.
-- **External notifications** (Slack, email, pager). Watchdog log is the v1 surface; operators read it directly or pipe it elsewhere.
+- **Remote service notifications** (Slack, email, pager, webhooks). Watchdog log is the v1 surface; operators read it directly or pipe it elsewhere. Local operator notifications via `watch --notify` are supported as of v0.1.2 (§10.9).
 - **Sophisticated retry/backoff.** Just respects the thresholds above.
 - **Routing, ranking, role assignment, message interpretation.** Reserved for the v2 coordinator/router (§13) if/when needed.
+
+### 10.9 Recipient-side watcher
+
+While the watchdog (§10.1) monitors the pool, the `agentchute watch` command provides recipient-side monitoring for individual agents. It is designed for regular terminal sessions (non-tmux) or wrappers without hook support, providing OS notifications or shell-command execution on new mail. See Appendix B.4 for example usage.
 
 ## 11. Protocol correction (best effort)
 
@@ -850,6 +854,8 @@ One corrective message per quarantined file. If the corrective send itself fails
 
 The reference CLI (`agentchute check`) implements §11 automatically: it quarantines malformed files in your inbox to `malformed/`, sends the corrective message to the inferred offender, and continues processing valid messages. Hand-protocol agents perform the same steps per the canonical walkthrough in §6.3 step 7.
 
+The `agentchute doctor` command (v0.1.2) provides diagnostic aggregation for the pool, including PATH checks, hook sanity scans, and scaffold verification. It is the RECOMMENDED tool for operators to verify protocol health.
+
 ## 12. Non-goals (v1)
 
 These are deliberate exclusions from v1:
@@ -868,7 +874,7 @@ These are intentionally NOT in v1; documented here so they don't get implemented
 - **Coordinator / router agent.** A richer agent that beyond liveness also routes broadcast tasks, recommends recipients, interprets task content, or implements a wildcard inbox. The v1 watchdog (§10) is liveness-only by design; coordination/routing is a separate concern reserved for v2.
 - **Opt-in transcript export.** A script that exports the loop archive into a tracked file (e.g., `.<vendor>/loop/transcripts/2026-05-09.md`) for permanent audit trail. Off by default.
 - **Auto-restart of exhausted agents.** v1 watchdog notifies via log; v2 may add wrapper-driven restart.
-- **External notifications** (Slack, email, pager). v1 keeps watchdog output as a log file; v2 may add notification adapters.
+- **Remote notifications** (Slack, email, pager, webhooks). v1 keeps watchdog output as a log file and supports local operator notifications via `watch --notify` (§10.9); v2 may add remote notification adapters.
 - **Repeat-poke suppression / `last_poked_at` backoff.** v1 cooperative waking (§10.5) and the watchdog (§10.4) re-evaluate from current state on every cycle without per-recipient cooldown bookkeeping. If repeat-poke suppression becomes necessary in production, the design would carry a `last_poked_at` field plus a backoff window — a separate v2 design as called out in §10.4 step g.
 - **In-band version negotiation.** v1's stance on protocol versioning (§1) is intentionally simple: the `AGENTCHUTE.md` file in the control repo is canonical, the optional `protocol_version` field is the only in-band signal, and unrecognized values quarantine per §11. v2 may add a handshake or profile-exchange mechanism so peers running incompatible versions can agree on a shared subset (or fail explicitly) rather than the v1 wholesale-reject. The must-ignore-unknown-fields rule (§6.5) already gives v2 a runway for additive changes; only breaking changes need negotiation.
 
@@ -889,3 +895,147 @@ Alternate substrates use the equivalent vendor-prefixed namespace: a queue topic
 The `AGENTCHUTE.md` spec is shared across all implementations and SHOULD live at the canonical pool location (the repo root in the filesystem reference). Implementation-specific notes (current agents, repo-specific layout, migration history, CLI tooling pointers) live in `.<vendor>/loop/README.md` in the filesystem reference; alternate substrates put equivalent notes wherever their namespace exposes them.
 
 A pool MAY contain multiple vendor implementations side-by-side. Agents from different vendors can coexist by reading their own vendor's namespace; cross-vendor messaging is out of scope for v1.
+
+## Appendix B. Reference implementation hook templates
+
+These templates show how to integrate the reference CLI into the lifecycle hooks of common agent wrappers. They are non-normative examples; conforming implementations MAY use different hook names or substrates.
+
+### B.1 Claude Code (.claude/settings.json)
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --as claude-code --vendor anthropic --context-only"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --as claude-code --claude-hook UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} gate --as claude-code --before finish --json"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Notes:**
+- **SessionStart**: Runs once per session start. Refreshes registration and surfaces inbox state as context.
+- **UserPromptSubmit**: Injects pending obligations into the model's context per turn. Uses the `--claude-hook` flag to emit the specific JSON shape required for Claude Code context injection.
+- **Stop**: Lifecycle gate. Exit 2 (blocked) triggers turn continuation.
+- **v0.1.2 note**: Operators SHOULD occasionally run `agentchute doctor --as claude-code` to verify hook health.
+
+### B.2 codex CLI (.codex/hooks.json)
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --as codex --vendor openai --codex-hook SessionStart"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --as codex --codex-hook UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} gate --as codex --before finish --codex-hook Stop"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Notes:**
+- **codex-hook output**: Uses the `--codex-hook` flag to emit the specific JSON shape required for codex context injection and turn-blocking.
+
+### B.3 Gemini CLI (.gemini/settings.json)
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "name": "agentchute-boot",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --as gemini-cli --vendor google --context-only"
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "agentchute-pending",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --as gemini-cli --json"
+          },
+          {
+            "name": "agentchute-gate",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} gate --as gemini-cli --before finish --json"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Notes:**
+- **BeforeAgent**: Since `SessionEnd` is non-blocking in gemini-cli, the gate is moved to the start of the next turn (`BeforeAgent`).
+
+### B.4 Recipient-side watcher (v0.1.2)
+
+For wrappers that don't support hooks, or for regular terminal sessions where OS notifications are preferred, the `watch` command provides a persistent polling fallback:
+
+```sh
+agentchute watch --as <id> --notify
+```
+
+This command is **non-consuming**: it polls/peeks the agent's inbox and triggers an OS notification on new mail, but does NOT archive or quarantine messages, nor does it make them visible to an agent's model context by itself. It is the recipient-side sibling to the watchdog daemon (§10); the human operator or agent wrapper still performs the consumption flow (§6.3) after being woken.

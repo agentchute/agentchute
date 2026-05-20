@@ -23,7 +23,7 @@ func cmdPending(args []string) error {
 	fs := flag.NewFlagSet("pending", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, controlRepo, loopDir, codexHook, staleAfter string
+	var agentID, controlRepo, loopDir, codexHook, claudeHook, staleAfter string
 	var jsonOut, failIfAny, showBody bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
@@ -33,6 +33,7 @@ func cmdPending(args []string) error {
 	fs.BoolVar(&showBody, "show-body", false, "include message body in output (default: frontmatter only)")
 	fs.StringVar(&staleAfter, "stale-after", "", "annotate (not filter) messages older than this duration (e.g. 5m, 1h)")
 	fs.StringVar(&codexHook, "codex-hook", "", "emit codex-specific hook JSON shape for the named event (UserPromptSubmit)")
+	fs.StringVar(&claudeHook, "claude-hook", "", "emit Claude-Code-specific hook JSON shape for the named event (UserPromptSubmit)")
 
 	if err := fs.Parse(args); err != nil {
 		return pendingUsage(err)
@@ -119,10 +120,14 @@ func cmdPending(args []string) error {
 		entries = append(entries, entry)
 	}
 
-	// Emit output.
+	// Emit output. The two --*-hook modes emit wrapper-specific JSON shapes
+	// designed to inject `additionalContext` into the model's developer
+	// context for that hook event. They never exit nonzero — the hook is
+	// for information, not lifecycle gating.
+	if claudeHook == "UserPromptSubmit" {
+		return emitClaudeUserPromptSubmit(entries, pendingReplies, len(skipped))
+	}
 	if codexHook == "UserPromptSubmit" {
-		// Codex-specific hook JSON shape. Emit even when inbox is empty so
-		// the hook always produces valid JSON and exits cleanly.
 		return emitCodexUserPromptSubmit(entries, pendingReplies, len(skipped))
 	}
 	if jsonOut {
@@ -216,11 +221,12 @@ func emitPendingJSON(entries []pendingEntry, replies []loop.PendingReplyEntry, m
 	return enc.Encode(out)
 }
 
-// emitCodexUserPromptSubmit emits the codex-specific hookSpecificOutput
-// JSON shape that injects the pending summary into model-visible developer
-// context. Always exits 0 (returned error nil) so the hook never fails the
-// turn just because mail is pending.
-func emitCodexUserPromptSubmit(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int) error {
+// buildPendingContext renders the shared developer-context text used by both
+// the --codex-hook and --claude-hook UserPromptSubmit emitters. The text is
+// the same regardless of wrapper — only the surrounding JSON envelope
+// differs (and even that converged: Claude Code and codex-cli both accept
+// the same `hookSpecificOutput.additionalContext` nested shape).
+func buildPendingContext(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int) string {
 	var ctx strings.Builder
 	switch {
 	case len(entries) == 0 && len(replies) == 0:
@@ -250,10 +256,36 @@ func emitCodexUserPromptSubmit(entries []pendingEntry, replies []loop.PendingRep
 	if malformed > 0 {
 		fmt.Fprintf(&ctx, "\n(%d malformed file(s) need quarantine; run `agentchute check`.)", malformed)
 	}
+	return ctx.String()
+}
+
+// emitCodexUserPromptSubmit emits the codex-specific hookSpecificOutput
+// JSON shape that injects the pending summary into model-visible developer
+// context. Always exits 0 (returned error nil) so the hook never fails the
+// turn just because mail is pending.
+func emitCodexUserPromptSubmit(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int) error {
+	return emitHookContextJSON("UserPromptSubmit", buildPendingContext(entries, replies, malformed))
+}
+
+// emitClaudeUserPromptSubmit emits the Claude-Code-specific hook JSON shape
+// for UserPromptSubmit. Verified against code.claude.com/docs/en/hooks.md:
+// Claude expects `hookSpecificOutput.additionalContext` nested (NOT
+// top-level `additionalContext`), exit 0 required. Convergent with codex's
+// schema; the structural difference between this and emitCodexUserPromptSubmit
+// is currently zero. Kept as a distinct emitter so future wrapper-specific
+// fields (Claude's `sessionTitle`, codex's `statusMessage`, etc.) can
+// diverge without forcing a callsite change.
+func emitClaudeUserPromptSubmit(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int) error {
+	return emitHookContextJSON("UserPromptSubmit", buildPendingContext(entries, replies, malformed))
+}
+
+// emitHookContextJSON writes the canonical hookSpecificOutput envelope to
+// stdout. Used by both wrapper-specific UserPromptSubmit emitters.
+func emitHookContextJSON(event, additionalContext string) error {
 	out := map[string]any{
 		"hookSpecificOutput": map[string]any{
-			"hookEventName":     "UserPromptSubmit",
-			"additionalContext": ctx.String(),
+			"hookEventName":     event,
+			"additionalContext": additionalContext,
 		},
 	}
 	enc := json.NewEncoder(os.Stdout)
@@ -305,6 +337,7 @@ Flags:
   --show-body           include message body in output
   --stale-after <dur>   annotate (not filter) messages older than this
   --codex-hook <event>  emit codex-specific hook JSON (UserPromptSubmit)
+  --claude-hook <event> emit Claude-Code-specific hook JSON (UserPromptSubmit)
 `)
 }
 

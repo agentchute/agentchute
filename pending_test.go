@@ -145,6 +145,73 @@ func TestPendingCleanCodexHookText(t *testing.T) {
 	})
 }
 
+// v0.1.2: --claude-hook UserPromptSubmit emits the Claude-Code-specific
+// hook JSON shape (hookSpecificOutput.additionalContext nested per
+// code.claude.com/docs/en/hooks.md). Convergent with --codex-hook — both
+// wrappers accept the same envelope today.
+func TestPendingClaudeHookUserPromptSubmitShape(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	entry := loop.PendingReplyEntry{
+		MessageID:        "msg-1",
+		From:             "codex",
+		To:               "claude-code",
+		Task:             "review",
+		OriginalFilename: "msg-1_from-codex_msg-aaaa.md",
+		ArchivePath:      "archive/x.md",
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", entry, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root, func() {
+		out, err := captureStdout(t, func() error {
+			return cmdPending(pendingArgs("--claude-hook", "UserPromptSubmit"))
+		})
+		if err != nil {
+			t.Fatalf("--claude-hook returned err = %v; want nil", err)
+		}
+		var wrap struct {
+			HookSpecificOutput struct {
+				HookEventName     string `json:"hookEventName"`
+				AdditionalContext string `json:"additionalContext"`
+			} `json:"hookSpecificOutput"`
+		}
+		if jerr := json.Unmarshal([]byte(out), &wrap); jerr != nil {
+			t.Fatalf("unmarshal claude hook output: %v\n%s", jerr, out)
+		}
+		if wrap.HookSpecificOutput.HookEventName != "UserPromptSubmit" {
+			t.Errorf("HookEventName = %q, want UserPromptSubmit", wrap.HookSpecificOutput.HookEventName)
+		}
+		if !strings.Contains(wrap.HookSpecificOutput.AdditionalContext, "pending reply obligation") {
+			t.Errorf("AdditionalContext missing pending-reply mention:\n%s", wrap.HookSpecificOutput.AdditionalContext)
+		}
+	})
+}
+
+// Convergence guard: --claude-hook and --codex-hook emit byte-identical
+// JSON for the same inbox state today. If we ever diverge (one wrapper
+// adds a wrapper-specific field), this test fails — re-evaluate whether
+// the shared emitter still makes sense.
+func TestPendingClaudeAndCodexHooksAreCurrentlyConvergent(t *testing.T) {
+	root, _ := setupSendFixture(t)
+	withCwd(t, root, func() {
+		claudeOut, err := captureStdout(t, func() error {
+			return cmdPending(pendingArgs("--claude-hook", "UserPromptSubmit"))
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		codexOut, err := captureStdout(t, func() error {
+			return cmdPending(pendingArgs("--codex-hook", "UserPromptSubmit"))
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if claudeOut != codexOut {
+			t.Errorf("--claude-hook and --codex-hook UserPromptSubmit outputs diverged:\nclaude: %q\ncodex:  %q", claudeOut, codexOut)
+		}
+	})
+}
+
 // Codex follow-up on 0d468fa: pending's frontmatter peek must use the
 // same lenient delimiter semantics as the validator/recorder. A
 // hand-protocol message with `---   \n` must surface its message_id,

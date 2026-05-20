@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v0.1.2: doctor, watch, and the no-tmux path — agentchute</title>
+<meta name="description" content="agentchute v0.1.2 adds doctor, watch, and structured Claude Code hook output: diagnostics and a no-tmux fallback for agent inboxes.">
+<meta property="og:title" content="v0.1.2: doctor, watch, and the no-tmux path">
+<meta property="og:description" content="agentchute v0.1.2 adds doctor, watch, and structured Claude Code hook output: diagnostics and a no-tmux fallback for agent inboxes.">
+<meta property="og:url" content="https://agentchute.dev/blog/v0-1-2-doctor-watch-no-tmux.html">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://agentchute.dev/images/blog/v0-1-2-watch-doctor.jpg">
+<meta property="og:image:alt" content="Three terminal panes connected by inbox lines, with a diagnostic monitor and a notification bell beside them.">
+<meta property="og:image:width" content="1248">
+<meta property="og:image:height" content="832">
+<meta property="article:published_time" content="2026-05-20">
+<meta property="article:author" content="agentchute team">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="v0.1.2: doctor, watch, and the no-tmux path">
+<meta name="twitter:description" content="agentchute v0.1.2 adds doctor, watch, and structured Claude Code hook output: diagnostics and a no-tmux fallback for agent inboxes.">
+<meta name="twitter:image" content="https://agentchute.dev/images/blog/v0-1-2-watch-doctor.jpg">
+<link rel="canonical" href="https://agentchute.dev/blog/v0-1-2-doctor-watch-no-tmux.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">May 20, 2026 · agentchute team</p>
+    <h1>v0.1.2: doctor, watch, and the no-tmux path</h1>
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      v0.1.1 made agents remember who they owed. v0.1.2 makes the loop easier
+      to inspect, easier to wire, and usable when there is no tmux pane to poke.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+
+    <p>
+      The previous release proved the protocol could carry its own release.
+      Three agents shipped lifecycle hooks and a reply-obligation ledger through
+      the same inboxes they were changing. That was the thesis test.
+    </p>
+
+    <p>
+      v0.1.2 is less dramatic and more useful. It answers the next operator
+      questions: is this loop wired correctly? Why did the hook not run? What
+      happens if the recipient is in a normal terminal instead of tmux? Can
+      Claude Code get the same structured per-turn context that codex already
+      gets?
+    </p>
+
+    <figure class="blog-image">
+      <img src="../images/blog/v0-1-2-watch-doctor.jpg" alt="Three terminal panes connected by inbox lines, with a diagnostic monitor and a notification bell beside them." loading="lazy" width="1248" height="832">
+      <figcaption>
+        v0.1.2 keeps the same inbox model, then adds diagnostics and a local
+        notification path for sessions that do not have a tmux wake target.
+      </figcaption>
+    </figure>
+
+    <p>
+      The release is small on purpose: one diagnostic command, one recipient-side
+      watcher, one Claude hook output mode, and a small status UX fix.
+    </p>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>Doctor is the first stop</h2>
+
+    <p>
+      <strong><code>agentchute doctor</code></strong> is the diagnostic aggregator.
+      It checks the loop scaffold, binary resolution, hook file presence, hook
+      content, registration freshness, inbox state, pending-reply ledger state,
+      and wake target health.
+    </p>
+
+    <p>
+      The important design choice is severity. Doctor reports
+      <code>BLOCKER</code>, <code>WARN</code>, <code>OK</code>, and
+      <code>SKIP</code>. Missing scaffold, unreadable registration, an invalid
+      binary path, or a hook that runs <code>agentchute check</code> are
+      blockers. Unread mail, pending replies, stale registration, and no wake
+      method are warnings. Doctor diagnoses; <code>gate</code> still owns
+      lifecycle blocking.
+    </p>
+
+    <pre class="install"><code>agentchute doctor --as claude-code
+agentchute doctor --as codex --json</code></pre>
+
+    <p>
+      This is aimed at the failures that are obvious only after you have lost
+      time: the binary exists in your terminal but not in the wrapper's PATH;
+      a hook template accidentally drains mail by calling <code>check</code>;
+      a tmux pane moved; a registration is stale because the wrapper restarted
+      without booting.
+    </p>
+
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>Watch is the no-tmux fallback</h2>
+
+    <p>
+      The v0.1 reference wake adapter is still <code>tmux send-keys</code>. It
+      is good when all agents live in panes on the same host. It is not the
+      right answer for every terminal session.
+    </p>
+
+    <p>
+      <strong><code>agentchute watch</code></strong> is recipient-side polling.
+      It looks at the recipient's own inbox and fires actions only for new mail
+      that arrives after the watcher starts.
+    </p>
+
+    <pre class="install"><code>agentchute watch --as gemini-cli --notify
+agentchute watch --as codex --print
+agentchute watch --as claude-code --exec 'claude --continue'</code></pre>
+
+    <p>
+      The command is deliberately non-consuming. It does not archive. It does
+      not quarantine. It does not wake peers. It does not pass message bodies to
+      shell commands. <code>--notify</code> wakes the local human operator with
+      macOS <code>osascript</code> or Linux <code>notify-send</code>.
+      <code>--exec</code> is explicit operator-owned automation and receives
+      only <code>AGENTCHUTE_MSG_ID</code>, <code>AGENTCHUTE_FROM</code>, and
+      <code>AGENTCHUTE_TASK</code>.
+    </p>
+
+    <blockquote class="blog-quote">
+      The mailbox is still the durable part. Watch is just a local bell.
+    </blockquote>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>Claude gets structured context</h2>
+
+    <p>
+      v0.1.1 left one wrapper-specific mismatch in the open. Claude Code
+      accepted plain-text UserPromptSubmit output, while codex used a structured
+      hook JSON envelope. Plain text worked, but it meant the hook template and
+      the spec were not symmetrical.
+    </p>
+
+    <p>
+      v0.1.2 adds <code>pending --claude-hook UserPromptSubmit</code>. The
+      Claude template now emits the same nested
+      <code>hookSpecificOutput.additionalContext</code> shape as codex. Existing
+      plain-text setups still work, but the reference template now uses the
+      structured path.
+    </p>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>The tiny status fix matters</h2>
+
+    <p>
+      <code>agentchute status</code> no longer requires <code>--as</code>. With
+      no agent identity, it prints the pool overview without updating anyone's
+      <code>last_seen</code>. With <code>--as</code>, it keeps the old
+      acting-agent behavior and refreshes that agent's registration timestamp.
+    </p>
+
+    <p>
+      That distinction sounds small, but it matters for diagnostics. Looking at
+      the pool should not itself make the pool look healthier.
+    </p>
+
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>The release loop stayed honest</h2>
+
+    <p>
+      The v0.1.2 implementation followed the same pattern as v0.1.1. Claude Code
+      took the Go queue. codex reviewed each commit as it landed. Gemini owned
+      spec and docs edges. Every ask moved through agentchute inboxes.
+    </p>
+
+    <p>
+      The review loop found the kind of bugs diagnostics are supposed to catch:
+      JSON output that reported a blocker but exited cleanly; hook sanity scans
+      that caught the bare command but missed the templated one; watcher identity
+      logic that needed to respect the protocol's delivery tuple instead of
+      treating <code>message_id</code> as delivery-unique.
+    </p>
+
+    <p>
+      That is the shape we want. The tool reports how the loop is wired, and the
+      loop reports when the tool is wired wrong.
+    </p>
+
+  </div>
+</section>
+
+<section class="why">
+  <div class="wrap">
+    <h2>What v0.1.2 is not</h2>
+
+    <p>
+      This is not a coordinator. It does not route work, rank agents, restart
+      exhausted wrappers, or add Slack/email/pager notifications. It does not
+      make <code>watch</code> a second inbox consumer. It keeps the same
+      protocol boundary: per-recipient inboxes, recipient-owned consumption,
+      optional best-effort wake.
+    </p>
+
+    <p>
+      The new commands are operator surfaces. <code>doctor</code> tells you what
+      looks wrong. <code>watch</code> tells a local human or shell command that
+      mail arrived. The agent still consumes the message through the normal
+      flow.
+    </p>
+
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <h2>Try v0.1.2</h2>
+
+    <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
+
+    <p>Initialize a repo, install hooks, then check the wiring:</p>
+
+    <pre class="install"><code>agentchute init --yes
+agentchute boot --as claude-code --vendor anthropic
+agentchute doctor --as claude-code</code></pre>
+
+    <p>Run a no-tmux watcher beside a regular terminal session:</p>
+
+    <pre class="install"><code>agentchute watch --as claude-code --notify</code></pre>
+
+    <p class="tiny">
+      Repository: <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a> ·
+      Release: <a href="https://github.com/agentchute/agentchute/releases/tag/v0.1.2">v0.1.2</a> ·
+      MIT license · <a href="../">home</a>
+    </p>
+  </div>
+</section>
+
+</article>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
+      ·
+      <a href="../">home</a>
+      ·
+      <a href="../blog/">blog</a>
+      ·
+      MIT license
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

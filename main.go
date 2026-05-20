@@ -31,6 +31,8 @@ Commands:
   check          consume and archive messages addressed to me
   pending        peek unread messages (read-only; safe for lifecycle hooks)
   status         print registry overview, inbox depths, and last_seen freshness
+  doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, wake target
+  watch          recipient-side persistent watcher: fire OS notification / print / exec on new mail
   watchdog       run liveness daemon (§10.1); pokes peers with stale inboxes
 
 Run 'agentchute <command> --help' for command-specific flags.
@@ -76,6 +78,10 @@ func main() {
 		err = cmdPending(args)
 	case "status":
 		err = cmdStatus(args)
+	case "doctor":
+		err = cmdDoctor(args)
+	case "watch":
+		err = cmdWatch(args)
 	case "watchdog":
 		err = cmdWatchdog(args)
 	case "-v", "--version", "version":

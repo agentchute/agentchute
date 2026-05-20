@@ -31,12 +31,17 @@ func cmdStatus(args []string) error {
 		return statusUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
+	// --as / $AGENTCHUTE_AGENT_ID is now optional. When omitted, status
+	// behaves as a pool-overview operator command: it prints the registry
+	// without claiming an agent identity and without ticking anyone's
+	// last_seen. The acting-agent mode (caller IS one of the pool agents,
+	// wants their last_seen refreshed as a side effect) is preserved when
+	// --as / env is set. v0.1.2 UX nit per codex review.
 	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID == "" {
-		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(agentID); err != nil {
-		return err
+	if agentID != "" {
+		if err := loop.ValidateAgentID(agentID); err != nil {
+			return err
+		}
 	}
 
 	cwd, err := os.Getwd()
@@ -55,13 +60,15 @@ func cmdStatus(args []string) error {
 	}
 
 	now := time.Now().UTC()
-	selfPath := cfg.AgentRegistrationPath(agentID)
-	if _, err := os.Stat(selfPath); err == nil {
-		if err := loop.UpdateLastSeen(selfPath, now); err != nil {
-			return fmt.Errorf("update last_seen for %s: %w", agentID, err)
+	if agentID != "" {
+		selfPath := cfg.AgentRegistrationPath(agentID)
+		if _, err := os.Stat(selfPath); err == nil {
+			if err := loop.UpdateLastSeen(selfPath, now); err != nil {
+				return fmt.Errorf("update last_seen for %s: %w", agentID, err)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat own registration: %w", err)
 		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat own registration: %w", err)
 	}
 
 	regs, err := readRegistrations(cfg)
@@ -74,7 +81,7 @@ func cmdStatus(args []string) error {
 }
 
 func statusUsage(err error) error {
-	return fmt.Errorf("%w\nusage: agentchute status --as <agent-id> [--control-repo <path>] [--loop-dir <path>]", err)
+	return fmt.Errorf("%w\nusage: agentchute status [--as <agent-id>] [--control-repo <path>] [--loop-dir <path>]\n\n  --as is optional. With it set, the caller's last_seen is refreshed as a side effect\n  (the historical \"acting-agent\" mode). Without it, status prints a pool overview only.", err)
 }
 
 func readRegistrations(cfg *loop.Config) (map[string]*loop.Registration, error) {

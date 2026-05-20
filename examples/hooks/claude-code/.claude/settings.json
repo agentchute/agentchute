@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} pending --as claude-code"
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --as claude-code --claude-hook UserPromptSubmit"
           }
         ]
       }
