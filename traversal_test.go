@@ -61,6 +61,14 @@ func TestCommandsRejectPathTraversalAgentIDs(t *testing.T) {
 			})
 		})
 		t.Run("status/"+id, func(t *testing.T) {
+			// Empty --as is legitimate for status (pool-overview mode);
+			// v0.1.2 explicitly made --as optional and treats "" the
+			// same as "flag omitted". Path-traversal security is
+			// preserved: every non-empty bad id is rejected by
+			// ValidateAgentID before any filesystem access.
+			if id == "" {
+				t.Skip("empty --as is pool-overview mode for status (by design)")
+			}
 			withCwd(t, root, func() {
 				args := []string{"--as", id}
 				if err := cmdStatus(args); err == nil {

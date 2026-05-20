@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -74,12 +75,32 @@ func cmdPending(args []string) error {
 		return err
 	}
 
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): pending stays
+	// read-only, so it does NOT hard-refuse on missing registration like
+	// the active commands. Instead it surfaces a `needs_boot` reason in
+	// every output mode (text, --json, --claude-hook, --codex-hook). The
+	// only exit-2 path is --fail-if-any (codex review: needs_boot IS
+	// actionable work).
+	needsBoot := false
+	if _, err := os.Stat(cfg.AgentRegistrationPath(agentID)); err != nil {
+		if os.IsNotExist(err) {
+			needsBoot = true
+		} else {
+			return fmt.Errorf("stat own registration: %w", err)
+		}
+	}
+
 	// Strictly read-only: we do NOT update last_seen here. Pending is the
 	// hook-safe peek; `boot` is the lifecycle event that ticks last_seen.
 	inboxDir := cfg.AgentInboxDir(agentID)
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
 	if err != nil {
-		return fmt.Errorf("list inbox: %w", err)
+		if errors.Is(err, loop.ErrInboxMissing) {
+			needsBoot = true
+			msgs, skipped = nil, nil
+		} else {
+			return fmt.Errorf("list inbox: %w", err)
+		}
 	}
 
 	// Pending-reply ledger — surface alongside the inbox count so per-turn
@@ -125,23 +146,31 @@ func cmdPending(args []string) error {
 	// context for that hook event. They never exit nonzero — the hook is
 	// for information, not lifecycle gating.
 	if claudeHook == "UserPromptSubmit" {
-		return emitClaudeUserPromptSubmit(entries, pendingReplies, len(skipped))
+		return emitClaudeUserPromptSubmit(entries, pendingReplies, len(skipped), needsBoot, agentID)
 	}
 	if codexHook == "UserPromptSubmit" {
-		return emitCodexUserPromptSubmit(entries, pendingReplies, len(skipped))
+		return emitCodexUserPromptSubmit(entries, pendingReplies, len(skipped), needsBoot, agentID)
 	}
 	if jsonOut {
-		return emitPendingJSON(entries, pendingReplies, len(skipped))
+		return emitPendingJSON(entries, pendingReplies, len(skipped), needsBoot, agentID)
 	}
-	emitPendingText(entries, pendingReplies, len(skipped))
+	emitPendingText(entries, pendingReplies, len(skipped), needsBoot, agentID)
 
 	// Exit code: 0 by default. With --fail-if-any, exit 2 if EITHER the
-	// inbox OR the ledger has unfinished obligations. Both are reasons a
-	// hook should treat the turn as not-yet-done.
-	if failIfAny && (len(entries) > 0 || len(pendingReplies) > 0) {
+	// inbox OR the ledger has unfinished obligations, OR the agent needs
+	// boot — all three are reasons a scheduler should wake the wrapper.
+	if failIfAny && (needsBoot || len(entries) > 0 || len(pendingReplies) > 0) {
 		return errFailIfAny
 	}
 	return nil
+}
+
+// needsBootMessage is the model-facing line surfaced when pending detects
+// that the agent has no registration on disk. Plain-text only (no shell-
+// special chars) so it can pass through the hook-envelope additionalContext
+// layers without further escaping.
+func needsBootMessage(agentID string) string {
+	return fmt.Sprintf("agentchute: agent %q is not registered yet. Run agentchute boot --as %s --vendor <vendor> before processing mail (AGENTCHUTE.md §5.7).", agentID, agentID)
 }
 
 // pendingEntry is the structured record for a single unread message.
@@ -162,9 +191,14 @@ type pendingEntry struct {
 var errFailIfAny = fmt.Errorf("agentchute-pending: unread messages exist")
 
 // emitPendingText prints the human-readable pending summary.
-func emitPendingText(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int) {
+func emitPendingText(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int, needsBoot bool, agentID string) {
+	if needsBoot {
+		fmt.Println(needsBootMessage(agentID))
+	}
 	if len(entries) == 0 && len(replies) == 0 {
-		fmt.Println("(no unread messages; no pending reply obligations)")
+		if !needsBoot {
+			fmt.Println("(no unread messages; no pending reply obligations)")
+		}
 		if malformed > 0 {
 			fmt.Printf("(%d malformed file(s) skipped; run `agentchute check` to quarantine + notify)\n", malformed)
 		}
@@ -202,19 +236,25 @@ func emitPendingText(entries []pendingEntry, replies []loop.PendingReplyEntry, m
 }
 
 // emitPendingJSON prints the structured JSON form.
-func emitPendingJSON(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int) error {
+func emitPendingJSON(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int, needsBoot bool, agentID string) error {
 	out := struct {
 		Count          int                      `json:"count"`
 		Malformed      int                      `json:"malformed_skipped"`
 		RepliesPending int                      `json:"replies_pending"`
+		NeedsBoot      bool                     `json:"needs_boot,omitempty"`
+		BootHint       string                   `json:"boot_hint,omitempty"`
 		Messages       []pendingEntry           `json:"messages"`
 		PendingReplies []loop.PendingReplyEntry `json:"pending_replies,omitempty"`
 	}{
 		Count:          len(entries),
 		Malformed:      malformed,
 		RepliesPending: len(replies),
+		NeedsBoot:      needsBoot,
 		Messages:       entries,
 		PendingReplies: replies,
+	}
+	if needsBoot {
+		out.BootHint = needsBootMessage(agentID)
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -226,11 +266,17 @@ func emitPendingJSON(entries []pendingEntry, replies []loop.PendingReplyEntry, m
 // the same regardless of wrapper — only the surrounding JSON envelope
 // differs (and even that converged: Claude Code and codex-cli both accept
 // the same `hookSpecificOutput.additionalContext` nested shape).
-func buildPendingContext(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int) string {
+func buildPendingContext(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int, needsBoot bool, agentID string) string {
 	var ctx strings.Builder
+	if needsBoot {
+		ctx.WriteString(needsBootMessage(agentID))
+		ctx.WriteString("\n")
+	}
 	switch {
 	case len(entries) == 0 && len(replies) == 0:
-		ctx.WriteString("agentchute: no unread messages; no pending reply obligations.")
+		if !needsBoot {
+			ctx.WriteString("agentchute: no unread messages; no pending reply obligations.")
+		}
 	default:
 		if len(entries) > 0 {
 			fmt.Fprintf(&ctx, "agentchute: %d unread message(s) in your inbox:\n", len(entries))
@@ -263,8 +309,8 @@ func buildPendingContext(entries []pendingEntry, replies []loop.PendingReplyEntr
 // JSON shape that injects the pending summary into model-visible developer
 // context. Always exits 0 (returned error nil) so the hook never fails the
 // turn just because mail is pending.
-func emitCodexUserPromptSubmit(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int) error {
-	return emitHookContextJSON("UserPromptSubmit", buildPendingContext(entries, replies, malformed))
+func emitCodexUserPromptSubmit(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int, needsBoot bool, agentID string) error {
+	return emitHookContextJSON("UserPromptSubmit", buildPendingContext(entries, replies, malformed, needsBoot, agentID))
 }
 
 // emitClaudeUserPromptSubmit emits the Claude-Code-specific hook JSON shape
@@ -275,8 +321,8 @@ func emitCodexUserPromptSubmit(entries []pendingEntry, replies []loop.PendingRep
 // is currently zero. Kept as a distinct emitter so future wrapper-specific
 // fields (Claude's `sessionTitle`, codex's `statusMessage`, etc.) can
 // diverge without forcing a callsite change.
-func emitClaudeUserPromptSubmit(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int) error {
-	return emitHookContextJSON("UserPromptSubmit", buildPendingContext(entries, replies, malformed))
+func emitClaudeUserPromptSubmit(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int, needsBoot bool, agentID string) error {
+	return emitHookContextJSON("UserPromptSubmit", buildPendingContext(entries, replies, malformed, needsBoot, agentID))
 }
 
 // emitHookContextJSON writes the canonical hookSpecificOutput envelope to

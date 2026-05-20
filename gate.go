@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -105,10 +106,20 @@ func cmdGate(args []string) error {
 	// messages but fail the §6.1.2 reference filename encoding. They block
 	// consensus/finish because the agent owes a quarantine + corrective
 	// notify, which `check` runs.
+	//
+	// ErrInboxMissing is treated as "this agent never booted on this
+	// host" — folded into the missing-registration path below so the
+	// reason text is unified ("not registered; run boot first").
 	inboxDir := cfg.AgentInboxDir(agentID)
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
+	inboxMissing := false
 	if err != nil {
-		return fmt.Errorf("list inbox: %w", err)
+		if errors.Is(err, loop.ErrInboxMissing) {
+			inboxMissing = true
+			msgs, skipped = nil, nil
+		} else {
+			return fmt.Errorf("list inbox: %w", err)
+		}
 	}
 
 	// Pending-reply ledger — entries owed a reply.
@@ -118,28 +129,26 @@ func cmdGate(args []string) error {
 	}
 	pendingReplies := ledger.PendingEntries()
 
-	// Stale-registration check — only run for phases that need it. A missing
-	// registration is "stale" by definition: an unenrolled agent should not
-	// commit/release. We track missing separately from age-exceeded so the
-	// reason text can name the actual condition (codex review on c17e310).
+	// Registration check — v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md
+	// §5.7): every phase blocks on missing registration; only commit/release
+	// additionally blocks on age-stale registration. An inbox dir that
+	// doesn't exist implies a missing registration too — the boot/register
+	// path creates both atomically.
 	staleReg := false
-	missingReg := false
+	missingReg := inboxMissing
 	regAge := time.Duration(0)
-	if phaseChecksStaleReg(phase) {
-		regPath := cfg.AgentRegistrationPath(agentID)
-		reg, regErr := loop.ReadRegistration(regPath)
-		if regErr != nil {
-			if os.IsNotExist(regErr) {
-				staleReg = true
-				missingReg = true
-			} else {
-				return fmt.Errorf("read own registration: %w", regErr)
-			}
+	regPath := cfg.AgentRegistrationPath(agentID)
+	reg, regErr := loop.ReadRegistration(regPath)
+	if regErr != nil {
+		if os.IsNotExist(regErr) {
+			missingReg = true
 		} else {
-			regAge = now.Sub(reg.LastSeen.UTC())
-			if regAge > StaleRegThreshold {
-				staleReg = true
-			}
+			return fmt.Errorf("read own registration: %w", regErr)
+		}
+	} else if phaseChecksStaleReg(phase) {
+		regAge = now.Sub(reg.LastSeen.UTC())
+		if regAge > StaleRegThreshold {
+			staleReg = true
 		}
 	}
 
@@ -253,17 +262,20 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 		reasons = append(reasons, fmt.Sprintf("%d pending reply obligation(s) in ledger", s.RepliesPending))
 	}
 
-	// commit + release additionally block on a stale registration unless the
-	// caller explicitly acknowledged. The acknowledgment only counts when
-	// --require-confirm is set (the request was "double-check me on this");
-	// otherwise stale-reg always blocks per the spec default.
-	if phaseChecksStaleReg(phase) && s.StaleReg {
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): every phase blocks
+	// on missing self-registration. An unenrolled agent has not declared
+	// itself to the pool; it can neither commit, finish, nor continue.
+	if s.MissingReg {
+		reasons = append(reasons, "not registered (run `agentchute boot --as <id> --vendor <vendor>` first; §5.7)")
+	}
+
+	// commit + release additionally block on age-stale registration unless
+	// the caller explicitly acknowledged. The acknowledgment only counts
+	// when --require-confirm is set (the request was "double-check me on
+	// this"); otherwise stale-reg always blocks per the spec default.
+	if phaseChecksStaleReg(phase) && s.StaleReg && !s.MissingReg {
 		if !(requireConfirm && ackStaleReg) {
-			if s.MissingReg {
-				reasons = append(reasons, "no registration on disk (run `agentchute boot` or `agentchute register` first)")
-			} else {
-				reasons = append(reasons, fmt.Sprintf("registration is stale (last_seen age %s > %s)", s.StaleRegAge, StaleRegThreshold))
-			}
+			reasons = append(reasons, fmt.Sprintf("registration is stale (last_seen age %s > %s)", s.StaleRegAge, StaleRegThreshold))
 		}
 	}
 

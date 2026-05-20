@@ -243,16 +243,35 @@ func ListInboxMessages(inboxDir string) ([]Message, error) {
 	return msgs, err
 }
 
+// ErrInboxMissing is returned by ListInboxMessages* when the recipient's
+// inbox directory does not exist on disk. Callers that act AS the agent
+// (check, send, watch, gate, self-poll) should treat this as "not
+// enrolled" — i.e., the agent never ran boot. Callers operating on a
+// peer's inbox (watchdog, status overview, peer liveness) should map it
+// to "no mail observable" and continue without failing the whole pass.
+//
+// Wrap with errors.Is to detect:
+//
+//	if errors.Is(err, loop.ErrInboxMissing) { ... }
+//
+// (Introduced in v0.2.1 — "Enforced Enrollment". Replaces the previous
+// silent `(nil, nil, nil)` return that masked missing-registration setups
+// as empty inboxes.)
+var ErrInboxMissing = errors.New("agentchute: inbox directory missing")
+
 // ListInboxMessagesWithSkipped returns both the parsed messages and the
 // filenames that look like a message attempt but failed §6.1 parsing. Skipped
 // names exclude expected noise (directories, symlinks, dotfiles, .tmp_ files);
 // they include only regular files that operator-visible loop activity would
 // have written. Skipped names are sorted for deterministic output.
+//
+// Returns a wrapped ErrInboxMissing when inboxDir does not exist; use
+// errors.Is to detect it.
 func ListInboxMessagesWithSkipped(inboxDir string) ([]Message, []string, error) {
 	entries, err := os.ReadDir(inboxDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil, nil
+			return nil, nil, fmt.Errorf("%w: %s", ErrInboxMissing, inboxDir)
 		}
 		return nil, nil, err
 	}

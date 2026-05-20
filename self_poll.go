@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -98,16 +99,22 @@ func cmdSelfPoll(args []string) error {
 		needsBoot = true
 	}
 
-	// Same read paths as pending. Strictly side-effect-free. Inbox/ledger
-	// reads tolerate missing dirs (return empty) so first-run needs_boot
-	// case still completes cleanly.
+	// Same read paths as pending. Strictly side-effect-free. ErrInboxMissing
+	// (registration exists but inbox dir doesn't — partial state) is
+	// folded into needs_boot so the scheduler can drive the wrapper through
+	// the boot path that recreates the inbox.
 	var msgs []loop.Message
 	var skipped []string
 	if !needsBoot {
 		var listErr error
 		msgs, skipped, listErr = loop.ListInboxMessagesWithSkipped(inboxDir)
 		if listErr != nil {
-			return fmt.Errorf("list inbox: %w", listErr)
+			if errors.Is(listErr, loop.ErrInboxMissing) {
+				needsBoot = true
+				msgs, skipped = nil, nil
+			} else {
+				return fmt.Errorf("list inbox: %w", listErr)
+			}
 		}
 	}
 	ledger, err := loop.LoadPendingLedger(cfg, agentID)

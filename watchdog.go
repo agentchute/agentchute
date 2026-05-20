@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -163,6 +164,13 @@ func runLivenessSweep(ctx context.Context, cfg *loop.Config, opts watchdogOption
 func watchdogAgentCycle(ctx context.Context, cfg *loop.Config, reg *loop.Registration, now time.Time, opts watchdogOptions) error {
 	msgs, err := loop.ListInboxMessages(cfg.AgentInboxDir(reg.AgentID))
 	if err != nil {
+		// Peer's inbox dir is missing: registered but never booted on this
+		// host, or partially-installed setup. Skip this peer for this cycle
+		// rather than failing the whole pass (codex review on the v0.2.1
+		// ErrInboxMissing sentinel).
+		if errors.Is(err, loop.ErrInboxMissing) {
+			return nil
+		}
 		return err
 	}
 	if len(msgs) == 0 {

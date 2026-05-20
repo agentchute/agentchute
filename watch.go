@@ -92,6 +92,17 @@ func cmdWatch(args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: --exec is enabled; commands will run as %q with AGENTCHUTE_MSG_ID / _FROM / _TASK env vars on every new message\n", execCmd)
 	}
 
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): watch is an
+	// active agent surface — it polls THIS agent's inbox and fires
+	// notifications/exec on its behalf. Refuse for an unregistered
+	// agent rather than silently polling a non-existent directory.
+	if _, err := os.Stat(cfg.AgentRegistrationPath(agentID)); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.7)", agentID, agentID)
+		}
+		return fmt.Errorf("stat own registration: %w", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

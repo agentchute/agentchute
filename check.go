@@ -66,7 +66,10 @@ func cmdCheck(args []string) error {
 
 	now := time.Now().UTC()
 
-	// Update own last_seen per AGENTCHUTE.md §6.3 step 1.
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): refuse to operate
+	// for an unregistered agent. check is an active agent command — it
+	// archives, quarantines, sends corrective notify, and runs cooperative
+	// waking; all of those imply the agent IS enrolled in the pool.
 	selfPath := cfg.AgentRegistrationPath(agentID)
 	selfExists := false
 	if _, err := os.Stat(selfPath); err == nil {
@@ -74,7 +77,9 @@ func cmdCheck(args []string) error {
 		if err := loop.UpdateLastSeen(selfPath, now); err != nil {
 			return fmt.Errorf("update last_seen for %s: %w", agentID, err)
 		}
-	} else if !os.IsNotExist(err) {
+	} else if os.IsNotExist(err) {
+		return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.7)", agentID, agentID)
+	} else {
 		return fmt.Errorf("stat own registration: %w", err)
 	}
 

@@ -35,6 +35,7 @@ Commands:
   doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, wake target
   watch          recipient-side persistent watcher: fire OS notification / print / exec on new mail
   watchdog       run liveness daemon (§10.1); pokes peers with stale inboxes
+  hooks          install canonical hook templates into .claude/ / .codex/ / .gemini/ (v0.2.1)
 
 Run 'agentchute <command> --help' for command-specific flags.
 See AGENTCHUTE.md for the full spec.
@@ -87,6 +88,8 @@ func main() {
 		err = cmdWatch(args)
 	case "watchdog":
 		err = cmdWatchdog(args)
+	case "hooks":
+		err = cmdHooks(args)
 	case "-v", "--version", "version":
 		fmt.Printf("agentchute %s\n", version)
 		return

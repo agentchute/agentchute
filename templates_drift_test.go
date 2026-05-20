@@ -30,10 +30,14 @@ func TestTemplatesMatchRepoWrappers(t *testing.T) {
 			wrapperFile: "GEMINI.md",
 			render:      func() string { return renderWrapperBlock("gemini-cli", "google") },
 		},
-		{
-			wrapperFile: "GROK.md",
-			render:      func() string { return renderWrapperBlock("grok", "xai") },
-		},
+		// GROK.md intentionally diverges from the standard
+		// wrapper.md template in v0.2.1: `agentchute hooks install`
+		// does not yet ship a grok template, so the GROK.md
+		// enrollment block points at manual boot instead of
+		// promising automation that doesn't exist. Add a grok
+		// template + restore this entry when the grok wrapper
+		// ships.
+		// {wrapperFile: "GROK.md", render: ...},
 		{
 			wrapperFile: "AGENTS.md",
 			render:      func() string { return enrollmentAgentsTemplate },

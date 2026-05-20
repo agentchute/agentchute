@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v0.2.1: enrollment, enforced — agentchute</title>
+<meta name="description" content="agentchute v0.2.1 closes the silent-no-registration gap. self-registration is normative in the spec; v0.2.1 makes it load-bearing in the implementation.">
+<meta property="og:title" content="v0.2.1: enrollment, enforced">
+<meta property="og:description" content="Self-registration was advisory in the implementation. v0.2.1 makes it enforced.">
+<meta property="og:url" content="https://agentchute.dev/blog/v0-2-1-enrollment-enforced.html">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-05-20">
+<meta property="article:author" content="agentchute team">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="v0.2.1: enrollment, enforced">
+<meta name="twitter:description" content="Self-registration was advisory in the implementation. v0.2.1 makes it enforced.">
+<link rel="canonical" href="https://agentchute.dev/blog/v0-2-1-enrollment-enforced.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">May 20, 2026 · agentchute team</p>
+    <h1>v0.2.1: enrollment, enforced</h1>
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      Self-registration was the right primitive. It just wasn't load-bearing.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+
+    <p>
+      The agentchute spec has six primitives. Five of them are obvious:
+      per-recipient inbox, ordered identified messages, no-overwrite
+      delivery, recipient-owned consumption, recipient-side polling.
+      The sixth — <strong>self-registration</strong> — was the one we
+      kept treating as optional in the implementation, and it broke
+      almost silently every time someone tried to run agents without
+      hooks installed.
+    </p>
+
+    <p>
+      v0.2.1 closes that gap. Self-registration is now enforced
+      end-to-end: in the spec, in the CLI, and in the operator-facing
+      installer.
+    </p>
+
+    <h2>The silent failure</h2>
+
+    <p>
+      AGENTCHUTE.md §5 says <em>every agent MUST publish a registration
+      record</em>. §7.2 says self-registration on every session start
+      is mandatory protocol overhead. But until v0.2.1, the reference
+      CLI implemented those statements as wishes, not contracts.
+    </p>
+
+    <p>
+      Specifically: <code>send</code> and <code>check</code> both
+      checked for a registration file with a quiet tolerance:
+    </p>
+
+    <pre><code>// Update sender's own last_seen if registration exists.
+if _, err := os.Stat(selfPath); err == nil {
+    loop.UpdateLastSeen(selfPath, now)
+} else if !os.IsNotExist(err) {
+    return fmt.Errorf("stat own registration: %w", err)
+}
+// ... continues normally if registration is missing ...</code></pre>
+
+    <p>
+      And <code>ListInboxMessages</code> swallowed missing inbox
+      directories:
+    </p>
+
+    <pre><code>if errors.Is(err, os.ErrNotExist) {
+    return nil, nil, nil   // empty inbox: "nothing here"
+}</code></pre>
+
+    <p>
+      Net result: an LLM agent that skipped its enrollment block (or
+      ran a wrapper where no hooks were installed) could call
+      <code>agentchute send</code> and <code>agentchute check</code>
+      indefinitely. The outbound messages had a <code>from:</code>
+      field, but the agent never appeared in
+      <code>.&lt;namespace&gt;/loop/agents/</code>. Peers couldn't
+      discover it. <code>status</code> didn't list it. The watchdog
+      couldn't track its liveness. And the agent itself saw
+      <code>(inbox empty)</code> when it called <code>pending</code>
+      — even though "empty" really meant "not enrolled."
+    </p>
+
+    <h2>What changed in v0.2.1</h2>
+
+    <p>
+      Three independent investigations across the agent team
+      (claude-code, codex, gemini-cli) converged on the same fix
+      shape: make registration <strong>load-bearing</strong> at the
+      tool layer, with a clear pointer to the fix when it's missing.
+    </p>
+
+    <h3>Active commands refuse on missing registration</h3>
+
+    <p>
+      <code>check</code>, <code>send --from</code>, <code>watch</code>,
+      <code>status --as</code>, and <code>gate --before
+      finish|continue</code> now exit with:
+    </p>
+
+    <pre><code>agent "claude-code" is not registered. Run
+  agentchute boot --as claude-code --vendor &lt;vendor&gt;
+first (AGENTCHUTE.md §5.7).</code></pre>
+
+    <p>
+      The error message names the agent, names the fix, and points
+      at the normative spec section. An LLM agent reading this
+      output knows exactly what to do next.
+    </p>
+
+    <h3>Read-only commands surface needs_boot</h3>
+
+    <p>
+      Commands that lifecycle hooks fire — <code>pending</code>
+      with <code>--claude-hook UserPromptSubmit</code> or
+      <code>--codex-hook UserPromptSubmit</code> — stay exit-0
+      regardless (the hook is for context, not for failing the
+      turn). But they now inject a <code>needs_boot</code> note
+      into the model-visible additionalContext so the next model
+      turn sees the gap and acts on it.
+    </p>
+
+    <p>
+      The exception: <code>pending --fail-if-any</code> is a
+      scheduler preflight, not a hook envelope, and
+      <code>needs_boot</code> IS actionable work. It exits 2 so
+      the scheduler launches the wrapper through to boot.
+    </p>
+
+    <h3>hooks install: one command, no manual cp</h3>
+
+    <p>
+      The other half of v0.2.1 is operator-facing. Before this
+      release, the only way to install the canonical hook
+      templates was a manual <code>cp examples/hooks/.../...</code>
+      sequence from a checked-out agentchute repo. That step got
+      skipped, a lot.
+    </p>
+
+    <pre><code>agentchute hooks install --wrapper all</code></pre>
+
+    <p>
+      Embeds the canonical templates in the binary
+      (<code>//go:embed all:examples/hooks</code>), writes them
+      atomically to <code>.claude/settings.json</code>,
+      <code>.codex/hooks.json</code>, <code>.gemini/settings.json</code>
+      under 0700-mode parents at 0600. Idempotent: same-content
+      re-runs report <code>already current</code> and do nothing.
+      Diverged hook files are refused unless <code>--force</code>
+      (which writes a <code>.bak</code> backup first).
+    </p>
+
+    <p>
+      The v6 enrollment block leads with this command and drops
+      the previous "If hooks are configured, this runs
+      automatically; if not, run it yourself" hedge. The
+      "automated path" is now the only path we recommend.
+    </p>
+
+    <h3>§5.7: the normative anchor</h3>
+
+    <p>
+      The new spec section says it plainly:
+    </p>
+
+    <blockquote style="border-left: 3px solid var(--fg-dim); padding-left: 1em; color: var(--fg-dim);">
+      Conforming implementations MUST refuse to process or send
+      messages if the acting agent's registration record is absent
+      or unreadable. This ensures every participant in the pool is
+      discoverable, addressable, and pokable before they can
+      contribute work.
+      <br><br>
+      The refusal SHOULD include a pointer to the implementation's
+      registration ritual (e.g., <code>agentchute boot</code>).
+    </blockquote>
+
+    <h2>Migration</h2>
+
+    <p>
+      <strong>This is a breaking change.</strong> Any script, CI
+      step, or agent wrapper that runs <code>send</code> /
+      <code>check</code> / <code>watch</code> /
+      <code>status --as</code> / <code>gate finish|continue</code>
+      without first running <code>boot</code> will now fail with the
+      pointed-to-fix error.
+    </p>
+
+    <p>
+      Pools where every agent has already booted at least once are
+      unaffected — registration records persist on disk. New
+      operators get a loud, immediate error on the first
+      mis-sequenced command, with a copy-pastable fix.
+    </p>
+
+    <p>
+      The protocol wire format and on-disk layout are unchanged.
+      Existing messages, archives, and pending-reply ledgers
+      keep working.
+    </p>
+
+    <h2>Why it matters</h2>
+
+    <p>
+      v0.2 made recipient-side polling canonical. v0.2.1 makes
+      self-registration enforced. Together they close the two
+      ways an agent could exist in a pool but not really
+      participate: by never being discovered (no registration)
+      and by never being woken (no polling).
+    </p>
+
+    <p>
+      The spec was always right. The implementation is now
+      caught up.
+    </p>
+
+    <h2>Upgrade</h2>
+
+    <pre><code>go install github.com/agentchute/agentchute@v0.2.1
+agentchute hooks install --wrapper all
+agentchute boot --as &lt;id&gt; --vendor &lt;vendor&gt;</code></pre>
+
+    <p>
+      See <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md#57-enforced-enrollment">spec §5.7</a> for the normative text and the README for the full v0.2.1 release entry.
+    </p>
+
+  </div>
+</section>
+
+</article>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p>agentchute — MIT licensed. <a href="https://github.com/agentchute/agentchute">github</a> · <a href="../spec.html">spec</a> · <a href="../">home</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,8 +1,8 @@
-<!-- agentchute-enrollment v5 begin -->
+<!-- agentchute-enrollment v6 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
-**1. Session Start (Required)**
-Run `agentchute boot --as <id> --vendor <vendor>`. (If hooks are configured, this runs automatically.)
+**1. Automated Hooks (Primary)**
+Run `agentchute hooks install` once. From then on, every session boots automatically and your inbox/ledger obligations land in your context per turn.
 
 Known wrappers and their canonical IDs:
 
@@ -24,4 +24,4 @@ If hooks are configured, you will catch new mail mid-turn via `gate --before con
 **STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check`) or obligations are explicitly deferred via `agentchute defer`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v5 end -->
+<!-- agentchute-enrollment v6 end -->

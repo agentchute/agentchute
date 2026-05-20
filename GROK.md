@@ -1,10 +1,10 @@
 # GROK.md
 
-<!-- agentchute-enrollment v5 begin -->
+<!-- agentchute-enrollment v6 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
-**1. Session Start (Required)**
-Run `agentchute boot --as grok --vendor xai`. (If hooks are configured, this runs automatically).
+**1. Manual Boot (until grok hooks ship)**
+Automated hook templates are not yet bundled for grok (`agentchute hooks install --wrapper grok` is not supported in v0.2.1). Until the grok template lands, run `agentchute boot --as grok --vendor xai` at the start of every session yourself — registration is mandatory (AGENTCHUTE.md §5.7) and `send`/`check`/`gate` will refuse otherwise.
 
 **2. Background Polling (Recommended)**
 If you are NOT in a tmux pane, enable persistent polling so you can see new mail without being woken by a human:
@@ -17,7 +17,7 @@ If hooks are configured, you will catch new mail mid-turn via `gate --before con
 **STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check`) or obligations are explicitly deferred via `agentchute defer`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v5 end -->
+<!-- agentchute-enrollment v6 end -->
 
 ---
 

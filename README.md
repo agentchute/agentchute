@@ -41,15 +41,20 @@ Hooks are the primary integration path for the reference CLI: each wrapper has a
 | **codex CLI** | `examples/hooks/codex/.codex/hooks.json` |
 | **Gemini CLI** | `examples/hooks/gemini/.gemini/settings.json` |
 
-To install:
+To install (v0.2.1+):
 
 ```sh
-# from the agentchute repo, into your project's working directory
-cp examples/hooks/claude-code/.claude/settings.json .claude/settings.json
-# repeat for codex (.codex/hooks.json) and gemini (.gemini/settings.json) as needed
+# one command, all three wrappers
+agentchute hooks install --wrapper all
+
+# or one wrapper at a time
+agentchute hooks install --wrapper claude-code
+
 # if the binary isn't on PATH, set this in the env that launches the wrapper:
 export AGENTCHUTE_BIN=/path/to/agentchute
 ```
+
+`hooks install` is idempotent — same-content re-runs report `already current` and do nothing. By default `--scope repo` anchors at the control-repo root (the dir holding `AGENTCHUTE.md`), so install works from any subdirectory. Use `--scope user` to install under `$HOME` instead, `--dry-run` to preview, `--force` to overwrite a diverged hook file (a `.bak` backup is written first).
 
 Restart the wrapper. From then on:
 
@@ -137,6 +142,10 @@ Delivery is no-overwrite by contract: a sender never replaces an existing messag
 | `watch --as <id> [--notify] [--print] [--exec <cmd>]` | Recipient-side non-consuming watcher for new mail; useful outside tmux |
 | `watchdog --as <id>` | Optional liveness sidecar; pokes peers with stale inboxes |
 | `prepare-pool --target <dir>` | Connect sibling folders via pointer files |
+| `self-poll --as <id>` | Side-effect-free "should I wake?" helper for schedulers (v0.2) |
+| `gate --before continue --gemini-hook AfterAgent` | In-session catchup decision JSON (v0.2) |
+| `doctor --generate-service <kind>` | Emit launchd / systemd / shell unit files for the preflighted scheduler (v0.2) |
+| `hooks install --wrapper <name>` | Write the canonical hook template into `.claude/` / `.codex/` / `.gemini/` (v0.2.1) |
 
 Run `agentchute <command> --help` for flags. All commands accept `--control-repo`, `--loop-dir`, and `--json` where applicable.
 
@@ -192,6 +201,19 @@ MIT — see [`LICENSE`](LICENSE).
 *Built by [reHuman Labs](https://rehumanlabs.com). Let humans do human work, agents do agent work, and stop using humans as a message bus.*
 
 ## Releases
+
+### v0.2.1 (2026-05-20)
+
+The **enforced enrollment** release. Self-registration was normative in the spec (§5) but the reference CLI treated it as optional; agents could call `send` and `check` forever without ever publishing a registration record. v0.2.1 closes the gap end-to-end.
+
+- **AGENTCHUTE.md §5.7** (new, normative): conforming implementations MUST refuse to perform active agent operations (consume, send, gate completion) without a registration record. Read-only diagnostics MAY surface a needs-registration signal instead of refusing, so wrappers can detect and remediate the gap.
+- **Active commands refuse on missing self-registration**: `check`, `send --from`, `watch`, `status --as`, and `gate --before finish|continue` now exit with a clear pointer to `agentchute boot --as <id> --vendor <vendor>`. The previous silent-tolerance behavior is gone.
+- **`internal/loop.ErrInboxMissing` sentinel**: `ListInboxMessages*` now distinguishes "inbox dir doesn't exist" from "inbox is empty". Callers act-as-agent map to `needs_boot`; peer-liveness paths (watchdog) skip without failing the pass.
+- **`pending` surfaces `needs_boot`** in text / `--json` / `--claude-hook UserPromptSubmit` / `--codex-hook UserPromptSubmit` modes (read-only, always exit 0 for hook envelopes; `--fail-if-any` exits 2 because that mode IS a scheduler preflight).
+- **`agentchute hooks install --wrapper <name>`** (new): writes the canonical hook template into `.claude/settings.json` / `.codex/hooks.json` / `.gemini/settings.json`. Atomic temp+rename, 0600/0700 modes, idempotent re-runs, `--scope repo|user`, `--dry-run`, `--force` with `.bak` backup. Makes the v6 enrollment block's "run this once" property real.
+- **v6 enrollment block**: drops the "If hooks are configured, this runs automatically" hedge; leads with `agentchute hooks install` as the primary path.
+
+**Breaking change**: any caller running `send` / `check` / `watch` / `status --as` / `gate finish|continue` without a prior `boot` now gets a loud error pointing at the fix. Pools where every agent has already booted at least once are unaffected.
 
 ### v0.2.0 (2026-05-20)
 

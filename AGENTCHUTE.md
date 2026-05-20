@@ -250,6 +250,14 @@ Optional free-text notes about this agent's role, working style, or constraints.
 
 `agentchute register --as <id> --vendor <vendor> [--host <name>] [--wake-method <adapter>] [--wake-target <addr>] [--bio "..."]` does the same with ergonomic flags (idempotent re-runs). The full flag list also includes `--announce`, but `--announce` sends an unsolicited notification to every peer and therefore falls outside the §7 protocol-overhead carve-out — it is operator-gated, not part of mandatory session-start registration. See `agentchute register -h` for the complete surface.
 
+### 5.7 Enforced enrollment
+
+Conforming implementations MUST refuse to perform **active agent operations** if the acting agent's registration record is absent or unreadable. Active operations are those that consume mail, deliver mail, advance lifecycle gates, or otherwise act AS the agent identity (e.g., `check`, `send --from`, `watch`, `status --as`, and `gate --before finish|continue` in the reference CLI). The refusal ensures every participant in the pool is discoverable, addressable, and pokable before it can contribute work.
+
+The refusal SHOULD include a pointer to the implementation's registration ritual (e.g., `agentchute boot`).
+
+**Read-only diagnostics MAY surface a needs-registration signal instead of refusing.** Commands that exist to inject context into a lifecycle hook (`pending --claude-hook` / `--codex-hook`), or to report pool state without claiming agent identity (pool-overview `status`, `doctor`), SHOULD remain available so that wrappers can detect and remediate the gap. The reference CLI surfaces this via a `needs_boot` field in `pending` output and via `self-poll`'s exit-2 semantics for scheduler preflights.
+
 ## 6. Messaging
 
 ### 6.1 Message identity
@@ -655,7 +663,7 @@ The protocol does not require tmux. Without tmux, peer wake via the reference CL
 As of v0.2, the recommended no-tmux polling patterns follow a three-tier model:
 
 - **Tier 1: Native recurring task.** Use the wrapper's built-in scheduler (e.g., Claude Code's `/loop`, Codex App Automations). This is the zero-infrastructure baseline.
-- **Tier 2: Preflighted scheduler.** For wrappers without a native loop (e.g., terminal `gemini-cli` or `codex-cli`). An external scheduler (launchd/systemd/cron) runs a side-effect-free preflight check (`agentchute self-poll --as <id>`) and only launches the wrapper when work exists. `self-poll` exits 2 whenever the wrapper should wake — unread mail, pending replies, malformed inbox files, or first-run `needs_boot` — so the scheduler wakes the wrapper through to its boot ritual on first install. (`agentchute pending` remains a read-only inbox/ledger primitive but does not surface `needs_boot`.)
+- **Tier 2: Preflighted scheduler.** For wrappers without a native loop (e.g., terminal `gemini-cli` or `codex-cli`). An external scheduler (launchd/systemd/cron) runs a side-effect-free preflight check (`agentchute self-poll --as <id>`) and only launches the wrapper when work exists. `self-poll` exits 2 whenever the wrapper should wake — unread mail, pending replies, malformed inbox files, or first-run `needs_boot` — so the scheduler wakes the wrapper through to its boot ritual on first install. (`agentchute pending` also surfaces `needs_boot` in v0.2.1+ as a read-only context-injection signal; it never returns exit 2 in hook-envelope modes, so it remains safe to wire as a UserPromptSubmit / BeforeAgent hook.)
 - **Tier 3: Finish-hook continuation.** Active sessions catch new mail at the end of a turn via lifecycle hooks (e.g., `gate --before continue`).
 
 Always schedule the wrapper (which invokes the model), not a bare `agentchute check` loop. The model must own the consumption decision.
