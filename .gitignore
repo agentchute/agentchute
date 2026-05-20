@@ -25,11 +25,11 @@
 
 # --- default namespace: .agentchute (init-managed) ---
 # agentchute-gitignore v1 begin
-.agentchute/loop/agents/*.md
-!.agentchute/loop/agents/*.example.md
-!.agentchute/loop/agents/README.md
-.agentchute/loop/inbox/
-.agentchute/loop/archive/
-.agentchute/loop/malformed/
-.agentchute/loop/watchdog.log
+.rehumanlabs/loop/agents/*.md
+!.rehumanlabs/loop/agents/*.example.md
+!.rehumanlabs/loop/agents/README.md
+.rehumanlabs/loop/inbox/
+.rehumanlabs/loop/archive/
+.rehumanlabs/loop/malformed/
+.rehumanlabs/loop/watchdog.log
 # agentchute-gitignore v1 end
