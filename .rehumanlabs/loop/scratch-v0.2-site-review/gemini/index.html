@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentchute — coordinate AI agents through shared inboxes</title>
+<meta name="description" content="agentchute is a markdown-protocol convention for AI agents to coordinate through shared inboxes. No central server or broker required. No SDK.">
+<meta property="og:title" content="agentchute">
+<meta property="og:description" content="Coordinate AI agents through shared inboxes. No central server or broker required.">
+<meta property="og:url" content="https://agentchute.dev/">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://agentchute.dev/">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <div class="logo">agentchute</div>
+    <nav>
+      <a href="blog/">blog</a>
+      <a href="spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+      <a href="https://github.com/agentchute/agentchute/blob/main/EXTENSIONS.md">extensions</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="wrap">
+    <h1>Running multiple AI agents on a shared project is easy.<br><span class="dim">Coordinating them isn't.</span></h1>
+
+    <p class="lede">
+      <strong>agentchute is a small coordination protocol: each agent owns an inbox; senders deliver identified messages without overwriting; recipients consume on their own cadence.</strong> Humans stay in the loop for decisions and steering — not for ferrying messages between terminals.
+    </p>
+    <p class="lede">
+      No central server or broker required. No SDK. No long-lived daemons required.
+      Just <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code></a>
+      plus a short enrollment block your agents read and follow.
+    </p>
+
+    <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
+
+    <p class="lede-foot">
+      Or skip the binary — just drop <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md">AGENTCHUTE.md</a>
+      into your project and follow the enrollment block. The whole protocol fits in one file.
+    </p>
+
+    <figure class="video">
+      <a
+        class="video-thumb"
+        href="https://www.youtube.com/watch?v=jwYzKtcOYl0"
+        target="_blank"
+        rel="noopener"
+        aria-label="Play video on YouTube: Real agentchute session — Claude, codex, Gemini in tmux (24x speedup, 62 seconds)">
+        <img
+          src="https://img.youtube.com/vi/jwYzKtcOYl0/maxresdefault.jpg"
+          alt="Three agents coordinating in tmux — thumbnail for the launch video"
+          loading="lazy">
+        <span class="video-play" aria-hidden="true">▶</span>
+      </a>
+      <figcaption>
+        Three agents coordinating in tmux during the final pre-release cleanup pass.
+        24x speedup of a real working session. <a href="https://www.youtube.com/watch?v=jwYzKtcOYl0" target="_blank" rel="noopener">Watch on YouTube</a> (62 seconds).
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="featured-post">
+  <div class="wrap">
+    <a href="blog/v0-2-recipient-polling.html" class="featured-post-link">
+      <img
+        src="images/blog/v0-1-2-workflow.jpg"
+        alt="Four-panel comic of the agentchute workflow: human writes instructions, hands to agents, agents coordinate, deliver result back."
+        class="featured-post-thumb"
+        loading="lazy"
+        width="240" height="160">
+      <div class="featured-post-text">
+        <p class="featured-post-meta">Latest from the blog</p>
+        <p class="featured-post-title">v0.2: recipient polling, by hand and by hook <span class="featured-post-arrow" aria-hidden="true">→</span></p>
+        <p class="featured-post-excerpt">agentchute v0.2 makes the no-tmux path first class: self-poll, gate --before continue, and a spec clarification that recipient polling is canonical.</p>
+      </div>
+    </a>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>What's actually in the protocol</h2>
+    <p>
+      The protocol is a small set of <em>implementation-agnostic primitives</em>. Conforming
+      implementations are free to choose any inbox medium, any transport between sender and
+      inbox, and any wake mechanism — those are <strong>outside the protocol</strong>.
+    </p>
+    <ul class="grid">
+      <li><strong>Per-recipient inbox.</strong> Each agent owns an ordered message stream. Senders deliver into the recipient's inbox; the recipient owns discovery and consumption.</li>
+      <li><strong>Ordered, identified messages.</strong> Each carries a unique identity tuple; receivers process oldest-first by timestamp with deterministic tie-breaking.</li>
+      <li><strong>No-overwrite delivery.</strong> Senders never silently clobbers an existing entry. Collisions retry with a fresh nonce.</li>
+      <li><strong>Recipient-owned consumption.</strong> Only the recipient reads its own message bodies. Senders and sidecars use metadata only.</li>
+      <li><strong>Recipient-side polling.</strong> The protocol's discovery mechanism is polling. Agents discover unread mail via their own inbox scans on their own cadence.</li>
+      <li><strong>Optional wake.</strong> Senders MAY signal a recipient via an optional wake adapter (tmux, HTTP, SSH). Failure is logged and ignored; the protocol remains correct in its absence.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="primitives" style="background:var(--bg-alt)">
+  <div class="wrap">
+    <h2>The reference implementation</h2>
+    <p>
+      The CLI in this repo picks one concrete answer for each implementation-specific axis.
+      It maps the primitives onto Markdown files on a shared filesystem. While it ships
+      with <code>tmux</code> wake support, v0.2 makes the **no-tmux** story first-class
+      through a three-tier polling model.
+    </p>
+    <ul class="grid">
+      <li><strong>Tier 1: Native loops.</strong> If your wrapper has a built-in recurring task feature (like Claude Code's <code>/loop</code>), use it. Zero infrastructure required.</li>
+      <li><strong>Tier 2: Preflighted scheduler.</strong> For wrappers without a native loop, an external scheduler (cron, systemd, launchd) runs a side-effect-free preflight using <code>agentchute self-poll</code> and launches the wrapper only when work exists.</li>
+      <li><strong>Tier 3: Lifecycle catchup.</strong> Active sessions catch new arrivals at lifecycle boundaries via hooks (e.g., Gemini's <code>AfterAgent</code> continuation).</li>
+      <li><strong>Diagnostics:</strong> <code>agentchute doctor</code> provides pool-wide health checks for PATH, hooks, registrations, and loop scaffold. It can even <code>--generate-service</code> unit files to automate Tier 2.</li>
+    </ul>
+    <p>
+      <strong>The protocol is substrate-agnostic.</strong>
+      The reference CLI uses a shared filesystem; another implementation can swap in
+      a queue, HTTP endpoint, object store, or git transport. Agents can run on
+      different machines, networks, or regions — same primitives either way.
+    </p>
+    <p>
+      Alternate inbox media and wake adapters are discussed in
+      <a href="https://github.com/agentchute/agentchute/blob/main/EXTENSIONS.md"><code>EXTENSIONS.md</code></a>.
+    </p>
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>The Handoff: simple two-agent message flow</h2>
+    <p>The best-effort contract: alice delivers to bob's inbox; alice MAY attempt a wake poke; bob polls, consumes, and replies.</p>
+
+    <div class="anim" data-anim="handoff">
+      <pre class="ascii ascii-anim" aria-label="Simple two-agent flow"><code></code></pre>
+      <div class="anim-controls">
+        <button type="button" class="anim-play" data-action="toggle" aria-label="Pause">⏸ Pause</button>
+        <button type="button" data-action="step-back" aria-label="Previous step">‹</button>
+        <span class="anim-step-label" aria-live="polite">step 1 / 4</span>
+        <button type="button" data-action="step-fwd" aria-label="Next step">›</button>
+        <button type="button" data-action="restart" aria-label="Restart">↺</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>The Review: multi-agent coordination with liveness sidecar</h2>
+    <p>
+      Coordination in the loop. <code>claude-code</code> requests review, <code>codex</code> and
+      <code>gemini-cli</code> send findings back. The watchdog runs as a metadata-only liveness aid — it only pokes a peer with a
+      stale unread inbox. Best-effort optimizations on top of a durable mailbox.
+    </p>
+
+    <div class="anim" data-anim="review">
+      <pre class="ascii ascii-anim" aria-label="Complex multi-agent flow with watchdog sidecar"><code></code></pre>
+      <div class="anim-controls">
+        <button type="button" class="anim-play" data-action="toggle" aria-label="Pause">⏸ Pause</button>
+        <button type="button" data-action="step-back" aria-label="Previous step">‹</button>
+        <span class="anim-step-label" aria-live="polite">step 1 / 5</span>
+        <button type="button" data-action="step-fwd" aria-label="Next step">›</button>
+        <button type="button" data-action="restart" aria-label="Restart">↺</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <h2>Try it</h2>
+
+    <p>With the optional reference CLI:</p>
+
+    <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
+
+    <p>
+      Or skip the binary — drop
+      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code></a>
+      into your project and follow the enrollment block. The whole protocol fits in one file.
+    </p>
+
+    <p class="tiny">
+      Repository: <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a> ·
+      MIT license · <a href="blog/">blog</a> · <a href="spec.html">spec</a>
+    </p>
+  </div>
+</section>
+
+</main>
+
+<script src="anim.js" defer></script>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
+      ·
+      <a href="spec.html">protocol spec</a>
+      ·
+      <a href="https://github.com/agentchute/agentchute/blob/main/EXTENSIONS.md">extensions</a>
+      ·
+      MIT license
+    </p>
+    <p class="tiny">
+      agentchute is built by <a href="https://rehumanlabs.com">reHuman Labs</a>.
+      The umbrella thesis: let humans do human work, let agents do agent work,
+      stop using humans as a message bus.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
