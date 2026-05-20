@@ -488,7 +488,10 @@ These fields form the protocol-level message envelope. Any conforming implementa
 - `from` (agent_id, recommended) — the sender. Same grammar as §5.1.
 - `to` (agent_id, recommended) — the recipient. Same grammar as §5.1.
 - `in_reply_to` (string, optional) — the `message_id` of the message this is replying to. References are non-normative; the protocol does not track open requests or guarantee a parent exists.
-- `task` (string, optional) — short task descriptor.
+- `reply_required` (boolean, optional, default `false`) — when true, the sender expects a reply from the recipient. See §6.4.3.
+- `priority` (enum, optional, default `normal`) — `low | normal | high`. This is a display/gating hint only; it does not change the §6.1.1 oldest-first ordering rule.
+- `reply_kind` (enum, optional) — `signoff | pushback | answer | review | ack`. Advisory hint describing the kind of reply expected when `reply_required` is true.
+- `task` (string, optional) — short task descriptor. The value `deferred-reply` is the convention for automatic acknowledgments of deferrals.
 - `status` (enum, optional) — `request | findings | signoff | request-changes | info`. Free-text values are tolerated but the listed values are the convention.
 
 Messages MAY omit any envelope fields entirely; receivers MUST handle messages without envelope (the body alone is sufficient). Unrecognized fields in the envelope MUST be ignored per §6.5 (the must-ignore-unknown-fields rule).
@@ -503,6 +506,9 @@ message_id: 2026-05-09T16:32:00.123456Z
 from: codex
 to: claude-code
 in_reply_to: 2026-05-09T16:08:36.000000Z   # optional; references a prior message_id
+reply_required: true
+priority: normal
+reply_kind: review
 task: short task description
 status: request | findings | signoff | request-changes | info
 ---
@@ -526,6 +532,16 @@ The v0.1 reference parser is intentionally small. Conforming implementations of 
 Full YAML features such as `#`-introduced comments inside the block, multi-line scalars (`|`, `>`), anchors, and tags are **not** part of the v1 reference encoding. The reference parser does not accept them; implementations that want richer YAML semantics are free to extend in their own fork, but those messages will not round-trip through the reference CLI.
 
 Alternate-substrate implementations MAY encode the same logical fields differently (JSON in an HTTP response body, message-queue attributes, an entry in a key-value store, etc.); envelope conformance is on the logical §6.4.1 fields and their semantics, not on the YAML-in-Markdown serialization.
+
+#### 6.4.3 Reply obligations
+
+A message with frontmatter `reply_required: true` places a reply obligation on the recipient. Archiving the message does not discharge the obligation; the reference CLI records the pending obligation in `<loop>/state/<agent>/pending-replies.json` (the pending-reply ledger) when `agentchute check` archives the message.
+
+The ledger entry status transitions from `pending` (on archive) to either `replied` (on `agentchute send --reply-to <message_id>`) or `deferred` (on `agentchute defer --message <message_id>`). Lifecycle gates that consult the ledger MUST report the obligation as still open until the entry status leaves `pending`.
+
+Replies (any message with `in_reply_to` set) SHOULD default to `reply_required: false` unless the responder explicitly requests further dialog. Automatic acknowledgments (e.g., from `agentchute defer`) MUST NOT set `reply_required: true`. These rules prevent infinite loops in automated coordination.
+
+A body-level `## ASK` heading is a salience convention for the recipient, not a machine-checkable protocol signal. Tooling MUST consult the envelope field, not the message body, to determine reply-obligation state. The reference CLI's `agentchute send --ask` convenience flag sets both `reply_required: true` and a leading `## ASK` heading.
 
 ### 6.5 Encoding, size, and forward compatibility
 
@@ -717,6 +733,8 @@ The watchdog runs at a regular cadence — either as a long-lived daemon (e.g., 
 
 The reference CLI performs the §10.4 watchdog algorithm opportunistically during every `check` cycle — a best-effort distributed extension of liveness. Every reference-CLI checker contributes; no opt-in field is required. Hand-protocol implementations MAY skip cooperative waking (§6.3 step 8 is MAY-do). Cooperative waking and the dedicated watchdog (§10.1 / §10.4) are **both best-effort**; neither can wake an agent with no reachable wake method. The dedicated daemon remains useful as an always-on best-effort fallback when no active peers are around to cooperate.
 
+When a wake adapter is available and the target agent declares a reachable `wake_method` / `wake_target`, an implementation SHOULD attempt a wake poke immediately after delivery or after detecting stale unread mail through cooperative waking. The wake is best-effort: if the adapter fails or the target declares no reachable wake method, the implementation records or logs the attempt and proceeds without blocking. **Senders MUST NOT wait synchronously for read receipts by default**; doing so turns mailbox delivery into blocking RPC and risks deadlock when peers are offline. Optional `send --wait-for-read --timeout <duration>` behavior is reserved for a future protocol version.
+
 **When**: only after the recipient has processed its own inbox and updated its own `last_seen` / `last_active` timestamps (§6.3). Own work takes priority.
 
 **Algorithm**: identical to §10.4, applied to every peer registration (self always excluded). All peer inspection uses **metadata only** — directory listings, filenames, timestamps. Agents MUST NOT open, read, copy, archive, or otherwise consume the contents of inbox files addressed to peers; that authority belongs strictly to the recipient.
@@ -724,7 +742,7 @@ The reference CLI performs the §10.4 watchdog algorithm opportunistically durin
 1. Enumerate peer registrations (self always excluded). _Reference CLI: read `.<vendor>/loop/agents/*.md`._
 2. For each peer:
    a. If peer `host` is set and differs from the local host: **skip proactively**. Cross-host wake adapters are not reachable from this machine; the message is already durably in the peer's inbox and the peer's own environment handles wake.
-   b. If peer `wake_method` is empty/absent OR `wake_target` is empty/absent: skip (non-pokable).
+   b. If peer `wake_method` is empty/absent OR `wake_target` is empty/absent: skip (non-pokable) and log/warn as operational visibility, not as a delivery failure.
    c. Using metadata only, compute the oldest unread message age and apply §10.4 conditions (status, restart_at, last_seen freshness, oldest unread message age threshold).
    d. If eligible: dispatch the poke via the wake adapter named in `wake_method` (§8 for tmux).
 3. Per-peer errors (empty wake fields, unsupported adapter, adapter invocation failure, malformed peer registration) MUST log/warn and continue. Cooperative waking MUST NOT fail or exit nonzero on per-peer issues; the message has already been delivered to the recipient's inbox (in the reference CLI, that's the shared filesystem).

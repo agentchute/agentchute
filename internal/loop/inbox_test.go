@@ -67,7 +67,7 @@ func TestWriteListArchiveMessage(t *testing.T) {
 	}
 
 	consumed := time.Date(2026, 5, 9, 16, 33, 0, 0, time.UTC)
-	if err := ArchiveMessage(msgs[0], archive, "claude-code", consumed); err != nil {
+	if _, err := ArchiveMessage(msgs[0], archive, "claude-code", consumed); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(msg.Path); !os.IsNotExist(err) {
@@ -117,7 +117,7 @@ func TestArchiveMessageRejectsExistingDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ArchiveMessage(msg, archive, "claude-code", consumed); err == nil {
+	if _, err := ArchiveMessage(msg, archive, "claude-code", consumed); err == nil {
 		t.Fatal("expected archive collision error")
 	}
 	if got, err := os.ReadFile(dest); err != nil || string(got) != "existing\n" {

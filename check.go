@@ -191,8 +191,18 @@ func cmdCheck(args []string) error {
 		fmt.Println()
 
 		if !noArchive {
-			if err := loop.ArchiveMessage(msg, cfg.ArchiveDir(), agentID, now); err != nil {
+			archivePath, err := loop.ArchiveMessage(msg, cfg.ArchiveDir(), agentID, now)
+			if err != nil {
 				return fmt.Errorf("archive message %s: %w", msg.Path, err)
+			}
+			// v0.1.1 ledger integration: if the archived message carries
+			// frontmatter `reply_required: true`, record a pending entry so
+			// `gate --before finish` blocks until the agent replies or defers.
+			// Errors here are loud: per codex's ledger integration note, an
+			// archived obligation without a ledger entry is a silent
+			// protocol leak.
+			if err := recordReplyObligation(cfg, agentID, msg, archivePath, content, now); err != nil {
+				return fmt.Errorf("record reply obligation for %s: %w", msg.Filename, err)
 			}
 		}
 		processed++
@@ -246,4 +256,43 @@ func runCooperativeWaking(cfg *loop.Config, agentID string, now time.Time) {
 
 func checkUsage(err error) error {
 	return fmt.Errorf("%w\nusage: agentchute check --as <agent-id> [--control-repo <path>] [--loop-dir <path>] [--no-archive] [--limit <n>]", err)
+}
+
+// recordReplyObligation parses the just-archived message's frontmatter
+// for `reply_required: true` and, when present, appends a pending entry
+// to the recipient's pending-reply ledger. No-op when the field is
+// absent or false. Errors propagate to the caller — per codex's ledger
+// integration note, an archived obligation without a ledger entry is a
+// silent protocol leak, so failures must be loud rather than swallowed.
+//
+// Uses loop.ParseMessageFrontmatter so the recorder honors the same
+// lenient delimiter semantics (whitespace-tolerant `---` lines per
+// §6.4.2) as loop.ValidateMessageFrontmatter — fixes the codex-flagged
+// gap where the validator accepted a message but the recorder dropped
+// it on a stricter parse (codex final review on 5320c08).
+func recordReplyObligation(cfg *loop.Config, agentID string, msg loop.Message, archivePath string, content []byte, now time.Time) error {
+	fm := loop.ParseMessageFrontmatter(content)
+	if !isFrontmatterReplyRequired(fm) {
+		return nil
+	}
+	messageID := strings.TrimSpace(fm["message_id"])
+	if messageID == "" {
+		// Per spec rev3 A.9 schema, message_id is the ledger's primary key.
+		// Frontmatter that sets reply_required: true without a message_id is
+		// malformed; refuse rather than fabricate.
+		return fmt.Errorf("reply_required: true set but message_id missing in frontmatter")
+	}
+	entry := loop.PendingReplyEntry{
+		MessageID:        messageID,
+		From:             msg.Sender,
+		To:               agentID,
+		Task:             strings.TrimSpace(fm["task"]),
+		OriginalFilename: msg.Filename,
+		ArchivePath:      archivePath,
+	}
+	return loop.RecordPendingReply(cfg, agentID, entry, now)
+}
+
+func isFrontmatterReplyRequired(fm map[string]string) bool {
+	return strings.ToLower(strings.TrimSpace(fm["reply_required"])) == "true"
 }

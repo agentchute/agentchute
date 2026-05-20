@@ -15,7 +15,7 @@ import (
 func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string) []byte {
 	var b strings.Builder
 	b.WriteString("---\n")
-	fmt.Fprintf(&b, "message_id: %s\n", formatMessageID(now))
+	fmt.Fprintf(&b, "message_id: %s\n", FormatMessageID(now))
 	fmt.Fprintf(&b, "from: %s\n", from)
 	fmt.Fprintf(&b, "to: %s\n", to)
 	if replyTo != "" {
@@ -33,10 +33,10 @@ func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string)
 	return []byte(b.String())
 }
 
-// formatMessageID returns the recommended frontmatter `message_id` format
+// FormatMessageID returns the recommended frontmatter `message_id` format
 // (RFC 3339 UTC with microsecond precision and `:` separators preserved).
 // Distinct from filename timestamps which use `-` for filesystem portability.
-func formatMessageID(t time.Time) string {
+func FormatMessageID(t time.Time) string {
 	t = t.UTC()
 	return fmt.Sprintf("%04d-%02d-%02dT%02d:%02d:%02d.%06dZ",
 		t.Year(), int(t.Month()), t.Day(),
@@ -118,6 +118,66 @@ func ValidateMessageFrontmatter(content []byte) error {
 	}
 	_, _, err := parseFrontmatter(text)
 	return err
+}
+
+// ExtractMessageBody returns the body portion of a message (everything
+// after the closing frontmatter `---` line). Honors the same lenient
+// delimiter semantics as ParseMessageFrontmatter (trimmed `---` opens
+// and closes the block — surrounding whitespace tolerated per §6.4.2).
+// Returns the full content unchanged when there's no frontmatter block
+// (body-only is valid per §6.4) or when the open delimiter has no
+// matching close.
+func ExtractMessageBody(content []byte) string {
+	text := strings.ReplaceAll(string(content), "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return text
+	}
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			// Body starts on the line after the closing delimiter; a
+			// blank line immediately following is conventional but not
+			// required, so don't trim it.
+			return strings.Join(lines[i+1:], "\n")
+		}
+	}
+	return text
+}
+
+// ParseMessageFrontmatter extracts the leading frontmatter block from a
+// message's bytes into a flat key/value map, honoring the same lenient
+// delimiter semantics as ValidateMessageFrontmatter (a trimmed `---` line
+// opens the block, a later trimmed `---` line closes it — surrounding
+// whitespace tolerated per §6.4.2). Body-only messages return an empty
+// map. Malformed blocks (opening `---` with no close) also return an empty
+// map; callers that need malformed-vs-absent distinction should call
+// ValidateMessageFrontmatter first.
+//
+// Mirrors the in-package parser used by `pending` / `check` so the
+// hot-path peek (pending.readFrontmatter) and the consume path
+// (check.recordReplyObligation) cannot disagree on what counts as a
+// well-formed frontmatter block.
+func ParseMessageFrontmatter(content []byte) map[string]string {
+	out := map[string]string{}
+	block, ok := firstFrontmatterBlock(content)
+	if !ok {
+		return out
+	}
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		colon := strings.IndexByte(line, ':')
+		if colon < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:colon])
+		val := strings.TrimSpace(line[colon+1:])
+		val = strings.Trim(val, `"'`)
+		out[key] = val
+	}
+	return out
 }
 
 // CorrectiveBody renders the §11.3 protocol-correction body for a quarantined

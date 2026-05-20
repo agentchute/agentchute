@@ -311,40 +311,43 @@ func isRegularDirEntry(entry os.DirEntry) (bool, error) {
 
 // ArchiveMessage moves a consumed message to archiveDir using the spec'd
 // archive filename: `<consumed-timestamp>_to-<recipient>_<original-inbox-filename>`.
+// Returns the absolute archive path so callers (e.g., the v0.1.1 ledger
+// integration in `check`) can record traceability without recomputing the
+// filename format.
 //
 // `consumedAt` is the time the recipient consumed the message; it is formatted
 // with second precision (suffixed `Z`) for archive sorting and human readability.
 //
 // The move is atomic via os.Rename when source and destination share a
 // filesystem (the normal case for in-repo state).
-func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.Time) error {
+func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.Time) (string, error) {
 	if err := ValidateAgentID(recipient); err != nil {
-		return fmt.Errorf("recipient: %w", err)
+		return "", fmt.Errorf("recipient: %w", err)
 	}
 	if msg.Path == "" || msg.Filename == "" {
-		return fmt.Errorf("ArchiveMessage: message Path and Filename required")
+		return "", fmt.Errorf("ArchiveMessage: message Path and Filename required")
 	}
 	if err := ensurePrivateDir(archiveDir); err != nil {
-		return err
+		return "", err
 	}
 	archivedName := fmt.Sprintf("%s_to-%s_%s", formatArchiveTimestamp(consumedAt), recipient, msg.Filename)
 	dest := filepath.Join(archiveDir, archivedName)
 	if err := linkNoClobber(msg.Path, dest); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("archive destination %s already exists", dest)
+			return "", fmt.Errorf("archive destination %s already exists", dest)
 		}
-		return fmt.Errorf("archive %s -> %s: %w", msg.Path, dest, err)
+		return "", fmt.Errorf("archive %s -> %s: %w", msg.Path, dest, err)
 	}
 	if err := os.Remove(msg.Path); err != nil {
-		return fmt.Errorf("remove archived source %s: %w", msg.Path, err)
+		return "", fmt.Errorf("remove archived source %s: %w", msg.Path, err)
 	}
 	if err := syncDir(filepath.Dir(msg.Path)); err != nil {
-		return err
+		return "", err
 	}
 	if err := syncDir(archiveDir); err != nil {
-		return err
+		return "", err
 	}
-	return nil
+	return dest, nil
 }
 
 func linkNoClobber(oldPath, newPath string) error {

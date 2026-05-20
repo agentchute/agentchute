@@ -1,0 +1,33 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "name": "agentchute-boot",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --as gemini-cli --vendor google --context-only"
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "agentchute-pending",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --as gemini-cli --json"
+          },
+          {
+            "name": "agentchute-gate",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} gate --as gemini-cli --before finish --json"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -105,6 +105,22 @@ func (c *Config) MalformedDir() string {
 	return filepath.Join(c.LoopDir, "malformed")
 }
 
+// AgentStateDir returns the per-agent local-state directory at
+// <loop>/state/<agent>. Used for recipient-owned state files such as the
+// pending-reply ledger (§6.4); kept out of inbox/archive/malformed because
+// it's not part of the wire protocol — peers never read another agent's
+// state dir.
+func (c *Config) AgentStateDir(agentID string) string {
+	return filepath.Join(c.LoopDir, "state", agentID)
+}
+
+// PendingRepliesPath returns the per-agent pending-replies ledger path
+// (§6.4 / spec rev3 A.9). Recipient-owned; updated by `check` (on archive
+// of a reply_required message), `send --reply-to`, and `defer`.
+func (c *Config) PendingRepliesPath(agentID string) string {
+	return filepath.Join(c.AgentStateDir(agentID), "pending-replies.json")
+}
+
 // WatchdogLogPath returns the watchdog log path.
 func (c *Config) WatchdogLogPath() string {
 	return filepath.Join(c.LoopDir, "watchdog.log")

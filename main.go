@@ -24,8 +24,12 @@ Commands:
   init           scaffold a project for agentchute (writes AGENTCHUTE.md, loop dirs, enrollment blocks)
   prepare-pool   prepare one or more folders as pool participants (writes pointer file + enrollment blocks)
   register       create or update a live registration for an agent
+  boot           session-start ritual: register + peek inbox + pending-reply summary (use in SessionStart hooks)
+  gate           lifecycle gate: block declaring done while inbox/replies are outstanding
+  defer          explicitly defer a pending-reply obligation (clears the gate; notifies sender)
   send           send a message from one agent to another
   check          consume and archive messages addressed to me
+  pending        peek unread messages (read-only; safe for lifecycle hooks)
   status         print registry overview, inbox depths, and last_seen freshness
   watchdog       run liveness daemon (§10.1); pokes peers with stale inboxes
 
@@ -34,6 +38,13 @@ See AGENTCHUTE.md for the full spec.
 `
 
 var version = "dev"
+
+// errBlocked is the canonical "lifecycle gate blocked" sentinel for v0.1.1.
+// Returned by `boot` (interactive mode, when unread mail or pending replies
+// exist) and `gate` (when --before <phase> finds an obligation). Mapped to
+// exit code 2 by main, matching codex Stop-hook and gemini emergency-brake
+// conventions. Distinct from errFailIfAny which is `pending`-specific.
+var errBlocked = fmt.Errorf("agentchute: lifecycle gate blocked")
 
 func main() {
 	if len(os.Args) < 2 {
@@ -51,10 +62,18 @@ func main() {
 		err = cmdPreparePool(args)
 	case "register":
 		err = cmdRegister(args)
+	case "boot":
+		err = cmdBoot(args)
+	case "gate":
+		err = cmdGate(args)
+	case "defer":
+		err = cmdDefer(args)
 	case "send":
 		err = cmdSend(args)
 	case "check":
 		err = cmdCheck(args)
+	case "pending":
+		err = cmdPending(args)
 	case "status":
 		err = cmdStatus(args)
 	case "watchdog":
@@ -79,6 +98,12 @@ func main() {
 			}
 			fmt.Println(msg)
 			return
+		}
+		// Exit code 2 for the lifecycle-gate sentinels (canonical "blocked"
+		// signal honored by codex Stop hooks and gemini blocking surfaces).
+		// Exit code 1 reserved for actual command failures.
+		if err == errFailIfAny || err == errBlocked {
+			os.Exit(2)
 		}
 		fmt.Fprintf(os.Stderr, "agentchute %s: %v\n", cmd, err)
 		os.Exit(1)
