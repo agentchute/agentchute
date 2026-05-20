@@ -14,8 +14,8 @@ func TestPrintStatusIncludesAgentsAndInboxDepth(t *testing.T) {
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	mustMkdir(t, cfg.AgentsDir())
 	mustMkdir(t, cfg.AgentInboxDir("codex"))
@@ -61,7 +61,7 @@ func TestPrintStatusIncludesAgentsAndInboxDepth(t *testing.T) {
 func TestCmdStatusWithoutAgentIDPrintsPoolWithoutSideEffects(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 	withCwd(t, root, func() {
 		t.Setenv("TMUX_PANE", "%1")
@@ -119,7 +119,7 @@ func TestCmdStatusWithoutAgentIDPrintsPoolWithoutSideEffects(t *testing.T) {
 func TestCmdStatusWithAgentIDRefreshesLastSeen(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 	withCwd(t, root, func() {
 		t.Setenv("TMUX_PANE", "%1")

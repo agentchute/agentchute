@@ -267,6 +267,58 @@ func TestInitNamespaceOverride(t *testing.T) {
 	}
 }
 
+func TestInitFailsBeforeCreatingSecondLoopNamespace(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".examplecorp", "loop"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := computeInitPlan(root, "agentchute", false)
+	if err == nil {
+		t.Fatal("expected conflicting loop namespace error, got nil")
+	}
+	for _, want := range []string{".examplecorp/loop", ".agentchute/loop", "multiple loop dirs"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestInitFailsClearlyWhenTwoLoopNamespacesAlreadyExist(t *testing.T) {
+	root := t.TempDir()
+	for _, namespace := range []string{".agentchute", ".examplecorp"} {
+		if err := os.MkdirAll(filepath.Join(root, namespace, "loop"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, err := computeInitPlan(root, "agentchute", false)
+	if err == nil {
+		t.Fatal("expected existing multiple loop namespace error, got nil")
+	}
+	for _, want := range []string{".agentchute/loop", ".examplecorp/loop", "AGENTCHUTE_LOOP_DIR", "--loop-dir"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestInitNamespaceOverrideCanManageExistingLoopNamespace(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".examplecorp", "loop"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := computeInitPlan(root, "examplecorp", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectAction(t, plan, ".examplecorp/loop/agents", "mkdir 0700")
+	expectAction(t, plan, ".examplecorp/loop/inbox", "mkdir 0700")
+	expectAction(t, plan, ".examplecorp/loop/archive", "mkdir 0700")
+	expectAction(t, plan, ".examplecorp/loop/malformed", "mkdir 0700")
+}
+
 // Symlinked namespace dir → hard fail at plan time. Otherwise os.MkdirAll
 // on a missing loop subdir would follow the symlink and create files outside
 // the project.

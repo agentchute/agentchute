@@ -14,7 +14,7 @@ import (
 func makeControlRepo(t *testing.T, root string) {
 	t.Helper()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# spec\n"))
-	mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 }
 
 func TestPreparePoolPlanFreshTarget(t *testing.T) {
@@ -24,8 +24,8 @@ func TestPreparePoolPlanFreshTarget(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{target}, false, false)
 	if err != nil {
@@ -69,8 +69,8 @@ func TestPreparePoolPlanEquivalentSpellingIsSkip(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{target}, false, false)
 	if err != nil {
@@ -93,8 +93,8 @@ func TestPreparePoolPlanEquivalentSpellingWithReplaceNormalizes(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{target}, true, false)
 	if err != nil {
@@ -120,8 +120,8 @@ func TestPreparePoolPlanExistingMatchingPointer(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{target}, false, false)
 	if err != nil {
@@ -146,8 +146,8 @@ func TestPreparePoolPlanExistingConflictingPointerWithoutReplaceErrors(t *testin
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	_, err := computePreparePoolPlan(cfg, []string{target}, false, false)
 	if err == nil {
@@ -167,8 +167,8 @@ func TestPreparePoolPlanExistingConflictingPointerWithReplaceAllowed(t *testing.
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{target}, true, false)
 	if err != nil {
@@ -189,8 +189,8 @@ func TestPreparePoolPlanTargetIsControlRepoErrors(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	_, err := computePreparePoolPlan(cfg, []string{root}, false, false)
 	if err == nil {
@@ -211,8 +211,8 @@ func TestPreparePoolPlanTargetIsAnotherControlRepoErrors(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	_, err := computePreparePoolPlan(cfg, []string{target}, false, false)
 	if err == nil {
@@ -231,8 +231,8 @@ func TestPreparePoolPlanMultiTarget(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{t1, t2}, false, false)
 	if err != nil {
@@ -252,8 +252,8 @@ func TestPreparePoolPlanWithUpdateGitignore(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{target}, false, true)
 	if err != nil {
@@ -272,8 +272,8 @@ func TestPreparePoolPlanNonGitTargetSurfacedAsNote(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{target}, false, false)
 	if err != nil {
@@ -301,8 +301,8 @@ func TestPreparePoolPlanRejectsMalformedExistingPointer(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	// Even with --replace-pointer, malformed existing should be a hard error
 	// — operator must fix it manually.
@@ -332,8 +332,8 @@ func TestPreparePoolPlanRejectsSymlinkTarget(t *testing.T) {
 	makeControlRepo(t, root)
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	_, err := computePreparePoolPlan(cfg, []string{symlinkPath}, false, false)
 	if err == nil {
@@ -354,8 +354,8 @@ func TestPreparePoolApplyEndToEnd(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 
 	plan, err := computePreparePoolPlan(cfg, []string{target}, false, false)
@@ -411,8 +411,8 @@ func TestPreparePoolApplyIdempotent(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan1, err := computePreparePoolPlan(cfg, []string{target}, false, false)
 	if err != nil {
@@ -462,8 +462,8 @@ func TestPreparePoolPreflightCatchesNonWritableTarget(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{t1, t2}, false, false)
 	if err != nil {
@@ -489,8 +489,8 @@ func TestPreparePoolAtomicWriteCleansTempFiles(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{target}, false, false)
 	if err != nil {
@@ -575,8 +575,8 @@ func TestPreparePoolPreflightCollectsAllFailures(t *testing.T) {
 
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{writable, ro1, ro2}, false, false)
 	if err != nil {
@@ -605,8 +605,8 @@ func TestPreparePoolDryRunOutputContainsExpectedSections(t *testing.T) {
 	target := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	plan, err := computePreparePoolPlan(cfg, []string{target}, false, false)
 	if err != nil {

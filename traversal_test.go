@@ -90,7 +90,7 @@ func TestCommandsRejectPathTraversalAgentIDs(t *testing.T) {
 	// register flow with valid slugs (none here) should appear under agents/
 	// or inbox/. Anything escaping the validator would land elsewhere.
 	for _, sub := range []string{"agents", "inbox"} {
-		dir := filepath.Join(root, ".rehumanlabs", "loop", sub)
+		dir := filepath.Join(root, ".examplecorp", "loop", sub)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -124,7 +124,7 @@ func setupTraversalRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 	return root
 }
 

@@ -49,7 +49,7 @@ func TestCheckRecordsPendingReplyOnArchiveOfReplyRequiredMessage(t *testing.T) {
 	if got.Task != "review" {
 		t.Errorf("Task = %q, want review", got.Task)
 	}
-	if !strings.Contains(got.ArchivePath, ".rehumanlabs/loop/archive") {
+	if !strings.Contains(got.ArchivePath, ".examplecorp/loop/archive") {
 		t.Errorf("ArchivePath %q should point into the archive dir", got.ArchivePath)
 	}
 }

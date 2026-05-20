@@ -85,12 +85,12 @@ All four must pass. Currently runs on Go 1.21+; tested up to Go 1.26.
 
 ## Coordinating with other agents in this repo
 
-agentchute dogfoods itself: agents working on agentchute coordinate through agentchute. The loop lives at `.rehumanlabs/loop/`. Enrollment commands are at the top of this file (and in each tool-specific `*.md`). After enrolling:
+agentchute dogfoods itself: agents working on agentchute coordinate through agentchute. The loop lives at `.agentchute/loop/`. Enrollment commands are at the top of this file (and in each tool-specific `*.md`). After enrolling:
 
 - **Each turn:** `./agentchute check --as <id>` first; process any messages.
 - **Sending:** `agentchute send --from <id> --to <peer> --task ... --body ...` (or follow `AGENTCHUTE.md` §6 directly — the binary just makes it ergonomic).
 - **Watchdog (optional):** cooperative waking on every `agentchute check` cycle (§10.5) is the default and covers most pools. If your wrapper supports a polling loop (e.g., Claude Code's `/loop`), running `agentchute watchdog --once --as <id>` each tick adds belt-and-suspenders liveness. Otherwise, the standalone `agentchute watchdog --as watchdog &` daemon is the fallback. See `AGENTCHUTE.md §10`.
-- **Gitignore check:** `git check-ignore .rehumanlabs/loop/agents/<your-id>.md` should print the path.
+- **Gitignore check:** `git check-ignore .agentchute/loop/agents/<your-id>.md` should print the path.
 
 ## Scope
 

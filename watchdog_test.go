@@ -15,7 +15,7 @@ func TestRunWatchdogCycleDefersFutureRestart(t *testing.T) {
 	root, cfg := setupWatchdogFixture(t)
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
 	future := now.Add(time.Hour)
-	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "rehumanlabs", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
+	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
 	writeRegistration(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "%1", now.Add(-10*time.Minute), loop.StatusActive, &future)
 	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
 
@@ -41,7 +41,7 @@ func TestRunWatchdogCycleDefersFutureRestart(t *testing.T) {
 func TestRunWatchdogCycleSkipsFreshAgent(t *testing.T) {
 	root, cfg := setupWatchdogFixture(t)
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
-	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "rehumanlabs", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
+	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
 	writeRegistration(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "%1", now.Add(-10*time.Second), loop.StatusActive, nil)
 	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
 
@@ -68,7 +68,7 @@ func TestRunWatchdogCycleUpdatesOwnLastSeen(t *testing.T) {
 	root, cfg := setupWatchdogFixture(t)
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
 	initialLastSeen := now.Add(-10 * time.Minute)
-	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "rehumanlabs", root, "", initialLastSeen, loop.StatusActive, nil)
+	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "", initialLastSeen, loop.StatusActive, nil)
 
 	err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
 		AgentID:             "watchdog",
@@ -92,7 +92,7 @@ func TestRunWatchdogCycleUpdatesOwnLastSeen(t *testing.T) {
 func TestRunWatchdogCycleIgnoresWatchdogLogWriteError(t *testing.T) {
 	root, cfg := setupWatchdogFixture(t)
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
-	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "rehumanlabs", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
+	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
 	writeRegistration(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "%1", now.Add(-10*time.Second), loop.StatusActive, nil)
 	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
 	mustMkdir(t, cfg.WatchdogLogPath())
@@ -114,7 +114,7 @@ func TestRunWatchdogCycleIgnoresWatchdogLogWriteError(t *testing.T) {
 func TestRunWatchdogCycleSkipsPeerWithUnreadableInbox(t *testing.T) {
 	root, cfg := setupWatchdogFixture(t)
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
-	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "rehumanlabs", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
+	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
 	writeRegistration(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "%1", now.Add(-10*time.Minute), loop.StatusActive, nil)
 	writeRegistration(t, cfg.AgentRegistrationPath("gemini-cli"), "gemini-cli", "google", root, "%2", now.Add(-10*time.Minute), loop.StatusActive, nil)
 	mustWrite(t, filepath.Join(cfg.AgentInboxDir("gemini-cli"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
@@ -151,8 +151,8 @@ func setupWatchdogFixture(t *testing.T) (string, *loop.Config) {
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	mustMkdir(t, cfg.AgentsDir())
 	mustMkdir(t, cfg.AgentInboxDir("codex"))
@@ -210,7 +210,7 @@ func TestRunLivenessSweepSkipsCrossHostPeers(t *testing.T) {
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
 
 	// Watchdog on M5.local; peer on remote-machine.local with stale inbox.
-	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "rehumanlabs", root, "M5.local", "", now.Add(-time.Minute), loop.StatusActive, nil)
+	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "M5.local", "", now.Add(-time.Minute), loop.StatusActive, nil)
 	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "remote-machine.local", "%1", now.Add(-10*time.Minute), loop.StatusActive, nil)
 	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
 
@@ -238,7 +238,7 @@ func TestRunLivenessSweepDoesNotSkipSameHostPeers(t *testing.T) {
 	root, cfg := setupWatchdogFixture(t)
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
 
-	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "rehumanlabs", root, "M5.local", "", now.Add(-time.Minute), loop.StatusActive, nil)
+	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "M5.local", "", now.Add(-time.Minute), loop.StatusActive, nil)
 	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "M5.local", "%1", now.Add(-10*time.Minute), loop.StatusActive, nil)
 	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
 
@@ -270,7 +270,7 @@ func TestRunLivenessSweepTreatsEmptyPeerHostAsSameHost(t *testing.T) {
 	root, cfg := setupWatchdogFixture(t)
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
 
-	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "rehumanlabs", root, "M5.local", "", now.Add(-time.Minute), loop.StatusActive, nil)
+	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "M5.local", "", now.Add(-time.Minute), loop.StatusActive, nil)
 	// Peer with NO host field (empty).
 	writeRegistration(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "%1", now.Add(-10*time.Minute), loop.StatusActive, nil)
 	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))

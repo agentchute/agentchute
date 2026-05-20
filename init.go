@@ -218,6 +218,10 @@ func computeInitPlan(root, namespace string, inGit bool) (initPlan, error) {
 		EnrollmentBlocks: make(map[string]string),
 	}
 
+	if err := guardInitLoopNamespace(root, namespace); err != nil {
+		return plan, err
+	}
+
 	// 1. AGENTCHUTE.md
 	specAction, err := planSpecFile(root)
 	if err != nil {
@@ -273,6 +277,68 @@ func computeInitPlan(root, namespace string, inGit bool) (initPlan, error) {
 	}
 
 	return plan, nil
+}
+
+func guardInitLoopNamespace(root, namespace string) error {
+	existing, err := findInitLoopDirs(root)
+	if err != nil {
+		return err
+	}
+	target := filepath.ToSlash(filepath.Join("."+namespace, "loop"))
+	targetExists := false
+	var conflicts []string
+	for _, rel := range existing {
+		if rel == target {
+			targetExists = true
+			continue
+		}
+		conflicts = append(conflicts, rel)
+	}
+	if len(conflicts) == 0 {
+		return nil
+	}
+
+	if targetExists {
+		all := append([]string{target}, conflicts...)
+		sort.Strings(all)
+		return fmt.Errorf("multiple agentchute loop namespaces found under %q: %s; refusing to initialize %s while discovery is ambiguous. Consolidate to one loop namespace, or set AGENTCHUTE_LOOP_DIR/pass --loop-dir for commands until then", root, strings.Join(all, ", "), target)
+	}
+	if len(conflicts) == 1 {
+		existingNamespace := strings.TrimPrefix(strings.TrimSuffix(conflicts[0], "/loop"), ".")
+		return fmt.Errorf("existing agentchute loop namespace %s found under %q; refusing to initialize %s because multiple loop dirs make discovery ambiguous. Run `agentchute init --namespace %s` to manage the existing pool, or migrate/remove %s before initializing %s", conflicts[0], root, target, existingNamespace, conflicts[0], target)
+	}
+	return fmt.Errorf("existing agentchute loop namespaces found under %q: %s; refusing to initialize %s because multiple loop dirs make discovery ambiguous. Consolidate to one loop namespace or pass --namespace for the namespace you are keeping", root, strings.Join(conflicts, ", "), target)
+}
+
+func findInitLoopDirs(root string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+
+	var loopDirs []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".") || name == "." || name == ".." {
+			continue
+		}
+		loopDir := filepath.Join(root, name, "loop")
+		info, err := os.Stat(loopDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("%s: %w", loopDir, err)
+		}
+		if info.IsDir() {
+			loopDirs = append(loopDirs, filepath.ToSlash(filepath.Join(name, "loop")))
+		}
+	}
+	sort.Strings(loopDirs)
+	return loopDirs, nil
 }
 
 // rejectSymlinkAncestor verifies that path, if it exists, is a real directory

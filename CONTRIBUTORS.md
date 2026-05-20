@@ -24,7 +24,7 @@ regardless — `git log --pretty=full` shows the per-commit attribution.
 
 Claude Code, codex, and Gemini CLI coordinate the agentchute releases
 through agentchute. The three-team round-1 / cross-review / synthesis
-pattern is documented in the `.rehumanlabs/loop/scratch-*` directories
+pattern is documented in the `.agentchute/loop/scratch-*` directories
 on the working branches (kept out of `main` so the release commits stay
 small, but visible on `v0.2`, `v0.2.1`, etc.).
 

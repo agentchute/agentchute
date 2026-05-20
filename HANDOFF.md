@@ -52,6 +52,6 @@ Even if Alex approved a similar action earlier in the conversation, the current 
 
 ## Coordination
 
-agentchute dogfoods itself: in-repo agents coordinate through the loop at `.rehumanlabs/loop/`. Enrollment instructions and routing patterns are in `AGENTS.md` § "Coordinating with other agents in this repo".
+agentchute dogfoods itself: in-repo agents coordinate through the loop at `.agentchute/loop/`. Enrollment instructions and routing patterns are in `AGENTS.md` § "Coordinating with other agents in this repo".
 
 When in doubt about a non-trivial decision, surface it via the loop to one of the other in-repo agents (codex for review-shaped tasks, gemini for prior-art / cross-language sanity) before acting. Three-way agreement is the discipline that's kept this project from drifting.

@@ -1,4 +1,4 @@
-# `.rehumanlabs/loop/` — repo-local agent coordination
+# `.agentchute/loop/` — repo-local agent coordination
 
 Live coordination state for agents working on the agentchute codebase. Follows the agentchute convention itself (the protocol spec at [`AGENTCHUTE.md`](../../AGENTCHUTE.md) is at this repo's root).
 

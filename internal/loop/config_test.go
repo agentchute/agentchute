@@ -9,7 +9,7 @@ import (
 func TestDiscoverFindsSingleLoopDirFromCwd(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# spec\n"))
-	mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 	mustMkdir(t, filepath.Join(root, "sub", "dir"))
 
 	cfg, err := Discover(DiscoverOpts{Cwd: filepath.Join(root, "sub", "dir")})
@@ -19,12 +19,12 @@ func TestDiscoverFindsSingleLoopDirFromCwd(t *testing.T) {
 	if cfg.ControlRepo != root {
 		t.Fatalf("ControlRepo = %q, want %q", cfg.ControlRepo, root)
 	}
-	wantLoop := filepath.Join(root, ".rehumanlabs", "loop")
+	wantLoop := filepath.Join(root, ".examplecorp", "loop")
 	if cfg.LoopDir != wantLoop {
 		t.Fatalf("LoopDir = %q, want %q", cfg.LoopDir, wantLoop)
 	}
-	if cfg.Vendor != "rehumanlabs" {
-		t.Fatalf("Vendor = %q, want rehumanlabs", cfg.Vendor)
+	if cfg.Vendor != "examplecorp" {
+		t.Fatalf("Vendor = %q, want examplecorp", cfg.Vendor)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestDiscoverFallsBackToEnvControlRepo(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# spec\n"))
-	mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 	cfg, err := Discover(DiscoverOpts{Cwd: outside, EnvControlRepo: root})
 	if err != nil {
@@ -90,7 +90,7 @@ func TestDiscoverFallsBackToEnvWhenCwdRepoHasNoLoopDir(t *testing.T) {
 	control := t.TempDir()
 	cwdRepo := t.TempDir()
 	mustWrite(t, filepath.Join(control, "AGENTCHUTE.md"), []byte("# spec\n"))
-	mustMkdir(t, filepath.Join(control, ".rehumanlabs", "loop"))
+	mustMkdir(t, filepath.Join(control, ".examplecorp", "loop"))
 	mustWrite(t, filepath.Join(cwdRepo, "AGENTCHUTE.md"), []byte("# other spec\n"))
 
 	cfg, err := Discover(DiscoverOpts{Cwd: cwdRepo, EnvControlRepo: control})

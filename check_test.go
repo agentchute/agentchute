@@ -18,7 +18,7 @@ func TestCmdCheckRunsCooperativeWaking(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 		// Register self (no TMUX_PANE = non-pokable, but the cooperation
 		// cycle for the self-agent skips self anyway).
@@ -30,8 +30,8 @@ func TestCmdCheckRunsCooperativeWaking(t *testing.T) {
 		// triggers the cooperative poke. Empty host = treated as same-host.
 		cfg := &loop.Config{
 			ControlRepo: root,
-			LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-			Vendor:      "rehumanlabs",
+			LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+			Vendor:      "examplecorp",
 		}
 		stalePeerPath := cfg.AgentRegistrationPath("stale-peer")
 		mustWrite(t, stalePeerPath, []byte(`---
@@ -81,15 +81,15 @@ func TestCmdCheckNoArchiveSuppressesCooperation(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 		if err := cmdRegister([]string{"--as", "checker", "--vendor", "test", "--wake-target", ""}); err != nil {
 			t.Fatal(err)
 		}
 
 		cfg := &loop.Config{
 			ControlRepo: root,
-			LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-			Vendor:      "rehumanlabs",
+			LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+			Vendor:      "examplecorp",
 		}
 		stalePeerPath := cfg.AgentRegistrationPath("stale-peer")
 		mustWrite(t, stalePeerPath, []byte(`---

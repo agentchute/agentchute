@@ -260,8 +260,8 @@ func setupAnnounceFixture(t *testing.T) *Config {
 	root := t.TempDir()
 	cfg := &Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	if err := ensurePrivateDir(cfg.AgentsDir()); err != nil {
 		t.Fatal(err)

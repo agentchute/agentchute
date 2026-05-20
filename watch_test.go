@@ -17,8 +17,8 @@ func newWatchTestCfg(t *testing.T) *loop.Config {
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".rehumanlabs", "loop"),
-		Vendor:      "rehumanlabs",
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
 	}
 	if err := loop.EnsurePrivateDir(cfg.AgentInboxDir("claude-code")); err != nil {
 		t.Fatal(err)
@@ -250,7 +250,7 @@ func TestCmdWatchRequiresAnAction(t *testing.T) {
 	if err := osWriteFile(filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec")); err != nil {
 		t.Fatal(err)
 	}
-	if err := loop.EnsurePrivateDir(filepath.Join(root, ".rehumanlabs", "loop")); err != nil {
+	if err := loop.EnsurePrivateDir(filepath.Join(root, ".examplecorp", "loop")); err != nil {
 		t.Fatal(err)
 	}
 	withCwd(t, root, func() {

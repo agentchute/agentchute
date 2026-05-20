@@ -24,7 +24,7 @@ func TestRegisterAutoDetectsTmuxPane(t *testing.T) {
 
 	// Setup a dummy repo
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 	// Set TMUX_PANE
 	t.Setenv("TMUX_PANE", "%99")
@@ -36,7 +36,7 @@ func TestRegisterAutoDetectsTmuxPane(t *testing.T) {
 	}
 
 	// Check registration file
-	regPath := filepath.Join(root, ".rehumanlabs", "loop", "agents", "test-agent.md")
+	regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
 	reg, err := loop.ReadRegistration(regPath)
 	if err != nil {
 		t.Fatalf("failed to read registration: %v", err)
@@ -53,7 +53,7 @@ func TestRegisterReRunPreservesExistingWakeTarget(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 		t.Setenv("TMUX_PANE", "%42")
 		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test-vendor"}); err != nil {
@@ -66,7 +66,7 @@ func TestRegisterReRunPreservesExistingWakeTarget(t *testing.T) {
 			t.Fatalf("re-register: %v", err)
 		}
 
-		regPath := filepath.Join(root, ".rehumanlabs", "loop", "agents", "test-agent.md")
+		regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
 		reg, err := loop.ReadRegistration(regPath)
 		if err != nil {
 			t.Fatal(err)
@@ -82,7 +82,7 @@ func TestRegisterReRunExplicitEmptyClearsWakeTarget(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 		t.Setenv("TMUX_PANE", "%42")
 		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test-vendor"}); err != nil {
@@ -93,7 +93,7 @@ func TestRegisterReRunExplicitEmptyClearsWakeTarget(t *testing.T) {
 			t.Fatalf("re-register with empty target: %v", err)
 		}
 
-		regPath := filepath.Join(root, ".rehumanlabs", "loop", "agents", "test-agent.md")
+		regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
 		reg, err := loop.ReadRegistration(regPath)
 		if err != nil {
 			t.Fatal(err)
@@ -113,13 +113,13 @@ func TestRegisterClearsStaleStatusAndRestartAt(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test", "--wake-method", "tmux", "--wake-target", "%0"}); err != nil {
 			t.Fatal(err)
 		}
 
-		regPath := filepath.Join(root, ".rehumanlabs", "loop", "agents", "test-agent.md")
+		regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
 		reg, err := loop.ReadRegistration(regPath)
 		if err != nil {
 			t.Fatal(err)
@@ -155,13 +155,13 @@ func TestRegisterBioFlagSetsAndOverwritesBody(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 		if err := cmdRegister([]string{"--as", "test", "--vendor", "test", "--wake-target", "", "--bio", "first bio"}); err != nil {
 			t.Fatal(err)
 		}
 
-		regPath := filepath.Join(root, ".rehumanlabs", "loop", "agents", "test.md")
+		regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test.md")
 		reg, err := loop.ReadRegistration(regPath)
 		if err != nil {
 			t.Fatal(err)
@@ -212,7 +212,7 @@ func TestRegisterExplicitEmptyTmuxPaneOverridesEnv(t *testing.T) {
 	}()
 
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 	t.Setenv("TMUX_PANE", "%99")
 
@@ -221,7 +221,7 @@ func TestRegisterExplicitEmptyTmuxPaneOverridesEnv(t *testing.T) {
 		t.Fatalf("cmdRegister failed: %v", err)
 	}
 
-	regPath := filepath.Join(root, ".rehumanlabs", "loop", "agents", "test-agent.md")
+	regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
 	reg, err := loop.ReadRegistration(regPath)
 	if err != nil {
 		t.Fatalf("failed to read registration: %v", err)
@@ -238,7 +238,7 @@ func TestRegisterExplicitNonTmuxMethodIgnoresTmuxPane(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 		t.Setenv("TMUX_PANE", "%99")
 		// User explicitly chose wezterm but didn't pass --wake-target.
@@ -260,14 +260,14 @@ func TestRegisterExplicitEmptyMethodIgnoresTmuxPane(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".rehumanlabs", "loop"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
 		t.Setenv("TMUX_PANE", "%99")
 		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test", "--wake-method", ""}); err != nil {
 			t.Fatalf("expected non-pokable registration to succeed, got %v", err)
 		}
 
-		regPath := filepath.Join(root, ".rehumanlabs", "loop", "agents", "test-agent.md")
+		regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
 		reg, err := loop.ReadRegistration(regPath)
 		if err != nil {
 			t.Fatal(err)

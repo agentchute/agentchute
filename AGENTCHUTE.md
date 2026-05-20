@@ -91,7 +91,7 @@ This section describes how the protocol primitives from §1 map onto a shared fi
 ```
 <repo-root>/
   AGENTCHUTE.md                    # this spec (tracked)
-  .<vendor>/                      # e.g., .rehumanlabs/
+  .<vendor>/                      # e.g., .agentchute/ or .examplecorp/
     loop/
       README.md                   # implementation notes (tracked)
       agents/
@@ -107,7 +107,7 @@ This section describes how the protocol primitives from §1 map onto a shared fi
       watchdog.log                # watchdog daemon log (gitignored, optional)
 ```
 
-The `<vendor>` prefix anchors the namespace to a specific organization or domain. This avoids collision with other agentchute implementations that may exist alongside in the same repo. Examples: `.rehumanlabs/`, `.examplecorp/`. The vendor SHOULD own the namespace (e.g., domain registration) to claim it.
+The `<vendor>` prefix anchors the namespace to a specific organization or domain. This avoids collision with other agentchute implementations that may exist alongside in the same repo. Examples: `.agentchute/` (the reference implementation), `.examplecorp/`. The vendor SHOULD own the namespace (e.g., domain registration) to claim it.
 
 The reference agentchute CLI initializes new projects under `.agentchute/loop/` by default. Other implementations MAY use a vendor-owned dotdir namespace such as `.examplecorp/loop/`. Discovery accepts any single dotdir containing `loop/`; if multiple loop namespaces exist in one repo, callers MUST disambiguate via `AGENTCHUTE_LOOP_DIR` or `--loop-dir`.
 
@@ -143,7 +143,7 @@ Discovery resolves two distinct things — the **control repo** (the directory c
 1. **`--control-repo <path>` flag.** Validation: path must exist, be a directory, and contain `AGENTCHUTE.md`.
 2. **`AGENTCHUTE_CONTROL_REPO` env var.** Same validation as the flag.
 3. **`.agentchute-control-repo` pointer file.** Walk from cwd up to the filesystem root looking for the file. The nearest pointer wins; any others found in the ancestor chain are recorded as *shadowed* (informational, surfaced in `status`). The pointer file contains one non-comment path line (blank lines and `#`-prefixed comments are allowed). Relative paths resolve from the pointer file's directory; absolute paths are accepted but discouraged in tracked files because they break across machines and clones. The resolved target must contain `AGENTCHUTE.md`. Sibling-repo pointers like `../coordination` are the primary use case — the resolved path is allowed to escape the pointer file's containing repo. A malformed pointer file or pointer to an invalid target is a HARD error; discovery does NOT silently fall through to the next step.
-4. **Cwd walk.** Walk from cwd up to the filesystem root looking for the first directory that contains both `AGENTCHUTE.md` AND at least one vendor-namespaced loop directory (e.g., `.rehumanlabs/loop/`). Use it as the control repo.
+4. **Cwd walk.** Walk from cwd up to the filesystem root looking for the first directory that contains both `AGENTCHUTE.md` AND at least one vendor-namespaced loop directory (e.g., `.agentchute/loop/`). Use it as the control repo.
 
 If all four steps fail, control-repo discovery fails with a clear error pointing operators at the four entry points.
 
@@ -903,7 +903,7 @@ Each conforming implementation namespaces its protocol state under a vendor-owne
 In the v0.1 filesystem reference, the namespace is a dotdir at the repo root:
 
 ```
-.rehumanlabs/loop/     # reHuman Labs's implementation
+.agentchute/loop/      # the reference implementation
 .examplecorp/loop/     # ExampleCorp's implementation
 .myorg/loop/           # any vendor's implementation
 ```
