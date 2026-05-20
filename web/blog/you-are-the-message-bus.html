@@ -100,8 +100,8 @@
       retries, and dashboards. Those systems are useful for some problems, but this
       problem was smaller and more physical. We had several CLI agents running side by
       side in tmux. They shared a repo. They needed a way to send a message to a named
-      peer, wake that peer if possible, and let the recipient decide what to do with
-      the message.
+      peer, let the recipient discover it, and wake that peer faster when the local
+      environment made that possible.
     </p>
 
     <blockquote class="blog-quote">
@@ -127,10 +127,10 @@
     <p>
       A sender does not call a central service. It does not ask a broker to route work.
       It writes a message to the recipient's inbox using no-overwrite delivery. If the
-      recipient declared a wake method, the sender can also poke it. In the v0.1
-      reference CLI, that wake method is <code>tmux send-keys</code>, because our agents
-      were running in tmux panes. Without a reachable wake method, delivery still works.
-      The recipient picks up the message on its next polling cadence.
+      recipient declared a wake method, the sender can also poke it. In the first
+      reference CLI, that wake method was <code>tmux send-keys</code>, because our agents
+      were running in tmux panes. Without a reachable wake method, delivery still works:
+      the recipient owns discovery and picks up the message on its next polling cadence.
     </p>
 
     <p>The protocol has six practical primitives.</p>
@@ -158,7 +158,8 @@
     <p>
       <strong>Fourth, optional wake.</strong> Delivery and wake are separate. The message
       landing in the inbox is the protocol event. A wake poke is a best-effort
-      convenience that reduces latency when the local environment supports it.
+      convenience that reduces latency when the local environment supports it, not a
+      requirement for correctness.
     </p>
 
     <p>
@@ -183,10 +184,10 @@
          │ 1. message lands in inbox/bob/ (bob: 1)    │
          └────────────────────────────────────────────┘
          │
-         │ 2. wake poke (tmux adapter)
+         │ 2. optional wake poke (tmux adapter)
          └─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─▶
                                                       │
-                                                      │ 3. check
+                                                      │ 3. poll/check
                                                       │    read + archive
                                                       ▼
 ┌──────────────────┐                        ┌──────────────────┐
@@ -200,12 +201,19 @@
     </blockquote>
 
     <p>
-      The v0.1 CLI chooses one concrete substrate: Markdown files on a shared
+      The first reference CLI chose one concrete substrate: Markdown files on a shared
       filesystem, atomic temp-file plus rename delivery, and tmux for peer wake. Those
       choices are intentionally boring. They are also not the protocol boundary. The
       same primitives can map to a queue, object store, HTTP endpoint, git-backed
       transport, or another shared medium as long as the implementation preserves the
-      inbox contract.
+      inbox contract and recipient-owned discovery.
+    </p>
+
+    <p>
+      The current spec makes that boundary explicit in §8.2: wake adapters are
+      convenience optimizations, while recipient-side polling is the discovery rule.
+      The v0.2 release post covers the concrete <code>self-poll</code> and generated
+      scheduler path for no-tmux recipients.
     </p>
 
     <p>
@@ -350,7 +358,7 @@
 
     <p>
       It is not a substitute for agent judgment. A message can ask for review, but it
-      cannot make the review good. A wake poke can get another pane's attention, but it
+      cannot make the review good. A wake poke can lower latency, but it
       cannot make the model understand the code. The protocol removes relay work. It
       does not remove the need to supervise the work.
     </p>
@@ -381,9 +389,10 @@
 
     <p>
       Files are easy to inspect. Markdown is easy for agents and humans to read. Atomic
-      rename is a well-understood delivery primitive on a shared filesystem. tmux is
-      already where many CLI agents live. None of those choices are glamorous, which is
-      part of why they work.
+      rename is a well-understood delivery primitive on a shared filesystem. tmux was
+      already where many CLI agents lived, and recipient-side polling covers the cases
+      where no pane is reachable. None of those choices are glamorous, which is part of
+      why they work.
     </p>
 
     <p>
