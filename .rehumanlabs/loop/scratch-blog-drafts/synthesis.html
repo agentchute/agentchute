@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v0.1.1: the agents shipped it themselves — agentchute</title>
+<meta name="description" content="agentchute v0.1.1 is out. Three AI agents shipped it using v0.1.0 — the build team coordinated through the protocol they were extending.">
+<meta property="og:title" content="v0.1.1: the agents shipped it themselves">
+<meta property="og:description" content="agentchute v0.1.1 is out. Three AI agents shipped it using v0.1.0 — the build team coordinated through the protocol they were extending.">
+<meta property="og:url" content="https://agentchute.dev/blog/v0-1-1-the-agents-shipped-it-themselves.html">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://agentchute.dev/images/blog/after.jpg">
+<meta property="og:image:alt" content="Three AI agents — Claude, codex, Gemini — at terminals, arrows between them, no human courier in the middle.">
+<meta property="og:image:width" content="1248">
+<meta property="og:image:height" content="832">
+<meta property="article:published_time" content="2026-05-20">
+<meta property="article:author" content="agentchute team">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="v0.1.1: the agents shipped it themselves">
+<meta name="twitter:description" content="agentchute v0.1.1 is out. Three AI agents shipped it using v0.1.0 — the build team coordinated through the protocol they were extending.">
+<meta name="twitter:image" content="https://agentchute.dev/images/blog/after.jpg">
+<link rel="canonical" href="https://agentchute.dev/blog/v0-1-1-the-agents-shipped-it-themselves.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">May 20, 2026 · agentchute team</p>
+    <h1>v0.1.1: the agents shipped it themselves</h1>
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      Three AI agents — Claude Code, codex CLI, Gemini CLI — shipped agentchute v0.1.1
+      using agentchute v0.1.0. The human stayed out of the message path.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+
+    <p>
+      <a href="you-are-the-message-bus.html">Last week's post</a> said the developer
+      is the message bus between their agents. v0.1.1 is the answer. It also happens
+      to be the first agentchute release in which the developer wasn't the message
+      bus during the build.
+    </p>
+
+    <p>
+      The build team was three agents in three tmux panes. Claude Code wrote the Go.
+      codex stood by as the rolling reviewer and surfaced several release-blocking
+      edge cases. Gemini owned the docs — the README rewrite, the §6.4.3 protocol
+      additions, the wrapper enrollment blocks. They coordinated through agentchute
+      inboxes. Alex sat in a fourth pane and steered when a decision was actually
+      his to make — merge approval, the question of what to do about self-send
+      loops, "ok, go". He didn't carry a single message between agents.
+    </p>
+
+    <figure class="blog-image">
+      <img src="../images/blog/after.jpg" alt="Three AI agents — Claude Code, codex, Gemini — at separate terminals, with rust-orange arrows flowing directly between them. The human's chair is empty." loading="lazy" width="1248" height="832">
+      <figcaption>
+        The human still steers. The agents carry their own messages.
+      </figcaption>
+    </figure>
+
+    <p>
+      That is what v0.1.1 was designed to enable, and the proof is that v0.1.1 got
+      built that way.
+    </p>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>What's actually in the release</h2>
+
+    <p>
+      Three commands and one piece of durable state.
+    </p>
+
+    <p>
+      <strong><code>agentchute boot</code></strong> is the session-start ritual.
+      Every wrapper now has a SessionStart hook that runs <code>boot</code>
+      automatically: it registers the agent, peeks the inbox, and reports any
+      pending reply obligations as developer context. The agent walks into the
+      conversation already knowing whether work is waiting.
+    </p>
+
+    <p>
+      <strong><code>agentchute gate</code></strong> is the lifecycle gate. The
+      Stop hook (or Gemini's <code>BeforeAgent</code>) runs
+      <code>gate --before finish</code>. If the agent has unread mail, malformed
+      inbox files, or unresolved reply obligations, the gate refuses to let it
+      stop. The agent gets one more turn, and developer context tells it exactly
+      what's outstanding.
+    </p>
+
+    <p>
+      <strong><code>agentchute defer</code></strong> is the escape valve. When
+      an obligation can't be discharged in the current turn — the work is real,
+      the answer needs research, the recipient is offline — the agent calls
+      <code>defer --message &lt;id&gt; --reason "..."</code>. The ledger entry
+      transitions to <em>deferred</em>, the gate stops blocking on it, and the
+      original sender gets an automatic acknowledgment. Without defer, the gate
+      is a trap. With it, the gate is just a guardrail.
+    </p>
+
+    <p>
+      The durable state is the <strong>pending-reply ledger</strong>. Every
+      recipient keeps a small JSON file at
+      <code>state/&lt;agent&gt;/pending-replies.json</code>. When <code>check</code>
+      archives a message marked <code>reply_required: true</code>, a pending
+      entry lands. When the recipient calls <code>send --reply-to &lt;msg-id&gt;</code>,
+      the entry transitions to <em>replied</em>. When the recipient calls
+      <code>defer</code>, it transitions to <em>deferred</em>. The gate reads the
+      ledger. The ledger is what makes obligations durable across turns — without
+      it, a question gets read, the agent stops, and the obligation is lost
+      forever.
+    </p>
+
+    <blockquote class="blog-quote">
+      A mailbox solves delivery. A ledger solves obligation.
+    </blockquote>
+
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>The release loop</h2>
+
+    <p>
+      We didn't build v0.1.1 in a single session. We used the pool. Claude Code
+      took the implementation queue. codex stood by as rolling reviewer. Gemini
+      watched the wrapper and docs edges. Every review request was a direct
+      inbox message.
+    </p>
+
+    <pre class="ascii"><code>┌────────────────┐      ┌────────────────┐      ┌────────────────┐
+│ CLAUDE-CODE    │      │ CODEX          │      │ GEMINI-CLI     │
+└───────┬────────┘      └───────▲────────┘      └───────▲────────┘
+        │ 1. land commit, request review        │
+        ├──────────────────────▶│               │
+        ├──────────────────────────────────────▶│
+        │                       │ 2. findings   │ 2. findings
+        │◀──────────────────────┤               │
+        │◀──────────────────────────────────────┤
+        │ 3. patch + reply-to + sign-off ask    │
+        ├──────────────────────▶│               │
+        └──────────────────────────────────────▶│</code></pre>
+
+    <p>
+      That loop found real bugs.
+    </p>
+
+    <p>
+      Early ledger code treated duplicate <code>message_id</code> values too
+      casually. A second delivery with the same id but a different filename
+      could have disappeared into an idempotent no-op. The review turned that
+      into a typed collision error, <code>ErrLedgerEntryCollision</code>. The
+      protocol says <code>message_id</code> is for threading, not delivery
+      uniqueness. The implementation had to honor that distinction.
+    </p>
+
+    <p>
+      Another review caught the wrong-recipient reply case. If an agent owed
+      codex a reply but sent <code>--reply-to</code> that message while
+      addressing Gemini, the ledger must not clear the codex obligation. The
+      fix checks both sides of the ledger row: the reply goes to the original
+      sender, and the row belongs to the replying agent.
+    </p>
+
+    <p>
+      The most important bug was simpler. <code>send --ask</code> wrote the
+      right wire field, but <code>check</code> initially archived the message
+      without recording it in the ledger. The mail was gone. The obligation
+      was gone with it. That would have made the new gate look clean while
+      the protocol still owed a reply. The review reproduced it end-to-end and
+      forced the missing integration: archive a <code>reply_required</code>
+      message, then record the pending-reply row immediately.
+    </p>
+
+    <p>
+      None of those were caught by the test suite first. They were caught by a
+      peer agent reading the diff. The same as in human teams.
+    </p>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>The hooks proved it under pressure</h2>
+
+    <p>
+      After the code path was green, Alex ran a real bake in a fresh folder
+      with the actual Claude wrapper. This was the kind of test unit tests don't
+      replace: install the hook template, start the wrapper, ask it what it
+      sees, and watch whether the context actually lands in the model.
+    </p>
+
+    <p>
+      The SessionStart hook worked. Claude quoted the injected "Inbox clear;
+      no pending reply obligations" text back from its developer context. The
+      Stop hook worked too. <code>gate --before finish</code> blocked the turn
+      when mail remained, and Claude walked the hand-protocol §5 path (because
+      <code>agentchute</code> wasn't on its tool sandbox PATH) to compose the
+      reply, archive the original, and tick its <code>last_seen</code>, then
+      ended cleanly.
+    </p>
+
+    <p>
+      The bake also caught a wrapper-specific mismatch. Claude Code's
+      UserPromptSubmit hook didn't inject raw JSON stdout. It injected plain
+      text. The template had been technically plausible and practically wrong.
+      The fix wasn't glamorous: drop <code>--json</code> for Claude's
+      UserPromptSubmit hook, keep codex's JSON-shaped hook mode, and document
+      the drift for the next spec revision.
+    </p>
+
+    <p>
+      A second real-bake observation became a loop-prevention convention. A
+      self-send with <code>--ask</code> is allowed — it can be a useful local
+      scratch obligation. But replies must not blindly propagate
+      <code>reply_required</code>, or an automated agent can create an infinite
+      ask-reply chain with itself. v0.1.1 now warns on self-send asks, and the
+      spec says replies should default to <code>reply_required: false</code>
+      unless the sender explicitly asks for more.
+    </p>
+
+    <blockquote class="blog-quote">
+      The protocol didn't only carry the release. It corrected the release.
+    </blockquote>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>The README was a three-agent consensus round</h2>
+
+    <p>
+      The last visible change before tagging wasn't a Go file. It was the
+      README. The old one was 396 lines, dense, with the pitch buried four
+      paragraphs in. Alex's instruction: "have your team, codex team and gemini
+      team work on new readme that is shorter, better in any way and is updated
+      with new features, it has to be super easy to read."
+    </p>
+
+    <p>
+      Three agents drafted independently in round 1. Round 2: each agent
+      reviewed the other two and proposed a synthesis. Round 3: claude-code
+      committed the synthesis, codex flagged two specific wording corrections,
+      gemini signed off, codex signed off after the corrections landed. 178
+      lines. The whole loop ran through agentchute inboxes in something like
+      twelve minutes.
+    </p>
+
+    <p>
+      The interesting thing wasn't the speed. It was that the agents disagreed
+      substantively. Gemini's draft was the shortest and codex called it out
+      as too short — the v0.1.1 features didn't have enough space. Codex's
+      draft was the longest and gemini called it out as too detailed — the
+      protocol-guarantees section belonged in <code>AGENTCHUTE.md</code>, not
+      the README. Convergence wasn't an averaging operation; it was a real
+      conversation about what the document was for.
+    </p>
+
+  </div>
+</section>
+
+<section class="why">
+  <div class="wrap">
+    <h2>Why this matters</h2>
+
+    <p>
+      Multi-agent work doesn't always need autonomy. Often it needs manners.
+      Ask the right peer. Wait for the reply. Don't forget an open request.
+      Don't leave while someone is talking to you. Tell the sender if you're
+      deferring. Make malformed messages visible instead of silently ignoring
+      them.
+    </p>
+
+    <p>
+      Those rules sound social because they are. agentchute turns a few of
+      them into files and exit codes.
+    </p>
+
+    <p>
+      v0.1.1 added durable obligation tracking, lifecycle gates across three
+      wrappers, and a self-correcting protocol convention against infinite
+      loops. The bigger thing it proved is that the agents can build the
+      protocol they coordinate through, in real time, with one human keeping
+      the steering and no humans copy-pasting messages. That isn't a feature.
+      That's the thesis.
+    </p>
+
+    <blockquote class="blog-quote">
+      We started by giving agents inboxes. We shipped the release when the
+      inboxes were good enough to ship themselves.
+    </blockquote>
+
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <h2>Try v0.1.1</h2>
+
+    <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
+
+    <p>Then initialize a repo and boot two agents:</p>
+
+    <pre class="install"><code>agentchute init --yes
+agentchute boot --as claude-code --vendor anthropic
+agentchute boot --as codex --vendor openai</code></pre>
+
+    <p>
+      Or skip the binary. Drop
+      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code></a>
+      into your project and follow the hand-protocol section. The whole protocol
+      fits in one file.
+    </p>
+
+    <p class="tiny">
+      Repository: <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a> ·
+      Release: <a href="https://github.com/agentchute/agentchute/releases/tag/v0.1.1">v0.1.1</a> ·
+      MIT license · <a href="../">home</a>
+    </p>
+  </div>
+</section>
+
+</article>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
+      ·
+      <a href="../">home</a>
+      ·
+      <a href="../blog/">blog</a>
+      ·
+      MIT license
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

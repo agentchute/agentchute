@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v0.1.2: doctor, watch, and the no-tmux story — agentchute</title>
+<meta name="description" content="agentchute v0.1.2 ships a diagnostic aggregator (doctor), a recipient-side watcher (watch), and a Claude-Code-specific hook output mode. Same three-agent build team, one more cycle.">
+<meta property="og:title" content="v0.1.2: doctor, watch, and the no-tmux story">
+<meta property="og:description" content="agentchute v0.1.2 ships a diagnostic aggregator (doctor), a recipient-side watcher (watch), and a Claude-Code-specific hook output mode. Same three-agent build team, one more cycle.">
+<meta property="og:url" content="https://agentchute.dev/blog/v0-1-2-doctor-watch-and-the-no-tmux-story.html">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://agentchute.dev/images/blog/v0-1-2-hero.jpg">
+<meta property="og:image:alt" content="An illustrated stethoscope and notification bell next to three terminal characters; a stylized 'doctor' panel and an inbox bell glow between them.">
+<meta property="og:image:width" content="1248">
+<meta property="og:image:height" content="832">
+<meta property="article:published_time" content="2026-05-20">
+<meta property="article:author" content="agentchute team">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="v0.1.2: doctor, watch, and the no-tmux story">
+<meta name="twitter:description" content="agentchute v0.1.2 ships a diagnostic aggregator (doctor), a recipient-side watcher (watch), and a Claude-Code-specific hook output mode.">
+<meta name="twitter:image" content="https://agentchute.dev/images/blog/v0-1-2-hero.jpg">
+<link rel="canonical" href="https://agentchute.dev/blog/v0-1-2-doctor-watch-and-the-no-tmux-story.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">May 20, 2026 · agentchute team</p>
+    <h1>v0.1.2: doctor, watch, and the no-tmux story</h1>
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      Six days after v0.1.1 made the coordination work, v0.1.2 makes it
+      diagnoseable. New: <code>doctor</code>, <code>watch</code>, a
+      Claude-Code-specific hook output mode, and the first answer to
+      "what if you don't have tmux?"
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+
+    <p>
+      <a href="v0-1-1-the-agents-shipped-it-themselves.html">v0.1.1</a>
+      made the loop work end-to-end. Three agents, durable reply obligations,
+      lifecycle hooks across three wrappers, and the human kept their
+      hands off the keyboard during the build. v0.1.2 is the smaller,
+      flatter follow-up: the things you notice you need only after the
+      loop is real.
+    </p>
+
+    <figure class="blog-image">
+      <img src="../images/blog/v0-1-2-hero.jpg" alt="An illustrated stethoscope and notification bell next to three terminal characters; a stylized 'doctor' diagnostic panel and an inbox notification glow between them, the human is reading in the corner." loading="lazy" width="1248" height="832">
+      <figcaption>
+        v0.1.2 adds the diagnostic and notification surfaces that v0.1.1
+        had to assume.
+      </figcaption>
+    </figure>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>What shipped</h2>
+
+    <p>
+      <strong><code>agentchute doctor</code></strong> is the diagnostic
+      aggregator. It walks an ordered checklist — scaffold integrity,
+      binary on PATH, hook content sanity, agent registration, ledger
+      state, wake-target validity — and reports each with a severity tag:
+      BLOCKER (exit nonzero), WARN (operational signal), SKIP (not
+      applicable), or OK. Designed to be wired into a CI step or an
+      operator script; v0.1.1's <code>gate</code>/<code>boot</code> own
+      lifecycle enforcement, <code>doctor</code> diagnoses.
+    </p>
+
+    <p>
+      The most useful check is also the most boring: hook content
+      sanity. v0.1.1 shipped a warning in the README — "never use
+      <code>agentchute check</code> in a hook unless you're sure the
+      output reaches the model's context." <code>doctor</code> now
+      checks for it. It also catches the templated form
+      (<code>${AGENTCHUTE_BIN:-agentchute} check</code>), the env-only
+      form (<code>$AGENTCHUTE_BIN check</code>), and mixed files where
+      one command is safe and another isn't. Codex caught all three
+      bugs during the rolling review of the first <code>doctor</code>
+      commit; the regex-rewrite to scan per-occurrence is in the
+      v0.1.2 history.
+    </p>
+
+    <p>
+      <strong><code>agentchute watch</code></strong> is the
+      recipient-side persistent watcher. v0.1.1's only wake adapter was
+      <code>tmux send-keys</code>, which works beautifully when every
+      agent is in a tmux pane and falls over the moment one isn't.
+      Watch is the answer: poll your own inbox, fire one of three
+      actions when new mail arrives.
+    </p>
+
+    <ul>
+      <li><strong><code>--notify</code></strong> — OS notification.
+        macOS <code>osascript</code>, Linux <code>notify-send</code>.
+        Wakes the human, not the agent. Pair with whatever wrapper
+        invocation you use to bring the model up.</li>
+      <li><strong><code>--print</code></strong> — stdout line per new
+        message. Pipe into anything.</li>
+      <li><strong><code>--exec &lt;cmd&gt;</code></strong> — shell
+        command per new message, with <code>AGENTCHUTE_MSG_ID</code>,
+        <code>AGENTCHUTE_FROM</code>, and <code>AGENTCHUTE_TASK</code>
+        as env vars. The only path that can wake an agent without
+        tmux, IF the operator's automation knows how to relaunch the
+        wrapper. Operator-owned; <code>watch</code> emits a startup
+        stderr warning when <code>--exec</code> is enabled.</li>
+    </ul>
+
+    <p>
+      Watch is non-consuming. It never archives, never quarantines,
+      never wakes peers. Mail still has to flow through
+      <code>check</code> for the model to actually see it; watch is
+      strictly the arrival-notification layer. It dedupes new mail by
+      frontmatter <code>message_id</code> when present, filename
+      otherwise — same identity convention the pending-reply ledger
+      uses.
+    </p>
+
+    <p>
+      <strong><code>--claude-hook UserPromptSubmit</code></strong> is
+      the small one. v0.1.1 shipped Claude Code's UserPromptSubmit hook
+      as plain-text <code>pending</code> output, after a real-bake
+      caught that the <code>--json</code> form silently failed to
+      inject context. v0.1.2 adds the structured JSON path:
+      <code>hookSpecificOutput.additionalContext</code> nested, exit 0
+      required, verified against the live wrapper docs. Convergent
+      with the existing <code>--codex-hook</code>; the two emitters
+      currently produce byte-identical output, with a test pinning
+      that as a tripwire if they ever diverge.
+    </p>
+
+    <p>
+      Plus three smaller surface improvements: <code>status</code> now
+      defaults to a no-agent pool overview when <code>--as</code> is
+      omitted (pure UX nit, but a real one), Appendix B was ported into
+      the official spec with the schema corrections from the v0.1.1
+      real-bake folded in, and EXTENSIONS.md now lists the OS
+      notification adapters with their human-relay semantics labeled
+      explicitly.
+    </p>
+
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>The no-tmux story</h2>
+
+    <p>
+      A surprising amount of agentchute discourse has been about
+      <code>tmux</code>. The protocol doesn't require it. The v0.1
+      reference CLI ships exactly one wake adapter, and that adapter
+      happens to be <code>tmux send-keys</code>. People kept hitting the
+      same question: "what if I'm not running in tmux?"
+    </p>
+
+    <p>
+      The v0.1.1 answer was "your recipient needs a polling cadence;
+      here are some wrapper-specific recurring-task patterns." That's
+      still true, and now it's the second-best answer. The first-best
+      answer is <code>watch</code>. Run it once per recipient pane (or
+      once per recipient host), let it sit. New mail arriving in that
+      recipient's inbox now fires a notification, prints to a pipe, or
+      invokes a script — your choice. No tmux. No watchdog daemon.
+    </p>
+
+    <figure class="blog-image">
+      <img src="../images/blog/v0-1-2-watch.jpg" alt="A terminal with the 'watch' command running; an envelope dropping into an inbox folder triggers a notification bell glowing above the terminal. A clock icon shows seconds passing." loading="lazy" width="1248" height="832">
+      <figcaption>
+        Polling, non-consuming, deduplicated. The arrival surface
+        v0.1.1 had to assume.
+      </figcaption>
+    </figure>
+
+    <p>
+      The watch loop is intentionally boring. Polling, not fsnotify.
+      Stdlib only — no new dependencies. Default cadence is 10 seconds;
+      operator-tunable via <code>--interval</code>, minimum 1 second.
+      The startup sweep captures the current inbox state as "already
+      seen" so a relaunched watcher doesn't notify on backlog.
+    </p>
+
+    <p>
+      Codex's brainstorm note on this was the right shape: do not
+      reopen the silent-drain confusion. Watch peeks; it never
+      consumes. If your watcher fires a notification and the operator
+      reads the message visually, the message is still in the inbox
+      until the wrapper runs <code>check</code>. That separation —
+      arrival surface vs. consume surface — is what the v0.1.1 hook
+      warning was about, and watch honors it.
+    </p>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>How the cycle ran (again)</h2>
+
+    <p>
+      Same shape as v0.1.1's build. Three agents in three panes; the
+      human steered. Codex landed three review rounds across the v0.1.2
+      Go work and caught real bugs both times: the
+      <code>--json</code> discovery-failure exit-0 in doctor (BLOCKER
+      that the report said was a blocker but the exit code disagreed),
+      the templated/env-only forms of the silent-drain antipattern,
+      and a test-precision issue in the status UX patch where a
+      nanosecond-anchored backdate masked the production
+      <code>last_seen</code> update path.
+    </p>
+
+    <figure class="blog-image">
+      <img src="../images/blog/v0-1-2-three-agents.jpg" alt="Three illustrated terminal characters, each holding a labeled file — 'doctor', 'watch', '--claude-hook' — passing them in a triangle while a stopwatch tracks the cycle." loading="lazy" width="1248" height="832">
+      <figcaption>
+        Six days, three agents, four features. The protocol carried
+        the second release too.
+      </figcaption>
+    </figure>
+
+    <p>
+      Gemini drove the spec port: §B of the rev3 scratch document is
+      now a real Appendix B in <code>AGENTCHUTE.md</code>, with the
+      Claude Code schema corrected to the nested <code>matcher</code> +
+      <code>hooks</code> shape and the <code>--json</code> example
+      removed from the UserPromptSubmit slot. The §10/§12 notification
+      contradictions surfaced as a follow-up review and got resolved
+      in the same cycle.
+    </p>
+
+    <p>
+      What this looked like on the wire: one
+      <code>agentchute send --ask</code> per commit Claude landed, one
+      <code>send --reply-to</code> per fix, the Stop hook blocking
+      every time something tried to call the cycle done while a review
+      was pending. That last part is the load-bearing piece. It's the
+      reason the obligations don't slip.
+    </p>
+
+  </div>
+</section>
+
+<section class="why">
+  <div class="wrap">
+    <h2>What's next</h2>
+
+    <p>
+      v0.1.2 closes the spec's stated minimum-viable-acceptance set:
+      Tests 4 (no-tmux fallback) and 10 (binary-on-PATH doctor) are
+      both unblocked. The remaining v0.1.x scope is wrapper-template
+      verification and any drift the real-bake surfaces — small,
+      reactive work.
+    </p>
+
+    <p>
+      v0.2 starts on a different shape of problem. Cross-host
+      coordination (the reference CLI is still single-filesystem),
+      sender-side outstanding-ask visibility (today the ledger only
+      tracks what the recipient owes), and the spec-level work on
+      authenticated transports for shared workloads where peer trust
+      isn't already given.
+    </p>
+
+    <blockquote class="blog-quote">
+      The protocol stays small. The places where it has to be loud get
+      a little louder.
+    </blockquote>
+
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <h2>Try v0.1.2</h2>
+
+    <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
+
+    <p>Then health-check your setup:</p>
+
+    <pre class="install"><code>agentchute doctor --as claude-code</code></pre>
+
+    <p>And if you're not in tmux, start the watcher:</p>
+
+    <pre class="install"><code>agentchute watch --as claude-code --notify</code></pre>
+
+    <p class="tiny">
+      Repository: <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a> ·
+      Release: <a href="https://github.com/agentchute/agentchute/releases/tag/v0.1.2">v0.1.2</a> ·
+      MIT license · <a href="../">home</a>
+    </p>
+  </div>
+</section>
+
+</article>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
+      ·
+      <a href="../">home</a>
+      ·
+      <a href="../blog/">blog</a>
+      ·
+      MIT license
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

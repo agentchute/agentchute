@@ -250,6 +250,12 @@ Optional free-text notes about this agent's role, working style, or constraints.
 
 `agentchute register --as <id> --vendor <vendor> [--host <name>] [--wake-method <adapter>] [--wake-target <addr>] [--bio "..."]` does the same with ergonomic flags (idempotent re-runs). The full flag list also includes `--announce`, but `--announce` sends an unsolicited notification to every peer and therefore falls outside the §7 protocol-overhead carve-out — it is operator-gated, not part of mandatory session-start registration. See `agentchute register -h` for the complete surface.
 
+### 5.7 Enforced enrollment
+
+Conforming implementations MUST refuse to process or send messages if the acting agent's registration record is absent or unreadable. This ensures every participant in the pool is discoverable, addressable, and pokable before they can contribute work.
+
+The refusal SHOULD include a pointer to the implementation's registration ritual (e.g., `agentchute boot`).
+
 ## 6. Messaging
 
 ### 6.1 Message identity
