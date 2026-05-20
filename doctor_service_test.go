@@ -64,8 +64,8 @@ func TestGenerateServiceLaunchdShape(t *testing.T) {
 		`com.agentchute.preflight.claude-code`,
 		`<key>StartInterval</key>`,
 		`<integer>30</integer>`,
-		`agentchute pending --as claude-code --fail-if-any`,
-		`flock -n /tmp/agentchute-claude-code.lock`,
+		`agentchute self-poll --as claude-code`,
+		`mkdir &#34;/tmp/agentchute-claude-code.lock&#34;`,
 		`claude -p`,
 		// the XML-escaped form of `2>&1`
 		`2&gt;&amp;1`,
@@ -95,7 +95,7 @@ func TestGenerateServiceSystemdServiceShape(t *testing.T) {
 		`[Service]`,
 		`Type=oneshot`,
 		`ExecStart=/bin/sh -c '`,
-		`agentchute pending --as codex --fail-if-any`,
+		`agentchute self-poll --as codex`,
 		`codex exec`,
 	} {
 		if !strings.Contains(got, want) {
@@ -253,7 +253,95 @@ func TestGenerateServicePromptHasConcreteAgentID(t *testing.T) {
 	if strings.Contains(got, "<vendor>") || strings.Contains(got, "<agent>") {
 		t.Errorf("generated artifact contains placeholder token:\n%s", got)
 	}
-	if !strings.Contains(got, "agentchute check --as claude-code") {
-		t.Errorf("generated artifact missing concrete agent id:\n%s", got)
+	if !strings.Contains(got, "agentchute boot --as claude-code --vendor anthropic") {
+		t.Errorf("generated artifact missing concrete agent id + vendor in wrapper prompt:\n%s", got)
+	}
+}
+
+// Codex review #3 (2026-05-20): unvalidated agent ids land directly in
+// shell strings — `bad;id` would emit injection-shaped output. Validate
+// before render.
+func TestGenerateServiceValidatesAgentID(t *testing.T) {
+	err := generateService(serviceParams{
+		Kind:     serviceKindLaunchd,
+		AgentID:  "bad;id",
+		Command:  "claude -p test",
+		Interval: 30,
+		Repo:     t.TempDir(),
+	})
+	if err == nil {
+		t.Fatalf("expected error for shell-injection-shaped agent id; got nil")
+	}
+}
+
+// Codex review #2 (2026-05-20): macOS does not ship flock by default —
+// generated launchd plists that depend on it are nonfunctional out of
+// the box. Use POSIX mkdir-as-lock instead (atomic on POSIX).
+func TestGenerateServicePreflightUsesPosixLock(t *testing.T) {
+	got, err := captureStdout(t, func() error {
+		return generateService(serviceParams{
+			Kind:     serviceKindLaunchd,
+			AgentID:  "claude-code",
+			Interval: 30,
+			Repo:     t.TempDir(),
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "flock") {
+		t.Errorf("preflight uses flock (not on macOS by default); want POSIX mkdir lock:\n%s", got)
+	}
+	if !strings.Contains(got, "mkdir") {
+		t.Errorf("preflight missing mkdir-as-lock:\n%s", got)
+	}
+	if !strings.Contains(got, "trap") {
+		t.Errorf("preflight missing trap-based lock cleanup:\n%s", got)
+	}
+}
+
+// Codex review #4 (2026-05-20): the `script` kind embedded a bare
+// `exit 0` inside `while true; do ... done`, which exited the whole
+// loop on the first idle tick. The fix wraps the tick in a `(...)`
+// subshell so `exit 0` only exits the subshell.
+func TestGenerateServiceScriptLoopSurvivesIdleTick(t *testing.T) {
+	got, err := captureStdout(t, func() error {
+		return generateService(serviceParams{
+			Kind:     serviceKindScript,
+			AgentID:  "claude-code",
+			Interval: 30,
+			Repo:     t.TempDir(),
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The tick body must run inside `( ... )` so `exit 0` is local to
+	// the subshell and the `while` keeps looping.
+	if !strings.Contains(got, "( cd ") {
+		t.Errorf("script kind missing subshell wrapper around tick body — `exit 0` would kill the loop:\n%s", got)
+	}
+}
+
+// Codex review #5 (2026-05-20): preflight via `self-poll` rather than
+// `pending --fail-if-any`. self-poll exits 2 on needs_boot too, so the
+// first-run wake actually fires the wrapper through to boot.
+func TestGenerateServicePreflightUsesSelfPoll(t *testing.T) {
+	got, err := captureStdout(t, func() error {
+		return generateService(serviceParams{
+			Kind:     serviceKindLaunchd,
+			AgentID:  "claude-code",
+			Interval: 30,
+			Repo:     t.TempDir(),
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "agentchute pending --as") {
+		t.Errorf("preflight uses pending (doesn't surface needs_boot); want self-poll:\n%s", got)
+	}
+	if !strings.Contains(got, "agentchute self-poll --as claude-code") {
+		t.Errorf("preflight missing self-poll command:\n%s", got)
 	}
 }

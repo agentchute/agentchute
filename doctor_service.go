@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 // --generate-service emits unit/script files for the preflighted-scheduler
 // pattern (round-3 synthesis tier 2): every N seconds, run a side-effect-free
-// `agentchute pending --as <id> --fail-if-any`; on rc=2 launch the wrapper.
+// `agentchute self-poll --as <id>`; on rc=2 launch the wrapper.
 //
 // The generated artifacts are deliberately self-contained inline-sh so the
 // operator gets ONE file per init kind. Doctor never installs/loads/starts
@@ -89,6 +91,12 @@ func generateService(p serviceParams) error {
 	if p.AgentID == "" {
 		return fmt.Errorf("--as is required for --generate-service")
 	}
+	// Codex review #3 (2026-05-20): validate the agent id BEFORE rendering.
+	// The id is interpolated into shell strings and unit-file labels; an
+	// unvalidated `bad;id` would emit injection-shaped output.
+	if err := loop.ValidateAgentID(p.AgentID); err != nil {
+		return err
+	}
 	switch p.Kind {
 	case serviceKindLaunchd, serviceKindSystemdService, serviceKindSystemdTimer, serviceKindScript:
 	default:
@@ -151,14 +159,21 @@ func generateService(p serviceParams) error {
 // wrapperInvocation returns the inline `<cmd> -p "<prompt>"` (or operator
 // override). The prompt is concrete — no placeholders — per codex's
 // signoff caveat that generated artifacts must supply concrete vendor /
-// agent identity, not template tokens for the model to interpret.
+// agent identity, not template tokens for the model to interpret. The
+// prompt leads with `agentchute boot` so the first-run needs_boot path
+// from self-poll also lands cleanly (boot is idempotent for existing
+// registrations and bootstraps fresh ones).
 func wrapperInvocation(p serviceParams) string {
 	if p.Command != "" {
 		return p.Command
 	}
+	vendor := p.Vendor
+	if vendor == "" {
+		vendor = "<vendor>" // unreachable: generateService refuses unknown-agent unless --command set
+	}
 	prompt := fmt.Sprintf(
-		"Process agentchute mail. Run \\`agentchute check --as %s\\` first; reply to each obligation with \\`send --reply-to\\` or release it with \\`defer --message\\`. Do not declare done until your inbox is empty.",
-		p.AgentID,
+		"Process agentchute mail. Run \\`agentchute boot --as %s --vendor %s\\` first (idempotent), then reply to obligations with \\`send --reply-to\\` or release them with \\`defer --message\\`. Do not declare done until your inbox is empty.",
+		p.AgentID, vendor,
 	)
 	// Each wrapper has its own flag for non-interactive prompt input.
 	switch p.Wrapper {
@@ -169,20 +184,26 @@ func wrapperInvocation(p serviceParams) string {
 	case "gemini":
 		return fmt.Sprintf(`gemini -p "%s"`, prompt)
 	default:
-		// Unknown wrapper but we have a name — best effort. Operator can
-		// always override with --command.
 		return fmt.Sprintf(`%s "%s"`, p.Wrapper, prompt)
 	}
 }
 
-// preflightLine is the shared inline-sh used by every kind. flock ensures
-// single-flight: a still-running wrapper from the previous tick won't get
-// raced by a second launch.
-func preflightLine(p serviceParams) string {
-	lockPath := fmt.Sprintf("/tmp/agentchute-%s.lock", p.AgentID)
+// preflightTick is the shared inline-sh used by every kind. Codex review
+// #2/#4/#5 (2026-05-20):
+//   - POSIX `mkdir` is the lock (atomic on POSIX); `flock` is not on
+//     macOS by default. The trap rmdir releases the lock if the wrapper
+//     crashes or the script is killed.
+//   - The whole tick runs in a `(...)` subshell so the `exit 0` on the
+//     idle path only exits the subshell, not a `while`-loop script kind.
+//   - Preflight is `agentchute self-poll --as <id>` rather than
+//     `pending --fail-if-any`. self-poll exits 2 on needs_boot too, so
+//     the first-run wake actually fires the wrapper through to the boot
+//     ritual.
+func preflightTick(p serviceParams) string {
+	lockDir := fmt.Sprintf("/tmp/agentchute-%s.lock", p.AgentID)
 	return fmt.Sprintf(
-		`cd %q || exit 0; agentchute pending --as %s --fail-if-any >/dev/null 2>&1; rc=$?; [ "$rc" -ne 2 ] && exit 0; flock -n %s sh -c %q`,
-		p.Repo, p.AgentID, lockPath, wrapperInvocation(p),
+		`( cd %q || exit 0; agentchute self-poll --as %s >/dev/null 2>&1; rc=$?; [ "$rc" -ne 2 ] && exit 0; mkdir %q 2>/dev/null || exit 0; trap 'rmdir %q' EXIT; sh -c %q )`,
+		p.Repo, p.AgentID, lockDir, lockDir, wrapperInvocation(p),
 	)
 }
 
@@ -209,7 +230,7 @@ func renderLaunchdPlist(p serviceParams) string {
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>` + html.EscapeString(preflightLine(p)) + `</string>
+        <string>` + html.EscapeString(preflightTick(p)) + `</string>
     </array>
     <key>StartInterval</key>
     <integer>` + fmt.Sprint(p.Interval) + `</integer>
@@ -231,7 +252,7 @@ After=network.target
 Type=oneshot
 WorkingDirectory=` + p.Repo + `
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/sh -c '` + preflightLine(p) + `'
+ExecStart=/bin/sh -c '` + preflightTick(p) + `'
 `
 }
 
@@ -261,7 +282,7 @@ func renderScript(p serviceParams) string {
 # any subcommand exits.
 INTERVAL=` + fmt.Sprint(p.Interval) + `
 while true; do
-    ` + preflightLine(p) + `
+    ` + preflightTick(p) + `
     sleep "$INTERVAL"
 done
 `
