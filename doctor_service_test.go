@@ -326,6 +326,32 @@ func TestGenerateServiceScriptLoopSurvivesIdleTick(t *testing.T) {
 	}
 }
 
+// Codex re-review #4 (2026-05-20): --repo flows into `cd %q` in the
+// generated shell tick; Go %q is not shell quoting, and $() / backticks
+// expand inside double quotes. Validate against a conservative
+// whitelist before rendering.
+func TestGenerateServiceValidatesRepo(t *testing.T) {
+	for _, malicious := range []string{
+		"/tmp/repo$(touch /tmp/agentchute-repo-pwn)",
+		"/tmp/repo`whoami`",
+		"/tmp/repo;rm -rf /",
+		"/tmp/repo\"injected\"",
+		"/tmp/repo'injected'",
+	} {
+		err := generateService(serviceParams{
+			Kind:     serviceKindScript,
+			AgentID:  "claude-code",
+			Vendor:   "anthropic",
+			Wrapper:  "claude",
+			Repo:     malicious,
+			Interval: 30,
+		})
+		if err == nil {
+			t.Errorf("expected error for shell-injection-shaped repo %q; got nil", malicious)
+		}
+	}
+}
+
 // Codex re-review #3 (2026-05-20): --vendor lands inside the generated
 // prompt and would shell-substitute if it contains $() or backticks.
 // Validate against the same slug rule as agent_id.

@@ -7,10 +7,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
+
+// repoCharRE is the conservative whitelist for --repo. Go's %q wraps
+// the path in double quotes, but `$(...)` and backticks expand inside
+// double quotes in shell — so without an input-charset gate, an
+// operator (or worse, a passed-through CI variable) could inject shell
+// at scheduler-tick time. We accept the safe subset of POSIX filename
+// characters: letters, digits, `/`, `_`, `.`, `-`, space. Operators
+// with paths containing `$` / backtick / `;` / `"` / `'` etc. can use
+// --command to bypass our rendering entirely.
+var repoCharRE = regexp.MustCompile(`^[A-Za-z0-9_/.\- ]+$`)
 
 // --generate-service emits unit/script files for the preflighted-scheduler
 // pattern (round-3 synthesis tier 2): every N seconds, run a side-effect-free
@@ -117,6 +128,12 @@ func generateService(p serviceParams) error {
 		return err
 	}
 	p.Repo = abs
+	// Codex re-review #4 (2026-05-20): --repo flows into `cd %q` in the
+	// shell tick, and `$(...)` inside Go-`%q` double quotes still
+	// command-substitutes. Validate against a strict whitelist.
+	if !repoCharRE.MatchString(p.Repo) {
+		return fmt.Errorf("--repo %q contains characters not in [A-Za-z0-9_/.- ]; move the repo or use --command", p.Repo)
+	}
 
 	if preset, ok := vendorPresets[p.AgentID]; ok {
 		if p.Vendor == "" {
