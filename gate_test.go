@@ -336,3 +336,92 @@ func TestGateRequiresPhaseFlag(t *testing.T) {
 		}
 	})
 }
+
+// v0.2: gate --before continue is a sibling of finish, identical
+// predicate (unread / malformed / pending-replies), different output
+// framing for in-session continuation hooks.
+func TestGateContinuePhaseSamePredicateAsFinish(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
+			t.Fatal(err)
+		}
+		inboxDir := filepath.Join(root, ".rehumanlabs", "loop", "inbox", "claude-code")
+		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
+			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, errFinish := captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
+		_, errContinue := captureStdout(t, func() error { return cmdGate(gateArgs("continue")) })
+		if !errors.Is(errFinish, errBlocked) {
+			t.Fatalf("finish err = %v, want errBlocked", errFinish)
+		}
+		if !errors.Is(errContinue, errBlocked) {
+			t.Fatalf("continue err = %v, want errBlocked", errContinue)
+		}
+	})
+}
+
+// v0.2: --gemini-hook AfterAgent emits decision:deny on block,
+// decision:allow on clear. Always exit 0 — the JSON is the signal.
+func TestGateGeminiHookAfterAgentBlockedShape(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
+			t.Fatal(err)
+		}
+		inboxDir := filepath.Join(root, ".rehumanlabs", "loop", "inbox", "claude-code")
+		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
+			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := captureStdout(t, func() error {
+			return cmdGate(gateArgs("continue", "--gemini-hook", "AfterAgent"))
+		})
+		if err != nil {
+			t.Errorf("err = %v, want nil (gemini hook exit 0)", err)
+		}
+		var wrap struct {
+			Decision string `json:"decision"`
+			Reason   string `json:"reason"`
+		}
+		if jerr := json.Unmarshal([]byte(out), &wrap); jerr != nil {
+			t.Fatalf("unmarshal: %v\n%s", jerr, out)
+		}
+		if wrap.Decision != "deny" {
+			t.Errorf("decision = %q, want deny", wrap.Decision)
+		}
+		if !strings.Contains(wrap.Reason, "unread") {
+			t.Errorf("reason missing 'unread': %q", wrap.Reason)
+		}
+	})
+}
+
+func TestGateGeminiHookAfterAgentClearShape(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
+			t.Fatal(err)
+		}
+		out, err := captureStdout(t, func() error {
+			return cmdGate(gateArgs("continue", "--gemini-hook", "AfterAgent"))
+		})
+		if err != nil {
+			t.Errorf("err = %v, want nil", err)
+		}
+		var wrap struct {
+			Decision string `json:"decision"`
+		}
+		if jerr := json.Unmarshal([]byte(out), &wrap); jerr != nil {
+			t.Fatalf("unmarshal: %v\n%s", jerr, out)
+		}
+		if wrap.Decision != "allow" {
+			t.Errorf("decision = %q, want allow on clear inbox", wrap.Decision)
+		}
+	})
+}
