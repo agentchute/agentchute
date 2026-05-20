@@ -156,8 +156,9 @@
     </p>
 
     <p>
-      <strong>Fourth, optional wake.</strong> Delivery and wake are separate. The message
-      landing in the inbox is the protocol event. A wake poke is a best-effort
+      <strong>Fourth, recipient-side polling.</strong> Delivery and discovery are separate.
+      The message landing in the inbox is the protocol event; the recipient discovers
+      it by polling its own inbox on its own cadence. A wake poke is a best-effort
       convenience that reduces latency when the local environment supports it, not a
       requirement for correctness.
     </p>
@@ -184,7 +185,7 @@
          │ 1. message lands in inbox/bob/ (bob: 1)    │
          └────────────────────────────────────────────┘
          │
-         │ 2. optional wake poke (tmux adapter)
+         │ 2. optional wake poke (best-effort)
          └─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─▶
                                                       │
                                                       │ 3. poll/check
