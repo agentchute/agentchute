@@ -20,6 +20,30 @@ func readFileForTest(t *testing.T, path string) string {
 // and each emits the kind-specific structural marker so an operator can
 // pipe straight to the right install target.
 
+// Regression: real-bake on 2026-05-20 found plutil rejecting the
+// generated plist with "unknown ampersand-escape sequence" because the
+// preflight shell line contains `2>&1` and the `&` was emitted raw.
+// Every plist <string> body must XML-escape its content.
+func TestGenerateServiceLaunchdXMLEscapesAmpersand(t *testing.T) {
+	got, err := captureStdout(t, func() error {
+		return generateService(serviceParams{
+			Kind:     serviceKindLaunchd,
+			AgentID:  "claude-code",
+			Interval: 30,
+			Repo:     t.TempDir(),
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "2>&1") {
+		t.Errorf("raw `2>&1` in plist body — plutil rejects (must be `2&gt;&amp;1`):\n%s", got)
+	}
+	if !strings.Contains(got, "2&gt;&amp;1") {
+		t.Errorf("expected XML-escaped `2&gt;&amp;1` in plist body:\n%s", got)
+	}
+}
+
 func TestGenerateServiceLaunchdShape(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, "claude.plist")
@@ -43,6 +67,8 @@ func TestGenerateServiceLaunchdShape(t *testing.T) {
 		`agentchute pending --as claude-code --fail-if-any`,
 		`flock -n /tmp/agentchute-claude-code.lock`,
 		`claude -p`,
+		// the XML-escaped form of `2>&1`
+		`2&gt;&amp;1`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("launchd plist missing %q\n%s", want, got)

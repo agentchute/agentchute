@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
@@ -188,14 +189,17 @@ func preflightLine(p serviceParams) string {
 func renderLaunchdPlist(p serviceParams) string {
 	label := fmt.Sprintf("com.agentchute.preflight.%s", p.AgentID)
 	logPath := fmt.Sprintf("/tmp/agentchute-%s.log", p.AgentID)
+	// XML-escape every shell-shaped value that lands inside a plist
+	// <string>. The preflight line in particular contains `2>&1` and
+	// `>/dev/null`; the `&` is a hard XML error if left raw.
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>` + label + `</string>
+    <string>` + html.EscapeString(label) + `</string>
     <key>WorkingDirectory</key>
-    <string>` + p.Repo + `</string>
+    <string>` + html.EscapeString(p.Repo) + `</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -205,14 +209,14 @@ func renderLaunchdPlist(p serviceParams) string {
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>` + preflightLine(p) + `</string>
+        <string>` + html.EscapeString(preflightLine(p)) + `</string>
     </array>
     <key>StartInterval</key>
     <integer>` + fmt.Sprint(p.Interval) + `</integer>
     <key>StandardOutPath</key>
-    <string>` + logPath + `</string>
+    <string>` + html.EscapeString(logPath) + `</string>
     <key>StandardErrorPath</key>
-    <string>` + logPath + `</string>
+    <string>` + html.EscapeString(logPath) + `</string>
 </dict>
 </plist>
 `
