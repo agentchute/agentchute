@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v0.2: recipient polling, by hand and by hook — agentchute</title>
+<meta name="description" content="agentchute v0.2 makes the no-tmux path first class: self-poll, gate --before continue, doctor --generate-service, and a §8.2 spec clarification that recipient polling is canonical.">
+<meta property="og:title" content="v0.2: recipient polling, by hand and by hook">
+<meta property="og:description" content="agentchute v0.2 makes the no-tmux path first class: self-poll, gate --before continue, doctor --generate-service, and a §8.2 spec clarification that recipient polling is canonical.">
+<meta property="og:url" content="https://agentchute.dev/blog/v0-2-recipient-polling.html">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-05-20">
+<meta property="article:author" content="agentchute team">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="v0.2: recipient polling, by hand and by hook">
+<meta name="twitter:description" content="agentchute v0.2 makes the no-tmux path first class: self-poll, gate --before continue, doctor --generate-service, and a §8.2 spec clarification that recipient polling is canonical.">
+<link rel="canonical" href="https://agentchute.dev/blog/v0-2-recipient-polling.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">May 20, 2026 · agentchute team</p>
+    <h1>v0.2: recipient polling, by hand and by hook</h1>
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      tmux made the first agentchute demos feel immediate. It also blurred
+      the protocol boundary. v0.2 fixes that.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+
+    <p>
+      <strong>agentchute is not tmux. agentchute is the mailbox.</strong>
+    </p>
+
+    <p>
+      The durable protocol step is simple: a sender writes a no-overwrite
+      message into the recipient's inbox. Everything after that is
+      best-effort liveness. A wake poke can reduce latency, but it is not
+      what makes the protocol correct. The recipient must still discover
+      its own inbox on its own cadence and run the normal recipient flow.
+    </p>
+
+    <p>
+      v0.2 makes that no-tmux story explicit — in the spec, in the CLI,
+      and in the generated services agents now ship to their operators.
+    </p>
+
+    <h2>The rule: schedule the wrapper, not <code>check</code></h2>
+
+    <p>
+      <code>agentchute check</code> is a <em>consuming</em> command. It
+      reads message bodies, archives inbox files, quarantines malformed
+      protocol state, and records reply-required obligations. If a shell
+      timer runs <code>check</code> by itself, the model never sees the
+      message. That is silent drain.
+    </p>
+
+    <p>The safe loop has two phases:</p>
+    <ol>
+      <li>A read-only preflight asks, "should I wake the wrapper?"</li>
+      <li>If work exists, the wrapper starts a model turn, and the
+        <em>model</em> runs <code>check</code>.</li>
+    </ol>
+    <p>That is the difference between automation and data loss.</p>
+
+    <h2>Three recipient-polling tiers</h2>
+
+    <p>
+      Different wrappers give us different scheduling surfaces, but the
+      same invariant holds in each one.
+    </p>
+
+    <h3>Tier 1 — native recurring task</h3>
+
+    <p>
+      <strong>Claude Code</strong> has a built-in scheduler. One line in
+      the session arms the loop:
+    </p>
+
+    <pre><code>/loop 5m process any agentchute mail; reply or defer required messages before stopping</code></pre>
+
+    <p>
+      The existing SessionStart / UserPromptSubmit / Stop hooks do the
+      rest. Each tick fires <code>agentchute boot</code>, the model runs
+      <code>check</code> when there is mail, and the Stop hook refuses to
+      finish if the inbox or reply ledger is still dirty.
+    </p>
+
+    <p>
+      <strong>Codex App</strong> has native Automations. Same shape: a
+      5-minute Automation that prompts the agent to process its mail.
+      Zero new infrastructure.
+    </p>
+
+    <h3>Tier 2 — preflighted scheduler</h3>
+
+    <p>
+      Terminal codex CLI and Gemini CLI don't have native recurring tasks
+      today, so v0.2 leans on the simplest dependable primitive: an
+      operator-owned scheduler that runs a side-effect-free preflight and
+      launches the wrapper only when work exists.
+    </p>
+
+    <pre><code>agentchute self-poll --as codex --json</code></pre>
+
+    <p>
+      Exit 0 means idle. Exit 2 means wake the wrapper. <code>self-poll</code>
+      is deliberately boring: it's a read-only helper over the same inbox
+      and ledger state that <code>pending</code> already exposes. It does
+      not archive, does not quarantine, does not update <code>last_seen</code>,
+      does not poke peers.
+    </p>
+
+    <p>It answers exactly one question:</p>
+
+    <pre><code>{
+  "agent": "codex",
+  "should_wake": true,
+  "reasons": ["unread"],
+  "unread_count": 1,
+  "replies_pending": 0,
+  "recommended_prompt": "..."
+}</code></pre>
+
+    <p>
+      That lets a launchd job, systemd timer, cron entry, or shell loop
+      poll every 30 seconds without spending model tokens on empty
+      inboxes. The expensive part — <code>codex exec</code> or
+      <code>gemini -p</code> — only runs when the recipient has work.
+    </p>
+
+    <p>
+      Writing the unit file is the only chore. v0.2 ships a generator
+      for it:
+    </p>
+
+    <pre><code># macOS launchd
+agentchute doctor --generate-service launchd --as codex \
+  --out ~/Library/LaunchAgents/com.agentchute.codex.plist
+launchctl load ~/Library/LaunchAgents/com.agentchute.codex.plist
+
+# Linux systemd user
+agentchute doctor --generate-service systemd-service --as codex \
+  --out ~/.config/systemd/user/agentchute-codex.service
+agentchute doctor --generate-service systemd-timer --as codex \
+  --out ~/.config/systemd/user/agentchute-codex.timer
+systemctl --user enable --now agentchute-codex.timer
+
+# Portable shell loop (cron @reboot, tmux pane, manual sh)
+agentchute doctor --generate-service script --as codex \
+  --out ~/bin/agentchute-codex.sh</code></pre>
+
+    <p>
+      Each artifact is single-flight (POSIX <code>mkdir</code>-as-lock),
+      uses <code>self-poll</code> as preflight, and launches the wrapper
+      with a plain-text prompt that tells the model to run boot + check.
+      Doctor emits only — install / load / start is the operator's job.
+    </p>
+
+    <h3>Tier 3 — finish-hook continuation</h3>
+
+    <p>
+      Polling handles idle recipients. Finish hooks handle recipients
+      that are <em>already awake</em>.
+    </p>
+
+    <p>
+      If a new message arrives while a model turn is running, the Stop
+      (Claude / codex) or AfterAgent (Gemini) hook scans the inbox at
+      the end of the turn. If work appeared, the hook refuses to let
+      the wrapper go idle.
+    </p>
+
+    <p>v0.2 adds a Gemini-friendly continuation surface:</p>
+
+    <pre><code>agentchute gate --as gemini-cli --before continue --gemini-hook AfterAgent</code></pre>
+
+    <p>
+      On work it emits <code>{"decision":"deny","reason":"…"}</code>.
+      On a clean inbox it emits <code>{"decision":"allow"}</code>. Both
+      paths exit 0 — the JSON is the signal.
+    </p>
+
+    <p>This is not sender-side wake. It's recipient-side catchup at a
+      lifecycle boundary.</p>
+
+    <h2>Where tmux fits now</h2>
+
+    <p>
+      tmux is still useful. If two agents share one tmux server, typing
+      <code>check</code> into the recipient pane is a fast wake hint.
+      The same idea can be implemented with HTTP, SSH, notification
+      services, or a relay.
+    </p>
+
+    <p>
+      Those are <strong>convenience adapters</strong>. They are not the
+      protocol. The new <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md#82-wake-responsibility">§8.2</a>
+      says so in normative text:
+    </p>
+
+    <blockquote style="border-left: 3px solid var(--fg-dim); padding-left: 1em; color: var(--fg-dim);">
+      The protocol's discovery mechanism is recipient-side polling. A
+      recipient agent MUST discover unread mail via its own inbox scans
+      on its own cadence; it MUST NOT depend on external wake signals
+      for correctness.
+    </blockquote>
+
+    <p>
+      The protocol stays small: deliver to the inbox; recipient polls;
+      model consumes; reply or defer obligations before stopping.
+      That's enough to run without tmux.
+    </p>
+
+    <h2>Upgrade</h2>
+
+    <pre><code>go install github.com/agentchute/agentchute@latest
+agentchute doctor --generate-service --help</code></pre>
+
+    <p>
+      Three new commands: <code>self-poll</code>,
+      <code>gate --before continue</code>, and
+      <code>doctor --generate-service</code>. The v5 enrollment block
+      teaches the three-tier polling model to any new agent that
+      runs <code>agentchute init</code>. See
+      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md#8-wake-adapters">spec §8</a>
+      for the full adapter contract and §8.2 for the wake-responsibility
+      text.
+    </p>
+
+  </div>
+</section>
+
+</article>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p>agentchute — MIT licensed. <a href="https://github.com/agentchute/agentchute">github</a> · <a href="../spec.html">spec</a> · <a href="../">home</a></p>
+  </div>
+</footer>
+
+</body>
+</html>
