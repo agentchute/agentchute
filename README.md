@@ -2,7 +2,7 @@
 
 # agentchute
 
-**Shared Markdown inboxes for AI agents, so they can hand off work without a human passing messages.**
+**Shared inboxes for AI agents, so they can hand off work without a human passing messages.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-2a4a8a.svg)](LICENSE)
 [![Go 1.21+](https://img.shields.io/badge/go-1.21+-2a4a8a.svg)](go.mod)
@@ -21,7 +21,9 @@ curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.
 
 You're running Claude Code, codex, and Gemini against the same repo. They have things to say to each other. Today you ferry every message between them by hand.
 
-agentchute is a mailbox-on-filesystem protocol. One agent writes a Markdown file into another's inbox directory; that's the entire wire format. A small reference CLI plus three lifecycle hooks turn it into a working coordination layer — no server, no broker, no SDK.
+agentchute is a small coordination protocol: each agent owns an inbox; senders deliver identified messages without overwriting; recipients consume on their own cadence; wake pokes are optional and best-effort. No server, no broker, no SDK.
+
+The v0.1 reference CLI maps the protocol onto Markdown files on a shared filesystem, with `tmux send-keys` as the wake adapter. Other substrates (queues, HTTP endpoints, object stores) preserve the same primitives — see [`EXTENSIONS.md`](EXTENSIONS.md).
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=jwYzKtcOYl0">
@@ -48,28 +50,48 @@ agentchute is not a queue, auth layer, audit log, task router, or multi-agent fr
 ┌──────────────────┐                          ┌──────────────────┐
 │  ALICE (Claude)  │                          │  BOB (codex)     │
 └──────────────────┘                          └──────────────────┘
-        │ 1. write inbox/bob/<ts>_from-alice_msg-<nonce>.md
+        │ 1. deliver message to Bob's inbox (no-overwrite)
         ├─────────────────────────────────────────▶
-        │ 2. tmux send-keys "check" (wake poke)
+        │ 2. wake poke (best-effort, if adapter is reachable)
         ├ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶
-        │                                         │ 3. read + archive
-        │ 4. reply lands in inbox/alice/          │
+        │                                         │ 3. consume + archive
+        │ 4. reply lands in Alice's inbox         │
         │◀─────────────────────────────────────────
 ```
 
-Delivery is an atomic, no-overwrite file write. The wake poke is best-effort (`tmux send-keys` is the v0.1 reference adapter); when it fails, the message simply waits in the inbox until the recipient's next poll.
+Delivery is no-overwrite by contract: a sender never replaces an existing message. The wake poke is best-effort; if no adapter is reachable, the message waits in the inbox until the recipient's next poll. The v0.1 reference CLI ships `tmux send-keys` as the wake adapter; alternates fit the same shape (see [`EXTENSIONS.md`](EXTENSIONS.md)).
 
-The reference CLI stores the whole loop at `.<namespace>/loop/`:
+## Lifecycle hooks (v0.1.1)
 
-```text
-agents/       live registrations: agent id, vendor, host, wake target
-inbox/<id>/   unread messages owned by each recipient
-archive/      consumed messages
-malformed/    quarantined protocol violations
-state/<id>/   per-agent pending-reply ledger
+Hooks are the primary integration path for the reference CLI: each wrapper has a hooks file that calls into agentchute at three points per session so you don't run `boot` / `pending` / `gate` by hand. (The protocol doesn't require hooks — they're how the reference CLI keeps the inbox contract visible during a wrapper's lifecycle events.)
+
+| Wrapper | Template |
+|---|---|
+| **Claude Code** | `examples/hooks/claude-code/.claude/settings.json` |
+| **codex CLI** | `examples/hooks/codex/.codex/hooks.json` |
+| **Gemini CLI** | `examples/hooks/gemini/.gemini/settings.json` |
+
+To install:
+
+```sh
+# from the agentchute repo, into your project's working directory
+cp examples/hooks/claude-code/.claude/settings.json .claude/settings.json
+# repeat for codex (.codex/hooks.json) and gemini (.gemini/settings.json) as needed
+# if the binary isn't on PATH, set this in the env that launches the wrapper:
+export AGENTCHUTE_BIN=/path/to/agentchute
 ```
 
+Restart the wrapper. From then on:
+
+- **SessionStart** runs `boot` — registers the agent, peeks the inbox, surfaces pending-reply obligations as developer context.
+- **UserPromptSubmit** (Claude/codex) / **BeforeAgent** (Gemini) runs `pending` — side-effect-free peek that injects current obligations into the model's context per turn.
+- **Stop** (Claude/codex) / **BeforeAgent** (Gemini, again) runs `gate --before finish` — refuses to let the agent end the turn while inbox or ledger has outstanding work. Claude and Gemini use exit-code blocking; codex uses its Stop-hook `{"decision":"block"}` JSON. This is the load-bearing one.
+
+> ⚠ **Never use `agentchute check` in a hook.** `check` archives and quarantines; `boot` and `pending` are read-only peeks. Hook templates above only use the peeks.
+
 ## Quickstart
+
+These are the commands the hooks call. With hooks installed (above), the wrapper runs them at the right lifecycle points for you. Run them by hand to learn the surface, or for the rare manual session.
 
 ```sh
 agentchute init --yes
@@ -99,25 +121,15 @@ agentchute send --from codex --to claude-code \
 
 Or codex can defer the obligation explicitly with `agentchute defer --message <id> --reason "..."` — the gate clears, the original sender gets an automatic deferred-reply ack.
 
-## Lifecycle hooks (v0.1.1)
+The reference CLI stores the whole loop at `.<namespace>/loop/`:
 
-Each wrapper has a hooks file that calls into agentchute at three points per session. Copy the template, restart the wrapper, done.
-
-| Wrapper | Template |
-|---|---|
-| **Claude Code** | `examples/hooks/claude-code/.claude/settings.json` |
-| **codex CLI** | `examples/hooks/codex/.codex/hooks.json` |
-| **Gemini CLI** | `examples/hooks/gemini/.gemini/settings.json` |
-
-What each hook does:
-
-- **SessionStart** runs `boot` — registers the agent, peeks the inbox, surfaces pending-reply obligations as developer context.
-- **UserPromptSubmit** (Claude/codex) / **BeforeAgent** (Gemini) runs `pending` — side-effect-free peek that injects current obligations into the model's context per turn.
-- **Stop** (Claude/codex) / **BeforeAgent** (Gemini, again) runs `gate --before finish` — refuses to let the agent end the turn while inbox or ledger has outstanding work. Claude and Gemini use exit-code blocking; codex uses its Stop-hook `{"decision":"block"}` JSON. This is the load-bearing one.
-
-If the binary isn't on the wrapper's PATH, set `AGENTCHUTE_BIN=/path/to/agentchute` in the environment that launches the wrapper. The templates honor `${AGENTCHUTE_BIN:-agentchute}`.
-
-> ⚠ **Never use `agentchute check` in a hook.** `check` archives and quarantines; `boot` and `pending` are read-only peeks. Hook templates above only use the peeks.
+```text
+agents/       live registrations: agent id, vendor, host, wake target
+inbox/<id>/   unread messages owned by each recipient
+archive/      consumed messages
+malformed/    quarantined protocol violations
+state/<id>/   per-agent pending-reply ledger
+```
 
 ## Commands at a glance
 
