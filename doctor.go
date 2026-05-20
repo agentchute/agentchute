@@ -235,17 +235,17 @@ func checkLoopDirScaffold(cfg *loop.Config) doctorCheck {
 func checkBinaryOnPath() doctorCheck {
 	// AGENTCHUTE_BIN takes precedence; hook templates use ${AGENTCHUTE_BIN:-agentchute}.
 	if envBin := strings.TrimSpace(os.Getenv("AGENTCHUTE_BIN")); envBin != "" {
-		if _, err := os.Stat(envBin); err == nil {
+		if reason := executableFileProblem(envBin); reason != "" {
 			return doctorCheck{
 				Name:     "binary_on_path",
-				Severity: severityOK,
-				Message:  fmt.Sprintf("AGENTCHUTE_BIN=%s exists; hook templates will resolve", envBin),
+				Severity: severityBlocker,
+				Message:  fmt.Sprintf("AGENTCHUTE_BIN=%s %s; hook templates will fail to launch the binary", envBin, reason),
 			}
 		}
 		return doctorCheck{
 			Name:     "binary_on_path",
-			Severity: severityBlocker,
-			Message:  fmt.Sprintf("AGENTCHUTE_BIN=%s does not exist; hook templates will fail to launch the binary", envBin),
+			Severity: severityOK,
+			Message:  fmt.Sprintf("AGENTCHUTE_BIN=%s is an executable file; hook templates will resolve", envBin),
 		}
 	}
 	resolved, err := exec.LookPath("agentchute")
@@ -380,8 +380,32 @@ func isAgentchuteBinValid() bool {
 	if envBin == "" {
 		return false
 	}
-	_, err := os.Stat(envBin)
-	return err == nil
+	return executableFileProblem(envBin) == ""
+}
+
+// executableFileProblem returns a human-readable reason when `path` is
+// NOT a regular file with at least one execute bit set, or "" when the
+// path is launchable by the wrapper's exec call. Stricter than
+// os.Stat because v0.1.2 shipped a check that incorrectly accepted
+// directories (codex review on d73d4dd).
+func executableFileProblem(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "does not exist"
+		}
+		return fmt.Sprintf("stat error: %v", err)
+	}
+	if info.IsDir() {
+		return "is a directory, not a binary"
+	}
+	if !info.Mode().IsRegular() {
+		return "is not a regular file"
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return "is not executable (no exec bits)"
+	}
+	return ""
 }
 
 func checkSelfRegistration(cfg *loop.Config, agentID string) doctorCheck {

@@ -100,9 +100,60 @@ func TestRunWatchLoopFiresOnlyOnNewArrivals(t *testing.T) {
 	}
 }
 
-// Dedup: same message_id arriving twice (or the same file scanned across
-// two ticks) must fire actions exactly once.
-func TestRunWatchLoopDedupesByMessageID(t *testing.T) {
+// v0.1.3 hotfix (codex review on d73d4dd): two distinct deliveries
+// carrying the same frontmatter message_id must BOTH fire. message_id
+// is not delivery-unique per AGENTCHUTE.md §6.4.1; the identity tuple
+// in the filename is authoritative. Same class as the v0.1.1 ledger bug.
+func TestRunWatchLoopFiresOnBothFilesWithSharedMessageID(t *testing.T) {
+	cfg := newWatchTestCfg(t)
+	inbox := cfg.AgentInboxDir("claude-code")
+
+	var mu sync.Mutex
+	fires := 0
+	opts := watchOptions{
+		Cfg:     cfg,
+		AgentID: "claude-code",
+		Print:   true,
+		PrintFn: func(_, _ string) {
+			mu.Lock()
+			fires++
+			mu.Unlock()
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runWatchLoop(ctx, opts, 50*time.Millisecond) }()
+
+	time.Sleep(120 * time.Millisecond)
+	// Two distinct files (distinct filenames via separate WriteInboxMessage
+	// calls; each gets a fresh nonce + microsecond-distinct timestamp)
+	// that share a frontmatter message_id.
+	sharedID := "shared-msgid-test"
+	body := []byte("---\nmessage_id: " + sharedID + "\nfrom: codex\nto: claude-code\n---\n\nb\n")
+	if _, err := loop.WriteInboxMessage(inbox, time.Now().UTC(), "codex", body); err != nil {
+		t.Fatal(err)
+	}
+	// Microsecond gap so the second filename is guaranteed distinct.
+	time.Sleep(2 * time.Millisecond)
+	if _, err := loop.WriteInboxMessage(inbox, time.Now().UTC(), "codex", body); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if fires != 2 {
+		t.Errorf("fires = %d, want 2 (both files must fire; message_id is not delivery-unique per §6.4.1)", fires)
+	}
+}
+
+// Dedup: same FILE scanned across two ticks must fire actions exactly
+// once. Filename is the protocol's identity tuple; this is the legitimate
+// dedup case.
+func TestRunWatchLoopDedupesBySameFile(t *testing.T) {
 	cfg := newWatchTestCfg(t)
 	inbox := cfg.AgentInboxDir("claude-code")
 
@@ -128,7 +179,8 @@ func TestRunWatchLoopDedupesByMessageID(t *testing.T) {
 		[]byte("---\nmessage_id: dedup-test\nfrom: codex\nto: claude-code\n---\n\nb\n")); err != nil {
 		t.Fatal(err)
 	}
-	// Let several ticks elapse — fires should remain at 1.
+	// Let several ticks elapse — fires should remain at 1 (same file scanned
+	// repeatedly).
 	time.Sleep(300 * time.Millisecond)
 	cancel()
 	<-done
@@ -136,7 +188,7 @@ func TestRunWatchLoopDedupesByMessageID(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if fires != 1 {
-		t.Errorf("fires = %d, want 1 (dedup by message_id)", fires)
+		t.Errorf("fires = %d, want 1 (same file dedup)", fires)
 	}
 }
 
@@ -164,10 +216,11 @@ func TestFireActionsCallsEnabledActions(t *testing.T) {
 	}
 
 	fireActions(opts, watchEntry{
-		Key:      "msg-test-1",
-		From:     "codex",
-		Task:     "review",
-		Filename: "ts_from-codex_msg-aaaa.md",
+		Key:       "ts_from-codex_msg-aaaa.md",
+		MessageID: "msg-test-1",
+		From:      "codex",
+		Task:      "review",
+		Filename:  "ts_from-codex_msg-aaaa.md",
 	})
 
 	if notifies != 1 {
@@ -179,6 +232,7 @@ func TestFireActionsCallsEnabledActions(t *testing.T) {
 	if execs != 1 {
 		t.Errorf("execs = %d, want 1", execs)
 	}
+	// AGENTCHUTE_MSG_ID surfaces the frontmatter message_id when present.
 	if lastEnv["AGENTCHUTE_MSG_ID"] != "msg-test-1" {
 		t.Errorf("AGENTCHUTE_MSG_ID = %q, want msg-test-1", lastEnv["AGENTCHUTE_MSG_ID"])
 	}

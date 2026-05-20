@@ -27,7 +27,9 @@ const defaultWatchInterval = 10 * time.Second
 //
 // Design notes (codex brainstorm + claude-code's read):
 //   - Polling only, stdlib only. No fsnotify dependency.
-//   - Dedupe by message_id when present, falling back to filename.
+//   - Dedupe by filename (the §6.1.1 delivery-identity tuple). Frontmatter
+//     `message_id` is for reply chains, not delivery uniqueness (§6.4.1),
+//     so two files with the same message_id fire independently.
 //   - Startup sweep captures current inbox as "already seen" so the watcher
 //     fires only on arrivals AFTER it started.
 //   - --exec is operator-owned automation. Startup stderr warning so the
@@ -155,8 +157,8 @@ func (o watchOptions) exec(cmd string, env map[string]string) error {
 
 // runWatchLoop is the testable inner loop. Captures the current inbox
 // as "seen", then polls at interval. Each new message (identified by
-// message_id-or-filename) fires the configured actions exactly once and
-// is added to the seen set.
+// filename) fires the configured actions exactly once and is added to
+// the seen set.
 func runWatchLoop(ctx context.Context, opts watchOptions, interval time.Duration) error {
 	inboxDir := opts.Cfg.AgentInboxDir(opts.AgentID)
 
@@ -190,9 +192,16 @@ func runWatchLoop(ctx context.Context, opts watchOptions, interval time.Duration
 	}
 }
 
-// watchEntry is the unit of new-mail dedup in the watch loop.
+// watchEntry is the unit of new-mail dedup in the watch loop. Key is
+// always the filename (the §6.1.1 identity tuple) — two distinct
+// deliveries must dedupe independently even when they happen to share a
+// frontmatter message_id, per AGENTCHUTE.md §6.4.1 (message_id is for
+// reply chains, not delivery uniqueness). MessageID is surfaced
+// separately to the --exec env var AGENTCHUTE_MSG_ID when present.
+// (codex review on d73d4dd; same class as the v0.1.1 ledger bug.)
 type watchEntry struct {
-	Key       string // message_id when present, else filename
+	Key       string // filename (delivery identity)
+	MessageID string // optional frontmatter message_id for AGENTCHUTE_MSG_ID env
 	From      string
 	Task      string
 	Filename  string
@@ -224,20 +233,16 @@ func scanInbox(inboxDir string) ([]watchEntry, error) {
 	out := make([]watchEntry, 0, len(msgs))
 	for _, msg := range msgs {
 		entry := watchEntry{
-			Key:       msg.Filename,
+			Key:       msg.Filename, // delivery identity per §6.1.1
 			From:      msg.Sender,
 			Filename:  msg.Filename,
 			Timestamp: msg.Timestamp.UTC(),
 		}
-		// Prefer message_id (frontmatter) as the dedup key when present —
-		// matches the ledger's identity convention. Filename is the
-		// fallback because every valid message has one and they're
-		// uniquely nonce-suffixed.
 		fm, _, ferr := readFrontmatter(msg.Path)
 		if ferr == nil {
-			if mid := strings.TrimSpace(fm["message_id"]); mid != "" {
-				entry.Key = mid
-			}
+			// Track frontmatter message_id for AGENTCHUTE_MSG_ID env var
+			// when --exec is enabled. Never used for dedup.
+			entry.MessageID = strings.TrimSpace(fm["message_id"])
 			entry.Task = fm["task"]
 		}
 		out = append(out, entry)
@@ -260,8 +265,16 @@ func fireActions(opts watchOptions, e watchEntry) {
 		opts.print(title, summary)
 	}
 	if opts.ExecCmd != "" {
+		// AGENTCHUTE_MSG_ID is the frontmatter message_id when the
+		// message carries one (matches the ledger's identity convention
+		// for reply threading), filename otherwise. Dedup uses filename
+		// regardless — this is only the env-var presentation surface.
+		msgID := e.MessageID
+		if msgID == "" {
+			msgID = e.Filename
+		}
 		env := map[string]string{
-			"AGENTCHUTE_MSG_ID": e.Key,
+			"AGENTCHUTE_MSG_ID": msgID,
 			"AGENTCHUTE_FROM":   e.From,
 			"AGENTCHUTE_TASK":   e.Task,
 		}

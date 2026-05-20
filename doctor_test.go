@@ -311,6 +311,51 @@ func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 	}
 }
 
+// v0.1.3 hotfix (codex review on d73d4dd): AGENTCHUTE_BIN must point at
+// a regular, executable file. A directory at that path was previously
+// accepted as "OK" because the check was just os.Stat — hooks would
+// then fail to launch the binary because /tmp is not a binary.
+func TestDoctorAGENTCHUTE_BINRejectsDirectory(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	t.Setenv("AGENTCHUTE_BIN", cfg.ControlRepo) // a directory
+	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	got := findCheck(t, r, "binary_on_path")
+	if got.Severity == severityOK {
+		t.Errorf("binary_on_path severity = %q, want WARN/BLOCKER for directory at AGENTCHUTE_BIN", got.Severity)
+	}
+}
+
+// Non-executable regular file at AGENTCHUTE_BIN must also be flagged —
+// the hook would launch it via exec which requires the exec bit.
+func TestDoctorAGENTCHUTE_BINRejectsNonExecutable(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	notExec := filepath.Join(cfg.ControlRepo, "not-executable")
+	if err := os.WriteFile(notExec, []byte("text"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTCHUTE_BIN", notExec)
+	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	got := findCheck(t, r, "binary_on_path")
+	if got.Severity == severityOK {
+		t.Errorf("binary_on_path severity = %q, want WARN/BLOCKER for non-executable file at AGENTCHUTE_BIN", got.Severity)
+	}
+}
+
+// Sanity: a real executable file at AGENTCHUTE_BIN does pass.
+func TestDoctorAGENTCHUTE_BINAcceptsExecutableFile(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	exec := filepath.Join(cfg.ControlRepo, "executable-stub")
+	if err := os.WriteFile(exec, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTCHUTE_BIN", exec)
+	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	got := findCheck(t, r, "binary_on_path")
+	if got.Severity != severityOK {
+		t.Errorf("binary_on_path severity = %q, want OK for valid executable", got.Severity)
+	}
+}
+
 func TestCmdDoctorJSONShape(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	// cmdDoctor calls loop.Discover, which needs AGENTCHUTE.md at the
