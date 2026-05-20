@@ -9,8 +9,8 @@
 <meta property="og:description" content="agentchute v0.1.2 adds doctor, watch, and structured Claude Code hook output: diagnostics and a no-tmux fallback for agent inboxes.">
 <meta property="og:url" content="https://agentchute.dev/blog/v0-1-2-doctor-watch-no-tmux.html">
 <meta property="og:type" content="article">
-<meta property="og:image" content="https://agentchute.dev/images/blog/v0-1-2-watch-doctor.jpg">
-<meta property="og:image:alt" content="Three terminal panes connected by inbox lines, with a diagnostic monitor and a notification bell beside them.">
+<meta property="og:image" content="https://agentchute.dev/images/blog/v0-1-2-workflow.jpg">
+<meta property="og:image:alt" content="Four-panel comic of the agentchute workflow: the human writes instructions, hands them to the agents, the agents coordinate among themselves through their inboxes, and deliver the result back.">
 <meta property="og:image:width" content="1248">
 <meta property="og:image:height" content="832">
 <meta property="article:published_time" content="2026-05-20">
@@ -18,7 +18,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="v0.1.2: doctor, watch, and the no-tmux path">
 <meta name="twitter:description" content="agentchute v0.1.2 adds doctor, watch, and structured Claude Code hook output: diagnostics and a no-tmux fallback for agent inboxes.">
-<meta name="twitter:image" content="https://agentchute.dev/images/blog/v0-1-2-watch-doctor.jpg">
+<meta name="twitter:image" content="https://agentchute.dev/images/blog/v0-1-2-workflow.jpg">
 <link rel="canonical" href="https://agentchute.dev/blog/v0-1-2-doctor-watch-no-tmux.html">
 <link rel="stylesheet" href="../style.css">
 </head>
@@ -69,10 +69,11 @@
     </p>
 
     <figure class="blog-image">
-      <img src="../images/blog/v0-1-2-watch-doctor.jpg" alt="Three terminal panes connected by inbox lines, with a diagnostic monitor and a notification bell beside them." loading="lazy" width="1248" height="832">
+      <img src="../images/blog/v0-1-2-workflow.jpg" alt="Four-panel comic: (1) human writes instructions in a notebook; (2) hands them to a screen of agent characters; (3) the agents pass paper messages between themselves while the human sips coffee; (4) the agents deliver the finished result back to the human." loading="lazy" width="1248" height="832">
       <figcaption>
-        v0.1.2 keeps the same inbox model, then adds diagnostics and a local
-        notification path for sessions that do not have a tmux wake target.
+        The full loop. v0.1.2 makes the third panel — agents coordinating
+        through their own inboxes — work without tmux and inspectable when
+        it doesn't.
       </figcaption>
     </figure>
 
