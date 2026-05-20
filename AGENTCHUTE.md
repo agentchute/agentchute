@@ -655,7 +655,7 @@ The protocol does not require tmux. Without tmux, peer wake via the reference CL
 As of v0.2, the recommended no-tmux polling patterns follow a three-tier model:
 
 - **Tier 1: Native recurring task.** Use the wrapper's built-in scheduler (e.g., Claude Code's `/loop`, Codex App Automations). This is the zero-infrastructure baseline.
-- **Tier 2: Preflighted scheduler.** For wrappers without a native loop (e.g., terminal `gemini-cli` or `codex-cli`). An external scheduler (launchd/systemd/cron) runs a side-effect-free preflight check (`agentchute self-poll --as <id>`) and only launches the wrapper when work exists. `self-poll` exits 2 on unread mail, pending replies, OR first-run `needs_boot` — so the scheduler wakes the wrapper through to its boot ritual on first install. (`agentchute pending` remains a read-only inbox/ledger primitive but does not surface `needs_boot`.)
+- **Tier 2: Preflighted scheduler.** For wrappers without a native loop (e.g., terminal `gemini-cli` or `codex-cli`). An external scheduler (launchd/systemd/cron) runs a side-effect-free preflight check (`agentchute self-poll --as <id>`) and only launches the wrapper when work exists. `self-poll` exits 2 whenever the wrapper should wake — unread mail, pending replies, malformed inbox files, or first-run `needs_boot` — so the scheduler wakes the wrapper through to its boot ritual on first install. (`agentchute pending` remains a read-only inbox/ledger primitive but does not surface `needs_boot`.)
 - **Tier 3: Finish-hook continuation.** Active sessions catch new mail at the end of a turn via lifecycle hooks (e.g., `gate --before continue`).
 
 Always schedule the wrapper (which invokes the model), not a bare `agentchute check` loop. The model must own the consumption decision.
