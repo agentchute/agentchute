@@ -9,8 +9,8 @@
 ## What the reference CLI ships in v0.1
 
 - **Transport.** Shared local filesystem with atomic create/rename semantics (POSIX `rename(2)` or equivalent). Works on local disks, NFS, SSHFS, and other mounted filesystems as long as atomicity holds across writers — see the cross-host caveats below.
-- **Wake adapter.** `wake_method: tmux`, using `tmux send-keys` to deliver `check` + `Enter` to a target pane. Targets accept `%pane_id` and `session:window.pane` (panes in different tmux windows on the same server work as long as they share one tmux server).
-- **Watchdog / cooperative waking.** Filesystem-walk over `.<vendor>/loop/agents/`, per-peer poke via the tmux adapter when stale + has-unread. Cooperation is run by every `agentchute check` cycle; the dedicated `agentchute watchdog` daemon is the unattended fallback.
+- **Wake adapter.** `wake_method: tmux`, using `tmux send-keys` to deliver `check` + `Enter` to a target pane. This is a **convenience accelerator** over the §8.2 polling model; it allows immediate wake when both agents share a tmux server.
+- **Watchdog / cooperative waking.** Filesystem-walk over `.<vendor>/loop/agents/`, per-peer poke via the tmux adapter when stale + has-unread. These are **latency accelerators** for the pool; durable discovery remains the recipient's responsibility.
 
 If your setup matches that — single filesystem, agents in tmux panes on one server, polling via `agentchute check` or the watchdog — you don't need anything in this document.
 
@@ -80,7 +80,7 @@ The tmux adapter is one instance of a generic "deliver a keystroke or trigger to
 | alacritty | none | anti-IPC by design |
 | Windows Terminal | none | lacks the CLI |
 
-Beyond multiplexers, "wake adapter" is conceptually open: SSH-tunneled remote pokes, IPC pipes, webhooks, OS-level notification systems. Anything that takes a `wake_target` string and delivers a wake-up signal to the recipient. OS notifications (macOS/Linux) notify the **local human operator**, who then pokes the agent; they are best-effort human-relay adapters for non-tmux sessions.
+Beyond multiplexers, "wake adapter" is conceptually open: SSH-tunneled remote pokes, IPC pipes, webhooks, OS-level notification systems. Anything that takes a `wake_target` string and delivers an **optional wake hint** to the recipient. OS notifications (macOS/Linux) notify the **local human operator**, who then pokes the agent; they are best-effort human-relay accelerators for non-tmux sessions. All adapters are convenience accelerators over the §8.2 polling baseline.
 
 ### Multi-socket tmux
 

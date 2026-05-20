@@ -650,13 +650,23 @@ Fallback keycodes if `Enter` does not commit on a particular CLI: try `C-m` (car
 
 ### 8.1 Running the reference CLI without tmux
 
-The protocol does not require tmux. Without tmux, peer wake via the reference CLI is unavailable — delivery still works (messages land in the recipient's inbox), but recipients must poll. Patterns for the wrappers we've used:
+The protocol does not require tmux. Without tmux, peer wake via the reference CLI's default adapter is unavailable — delivery still works (messages land in the recipient's inbox), but recipients must poll.
 
-- **Claude Code**: `/loop check` — Claude's built-in recurring task feature. The agent itself sees each tick.
-- **codex CLI** (no built-in self-loop in 0.130.0): an operator-owned scheduler invoking `codex exec` with an inbox-processing prompt.
-- **Gemini CLI** (no built-in self-loop): same shape — an operator-owned scheduler invoking `gemini` with an inbox-processing prompt.
+As of v0.2, the recommended no-tmux polling patterns follow a three-tier model:
 
-A bare `agentchute check` shell loop without the wrapper is NOT a valid pattern for task-processing agents: it consumes and archives messages without any model acting on them. Always schedule the wrapper, not the CLI alone.
+- **Tier 1: Native recurring task.** Use the wrapper's built-in scheduler (e.g., Claude Code's `/loop`, Codex App Automations). This is the zero-infrastructure baseline.
+- **Tier 2: Preflighted scheduler.** For wrappers without a native loop (e.g., terminal `gemini-cli` or `codex-cli`). An external scheduler (launchd/systemd/cron) runs a side-effect-free preflight check (`agentchute self-poll --as <id>`) and only launches the wrapper when work exists. `self-poll` exits 2 whenever the wrapper should wake — unread mail, pending replies, malformed inbox files, or first-run `needs_boot` — so the scheduler wakes the wrapper through to its boot ritual on first install. (`agentchute pending` remains a read-only inbox/ledger primitive but does not surface `needs_boot`.)
+- **Tier 3: Finish-hook continuation.** Active sessions catch new mail at the end of a turn via lifecycle hooks (e.g., `gate --before continue`).
+
+Always schedule the wrapper (which invokes the model), not a bare `agentchute check` loop. The model must own the consumption decision.
+
+### 8.2 Wake responsibility
+
+The protocol's discovery mechanism is recipient-side polling. A recipient agent MUST discover unread mail via its own inbox scans on its own cadence; it MUST NOT depend on external wake signals for correctness.
+
+Wake adapters (tmux, HTTP, SSH, etc.) are **best-effort convenience optimizations** that reduce polling latency. Senders MAY attempt wake via the recipient's declared `wake_method`; failure is logged and ignored. Recipients MAY use external wake hints as additional signals but MUST remain correct in their absence.
+
+The `wake_method` registration field declares the recipient's preferred convenience adapter, NOT a protocol requirement. Empty `wake_method` is equivalent to "I poll my own inbox."
 
 ## 9. Liveness
 
@@ -670,7 +680,7 @@ For larger pools, or for production-realistic 24/7 use where token-exhaustion st
 
 The v1 watchdog monitors agent inboxes and pokes recipients whose inboxes are stale. The behavior described below is implementation-agnostic — implementations may run as a small standalone daemon process, may be built into a long-running agent's polling loop (e.g., Claude Code's `/loop`), or may be filled by a human checking timestamps and running the §8 poke by hand. See the vendor implementation's README for concrete paths. It is **liveness-only**: it MUST NOT assign tasks, reroute messages, rank agents, interpret message content, or modify any inbox/archive contents beyond reading. A richer coordinator/router remains a v2 deferred item (§13).
 
-In addition to dedicated watchdog processes, every recipient flow MAY contribute cooperative waking (§10.5) — a best-effort distributed extension of the watchdog algorithm performed opportunistically during a normal `check` cycle. Watchdog and cooperation are **both best-effort** liveness aids; only inbox delivery is the durable part. Neither can wake an agent with no reachable `wake_method`/`wake_target` — in that case the recipient must poll its inbox on its own cadence or be checked manually. Run the dedicated watchdog when you want unattended polling without relying on active peers.
+In addition to dedicated watchdog processes, every recipient flow MAY contribute cooperative waking (§10.5) — a best-effort distributed extension of the watchdog algorithm performed opportunistically during a normal `check` cycle. Watchdog and cooperation are **both best-effort** liveness aids; they are latency accelerators over the §8.2 recipient-polling correctness model. Only inbox delivery is the durable part. Neither can wake an agent with no reachable `wake_method`/`wake_target` — in that case the recipient must poll its inbox on its own cadence or be checked manually. Run the dedicated watchdog when you want unattended polling without relying on active peers.
 
 
 ### 10.1 Watchdog registration

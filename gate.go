@@ -22,11 +22,19 @@ const StaleRegThreshold = 30 * time.Minute
 
 // Lifecycle phases recognized by `gate --before <phase>`. Order matters
 // only for grouping: each later phase implies the earlier phase's checks.
+//
+// The `continue` phase (v0.2) is a sibling of `finish` optimized for
+// in-session decision hooks like gemini-cli's AfterAgent or codex Stop:
+// "should the wrapper immediately continue into another turn?" Identical
+// blocking predicate as `finish` (unread / malformed / pending-replies)
+// — diverges only in output framing for hook-specific JSON shapes like
+// `decision:deny` (gemini AfterAgent) vs `decision:block` (codex Stop).
 const (
 	gatePhaseConsensus = "consensus"
 	gatePhaseCommit    = "commit"
 	gatePhaseRelease   = "release"
 	gatePhaseFinish    = "finish"
+	gatePhaseContinue  = "continue"
 )
 
 // cmdGate is the lifecycle gate. Read-only: never refreshes registration,
@@ -40,14 +48,15 @@ func cmdGate(args []string) error {
 	fs := flag.NewFlagSet("gate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, before, controlRepo, loopDir, codexHook string
+	var agentID, before, controlRepo, loopDir, codexHook, geminiHook string
 	var jsonOut, requireConfirm, ackStaleReg bool
 	fs.StringVar(&agentID, "as", "", "agent id (or $AGENTCHUTE_AGENT_ID)")
-	fs.StringVar(&before, "before", "", "lifecycle phase: consensus|commit|release|finish")
+	fs.StringVar(&before, "before", "", "lifecycle phase: consensus|commit|release|finish|continue")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or $AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or $AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
 	fs.StringVar(&codexHook, "codex-hook", "", "codex hook JSON shape for the named event (Stop)")
+	fs.StringVar(&geminiHook, "gemini-hook", "", "gemini-cli hook JSON shape for the named event (AfterAgent — typically paired with --before continue)")
 	fs.BoolVar(&requireConfirm, "require-confirm", false, "refuse unless warn-level conditions are explicitly acknowledged")
 	fs.BoolVar(&ackStaleReg, "ack-stale-reg", false, "acknowledge that the registration is stale (for --require-confirm)")
 
@@ -71,7 +80,7 @@ func cmdGate(args []string) error {
 		return gateUsage(fmt.Errorf("--before <phase> is required"))
 	}
 	if !isValidGatePhase(phase) {
-		return gateUsage(fmt.Errorf("unknown phase %q (valid: consensus|commit|release|finish)", phase))
+		return gateUsage(fmt.Errorf("unknown phase %q (valid: consensus|commit|release|finish|continue)", phase))
 	}
 
 	cwd, err := os.Getwd()
@@ -172,6 +181,12 @@ func cmdGate(args []string) error {
 		// On clear: no output, exit 0. On block: emit {"decision":"block",...}
 		// JSON, exit 0 (codex's preferred shape; main.go won't see errBlocked).
 		return emitGateCodexStop(status)
+	case geminiHook == "AfterAgent":
+		// gemini-cli AfterAgent: {"decision":"deny","reason":"..."} on
+		// block forces another turn; {"decision":"allow"} on clear lets
+		// the session end. Always exits 0 (the JSON is the signal).
+		// Typically paired with --before continue; v0.2 wake-method R&D.
+		return emitGateGeminiAfterAgent(status)
 	case jsonOut:
 		if err := emitGateJSON(status); err != nil {
 			return err
@@ -205,7 +220,7 @@ type gateStatus struct {
 
 func isValidGatePhase(phase string) bool {
 	switch phase {
-	case gatePhaseConsensus, gatePhaseCommit, gatePhaseRelease, gatePhaseFinish:
+	case gatePhaseConsensus, gatePhaseCommit, gatePhaseRelease, gatePhaseFinish, gatePhaseContinue:
 		return true
 	}
 	return false
@@ -337,6 +352,27 @@ func emitGateCodexStop(s gateStatus) error {
 	return enc.Encode(out)
 }
 
+// emitGateGeminiAfterAgent emits gemini-cli's AfterAgent decision JSON.
+// On block: `{"decision":"deny","reason":"..."}` forces another turn.
+// On clear: `{"decision":"allow"}` lets the session end. Always exits 0
+// (the JSON is the signal). v0.2 wake-method R&D: this is the in-session
+// continuation surface for gemini-cli without an external scheduler;
+// typically paired with `--before continue`.
+func emitGateGeminiAfterAgent(s gateStatus) error {
+	if !s.Blocked {
+		out := map[string]any{"decision": "allow"}
+		enc := json.NewEncoder(os.Stdout)
+		return enc.Encode(out)
+	}
+	reason := fmt.Sprintf("agentchute gate --before %s: %s", s.Phase, strings.Join(s.Reasons, "; "))
+	out := map[string]any{
+		"decision": "deny",
+		"reason":   reason,
+	}
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(out)
+}
+
 func gateUsage(err error) error {
 	if err == flag.ErrHelp {
 		return gateHelpErr()
@@ -362,6 +398,8 @@ Phases:
   release    same as commit + warns on wake_stale peer registrations
   finish     blocks on unread direct mail OR pending required-replies
              (strongest gate; for end-of-turn use)
+  continue   same predicate as finish; for in-session decision hooks
+             (gemini AfterAgent, codex Stop) that ask "continue the turn?"
 
 Exit codes:
   0  clear to proceed
@@ -370,11 +408,13 @@ Exit codes:
 
 Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
-  --before <phase>      consensus|commit|release|finish (required)
+  --before <phase>      consensus|commit|release|finish|continue (required)
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --json                structured JSON output
   --codex-hook <event>  codex hook JSON shape (Stop)
+  --gemini-hook <event> gemini-cli hook JSON shape (AfterAgent); on block emits
+                        {"decision":"deny","reason":"..."}, else {"decision":"allow"}
   --require-confirm     refuse unless warn-level conditions are acknowledged
   --ack-stale-reg       acknowledge stale registration (for --require-confirm)
 `)

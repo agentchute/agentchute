@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentchute — coordinate AI agents through shared inboxes</title>
-<meta name="description" content="agentchute is a markdown-protocol convention for AI agents to coordinate through shared inboxes. No central server or broker required. No SDK.">
+<meta name="description" content="agentchute is a Markdown protocol for AI agents to coordinate through shared inboxes. Recipient-side polling is canonical; wake adapters like tmux are optional latency hints.">
 <meta property="og:title" content="agentchute">
-<meta property="og:description" content="Coordinate AI agents through shared inboxes. No central server or broker required.">
+<meta property="og:description" content="Coordinate AI agents through shared inboxes. Recipient-side polling, optional wake adapters, no central broker.">
 <meta property="og:url" content="https://agentchute.dev/">
 <meta property="og:type" content="website">
 <link rel="canonical" href="https://agentchute.dev/">
@@ -40,6 +40,8 @@
     </p>
     <p class="lede">
       No central server or broker required. No SDK. No compiled code required.
+      Recipients poll their own inboxes; wake adapters like tmux are optional
+      convenience, not correctness.
       Just <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code></a>
       plus a short enrollment block your agents read and follow.
     </p>
@@ -66,6 +68,7 @@
       </a>
       <figcaption>
         Three agents coordinating in tmux during the final pre-release cleanup pass.
+        tmux is one convenient wake adapter; v0.2 also makes no-tmux polling first-class.
         24x speedup of a real working session. No staged prompts, no human ferrying
         messages. <a href="https://www.youtube.com/watch?v=jwYzKtcOYl0" target="_blank" rel="noopener">Watch on YouTube</a> (62 seconds).
       </figcaption>
@@ -75,17 +78,17 @@
 
 <section class="featured-post">
   <div class="wrap">
-    <a href="blog/v0-1-2-doctor-watch-no-tmux.html" class="featured-post-link">
+    <a href="blog/v0-2-recipient-polling.html" class="featured-post-link">
       <img
-        src="images/blog/v0-1-2-workflow.jpg"
-        alt="Four-panel comic of the agentchute workflow: human writes instructions, hands to agents, agents coordinate, deliver result back."
+        src="images/blog/v0-2-workflow.jpg"
+        alt="Four-panel comic of agentchute v0.2: sender writes to inbox, recipient polls, wrapper runs check, agents coordinate without tmux as a hard dependency."
         class="featured-post-thumb"
         loading="lazy"
         width="240" height="160">
       <div class="featured-post-text">
         <p class="featured-post-meta">Latest from the blog</p>
-        <p class="featured-post-title">v0.1.2: doctor, watch, and the no-tmux path <span class="featured-post-arrow" aria-hidden="true">→</span></p>
-        <p class="featured-post-excerpt">v0.1.1 made agents remember who they owed. v0.1.2 makes the loop easier to inspect, easier to wire, and usable when there is no tmux pane to poke.</p>
+        <p class="featured-post-title">v0.2: recipient polling, by hand and by hook <span class="featured-post-arrow" aria-hidden="true">→</span></p>
+        <p class="featured-post-excerpt">v0.2 makes the no-tmux path first-class: self-poll, preflighted schedulers, gate --before continue, and a §8.2 wake-responsibility clarification.</p>
       </div>
     </a>
   </div>
@@ -104,7 +107,7 @@
       <li><strong>Ordered, identified messages.</strong> Each carries a unique <code>(timestamp, sender, nonce)</code> identity tuple; receivers process oldest-first by timestamp with deterministic tie-breaking. The reference CLI realizes this as lexicographic-sorted filenames.</li>
       <li><strong>No-overwrite delivery.</strong> Delivery never silently clobbers an existing entry. Same-identity collisions retry with a fresh nonce. <em>Sender-to-inbox transport is implementation-specific.</em></li>
       <li><strong>Recipient-owned consumption.</strong> Only the recipient reads its own message bodies. Liveness checks use inbox metadata only.</li>
-      <li><strong>Optional wake.</strong> Senders MAY signal a recipient via a pluggable wake adapter. The recipient's own self-poll loop is an equally valid fallback. <em>The wake mechanism is implementation-specific.</em></li>
+      <li><strong>Optional wake.</strong> Senders MAY signal a recipient via a pluggable wake adapter. Per <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md#82-wake-responsibility">§8.2</a>, recipient-side polling is the correctness mechanism; wake is a latency hint. <em>The wake mechanism is implementation-specific.</em></li>
       <li><strong>Self-registration.</strong> Each agent publishes a small record naming itself, its wake method/target (if any), and operational metadata.</li>
     </ul>
   </div>
@@ -112,22 +115,22 @@
 
 <section class="primitives" style="background:var(--bg-alt)">
   <div class="wrap">
-    <h2>The v0.1 reference implementation</h2>
+    <h2>The reference CLI: filesystem inboxes, optional wake</h2>
     <p>
       The CLI in this repo picks one concrete answer for each implementation-specific axis.
       It's not the protocol — it's the implementation we used while building the protocol,
       and it worked well enough to be the exclusive coordination layer for the team that
-      shipped it. We chose tmux because it is terminal-native, widely packaged, and gives
-      each agent a stable addressable pane; with one install and a few panes, senders can
-      wake recipients immediately without adding a daemon, broker, or wrapper-specific
-      integration.
+      shipped it. tmux remains the fastest local wake path when all agents live in one
+      terminal multiplexer. v0.2 makes the other path explicit too: recipients can poll
+      their own inboxes and schedulers can launch the wrapper only when work exists.
     </p>
     <ul class="grid">
       <li><strong>Inbox medium:</strong> plain <code>.md</code> files on a shared filesystem, organized under <code>.&lt;vendor&gt;/loop/inbox/&lt;agent&gt;/</code>.</li>
       <li><strong>Transport:</strong> atomic create-temp + rename (the local-filesystem realization of no-overwrite delivery).</li>
-      <li><strong>Multiplexer:</strong> tmux. See the <a href="https://github.com/agentchute/agentchute/blob/main/examples/tmux-quickstart.md">tmux starter kit</a> for a 5-minute setup if you're new to it.</li>
-      <li><strong>Peer-to-peer wake:</strong> <code>tmux send-keys</code> injecting the literal string <code>check</code> into the recipient's pane.</li>
-      <li><strong>Recipient self-poll:</strong> Claude Code's <code>/loop</code> feature is the in-wrapper path; codex CLI and Gemini CLI have no built-in self-loop, so they use an operator-owned scheduler that invokes the wrapper. Used as the fallback when no peer wake adapter is reachable.</li>
+      <li><strong>Peer wake adapter:</strong> <code>tmux send-keys</code> can inject the literal string <code>check</code> into an addressable recipient pane. See the <a href="https://github.com/agentchute/agentchute/blob/main/examples/tmux-quickstart.md">tmux starter kit</a> for the 5-minute local setup.</li>
+      <li><strong>Recipient polling:</strong> <code>self-poll</code> is the read-only "should I wake the wrapper?" helper for schedulers and launch prompts.</li>
+      <li><strong>Generated schedulers:</strong> <code>doctor --generate-service</code> emits launchd, systemd, or portable shell-loop units that run <code>self-poll</code> and then launch the wrapper, not bare <code>check</code>.</li>
+      <li><strong>Lifecycle catchup:</strong> <code>gate --before continue</code> lets already-awake wrappers catch mail that arrived during a turn.</li>
     </ul>
     <p>
       <strong>Local is not baked into the protocol, and neither is speed.</strong>
@@ -143,7 +146,8 @@
       with a worked git-as-transport sketch. Alternate wake adapters (wezterm, kitty,
       OS notifications, SSH-based pokes) and alternate self-poll mechanisms are
       covered in the surrounding sections.
-      None of these ship in v0.1; they ship the day someone writes them.
+      The reference CLI stays intentionally small; adapters outside the filesystem +
+      tmux baseline can live as extensions.
     </p>
   </div>
 </section>
@@ -151,7 +155,7 @@
 <section class="flow">
   <div class="wrap">
     <h2>The Handoff: simple two-agent message flow</h2>
-    <p>The simplest case: alice sends; bob's wake adapter pokes; bob's <code>check</code> runs; bob replies.</p>
+    <p>The simplest case: alice sends; bob discovers the inbox entry by wake hint or polling; bob's model runs <code>check</code>; bob replies.</p>
 
     <div class="anim" data-anim="handoff">
       <pre class="ascii ascii-anim" aria-label="Simple two-agent flow"><code></code></pre>
@@ -201,7 +205,7 @@
       <li><strong>Not an identity/auth system.</strong> Messages are unsigned plain-text. If you don't trust your peers, don't run them on your machine.</li>
       <li><strong>Not a router or task-assignment engine.</strong> Agents are peers; senders pick recipients explicitly. No wildcard, no broadcast, no role election.</li>
       <li><strong>Not an audit log.</strong> Archives are local and gitignored by default. Loop messages are a transient operational trace.</li>
-      <li><strong>Not a distributed transport with cryptographic guarantees.</strong> The v0.1 reference CLI runs over a shared filesystem and provides no signing, no acks, no exactly-once. The protocol itself is medium-agnostic — alternate inbox transports are compatible — but v0.1 ships only the local, unsigned, cooperative-trust implementation. For cryptographic audit, use a signed-envelope coordination protocol.</li>
+      <li><strong>Not a distributed transport with cryptographic guarantees.</strong> The reference CLI runs over a shared filesystem and provides no signing, no acks, no exactly-once. The protocol itself is medium-agnostic — alternate inbox transports are compatible — but the CLI ships only the local, unsigned, cooperative-trust implementation. For cryptographic audit, use a signed-envelope coordination protocol.</li>
     </ul>
     <p>If you wanted any of those, this is the wrong tool, and that's fine.</p>
   </div>
@@ -257,31 +261,33 @@ go install github.com/agentchute/agentchute@latest</code></pre>
       <li><code>agentchute init</code> — scaffold loop directories + drop ENROLLMENT blocks into discovered wrapper files.</li>
       <li><code>agentchute register --as &lt;id&gt; --vendor &lt;vendor&gt;</code> — write your registration.</li>
       <li><code>agentchute check --as &lt;id&gt;</code> — pull your inbox, archive consumed messages, enforce §11 (quarantine + notify), and run §10.5 cooperative waking.</li>
+      <li><code>agentchute self-poll --as &lt;id&gt;</code> — read-only preflight for schedulers: exit 0 when idle, exit 2 when the wrapper should wake.</li>
       <li><code>agentchute send --from &lt;id&gt; --to &lt;peer&gt; --task "..."</code> — write the message file and poke the recipient.</li>
+      <li><code>agentchute gate --as &lt;id&gt; --before continue</code> — lifecycle catchup for already-awake wrappers.</li>
       <li><code>agentchute prepare-pool --target &lt;folder&gt;</code> — scaffold cross-folder enrollment in sibling folders.</li>
       <li><code>agentchute status --as &lt;id&gt;</code> — registry overview, inbox depths, freshness.</li>
-      <li><code>agentchute watchdog --as &lt;id&gt;</code> — optional liveness daemon (most pools don't need one; cooperative waking covers it).</li>
+      <li><code>agentchute doctor --generate-service &lt;kind&gt; --as &lt;id&gt;</code> — emit launchd/systemd/script scheduler units for no-tmux polling.</li>
+      <li><code>agentchute watchdog --as &lt;id&gt;</code> — optional liveness daemon; wake remains best-effort.</li>
     </ul>
     <p>
       Both paths produce the same on-disk state. You can mix: hand-protocol on one shell,
       CLI on another, in the same pool.
     </p>
-    <h3>One prerequisite: tmux (or a workaround)</h3>
+    <h3>tmux is optional; polling is required</h3>
     <p>
-      The v0.1 reference CLI ships one peer-wake adapter: <code>tmux send-keys</code>.
-      Install tmux and run agents in addressable tmux panes if you want senders to wake
-      recipients immediately after delivery. Without tmux, delivery still works —
-      messages land in the recipient's inbox — but recipients must poll manually,
-      use a wrapper-provided self-loop, or run an operator-owned scheduler that
-      invokes the agent.
+      The reference CLI ships a tmux peer-wake adapter because it is useful when all
+      agents live in addressable panes. That is a latency optimization, not a
+      prerequisite. The protocol's discovery mechanism is recipient-side polling:
+      senders write to an inbox, and recipients must discover that inbox on their own
+      cadence whether a wake hint arrived or not.
     </p>
     <p>
-      Per-wrapper self-poll patterns we've verified:
+      The v0.2 polling tiers we've verified:
     </p>
     <ul class="commands">
-      <li><strong>Claude Code:</strong> <code>/loop check</code> — Claude's built-in recurring task. The agent itself sees each tick and processes inbox arrivals.</li>
-      <li><strong>codex CLI</strong> (no built-in self-loop in 0.130.0): operator-owned <code>while</code>-loop invoking <code>codex exec</code> with an inbox-processing prompt.</li>
-      <li><strong>Gemini CLI</strong> (no built-in self-loop): same shape — operator-owned scheduler invoking <code>gemini</code> with an inbox-processing prompt.</li>
+      <li><strong>Native recurring tasks:</strong> Claude Code <code>/loop</code> and Codex App Automations can prompt the agent to process mail on a cadence.</li>
+      <li><strong>Preflighted scheduler:</strong> launchd/systemd/cron/shell runs <code>agentchute self-poll --as &lt;id&gt;</code>; on exit 2 it launches <code>codex exec</code>, <code>gemini -p</code>, or another wrapper with an inbox-processing prompt.</li>
+      <li><strong>Finish-hook continuation:</strong> <code>gate --before continue</code> catches mail that appears while a wrapper is already awake.</li>
     </ul>
     <p>
       Important: a bare <code>agentchute check</code> shell loop without a wrapper is
@@ -303,8 +309,8 @@ go install github.com/agentchute/agentchute@latest</code></pre>
     <p>
       agentchute is what's left when you remove every layer that didn't have to be there.
       The spec is short. The reference CLI is small. The only moving parts are
-      <strong>shared inboxes</strong> and, when available, a wake poke for direct
-      wake-ups. <strong>The simplicity is the point.</strong>
+      <strong>shared inboxes</strong>, recipient polling, and, when available, a wake
+      poke for lower latency. <strong>The simplicity is the point.</strong>
     </p>
   </div>
 </section>

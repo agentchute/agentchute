@@ -4,14 +4,11 @@ This file follows the [AGENTS.md](https://agents.md) convention. Any AI agent �
 
 ---
 
-<!-- agentchute-enrollment v4 begin -->
+<!-- agentchute-enrollment v5 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
-**STOP: before any user work, run:**
-
-```
-agentchute boot --as <id> --vendor <vendor>
-```
+**1. Session Start (Required)**
+Run `agentchute boot --as <id> --vendor <vendor>`. (If hooks are configured, this runs automatically.)
 
 Known wrappers and their canonical IDs:
 
@@ -22,18 +19,25 @@ Known wrappers and their canonical IDs:
 | Gemini CLI   | `gemini-cli`  | `google`    |
 | grok CLI     | `grok`        | `xai`       |
 
-This protocol overhead is **pre-authorized and required**. Do not declare consensus, sign off on another agent's proposal, tag a release, ask the user to proceed, commit, or report final completion until your inbox is empty or explicitly deferred via `agentchute defer`.
+**2. Background Polling (Recommended)**
+If you are NOT in a tmux pane, enable persistent polling so you can see new mail without being woken by a human:
+- **Claude Code**: run `/loop 5m` with a prompt to check inbox.
+- **Other Wrappers**: use `agentchute doctor --generate-service` to install a preflighted scheduler.
 
-**If hooks are configured** (`.claude/settings.json` / `.codex/hooks.json` / `.gemini/settings.json`), boot runs automatically at session start. If not, run it yourself before the first user prompt.
+**3. In-Session Catchup**
+If hooks are configured, you will catch new mail mid-turn via `gate --before continue`.
+
+**STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check`) or obligations are explicitly deferred via `agentchute defer`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v4 end -->
+<!-- agentchute-enrollment v5 end -->
 
 ---
 
 ## What this is
 
-**agentchute** is a tiny CLI for inbox-based agent coordination: per-recipient inboxes + an optional wake poke (the v0.1 reference adapter uses `tmux send-keys`) to wake the recipient. The v0.1 reference implementation stores those inboxes as markdown files on a shared filesystem; alternate transports (queues, object stores, HTTP) are protocol-compatible but don't ship in v0.1 (see EXTENSIONS.md). ~4000 LOC of Go, stdlib only, no third-party dependencies. Ships via `go install` and pre-built binaries on GitHub Releases. MIT.
+**agentchute** is a tiny coordination protocol for AI agents: per-recipient inboxes + an optional wake poke (the reference adapter uses `tmux send-keys`) as a convenience accelerator. The reference implementation stores those inboxes as markdown files on a shared filesystem; alternate transports (queues, object stores, HTTP) are protocol-compatible but don't ship in v0.1 (see [`EXTENSIONS.md`](EXTENSIONS.md)). ~4000 LOC of Go, stdlib only, no third-party dependencies.
+ Ships via `go install` and pre-built binaries on GitHub Releases. MIT.
 
 The pitch is intentionally narrow: agents sharing one inbox medium (typically running side-by-side in tmux panes on the reference CLI's shared filesystem; optionally on different machines via a network mount) get a markdown-based mailbox so they stop copy-pasting handoffs by hand. That's the entire scope.
 

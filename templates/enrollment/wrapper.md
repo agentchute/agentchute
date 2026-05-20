@@ -1,15 +1,18 @@
-<!-- agentchute-enrollment v4 begin -->
+<!-- agentchute-enrollment v5 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
-**STOP: before any user work, run:**
+**1. Session Start (Required)**
+Run `agentchute boot --as {{AS}} --vendor {{VENDOR}}`. (If hooks are configured, this runs automatically).
 
-```
-agentchute boot --as {{AS}} --vendor {{VENDOR}}
-```
+**2. Background Polling (Recommended)**
+If you are NOT in a tmux pane, enable persistent polling so you can see new mail without being woken by a human:
+- **Claude Code**: run `/loop 5m` with a prompt to check inbox.
+- **Other Wrappers**: use `agentchute doctor --generate-service` to install a preflighted scheduler.
 
-This protocol overhead is **pre-authorized and required**. Do not declare consensus, sign off on another agent's proposal, tag a release, ask the user to proceed, commit, or report final completion until your inbox is empty or explicitly deferred via `agentchute defer`.
+**3. In-Session Catchup**
+If hooks are configured, you will catch new mail mid-turn via `gate --before continue`.
 
-**If hooks are configured** (`.claude/settings.json` / `.codex/hooks.json` / `.gemini/settings.json`), boot runs automatically at session start. If not, run it yourself before the first user prompt.
+**STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check`) or obligations are explicitly deferred via `agentchute defer`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v4 end -->
+<!-- agentchute-enrollment v5 end -->
