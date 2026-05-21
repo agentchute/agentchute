@@ -32,6 +32,7 @@ Commands:
   check          consume and archive messages addressed to me
   pending        peek unread messages (read-only; safe for lifecycle hooks)
   run            launch a wrapper under the PTY runner and local wake socket
+  setup          one-command control-repo setup for tmux, runner, or both wake paths
   self-check     refresh own registration/last_seen and reconcile wake target
   self-poll      "should I wake the wrapper?" — read-only by default; optional poller heartbeat
   poller         recipient-side poller heartbeat/run/status for non-tmux agents
@@ -85,6 +86,8 @@ func main() {
 		err = cmdPending(args)
 	case "run":
 		err = cmdRun(args)
+	case "setup":
+		err = cmdSetup(args)
 	case "self-check":
 		err = cmdSelfCheck(args)
 	case "self-poll":

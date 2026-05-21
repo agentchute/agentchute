@@ -77,6 +77,31 @@ func TestShimsInstallRefusesExistingWithoutForce(t *testing.T) {
 	}
 }
 
+func TestShimsInstallCanLimitWrappers(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := cmdShims([]string{"install", "--dir", dir, "--wrapper", "codex", "--quiet"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "codex")); err != nil {
+		t.Fatalf("codex shim missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "claude")); !os.IsNotExist(err) {
+		t.Fatalf("claude shim should not be installed: %v", err)
+	}
+}
+
+func TestShimsInstallWrapperAgentIDInstallsAliases(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := cmdShims([]string{"install", "--dir", dir, "--wrapper", "gemini-cli", "--quiet"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"gemini", "gemini-cli"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("%s shim missing: %v", name, err)
+		}
+	}
+}
+
 func TestShimsExecRefusesHardDiscoveryError(t *testing.T) {
 	root := t.TempDir()
 	shimDir := filepath.Join(t.TempDir(), "shim")

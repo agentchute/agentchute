@@ -6,7 +6,7 @@
 
 ## 1. Purpose
 
-A small convention for two or more agents (humans, AI assistants, or both) to coordinate through **shared inboxes**. Designed for explicit handoffs: agent X writes a message into agent Y's inbox; if Y declared a reachable `wake_method` and `wake_target`, X also pokes Y with `check` via the corresponding wake adapter for direct wake-up. Without a reachable wake method, Y picks up the message via its own polling cadence (wrapper loop, watchdog, or manual `check`).
+A small convention for two or more agents (humans, AI assistants, or both) to coordinate through **shared inboxes**. Designed for explicit handoffs: agent X writes a message into agent Y's inbox; if Y declared a reachable `wake_method` and `wake_target`, X also pokes Y via the corresponding wake adapter for direct wake-up. Without a reachable wake method, Y picks up the message via its own polling cadence (wrapper loop, watchdog, or manual `check`).
 
 ### Protocol primitives (implementation-agnostic)
 
@@ -28,8 +28,8 @@ The v0.1 reference CLI maps these primitives onto the three concrete choices we'
 - **Inbox medium**: plain `.md` files on a shared filesystem, organized under a vendor-namespaced loop directory at the repo root (§3, §6).
 - **Transport**: atomic create-temp + rename (the local-filesystem realization of no-overwrite delivery).
 - **Wake** — two-sided:
-  - *Peer→peer*: `tmux send-keys` injection of the literal string `check` into the recipient's pane (the v0.1 reference wake adapter, §8).
-  - *Runner socket*: `agentchute run` launches a wrapper under a PTY, registers `wake_method: agentchute-run` with a local Unix socket target, polls the inbox, and injects `check inbox` when mail arrives.
+  - *Peer→peer*: `tmux send-keys` injection of `[agentchute:tmux] check inbox` into the recipient's pane (the v0.1 reference wake adapter, §8).
+  - *Runner socket*: `agentchute run` launches a wrapper under a PTY, registers `wake_method: agentchute-run` with a local Unix socket target, polls the inbox, and injects `[agentchute:run] check inbox` when mail arrives.
   - *Recipient self-poll fallback*: the wrapper's own polling loop. Claude Code's `/loop` feature is the in-wrapper path; codex CLI and Gemini CLI have no built-in self-loop and use an operator-owned scheduler that invokes the wrapper. See §8.1 and `README.md` for the per-wrapper patterns we've verified.
 
 These three choices are reference choices, not protocol requirements. The reference implementation worked well enough to be exclusively used for the work that produced this protocol — but a conforming implementation could pick a different inbox medium, transport, wake adapter, or self-poll mechanism and still interoperate.
@@ -581,13 +581,14 @@ An agent's authority to mutate project state (edit files, commit, push, run side
 
 - **Self-registration (§5) on every session start.** Mandatory and idempotent — *run* the registration command (`agentchute boot --as <id> --vendor <vendor>` or `agentchute register --as <id> --vendor <vendor>`) or perform the equivalent hand-protocol §5 write *every time the agent starts*, even when a registration file for this agent already exists. Existing files are likely stale: the previous session may have had a different `host`, `wake_target`, `wake_method`, pane ID, or working directory. **Verifying that a registration file exists is NOT sufficient.** The act of running registration reconciles the registration against current `os.Hostname()`, `$TMUX_PANE`, and `cwd`. If a hand-protocol agent cannot run the CLI, it MUST hand-write the registration anyway, overwriting any prior file's fields with current values.
 - **Self-state updates**: `last_seen` at the start of every turn; `last_active` after consuming inbox messages; `status`, `restart_at` whenever the agent's wrapper has budget/reset visibility. The reference CLI's hook-safe `agentchute self-check --as <id> --vendor <vendor>` refreshes `last_seen` and reconciles the agent's own wake target without consuming inbox mail.
+- **Reference same-host tmux cleanup**: the filesystem reference CLI MAY remove a peer registration only when all of the following are true: the peer is not self, the registration is parseable, `host` equals the local host, `wake_method: tmux`, and the declared `wake_target` is unreachable on the local tmux server. This is narrow local liveness garbage collection for stale pane IDs; it MUST NOT read peer inboxes, touch cross-host registrations, touch non-tmux registrations, or quarantine malformed registrations.
 - **Own scaffold creation**: creating this agent's own protocol state within the existing pool's namespace — its own inbox, archive, and quarantine areas. The agent MUST NOT touch peer state or create the pool itself. _Reference CLI: `inbox/<self>/`, `archive/`, and `malformed/` under `.<vendor>/loop/`._ Shared bootstrap (e.g., `agentchute init` creating the whole pool tree from nothing) is *not* protocol overhead — it remains gated, run only when the human or a directly-addressed message asks for it.
 - **Own-inbox operations**: listing own inbox, reading own messages, archiving consumed messages, quarantining malformed files per §11.
 - **Cooperative waking (§10.5)** and watchdog-style peer-inbox-metadata reads — filenames and timestamps only; never opening peer message bodies.
 - **§11 corrective messages** to inferred offenders of protocol violations.
 - **Direct replies necessary to answer a directly-addressed message** — part of fulfilling the incoming task. Does NOT extend to unsolicited peer messaging, broadcasting, or contacting peers not involved in the original thread.
 
-Constraints on protocol-overhead actions: they MUST be idempotent (running them again with the same inputs is a no-op or refreshes state to current truth) and limited to **this agent's own protocol state** on whatever substrate the implementation uses (in the reference CLI, that's under `.<vendor>/loop/`). They MUST NOT touch project files outside the protocol's namespace, write to peer registration files, or open peer message bodies.
+Constraints on protocol-overhead actions: they MUST be idempotent (running them again with the same inputs is a no-op or refreshes state to current truth) and limited to **this agent's own protocol state** on whatever substrate the implementation uses (in the reference CLI, that's under `.<vendor>/loop/`). Except for the narrow same-host tmux cleanup above, they MUST NOT touch project files outside the protocol's namespace, write to peer registration files, or open peer message bodies.
 
 Everything outside this list — editing project files, sending unsolicited messages to peers other than the directed-message sender, running side-effecting external commands, starting tasks not assigned to this agent — remains gated by the authority rule above.
 
@@ -643,18 +644,18 @@ The poke is a wake-up signal, not a comms channel. All semantic content lives in
 Pattern:
 
 ```sh
-tmux send-keys -t <recipient.wake_target> 'check'
+tmux send-keys -t <recipient.wake_target> '[agentchute:tmux] check inbox'
 sleep 0.3
 tmux send-keys -t <recipient.wake_target> Enter
 ```
 
-Trigger string: `check` (single short word; noise-resistant if mistyped).
+Trigger string: `[agentchute:tmux] check inbox`. The bracketed prefix is reference-adapter metadata; the model-facing instruction is still to check the inbox. Other conforming wake adapters may use different prompt text as long as inbox delivery remains durable and recipient-owned.
 
 `wake_target` grammar for `wake_method: tmux`: accepts the canonical tmux target syntax — `%pane_id` (e.g., `%0`) or `session:window.pane` (e.g., `frontend:0.0`). Panes living in different tmux windows or sessions on the same tmux server are addressable via the `session:window.pane` form. Multi-socket setups (`tmux -L socket-name`) are not parsed by the reference adapter in v0.1.
 
 Constraints:
 
-- Only send `check` immediately after writing the corresponding inbox file. Do not poke for arbitrary prompts or chat.
+- Only send the wake prompt immediately after writing the corresponding inbox file. Do not poke for arbitrary prompts or chat.
 - The poke channel is not a fallback comms channel. If the recipient is unreachable (pane closed, tmux server gone), passive polling at the recipient's next turn will pick up the message anyway.
 - If `wake_method`/`wake_target` is empty, absent, unknown, or invalid, fall back to passive polling (recipient checks inbox at start of each turn regardless).
 
@@ -666,7 +667,7 @@ The protocol does not require tmux. Without tmux, delivery still works (messages
 
 As of v0.3, the recommended no-tmux polling patterns follow a five-tier model. Reference CLI lifecycle checks treat recipient liveness as proven only when either a reachable wake target exists (`tmux` or `agentchute-run`) or `state/<agent>/poller.json` contains a fresh poller heartbeat.
 
-- **Tier 1: Runner / launcher shims.** `agentchute run --as <id> --vendor <v> -- <wrapper>` launches the wrapper under a PTY, registers `wake_method: agentchute-run`, keeps `last_seen` fresh, polls the inbox, and injects `check inbox` when work arrives. `agentchute shims install` makes this the default for normal wrapper commands inside pools and passes through outside pools.
+- **Tier 1: Runner / launcher shims.** `agentchute run --as <id> --vendor <v> -- <wrapper>` launches the wrapper under a PTY, registers `wake_method: agentchute-run`, keeps `last_seen` fresh, polls the inbox, and injects `[agentchute:run] check inbox` when work arrives. `agentchute setup --wake runner` makes this the default for normal wrapper commands inside pools and passes through outside pools.
 - **Tier 2: Hook-managed poller fallback.** Canonical wrapper hooks run `agentchute poller ensure --as <id> --vendor <v>`. In a reachable tmux pane or under a reachable `agentchute-run` runner this is a no-op because the wake adapter is sufficient. Otherwise it starts or verifies `agentchute poller run`, which writes the poller heartbeat and launches the wrapper when work exists.
 - **Tier 3: Native recurring task.** A wrapper's built-in scheduler (e.g., Claude Code's `/loop`, Codex App Automations) MAY replace `poller run` only if it calls `agentchute self-poll --as <id> --heartbeat` so the heartbeat remains fresh.
 - **Tier 4: Preflighted scheduler.** For wrappers without a native loop (e.g., terminal `gemini-cli` or `codex-cli`). An external scheduler (launchd/systemd/cron) runs `agentchute self-poll --as <id> --heartbeat` and only launches the wrapper when work exists. `self-poll` exits 2 whenever the wrapper should wake — unread mail, pending replies, malformed inbox files, or first-run `needs_boot` — so the scheduler wakes the wrapper through to its boot ritual on first install. (`agentchute pending` also surfaces `needs_boot` in v0.2.1+ as a read-only context-injection signal; it never returns exit 2 in hook-envelope modes, so it remains safe to wire as a UserPromptSubmit / BeforeAgent hook.)
@@ -830,6 +831,7 @@ The threshold is mechanical: the parser failed on a required structural element.
 - Optional fields absent — `restart_at`, `last_active`, and optional message-frontmatter fields including `task`, `status`, `in_reply_to`.
 - Messages without any frontmatter (§6.4 makes frontmatter recommended, not required; body-only messages are valid).
 - Stale `last_seen` — that is what the watchdog is for (§10).
+- An unreachable same-host tmux `wake_target` in an otherwise parseable registration — the reference CLI treats that as the §7.2 same-host tmux cleanup case, not a §11 quarantine case.
 - File permission drift (cosmetic; does not block protocol operation).
 
 ### 11.2 Enforcement action

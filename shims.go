@@ -46,9 +46,10 @@ func cmdShims(args []string) error {
 func cmdShimsInstall(args []string) error {
 	fs := flag.NewFlagSet("shims install", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var dir string
+	var dir, wrapper string
 	var force, quiet bool
 	fs.StringVar(&dir, "dir", "", "shim directory (default: $HOME/.agentchute/bin)")
+	fs.StringVar(&wrapper, "wrapper", "all", "wrapper key(s): claude-code,codex,gemini-cli or all")
 	fs.BoolVar(&force, "force", false, "overwrite existing shim files")
 	fs.BoolVar(&quiet, "quiet", false, "suppress status text")
 	if err := fs.Parse(args); err != nil {
@@ -79,7 +80,11 @@ func cmdShimsInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	for _, spec := range shimSpecs {
+	selected, err := selectShimSpecs(wrapper)
+	if err != nil {
+		return err
+	}
+	for _, spec := range selected {
 		path := filepath.Join(absDir, spec.Name)
 		if !force {
 			if _, err := os.Lstat(path); err == nil {
@@ -99,6 +104,43 @@ func cmdShimsInstall(args []string) error {
 		}
 	}
 	return nil
+}
+
+func selectShimSpecs(wrapper string) ([]shimSpec, error) {
+	wrapper = strings.TrimSpace(wrapper)
+	if wrapper == "" || wrapper == "all" {
+		return shimSpecs, nil
+	}
+	wanted := map[string]bool{}
+	for _, part := range strings.Split(wrapper, ",") {
+		key := strings.TrimSpace(part)
+		if key == "" {
+			continue
+		}
+		wanted[key] = true
+	}
+	if len(wanted) == 0 {
+		return nil, fmt.Errorf("--wrapper must not be empty")
+	}
+	var selected []shimSpec
+	matched := map[string]bool{}
+	for _, spec := range shimSpecs {
+		if wanted[spec.Name] || wanted[spec.AgentID] {
+			selected = append(selected, spec)
+			if wanted[spec.Name] {
+				matched[spec.Name] = true
+			}
+			if wanted[spec.AgentID] {
+				matched[spec.AgentID] = true
+			}
+		}
+	}
+	for key := range wanted {
+		if !matched[key] {
+			return nil, fmt.Errorf("--wrapper %q is not recognized; known: claude-code, codex, gemini-cli, all", key)
+		}
+	}
+	return selected, nil
 }
 
 func renderShimScript(agentchuteBin, shimDir, name string) string {
@@ -250,7 +292,7 @@ func shimsHelpErr() error {
 func shimsHelp() string {
 	return strings.TrimSpace(`
 Usage:
-  agentchute shims install [--dir <path>] [--force] [--quiet]
+  agentchute shims install [--dir <path>] [--wrapper <name[,name...]>] [--force] [--quiet]
   agentchute shims exec --name <wrapper> --shim-dir <dir> -- [args...]
 
 Launcher shims make normal wrapper commands route through agentchute run

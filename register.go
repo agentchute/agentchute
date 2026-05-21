@@ -42,6 +42,7 @@ type registerOpts struct {
 	WakeTargetProvided bool
 	BioProvided        bool
 	ClearStaleTmuxWake bool
+	PruneStalePeerTmux bool
 }
 
 // registerResult is performRegister's outcome.
@@ -60,6 +61,7 @@ type registerResult struct {
 	ResolvedWakeMethod string // post-merge wake_method actually written (may come from existing reg)
 	ResolvedWakeTarget string // post-merge wake_target actually written
 	ResolvedHost       string // post-merge host actually written
+	PeerWakeStale      []peerWakeStale
 	Warnings           []string
 }
 
@@ -135,6 +137,14 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		return nil, fmt.Errorf("create inbox dir: %w", err)
 	}
 
+	var peerWakeStale []peerWakeStale
+	if opts.PruneStalePeerTmux {
+		peerWakeStale, err = pruneStalePeerTmuxRegistrations(cfg, opts.AgentID)
+		if err != nil {
+			return nil, fmt.Errorf("prune stale peer tmux registrations: %w", err)
+		}
+	}
+
 	return &registerResult{
 		Reg:                reg,
 		InboxDir:           inboxDir,
@@ -143,6 +153,7 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		ResolvedWakeMethod: wakeMethod,
 		ResolvedWakeTarget: wakeTarget,
 		ResolvedHost:       host,
+		PeerWakeStale:      peerWakeStale,
 		Warnings:           warnings,
 	}, nil
 }
@@ -210,11 +221,12 @@ func cmdRegister(args []string) error {
 	// preserves existing registration values for fields the user did not pass.
 	// Explicit "" still clears.
 	opts := registerOpts{
-		Host:         host,
-		WakeMethod:   wakeMethod,
-		WakeTarget:   wakeTarget,
-		Bio:          bio,
-		WorkingRepos: workingRepos,
+		Host:               host,
+		WakeMethod:         wakeMethod,
+		WakeTarget:         wakeTarget,
+		Bio:                bio,
+		WorkingRepos:       workingRepos,
+		PruneStalePeerTmux: true,
 	}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -271,6 +283,9 @@ func cmdRegister(args []string) error {
 	fmt.Printf("  loop_dir:      %s%s\n", cfg.LoopDir, formatOriginSuffix(cfg.LoopDirOrigin))
 	fmt.Printf("  registration:  %s\n", cfg.AgentRegistrationPath(agentID))
 	fmt.Printf("  inbox:         %s\n", result.InboxDir)
+	if len(result.PeerWakeStale) > 0 {
+		fmt.Printf("  pruned_tmux:   %d stale same-host peer registration(s)\n", len(result.PeerWakeStale))
+	}
 	if !reg.IsPokable() {
 		fmt.Println("  (non-pokable: senders skip the wake poke; you must poll your own inbox)")
 	}

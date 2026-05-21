@@ -46,6 +46,7 @@ func cmdSelfCheck(args []string) error {
 		WakeTarget:         wakeTarget,
 		Bio:                bio,
 		ClearStaleTmuxWake: true,
+		PruneStalePeerTmux: true,
 	}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -91,11 +92,6 @@ func cmdSelfCheck(args []string) error {
 		return err
 	}
 
-	peerStale, err := findStalePeerTmuxWakeTargets(cfg, agentID)
-	if err != nil {
-		return err
-	}
-
 	status := selfCheckStatus{
 		Agent:              agentID,
 		Vendor:             opts.Vendor,
@@ -105,8 +101,8 @@ func cmdSelfCheck(args []string) error {
 		LastSeen:           result.Reg.LastSeen.UTC().Format(time.RFC3339),
 		TmuxPane:           currentTmuxPane(),
 		TmuxPaneReachable:  currentTmuxPane() != "" && tmuxTargetReachable(currentTmuxPane()),
-		PeerWakeStale:      peerStale,
-		PeerWakeStaleCount: len(peerStale),
+		PeerWakeStale:      result.PeerWakeStale,
+		PeerWakeStaleCount: len(result.PeerWakeStale),
 		Warnings:           result.Warnings,
 	}
 
@@ -148,7 +144,7 @@ func emitSelfCheckText(s selfCheckStatus) {
 		fmt.Printf("  tmux: current pane %s is not reachable; wake target cleared\n", s.TmuxPane)
 	}
 	if s.PeerWakeStaleCount > 0 {
-		fmt.Printf("  peer wake stale: %d same-host tmux target(s) unreachable\n", s.PeerWakeStaleCount)
+		fmt.Printf("  peer wake stale: %d same-host tmux registration(s) removed\n", s.PeerWakeStaleCount)
 	}
 	for _, warning := range s.Warnings {
 		fmt.Printf("  warning: %s\n", warning)
@@ -172,8 +168,8 @@ Usage: agentchute self-check --as <id> --vendor <vendor> [flags]
 
 Hook-safe active self check. Refreshes/creates this agent's registration,
 updates last_seen, reconciles wake_method/wake_target against current tmux
-state, and reports stale same-host peer tmux wake targets. Does not read,
-archive, quarantine, send inbox messages, or mutate peer registrations.
+state, and removes stale same-host peer tmux registrations. Does not read,
+archive, quarantine, or send inbox messages.
 
 Flags:
   --as <id>              agent id (or $AGENTCHUTE_AGENT_ID)

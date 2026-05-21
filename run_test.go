@@ -70,6 +70,12 @@ func TestPromptInjectionBytesDefaultUsesCarriageReturn(t *testing.T) {
 	}
 }
 
+func TestDefaultRunnerPromptIsTaggedWake(t *testing.T) {
+	if defaultRunnerPrompt != "[agentchute:run] check inbox" {
+		t.Fatalf("defaultRunnerPrompt = %q", defaultRunnerPrompt)
+	}
+}
+
 func TestPromptInjectionBytesCodexUsesBracketedPasteAndEnhancedEnter(t *testing.T) {
 	got := string(promptInjectionBytes(runnerOptions{
 		AgentID:     "codex",

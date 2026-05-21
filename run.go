@@ -25,7 +25,7 @@ const (
 	defaultRunnerIntervalSeconds = 5
 	defaultRunnerIdleGrace       = 2 * time.Second
 	defaultRunnerBusyGrace       = 30 * time.Second
-	defaultRunnerPrompt          = "check inbox"
+	defaultRunnerPrompt          = "[agentchute:run] check inbox"
 
 	bracketedPasteStart = "\x1b[200~"
 	bracketedPasteEnd   = "\x1b[201~"
@@ -182,7 +182,7 @@ Flags:
   --vendor <vendor>          vendor or origin (anthropic, openai, google)
   --interval <seconds>       inbox poll interval (minimum 5; default 5)
   --interrupt-policy <mode>  after-idle|after-grace|always (default after-idle; idle is heuristic)
-  --prompt <text>            prompt injected on wake (default "check inbox")
+  --prompt <text>            prompt injected on wake (default "[agentchute:run] check inbox")
   --idle-grace <duration>    quiet period before prompt injection (default 2s)
   --busy-grace <duration>    grace before Ctrl-C in after-grace mode (default 30s)
   --control-repo <p>         control repo path (or $AGENTCHUTE_CONTROL_REPO)
@@ -348,6 +348,7 @@ func registerRunner(cfg *loop.Config, opts runnerOptions, socketPath string, now
 		WakeMethodProvided: true,
 		WakeTargetProvided: true,
 		ClearStaleTmuxWake: true,
+		PruneStalePeerTmux: true,
 		WorkingRepos:       []string{cfg.ControlRepo},
 		Host:               localHostname(),
 		HostProvided:       true,

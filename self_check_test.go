@@ -85,7 +85,7 @@ func TestSelfCheckRefreshesLastSeenAndClearsStaleTmuxWake(t *testing.T) {
 	}
 }
 
-func TestSelfCheckReportsStaleSameHostPeerTmuxTargetWithoutMutatingPeer(t *testing.T) {
+func TestSelfCheckPrunesStaleSameHostPeerTmuxRegistration(t *testing.T) {
 	withFakeTmuxTargets(t, "%1")
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
@@ -130,12 +130,11 @@ func TestSelfCheckReportsStaleSameHostPeerTmuxTargetWithoutMutatingPeer(t *testi
 	if got.PeerWakeStaleCount != 1 {
 		t.Fatalf("PeerWakeStaleCount = %d, want 1; output=%s", got.PeerWakeStaleCount, out)
 	}
-	peer, err = loop.ReadRegistration(cfg.AgentRegistrationPath("codex"))
-	if err != nil {
-		t.Fatal(err)
+	if len(got.PeerWakeStale) != 1 || got.PeerWakeStale[0].AgentID != "codex" || got.PeerWakeStale[0].Target != "%9" {
+		t.Fatalf("PeerWakeStale = %+v, want codex %%9", got.PeerWakeStale)
 	}
-	if peer.WakeMethod != "tmux" || peer.WakeTarget != "%9" {
-		t.Fatalf("peer registration should be diagnostic-only, got %q %q", peer.WakeMethod, peer.WakeTarget)
+	if _, err := os.Stat(cfg.AgentRegistrationPath("codex")); !os.IsNotExist(err) {
+		t.Fatalf("peer registration should be removed, stat err=%v", err)
 	}
 }
 
