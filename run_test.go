@@ -25,8 +25,10 @@ func TestRunInjectsPromptOnSocketWake(t *testing.T) {
 	withCwd(t, root, func() {
 		go func() {
 			errCh <- cmdRun([]string{
-				"--as", "codex",
-				"--vendor", "openai",
+				"--as", "runner-test",
+				"--vendor", "test",
+				"--control-repo", root,
+				"--loop-dir", filepath.Join(root, ".examplecorp", "loop"),
 				"--interval", "5",
 				"--idle-grace", "100ms",
 				"--prompt", "check inbox",
@@ -38,7 +40,7 @@ func TestRunInjectsPromptOnSocketWake(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		target := loop.RunnerWakeTarget(cfg.RunnerSocketPath("codex"))
+		target := loop.RunnerWakeTarget(cfg.RunnerSocketPath("runner-test"))
 		waitForRunnerSocket(t, target, errCh)
 		if err := loop.PokeWakeTarget(loop.RunnerWakeMethod, target); err != nil {
 			t.Fatalf("poke runner: %v", err)
@@ -52,6 +54,45 @@ func TestRunInjectsPromptOnSocketWake(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("runner did not inject prompt and exit fake wrapper")
+	}
+}
+
+func TestPromptInjectionBytesDefaultUsesCarriageReturn(t *testing.T) {
+	got := string(promptInjectionBytes(runnerOptions{
+		AgentID:     "runner-test",
+		Vendor:      "test",
+		Prompt:      "check inbox",
+		WrapperArgs: []string{"/tmp/fake-wrapper"},
+	}))
+	want := "check inbox\r"
+	if got != want {
+		t.Fatalf("promptInjectionBytes = %q, want %q", got, want)
+	}
+}
+
+func TestPromptInjectionBytesCodexUsesBracketedPasteAndEnhancedEnter(t *testing.T) {
+	got := string(promptInjectionBytes(runnerOptions{
+		AgentID:     "codex",
+		Vendor:      "openai",
+		Prompt:      "check inbox",
+		WrapperArgs: []string{"/usr/local/bin/codex"},
+	}))
+	want := bracketedPasteStart + "check inbox" + bracketedPasteEnd + codexEnhancedEnter
+	if got != want {
+		t.Fatalf("promptInjectionBytes = %q, want %q", got, want)
+	}
+}
+
+func TestPromptInjectionBytesCodexWrapperUsesEnhancedEnter(t *testing.T) {
+	got := string(promptInjectionBytes(runnerOptions{
+		AgentID:     "custom-codex",
+		Vendor:      "openai",
+		Prompt:      "check inbox",
+		WrapperArgs: []string{"/usr/local/bin/codex"},
+	}))
+	want := bracketedPasteStart + "check inbox" + bracketedPasteEnd + codexEnhancedEnter
+	if got != want {
+		t.Fatalf("promptInjectionBytes = %q, want %q", got, want)
 	}
 }
 
@@ -128,6 +169,8 @@ func TestRunShutdownSocketCleansUpRunner(t *testing.T) {
 			errCh <- cmdRun([]string{
 				"--as", "codex",
 				"--vendor", "openai",
+				"--control-repo", root,
+				"--loop-dir", filepath.Join(root, ".examplecorp", "loop"),
 				"--interval", "5",
 				"--idle-grace", "100ms",
 				"--", script,

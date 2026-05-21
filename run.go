@@ -26,6 +26,10 @@ const (
 	defaultRunnerIdleGrace       = 2 * time.Second
 	defaultRunnerBusyGrace       = 30 * time.Second
 	defaultRunnerPrompt          = "check inbox"
+
+	bracketedPasteStart = "\x1b[200~"
+	bracketedPasteEnd   = "\x1b[201~"
+	codexEnhancedEnter  = "\x1b[13;1u"
 )
 
 type interruptPolicy string
@@ -558,8 +562,7 @@ func (r *runnerRuntime) isIdle() bool {
 }
 
 func (r *runnerRuntime) injectPrompt() {
-	line := r.opts.Prompt + "\r"
-	if err := r.writePTY([]byte(line)); err != nil {
+	if err := r.writePTY(promptInjectionBytes(r.opts)); err != nil {
 		fmt.Fprintf(os.Stderr, "agentchute run: inject prompt: %v\n", err)
 		return
 	}
@@ -569,6 +572,23 @@ func (r *runnerRuntime) injectPrompt() {
 	r.lastInjection = now
 	r.mu.Unlock()
 	_ = r.saveState()
+}
+
+func promptInjectionBytes(opts runnerOptions) []byte {
+	if shouldUseCodexSubmitSequence(opts) {
+		return []byte(bracketedPasteStart + opts.Prompt + bracketedPasteEnd + codexEnhancedEnter)
+	}
+	return []byte(opts.Prompt + "\r")
+}
+
+func shouldUseCodexSubmitSequence(opts runnerOptions) bool {
+	if strings.EqualFold(opts.AgentID, "codex") {
+		return true
+	}
+	if len(opts.WrapperArgs) == 0 {
+		return false
+	}
+	return filepath.Base(opts.WrapperArgs[0]) == "codex"
 }
 
 func (r *runnerRuntime) copyPTYOutput() {
