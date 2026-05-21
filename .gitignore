@@ -12,12 +12,13 @@
 # The init marker pair below lets `agentchute init` upgrade the stanza
 # idempotently on future runs.
 
-# agentchute-gitignore v1 begin
+# agentchute-gitignore v2 begin
 .agentchute/loop/agents/*.md
 !.agentchute/loop/agents/*.example.md
 !.agentchute/loop/agents/README.md
 .agentchute/loop/inbox/
 .agentchute/loop/archive/
 .agentchute/loop/malformed/
+.agentchute/loop/state/
 .agentchute/loop/watchdog.log
-# agentchute-gitignore v1 end
+# agentchute-gitignore v2 end

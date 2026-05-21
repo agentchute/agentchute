@@ -24,8 +24,8 @@ import (
 var repoCharRE = regexp.MustCompile(`^[A-Za-z0-9_/.\- ]+$`)
 
 // --generate-service emits unit/script files for the preflighted-scheduler
-// pattern (round-3 synthesis tier 2): every N seconds, run a side-effect-free
-// `agentchute self-poll --as <id>`; on rc=2 launch the wrapper.
+// pattern (round-3 synthesis tier 2): every N seconds, run
+// `agentchute self-poll --as <id> --heartbeat`; on rc=2 launch the wrapper.
 //
 // The generated artifacts are deliberately self-contained inline-sh so the
 // operator gets ONE file per init kind. Doctor never installs/loads/starts
@@ -227,9 +227,10 @@ func wrapperInvocation(p serviceParams) string {
 //     subshell exits.
 //   - The whole tick runs in a `(...)` subshell so `exit 0` on the idle
 //     path only exits the subshell — `while`-loop script kind survives.
-//   - Preflight is `agentchute self-poll --as <id>`; it exits 2 on
-//     needs_boot too, so first-run wake fires the wrapper through to
-//     boot.
+//   - Preflight is `agentchute self-poll --as <id> --heartbeat`; it scans the
+//     inbox, writes the poller heartbeat, and exits 2 on needs_boot too, so
+//     first-run wake fires the wrapper through to boot. The heartbeat is what
+//     lets doctor/gate prove non-tmux recipient polling is alive.
 //   - No inner single quotes anywhere in the body. The systemd ExecStart
 //     wrapper uses outer single quotes — a single-quoted `trap '...'`
 //     would terminate the ExecStart string at the inner quote. So the
@@ -239,8 +240,8 @@ func wrapperInvocation(p serviceParams) string {
 func preflightTick(p serviceParams) string {
 	lockDir := fmt.Sprintf("/tmp/agentchute-%s.lock", p.AgentID)
 	return fmt.Sprintf(
-		`( cd %q || exit 0; agentchute self-poll --as %s >/dev/null 2>&1; rc=$?; [ "$rc" -ne 2 ] && exit 0; mkdir %s 2>/dev/null || exit 0; trap "rmdir %s" EXIT; sh -c %q )`,
-		p.Repo, p.AgentID, lockDir, lockDir, wrapperInvocation(p),
+		`( cd %q || exit 0; agentchute self-poll --as %s --heartbeat --heartbeat-method scheduler --heartbeat-interval %d >/dev/null 2>&1; rc=$?; [ "$rc" -ne 2 ] && exit 0; mkdir %s 2>/dev/null || exit 0; trap "rmdir %s" EXIT; sh -c %q )`,
+		p.Repo, p.AgentID, p.Interval, lockDir, lockDir, wrapperInvocation(p),
 	)
 }
 
@@ -311,8 +312,8 @@ func renderScript(p serviceParams) string {
 	return `#!/bin/sh
 # agentchute preflighted scheduler for ` + p.AgentID + `.
 # Run in a long-lived process (cron @reboot, tmux pane, manual sh) — the
-# script loops itself. Side-effect-free preflight via self-poll; wrapper
-# only launches when work exists. Single-flight via POSIX mkdir lock.
+# script loops itself. Preflight via self-poll writes a poller heartbeat;
+# wrapper only launches when work exists. Single-flight via POSIX mkdir lock.
 #
 # No 'set -e': agentchute self-poll intentionally exits 2 when work
 # exists, and the script needs to keep looping past every tick

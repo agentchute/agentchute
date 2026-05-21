@@ -344,6 +344,7 @@ func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 		[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n")); err != nil {
 		t.Fatal(err)
 	}
+	mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 
 	r := runDoctorChecks(cfg, "claude-code", time.Now().UTC())
 	got := findCheck(t, r, "inbox_state")
@@ -352,6 +353,49 @@ func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 	}
 	if r.Blockers != 0 {
 		t.Errorf("Blockers = %d, want 0 (unread mail is informational in doctor)", r.Blockers)
+	}
+}
+
+func TestDoctorRecipientLivenessBlocksWithoutWakeOrPoller(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	reg := &loop.Registration{
+		AgentID:     "claude-code",
+		Vendor:      "anthropic",
+		ControlRepo: cfg.ControlRepo,
+		LastSeen:    time.Now().UTC(),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code"), reg); err != nil {
+		t.Fatal(err)
+	}
+	got := checkRecipientLiveness(cfg, "claude-code", time.Now().UTC())
+	if got.Severity != severityBlocker {
+		t.Fatalf("recipient_liveness severity = %q, want BLOCKER", got.Severity)
+	}
+	if !strings.Contains(got.Message, "poller ensure") {
+		t.Errorf("message should include remediation command: %q", got.Message)
+	}
+}
+
+func TestDoctorRecipientLivenessAcceptsFreshPoller(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	reg := &loop.Registration{
+		AgentID:     "claude-code",
+		Vendor:      "anthropic",
+		ControlRepo: cfg.ControlRepo,
+		LastSeen:    time.Now().UTC(),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code"), reg); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
+	got := checkRecipientLiveness(cfg, "claude-code", time.Now().UTC())
+	if got.Severity != severityOK {
+		t.Fatalf("recipient_liveness severity = %q, want OK (%s)", got.Severity, got.Message)
+	}
+	if !strings.Contains(got.Message, "fresh poller heartbeat") {
+		t.Errorf("message should mention fresh heartbeat: %q", got.Message)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,7 @@ func tmuxTargetReachable(target string) bool {
 type peerWakeStale struct {
 	AgentID string `json:"agent_id"`
 	Target  string `json:"target"`
+	Path    string `json:"-"`
 }
 
 func findStalePeerTmuxWakeTargets(cfg *loop.Config, selfID string) ([]peerWakeStale, error) {
@@ -66,7 +68,23 @@ func findStalePeerTmuxWakeTargets(cfg *loop.Config, selfID string) ([]peerWakeSt
 		if target == "" || tmuxTargetReachable(target) {
 			continue
 		}
-		stale = append(stale, peerWakeStale{AgentID: reg.AgentID, Target: target})
+		stale = append(stale, peerWakeStale{AgentID: reg.AgentID, Target: target, Path: path})
+	}
+	return stale, nil
+}
+
+func pruneStalePeerTmuxRegistrations(cfg *loop.Config, selfID string) ([]peerWakeStale, error) {
+	stale, err := findStalePeerTmuxWakeTargets(cfg, selfID)
+	if err != nil {
+		return nil, err
+	}
+	for _, peer := range stale {
+		if peer.Path == "" {
+			continue
+		}
+		if err := os.Remove(peer.Path); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove stale tmux registration %q: %w", peer.AgentID, err)
+		}
 	}
 	return stale, nil
 }

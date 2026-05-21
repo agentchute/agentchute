@@ -18,10 +18,10 @@ func TestInitFreshEmpty(t *testing.T) {
 	}
 
 	expectAction(t, plan, "AGENTCHUTE.md", "write")
-	expectAction(t, plan, "CLAUDE.md", "create v6")
-	expectAction(t, plan, "CODEX.md", "create v6")
-	expectAction(t, plan, "GEMINI.md", "create v6")
-	expectAction(t, plan, "AGENTS.md", "create v6")
+	expectAction(t, plan, "CLAUDE.md", "create v9")
+	expectAction(t, plan, "CODEX.md", "create v9")
+	expectAction(t, plan, "GEMINI.md", "create v9")
+	expectAction(t, plan, "AGENTS.md", "create v9")
 	expectAction(t, plan, ".gitignore", "skip") // not in git
 	expectAction(t, plan, ".agentchute/loop/agents", "mkdir 0700")
 	expectAction(t, plan, ".agentchute/loop/inbox", "mkdir 0700")
@@ -80,14 +80,14 @@ func TestInitPrependsBlockWhenNoMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "prepend v6")
+	expectAction(t, plan, "CLAUDE.md", "prepend v9")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "agentchute-enrollment v6 begin") {
+	if !strings.Contains(string(got), "agentchute-enrollment v9 begin") {
 		t.Errorf("CLAUDE.md missing marker after prepend:\n%s", got)
 	}
 	if !strings.HasSuffix(string(got), originalContent) {
@@ -121,7 +121,7 @@ func TestInitReplacesDriftedV1Content(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "replace v1→v6")
+	expectAction(t, plan, "CLAUDE.md", "replace v1→v9")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
@@ -139,7 +139,7 @@ func TestInitReplacesDriftedV1Content(t *testing.T) {
 // Existing file with a future version marker → leave alone with warning.
 func TestInitLeavesNewerVersionAlone(t *testing.T) {
 	root := t.TempDir()
-	future := "<!-- agentchute-enrollment v7 begin -->\nfuture\n<!-- agentchute-enrollment v7 end -->\n"
+	future := "<!-- agentchute-enrollment v10 begin -->\nfuture\n<!-- agentchute-enrollment v10 end -->\n"
 	mustWrite(t, filepath.Join(root, "CLAUDE.md"), []byte(future))
 
 	plan, err := computeInitPlan(root, "agentchute", false)
@@ -233,7 +233,7 @@ func TestInitCreatesGitignoreInGitWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, ".gitignore", "create v1")
+	expectAction(t, plan, ".gitignore", "create v2")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, ".gitignore"))
@@ -241,10 +241,10 @@ func TestInitCreatesGitignoreInGitWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(got), gitignoreBeginV1) {
-		t.Errorf(".gitignore missing v1 begin marker:\n%s", got)
+		t.Errorf(".gitignore missing gitignore begin marker:\n%s", got)
 	}
 	if !strings.Contains(string(got), gitignoreEndV1) {
-		t.Errorf(".gitignore missing v1 end marker:\n%s", got)
+		t.Errorf(".gitignore missing gitignore end marker:\n%s", got)
 	}
 	if !strings.Contains(string(got), ".agentchute/loop/agents/*.md") {
 		t.Errorf(".gitignore missing namespace stanza:\n%s", got)
@@ -386,7 +386,7 @@ func TestInitGitignoreFailsOnMalformedMarker(t *testing.T) {
 // Gitignore version is currently 1; v2 here is "newer than current."
 func TestInitGitignoreSkipsNewerVersion(t *testing.T) {
 	root := t.TempDir()
-	future := "# agentchute-gitignore v2 begin\nstuff\n# agentchute-gitignore v2 end\n"
+	future := "# agentchute-gitignore v3 begin\nstuff\n# agentchute-gitignore v3 end\n"
 	mustWrite(t, filepath.Join(root, ".gitignore"), []byte(future))
 
 	plan, err := computeInitPlan(root, "agentchute", true)

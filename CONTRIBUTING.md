@@ -28,7 +28,7 @@ go build ./...
 
 Requires Go 1.21+. Tests that exercise tmux should use a fake `tmux` shimmed onto `PATH`; a real tmux server should not be required for automated test runs.
 
-No third-party dependencies. Standard library only. PRs that add a dep need a strong reason.
+No new third-party dependencies beyond the existing PTY runner dependency (`github.com/creack/pty`) without a strong reason.
 
 ## Coding style
 

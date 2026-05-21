@@ -11,6 +11,11 @@
           },
           {
             "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as codex --vendor openai --quiet",
+            "statusMessage": "agentchute: poller"
+          },
+          {
+            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --as codex --vendor openai --codex-hook SessionStart",
             "statusMessage": "agentchute: boot"
           }
@@ -24,6 +29,11 @@
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as codex --vendor openai --quiet",
             "statusMessage": "agentchute: self-check"
+          },
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as codex --vendor openai --quiet",
+            "statusMessage": "agentchute: poller"
           },
           {
             "type": "command",

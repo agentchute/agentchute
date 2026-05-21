@@ -338,6 +338,33 @@ func TestGateRequiresPhaseFlag(t *testing.T) {
 	})
 }
 
+func TestGateFinishRequiresRecipientLiveness(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "")
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
+			t.Fatal(err)
+		}
+		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--json")) })
+		if !errors.Is(err, errBlocked) {
+			t.Fatalf("finish without wake or poller err = %v, want errBlocked", err)
+		}
+		if !strings.Contains(out, "liveness") && !strings.Contains(out, "poller") {
+			t.Errorf("output should mention liveness/poller: %q", out)
+		}
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
+		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
+		if err != nil {
+			t.Errorf("finish with fresh poller heartbeat err = %v, want nil", err)
+		}
+	})
+}
+
 // v0.2: gate --before continue is a sibling of finish, identical
 // predicate (unread / malformed / pending-replies), different output
 // framing for in-session continuation hooks.

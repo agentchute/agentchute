@@ -4,13 +4,21 @@ This file follows the [AGENTS.md](https://agents.md) convention. Any AI agent �
 
 ---
 
-<!-- agentchute-enrollment v6 begin -->
+<!-- agentchute-enrollment v9 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
-**1. Automated Hooks (Primary)**
-Run `agentchute hooks install` once. From then on, every session boots automatically and your inbox/ledger obligations land in your context per turn.
+**1. Setup / Startup Path**
+Run `agentchute setup` once per control repo. Choose `tmux` when tmux is the primary wake path, `runner` when launcher shims should route wrappers through `agentchute run`, or `both` for mixed pools. Non-interactive examples:
 
-If a session starts and you do not see an agentchute boot/enrolled context line, run `agentchute boot --as <agent_id> --vendor <vendor>` before doing any work.
+```sh
+agentchute setup --wake runner --wrappers all --yes
+agentchute setup --wake tmux --wrappers all --yes
+agentchute setup --wake both --wrappers all --yes
+```
+
+Start sessions with the normal wrapper command from a control repo. In runner mode, the shim routes through `agentchute run`, which registers you, refreshes `last_seen`, exposes a reachable `agentchute-run` wake socket, polls your inbox, and injects `[agentchute:run] check inbox` when mail arrives. In tmux mode, peer wakes inject `[agentchute:tmux] check inbox`. Treat the bracketed prefix as machine metadata and follow the inbox-check instruction.
+
+If a session starts and you do not see agentchute boot/enrolled context, run `agentchute run --as <agent_id> --vendor <vendor> -- <wrapper>` or, as a manual fallback, `agentchute boot --as <agent_id> --vendor <vendor>` and `agentchute poller ensure --as <agent_id> --vendor <vendor>` before doing any work.
 
 Known wrappers and their canonical IDs:
 
@@ -21,25 +29,29 @@ Known wrappers and their canonical IDs:
 | Gemini CLI   | `gemini-cli`  | `google`    |
 | grok CLI     | `grok`        | `xai`       |
 
-**2. Background Polling (Recommended)**
-If you are NOT in a tmux pane, enable persistent polling so you can see new mail without being woken by a human:
-- **Claude Code**: run `/loop 5m` with a prompt to check inbox.
-- **Other Wrappers**: use `agentchute doctor --generate-service` to install a preflighted scheduler.
+**2. Lifecycle Hooks (Required for Context and Gates)**
+`agentchute setup` installs lifecycle hooks. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox/ledger context per turn and block finish while obligations remain.
 
-**3. In-Session Catchup**
+**3. Recipient Polling Fallback**
+Senders only deliver to your inbox. If you are not launched through `agentchute run` and are NOT in a tmux pane, keep recipient polling alive:
+- **Runner default**: `agentchute run --as <agent_id> --vendor <vendor> -- <wrapper>` polls and exposes a reachable wake socket.
+- **Hook-managed fallback**: `agentchute poller ensure --as <agent_id> --vendor <vendor>` starts/verifies `poller run` and writes `state/<agent_id>/poller.json`.
+- **Native loops**: if your wrapper has a recurring task feature, it may replace `poller run` only if it keeps a fresh poller heartbeat.
+- **Generated services**: `agentchute doctor --generate-service` emits launchd/systemd/script schedulers that call `self-poll --heartbeat`.
+
+**4. In-Session Catchup**
 If hooks are configured, you will catch new mail mid-turn via `gate --before continue`.
 
 **STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check --as <agent_id>`) or obligations are explicitly deferred via `agentchute defer --as <agent_id>`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v6 end -->
+<!-- agentchute-enrollment v9 end -->
 
 ---
 
 ## What this is
 
-**agentchute** is a tiny coordination protocol for AI agents: per-recipient inboxes + an optional wake poke (the reference adapter uses `tmux send-keys`) as a convenience accelerator. The reference implementation stores those inboxes as markdown files on a shared filesystem; alternate transports (queues, object stores, HTTP) are protocol-compatible but don't ship in v0.1 (see [`EXTENSIONS.md`](EXTENSIONS.md)). ~4000 LOC of Go, stdlib only, no third-party dependencies.
- Ships via `go install` and pre-built binaries on GitHub Releases. MIT.
+**agentchute** is a tiny coordination protocol for AI agents: per-recipient inboxes + an optional wake poke (the reference adapters include `tmux send-keys` and the local `agentchute-run` socket) as convenience accelerators. The reference implementation stores those inboxes as markdown files on a shared filesystem; alternate transports (queues, object stores, HTTP) are protocol-compatible but don't ship in the reference CLI (see [`EXTENSIONS.md`](EXTENSIONS.md)). Small Go codebase, mostly stdlib, with one PTY dependency for the runner. Ships via `go install` and pre-built binaries on GitHub Releases. MIT.
 
 The pitch is intentionally narrow: agents sharing one inbox medium (typically running side-by-side in tmux panes on the reference CLI's shared filesystem; optionally on different machines via a network mount) get a markdown-based mailbox so they stop copy-pasting handoffs by hand. That's the entire scope.
 
@@ -58,7 +70,7 @@ These rules apply to every agent. They are the discipline that keeps agentchute 
 
 **1. Spec is source of truth.** `AGENTCHUTE.md` defines the wire contract. If a code change implies a spec change, propose the spec change first in its own PR. Don't sneak protocol changes into a code PR.
 
-**2. Intentionally small surface.** No third-party Go dependencies. New dependencies need strong justification — the bar is high. The pitch is *"a few markdown files and an optional wake poke"*; adding layers undermines that.
+**2. Intentionally small surface.** No new third-party Go dependencies beyond the existing PTY runner dependency (`github.com/creack/pty`) without strong justification — the bar is high. The pitch is *"a few markdown files and an optional wake poke"*; adding layers undermines that.
 
 **3. Stay in scope.** Only modify files, sections, functions, or lines directly related to the current task. Don't refactor, rename, reorganize, reformat, or "improve" anything that wasn't asked about. If you notice something worth fixing elsewhere, mention it at the end of your response. Do not touch it.
 

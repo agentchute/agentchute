@@ -13,7 +13,9 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// cmdSelfPoll is the side-effect-free "should I wake the wrapper?" helper.
+// cmdSelfPoll is the "should I wake the wrapper?" helper. By default it is
+// side-effect-free; schedulers pass --heartbeat when the same inbox scan should
+// also prove poller liveness.
 // Designed for two callers:
 //
 //   - External schedulers (launchd / systemd / cron / shell loops):
@@ -30,9 +32,10 @@ import (
 //     `send --reply-to`, `defer`). Paste into `gemini -p "..."` or
 //     `codex exec '...'`.
 //
-// Strictly read-only: same invariants as `pending`. Never archives,
-// quarantines, modifies last_seen, or pokes peers. Reads the inbox and
-// the pending-reply ledger.
+// With no --heartbeat flag: same read-only invariants as `pending`. Never
+// archives, quarantines, modifies last_seen, or pokes peers. With --heartbeat,
+// the only additional write is state/<agent>/poller.json after this same inbox
+// scan, so doctor/gate can prove non-tmux polling is alive.
 //
 // Per the v0.2 wake-method R&D synthesis (round 3): self-poll names
 // the role explicitly so cross-wrapper docs and scheduler scripts
@@ -43,13 +46,18 @@ func cmdSelfPoll(args []string) error {
 	fs := flag.NewFlagSet("self-poll", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, controlRepo, loopDir string
+	var agentID, controlRepo, loopDir, heartbeatMethod string
+	var heartbeat bool
+	var heartbeatInterval int
 	var jsonOut, promptText bool
 	fs.StringVar(&agentID, "as", "", "agent id (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or $AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or $AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output for schedulers")
 	fs.BoolVar(&promptText, "prompt-text", false, "model-facing prompt fragment for paste-into-launch-prompt setups")
+	fs.BoolVar(&heartbeat, "heartbeat", false, "write state/<agent>/poller.json after a successful poll tick")
+	fs.IntVar(&heartbeatInterval, "heartbeat-interval", loop.DefaultPollerIntervalSeconds, "heartbeat poll interval in seconds")
+	fs.StringVar(&heartbeatMethod, "heartbeat-method", "self-poll", "heartbeat method label")
 
 	if err := fs.Parse(args); err != nil {
 		return selfPollUsage(err)
@@ -84,6 +92,36 @@ func cmdSelfPoll(args []string) error {
 		return err
 	}
 
+	result, err := computeSelfPollResult(cfg, agentID)
+	if err != nil {
+		return err
+	}
+	if heartbeat {
+		if err := writePollerHeartbeat(cfg, agentID, heartbeatMethod, heartbeatInterval, time.Now().UTC()); err != nil {
+			return fmt.Errorf("write poller heartbeat: %w", err)
+		}
+	}
+
+	switch {
+	case jsonOut:
+		if err := emitSelfPollJSON(result); err != nil {
+			return err
+		}
+	case promptText:
+		emitSelfPollPromptText(result)
+	default:
+		emitSelfPollText(result)
+	}
+
+	// Same convention as pending --fail-if-any: exit 2 when work exists so
+	// shell schedulers can branch on $? without parsing output.
+	if result.ShouldWake {
+		return errFailIfAny
+	}
+	return nil
+}
+
+func computeSelfPollResult(cfg *loop.Config, agentID string) (selfPollResult, error) {
 	// Detect missing self registration / inbox dir BEFORE the listing read.
 	// First-run schedulers (started via doctor --generate-service before the
 	// agent has ever booted) need a wakeable signal — codex review pre-code:
@@ -113,13 +151,13 @@ func cmdSelfPoll(args []string) error {
 				needsBoot = true
 				msgs, skipped = nil, nil
 			} else {
-				return fmt.Errorf("list inbox: %w", listErr)
+				return selfPollResult{}, fmt.Errorf("list inbox: %w", listErr)
 			}
 		}
 	}
 	ledger, err := loop.LoadPendingLedger(cfg, agentID)
 	if err != nil {
-		return fmt.Errorf("load pending-reply ledger: %w", err)
+		return selfPollResult{}, fmt.Errorf("load pending-reply ledger: %w", err)
 	}
 	pendingReplies := ledger.PendingEntries()
 
@@ -156,23 +194,19 @@ func cmdSelfPoll(args []string) error {
 	result.Reasons = buildShouldWakeReasons(result)
 	result.RecommendedPrompt = buildSelfPollPrompt(result)
 
-	switch {
-	case jsonOut:
-		if err := emitSelfPollJSON(result); err != nil {
-			return err
-		}
-	case promptText:
-		emitSelfPollPromptText(result)
-	default:
-		emitSelfPollText(result)
-	}
+	return result, nil
+}
 
-	// Same convention as pending --fail-if-any: exit 2 when work exists so
-	// shell schedulers can branch on $? without parsing output.
-	if result.ShouldWake {
-		return errFailIfAny
-	}
-	return nil
+func writePollerHeartbeat(cfg *loop.Config, agentID, method string, intervalSeconds int, now time.Time) error {
+	host, _ := os.Hostname()
+	return loop.SavePollerHeartbeat(cfg, loop.PollerHeartbeat{
+		AgentID:         agentID,
+		Method:          strings.TrimSpace(method),
+		Host:            strings.TrimSpace(host),
+		PID:             os.Getpid(),
+		IntervalSeconds: intervalSeconds,
+		LastSeen:        now,
+	})
 }
 
 // selfPollResult is the cross-format shape consumed by every emitter.
@@ -356,11 +390,13 @@ func selfPollHelpErr() error {
 
 func selfPollHelp() string {
 	return strings.TrimSpace(`
-Usage: agentchute self-poll --as <id> [--json | --prompt-text]
+Usage: agentchute self-poll --as <id> [--json | --prompt-text] [--heartbeat]
 
-Side-effect-free 'should I wake the wrapper?' helper. Reads the inbox
-and pending-reply ledger; emits a structured verdict and a recommended
-model-facing prompt. Never archives, quarantines, or pokes peers.
+'Should I wake the wrapper?' helper. Reads the inbox and pending-reply
+ledger; emits a structured verdict and a recommended model-facing prompt.
+Never archives, quarantines, or pokes peers. With --heartbeat, also writes
+state/<agent>/poller.json after the same inbox scan so doctor/gate can prove
+recipient polling is alive.
 
 Exit codes (like pending --fail-if-any):
   0  idle — no unread mail, no pending replies, no malformed files
@@ -374,10 +410,13 @@ Flags:
                         recommended_prompt for paste-into-launch)
   --prompt-text         emit only the model-facing prompt fragment
                         (use as $(agentchute self-poll ... --prompt-text))
+  --heartbeat           write state/<agent>/poller.json after a successful tick
+  --heartbeat-interval  poll interval in seconds for freshness math
+  --heartbeat-method    method label stored in poller.json
 
 Designed for the v0.2 'no-tmux' release: schedulers (launchd / systemd
-/ cron / while-loops) preflight with --json's exit code; wrapper launch
-prompts paste --prompt-text into '-p "..."' invocations. See
+/ cron / while-loops) preflight with --json's exit code and --heartbeat;
+wrapper launch prompts paste --prompt-text into '-p "..."' invocations. See
 AGENTCHUTE.md §8.x for the protocol contract.
 `)
 }

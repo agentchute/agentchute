@@ -20,9 +20,12 @@ var pokeSleep = 300 * time.Millisecond
 // server.
 var tmuxBinary = "tmux"
 
-// PokeTargetContext sends `check` + sleep + Enter to a tmux target, matching
-// the AGENTCHUTE.md §8 tmux wake adapter recipe. The dispatcher in wake.go
-// calls this via tmuxAdapter when a peer declares wake_method: tmux.
+const tmuxWakePrompt = "[agentchute:tmux] check inbox"
+
+// PokeTargetContext sends the agentchute wake prompt + sleep + Enter to a
+// tmux target, matching the AGENTCHUTE.md §8 tmux wake adapter recipe. The
+// dispatcher in wake.go calls this via tmuxAdapter when a peer declares
+// wake_method: tmux.
 //
 // Behavior:
 //   - If target is empty, returns nil immediately. Non-pokable agents are
@@ -39,8 +42,8 @@ func PokeTargetContext(ctx context.Context, target string) error {
 	if target == "" {
 		return nil
 	}
-	if err := tmuxSendKeys(ctx, target, "check"); err != nil {
-		return fmt.Errorf("send check: %w", err)
+	if err := tmuxSendKeys(ctx, target, tmuxWakePrompt); err != nil {
+		return fmt.Errorf("send wake prompt: %w", err)
 	}
 	select {
 	case <-ctx.Done():

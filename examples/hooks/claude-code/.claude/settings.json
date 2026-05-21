@@ -10,6 +10,10 @@
           },
           {
             "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as claude-code --vendor anthropic --quiet"
+          },
+          {
+            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --as claude-code --vendor anthropic --context-only"
           }
         ]
@@ -21,6 +25,10 @@
           {
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as claude-code --vendor anthropic --quiet"
+          },
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as claude-code --vendor anthropic --quiet"
           },
           {
             "type": "command",

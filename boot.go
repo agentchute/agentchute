@@ -56,10 +56,11 @@ func cmdBoot(args []string) error {
 	_ = noArchive
 
 	opts := registerOpts{
-		Host:       host,
-		WakeMethod: wakeMethod,
-		WakeTarget: wakeTarget,
-		Bio:        bio,
+		Host:               host,
+		WakeMethod:         wakeMethod,
+		WakeTarget:         wakeTarget,
+		Bio:                bio,
+		PruneStalePeerTmux: true,
 	}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {

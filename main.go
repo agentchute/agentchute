@@ -1,5 +1,6 @@
 // agentchute — inbox-based agent coordination via markdown files + pluggable
-// wake adapters. The v0.1 reference adapter is tmux (see AGENTCHUTE.md §8).
+// wake adapters. Reference adapters include tmux and the local runner socket
+// (see AGENTCHUTE.md §8).
 //
 // See AGENTCHUTE.md (at repo root) for the full spec. This binary is the
 // reference implementation of the optional CLI sketched in the spec. The
@@ -30,8 +31,12 @@ Commands:
   send           send a message from one agent to another
   check          consume and archive messages addressed to me
   pending        peek unread messages (read-only; safe for lifecycle hooks)
+  run            launch a wrapper under the PTY runner and local wake socket
+  setup          one-command control-repo setup for tmux, runner, or both wake paths
   self-check     refresh own registration/last_seen and reconcile wake target
-  self-poll      "should I wake the wrapper?" — side-effect-free helper for schedulers and launch prompts
+  self-poll      "should I wake the wrapper?" — read-only by default; optional poller heartbeat
+  poller         recipient-side poller heartbeat/run/status for non-tmux agents
+  shims          install/pass-through launcher shims for known wrappers
   status         print registry overview, inbox depths, and last_seen freshness
   doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, wake target
   watch          recipient-side persistent watcher: fire OS notification / print / exec on new mail
@@ -79,10 +84,18 @@ func main() {
 		err = cmdCheck(args)
 	case "pending":
 		err = cmdPending(args)
+	case "run":
+		err = cmdRun(args)
+	case "setup":
+		err = cmdSetup(args)
 	case "self-check":
 		err = cmdSelfCheck(args)
 	case "self-poll":
 		err = cmdSelfPoll(args)
+	case "poller":
+		err = cmdPoller(args)
+	case "shims":
+		err = cmdShims(args)
 	case "status":
 		err = cmdStatus(args)
 	case "doctor":

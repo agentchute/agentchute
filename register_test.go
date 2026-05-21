@@ -152,6 +152,58 @@ func TestRegisterClearsStaleStatusAndRestartAt(t *testing.T) {
 	})
 }
 
+func TestRegisterPrunesStaleSameHostPeerTmuxRegistration(t *testing.T) {
+	withFakeTmuxTargets(t, "%1")
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		host, _ := os.Hostname()
+		stale := &loop.Registration{
+			AgentID:     "grok",
+			Vendor:      "xai",
+			ControlRepo: root,
+			Host:        host,
+			WakeMethod:  "tmux",
+			WakeTarget:  "%9",
+			LastSeen:    time.Now().UTC().Truncate(time.Second),
+			Status:      loop.StatusActive,
+		}
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("grok"), stale); err != nil {
+			t.Fatal(err)
+		}
+		remote := *stale
+		remote.AgentID = "remote"
+		remote.Host = "other-host"
+		remote.WakeTarget = "%8"
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("remote"), &remote); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Setenv("TMUX_PANE", "%1")
+		out, err := captureStdout(t, func() error {
+			return cmdRegister([]string{"--as", "test-agent", "--vendor", "test"})
+		})
+		if err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		if !strings.Contains(out, "pruned_tmux:") {
+			t.Fatalf("register output did not report stale tmux pruning:\n%s", out)
+		}
+		if _, err := os.Stat(cfg.AgentRegistrationPath("grok")); !os.IsNotExist(err) {
+			t.Fatalf("same-host stale tmux registration should be removed, stat err=%v", err)
+		}
+		if _, err := os.Stat(cfg.AgentRegistrationPath("remote")); err != nil {
+			t.Fatalf("cross-host stale tmux registration should remain: %v", err)
+		}
+	})
+}
+
 // --bio sets the registration body. Without --bio on a re-register, the
 // existing body is preserved (idempotence). With --bio, the body is
 // overwritten with the new text.

@@ -30,10 +30,10 @@ var enrollmentMarkerRE = regexp.MustCompile(`<!-- agentchute-enrollment v(\d+) (
 var embeddedSpecContent string
 
 const (
-	enrollmentVersion       = 6
-	gitignoreVersion        = 1
-	gitignoreBeginV1        = "# agentchute-gitignore v1 begin"
-	gitignoreEndV1          = "# agentchute-gitignore v1 end"
+	enrollmentVersion       = 9
+	gitignoreVersion        = 2
+	gitignoreBeginV1        = "# agentchute-gitignore v2 begin"
+	gitignoreEndV1          = "# agentchute-gitignore v2 end"
 	defaultNamespace        = "agentchute"
 	specRecognitionSentinel = "# AGENTCHUTE.md"
 )
@@ -56,15 +56,16 @@ var enrollmentAgentsTemplate string
 
 // gitignoreStanzaTemplate is appended to .gitignore in a git worktree. NAMESPACE
 // is substituted with the user's --namespace (or "agentchute" by default).
-const gitignoreStanzaTemplate = `# agentchute-gitignore v1 begin
+const gitignoreStanzaTemplate = `# agentchute-gitignore v2 begin
 .{{NAMESPACE}}/loop/agents/*.md
 !.{{NAMESPACE}}/loop/agents/*.example.md
 !.{{NAMESPACE}}/loop/agents/README.md
 .{{NAMESPACE}}/loop/inbox/
 .{{NAMESPACE}}/loop/archive/
 .{{NAMESPACE}}/loop/malformed/
+.{{NAMESPACE}}/loop/state/
 .{{NAMESPACE}}/loop/watchdog.log
-# agentchute-gitignore v1 end
+# agentchute-gitignore v2 end
 `
 
 // wrapperTarget describes one of CLAUDE.md / CODEX.md / GEMINI.md — auto-

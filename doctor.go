@@ -48,8 +48,8 @@ var (
 
 // cmdDoctor is the diagnostic aggregator (spec rev3 §A.7). Walks an
 // ordered list of checks; each check returns a severity-tagged result.
-// Doctor diagnoses; it does NOT enforce lifecycle — `gate` / `boot`
-// already own the blocking surface for unread mail and pending replies.
+// Doctor diagnoses and exits nonzero on blockers; `gate` / `boot` own the
+// lifecycle blocking surface during normal wrapper operation.
 //
 // Severity rules (codex brainstorm note):
 //   - BLOCKER: integration is unsafe or broken; exit nonzero so CI/operator
@@ -177,12 +177,13 @@ func runDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doctorRepo
 			checkInboxState(cfg, agentID),
 			checkLedgerState(cfg, agentID),
 			checkWakeTargetValidity(cfg, agentID),
+			checkRecipientLiveness(cfg, agentID, now),
 		)
 	} else {
 		checks = append(checks, doctorCheck{
 			Name:     "agent_specific_checks",
 			Severity: severitySkip,
-			Message:  "no --as / $AGENTCHUTE_AGENT_ID; skipped per-agent checks (registration freshness, inbox state, ledger state, wake target validity)",
+			Message:  "no --as / $AGENTCHUTE_AGENT_ID; skipped per-agent checks (registration freshness, inbox state, ledger state, wake target validity, recipient liveness)",
 		})
 	}
 
@@ -589,9 +590,27 @@ func checkWakeTargetValidity(cfg *loop.Config, agentID string) doctorCheck {
 			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=tmux but target %q not currently addressable (`tmux list-panes -t %s` failed); pane may have closed", target, target)}
 		}
 		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=tmux, target=%s reachable", target)}
+	case loop.RunnerWakeMethod:
+		if !loop.RunnerSocketReachable(target, time.Second) {
+			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=%s but socket target %q is not reachable; runner may have exited", method, target)}
+		}
+		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=%s, target reachable", method)}
 	default:
 		return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=%s unknown to v0.1 reference CLI; senders cannot poke this agent unless an adapter is provided externally", method)}
 	}
+}
+
+func checkRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) doctorCheck {
+	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
+	if err != nil {
+		return doctorCheck{Name: "recipient_liveness", Severity: severitySkip, Message: "registration unreadable (see self_registration)"}
+	}
+	_ = reg
+	liveness := evaluateRecipientLiveness(cfg, agentID, now)
+	if liveness.OK {
+		return doctorCheck{Name: "recipient_liveness", Severity: severityOK, Message: liveness.Message}
+	}
+	return doctorCheck{Name: "recipient_liveness", Severity: severityBlocker, Message: liveness.Message}
 }
 
 // ---------- output ----------
@@ -650,13 +669,12 @@ Usage: agentchute doctor [--as <id>] [--json]
 
 Diagnostic aggregator. Runs an ordered set of checks against the local
 loop directory, the calling environment, and (if --as is provided) the
-named agent's registration / inbox / ledger / wake target. Reports each
-check with a severity (BLOCKER / WARN / OK / SKIP) and exits nonzero
-when any BLOCKER is found.
+named agent's registration / inbox / ledger / wake target / recipient
+liveness. Reports each check with a severity (BLOCKER / WARN / OK / SKIP)
+and exits nonzero when any BLOCKER is found.
 
-Doctor diagnoses; it does NOT enforce lifecycle. boot/gate own the
-blocking surface for unread mail and pending replies during normal
-operation.
+Doctor diagnoses setup readiness. boot/gate own the blocking surface for
+unread mail, pending replies, and recipient liveness during normal operation.
 
 Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID); optional
@@ -668,6 +686,7 @@ Service generator (v0.2):
   --generate-service <kind>  emit a unit/script for the preflighted-scheduler
                              pattern (round-3 synthesis tier 2). Kind is one of:
                              launchd | systemd-service | systemd-timer | script.
+                             Generated schedulers call self-poll --heartbeat.
                              Doctor emits ONLY; install/load/start is the
                              operator's responsibility.
   --as <id>                  required with --generate-service
