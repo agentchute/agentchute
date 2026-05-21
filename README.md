@@ -15,8 +15,6 @@
 curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
 ```
 
-Run that from the repo where your agents will coordinate. It installs the binary, starts the guided setup when a terminal is available, and tells you if anything still needs attention. Restart your agents after it finishes.
-
 </div>
 
 ---
