@@ -53,14 +53,21 @@ func registrationHasReachableWake(reg *loop.Registration) bool {
 	}
 	method := strings.TrimSpace(reg.WakeMethod)
 	target := strings.TrimSpace(reg.WakeTarget)
-	if method != "tmux" || target == "" {
+	if target == "" {
 		return false
 	}
 	localHost, _ := os.Hostname()
 	if strings.TrimSpace(reg.Host) != "" && strings.TrimSpace(localHost) != "" && reg.Host != localHost {
 		return false
 	}
-	return tmuxTargetReachable(target)
+	switch method {
+	case "tmux":
+		return tmuxTargetReachable(target)
+	case loop.RunnerWakeMethod:
+		return loop.RunnerSocketReachable(target, time.Second)
+	default:
+		return false
+	}
 }
 
 func stalePollerLiveness(agentID, vendor, detail string) recipientLiveness {

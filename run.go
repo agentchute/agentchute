@@ -1,0 +1,728 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/agentchute/agentchute/internal/loop"
+	runnerpty "github.com/agentchute/agentchute/internal/runner/pty"
+)
+
+const (
+	defaultRunnerIntervalSeconds = 5
+	defaultRunnerIdleGrace       = 2 * time.Second
+	defaultRunnerBusyGrace       = 30 * time.Second
+	defaultRunnerPrompt          = "check inbox"
+)
+
+type interruptPolicy string
+
+const (
+	interruptAfterIdle  interruptPolicy = "after-idle"
+	interruptAfterGrace interruptPolicy = "after-grace"
+	interruptAlways     interruptPolicy = "always"
+)
+
+type runnerOptions struct {
+	AgentID         string
+	Vendor          string
+	ControlRepo     string
+	LoopDir         string
+	IntervalSeconds int
+	InterruptPolicy interruptPolicy
+	Prompt          string
+	IdleGrace       time.Duration
+	BusyGrace       time.Duration
+	WrapperArgs     []string
+}
+
+func cmdRun(args []string) error {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var opts runnerOptions
+	var idleGrace, busyGrace time.Duration
+	fs.StringVar(&opts.AgentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
+	fs.StringVar(&opts.Vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google)")
+	fs.StringVar(&opts.ControlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
+	fs.StringVar(&opts.LoopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
+	fs.IntVar(&opts.IntervalSeconds, "interval", defaultRunnerIntervalSeconds, "inbox poll interval in seconds")
+	fs.Var((*interruptPolicyFlag)(&opts.InterruptPolicy), "interrupt-policy", "after-idle|after-grace|always")
+	fs.StringVar(&opts.Prompt, "prompt", defaultRunnerPrompt, "prompt injected when mail arrives")
+	fs.DurationVar(&idleGrace, "idle-grace", defaultRunnerIdleGrace, "quiet period before a wrapper is considered idle")
+	fs.DurationVar(&busyGrace, "busy-grace", defaultRunnerBusyGrace, "busy period before after-grace sends Ctrl-C")
+	if err := fs.Parse(args); err != nil {
+		return runUsage(err)
+	}
+
+	opts.AgentID = strings.TrimSpace(firstNonEmpty(opts.AgentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
+	if opts.AgentID == "" {
+		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
+	}
+	if err := loop.ValidateAgentID(opts.AgentID); err != nil {
+		return err
+	}
+	opts.Vendor = strings.TrimSpace(opts.Vendor)
+	if opts.Vendor == "" {
+		if preset, ok := vendorPresets[opts.AgentID]; ok {
+			opts.Vendor = preset.Vendor
+		}
+	}
+	if opts.Vendor == "" {
+		return fmt.Errorf("missing --vendor (recommended values: anthropic, openai, google)")
+	}
+	if err := loop.ValidateAgentID(opts.Vendor); err != nil {
+		return fmt.Errorf("--vendor: %w", err)
+	}
+	if opts.IntervalSeconds < loop.MinPollerIntervalSeconds {
+		return fmt.Errorf("--interval must be >= %d seconds", loop.MinPollerIntervalSeconds)
+	}
+	if opts.InterruptPolicy == "" {
+		opts.InterruptPolicy = interruptAfterIdle
+	}
+	if !validInterruptPolicy(opts.InterruptPolicy) {
+		return fmt.Errorf("--interrupt-policy must be one of after-idle, after-grace, always")
+	}
+	opts.Prompt = strings.TrimSpace(opts.Prompt)
+	if opts.Prompt == "" {
+		return fmt.Errorf("--prompt must not be empty")
+	}
+	if idleGrace <= 0 {
+		return fmt.Errorf("--idle-grace must be > 0")
+	}
+	if busyGrace <= 0 {
+		return fmt.Errorf("--busy-grace must be > 0")
+	}
+	opts.IdleGrace = idleGrace
+	opts.BusyGrace = busyGrace
+	opts.WrapperArgs = fs.Args()
+	if len(opts.WrapperArgs) == 0 {
+		return runUsage(fmt.Errorf("missing wrapper command after --"))
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	cfg, err := loop.Discover(loop.DiscoverOpts{
+		ControlRepoFlag: opts.ControlRepo,
+		LoopDirFlag:     opts.LoopDir,
+		Cwd:             cwd,
+		EnvControlRepo:  os.Getenv("AGENTCHUTE_CONTROL_REPO"),
+		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
+	})
+	if err != nil {
+		return err
+	}
+	return runWrapper(cfg, opts, cwd)
+}
+
+type interruptPolicyFlag interruptPolicy
+
+func (p *interruptPolicyFlag) String() string {
+	return string(*p)
+}
+
+func (p *interruptPolicyFlag) Set(v string) error {
+	policy := interruptPolicy(strings.TrimSpace(v))
+	if !validInterruptPolicy(policy) {
+		return fmt.Errorf("invalid interrupt policy %q", v)
+	}
+	*p = interruptPolicyFlag(policy)
+	return nil
+}
+
+func validInterruptPolicy(p interruptPolicy) bool {
+	switch p {
+	case interruptAfterIdle, interruptAfterGrace, interruptAlways:
+		return true
+	default:
+		return false
+	}
+}
+
+func runUsage(err error) error {
+	if err == flag.ErrHelp {
+		return runHelpErr()
+	}
+	return fmt.Errorf("%w\n\n%s", err, runHelp())
+}
+
+func runHelpErr() error {
+	return fmt.Errorf("%w\n%s", flag.ErrHelp, runHelp())
+}
+
+func runHelp() string {
+	return strings.TrimSpace(`
+Usage: agentchute run --as <id> --vendor <vendor> [flags] -- <wrapper> [args...]
+
+Launch an interactive wrapper under agentchute's PTY runner. The runner owns
+registration, last_seen heartbeat updates, a local wake socket, inbox polling,
+and prompt injection when mail arrives.
+
+Flags:
+  --as <id>                  agent id (or $AGENTCHUTE_AGENT_ID)
+  --vendor <vendor>          vendor or origin (anthropic, openai, google)
+  --interval <seconds>       inbox poll interval (minimum 5; default 5)
+  --interrupt-policy <mode>  after-idle|after-grace|always (default after-idle; idle is heuristic)
+  --prompt <text>            prompt injected on wake (default "check inbox")
+  --idle-grace <duration>    quiet period before prompt injection (default 2s)
+  --busy-grace <duration>    grace before Ctrl-C in after-grace mode (default 30s)
+  --control-repo <p>         control repo path (or $AGENTCHUTE_CONTROL_REPO)
+  --loop-dir <p>             loop dir path (or $AGENTCHUTE_LOOP_DIR)
+`)
+}
+
+type runnerRuntime struct {
+	cfg      *loop.Config
+	opts     runnerOptions
+	cwd      string
+	started  time.Time
+	socket   string
+	childPID int
+	cmd      *exec.Cmd
+	ptmx     *os.File
+	listener net.Listener
+	done     <-chan error
+
+	mu                  sync.Mutex
+	ptmxMu              sync.Mutex
+	stopOnce            sync.Once
+	shutdownRequested   atomic.Bool
+	pendingWake         bool
+	lastInjection       time.Time
+	lastPoll            time.Time
+	lastObservedMessage string
+	lastOutputUnixNano  atomic.Int64
+	lastInputUnixNano   atomic.Int64
+
+	wakeCh chan struct{}
+	stopCh chan struct{}
+}
+
+func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
+	stateDir := cfg.AgentStateDir(opts.AgentID)
+	if err := loop.EnsurePrivateDir(stateDir); err != nil {
+		return err
+	}
+	socketPath := cfg.RunnerSocketPath(opts.AgentID)
+	if err := refuseLiveRunnerCollision(cfg, opts.AgentID); err != nil {
+		return err
+	}
+
+	cmd := exec.Command(opts.WrapperArgs[0], opts.WrapperArgs[1:]...)
+	cmd.Dir = cwd
+	cmd.Env = runnerChildEnv(cfg, opts)
+	ptmx, err := runnerpty.Start(cmd)
+	if err != nil {
+		return fmt.Errorf("start wrapper under PTY: %w", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	listener, err := startRunnerSocket(socketPath)
+	if err != nil {
+		_ = ptmx.Close()
+		_ = cmd.Process.Kill()
+		<-done
+		_ = saveRunnerOfflineState(cfg, opts.AgentID, socketPath, cmd.Process.Pid, time.Now().UTC())
+		_ = markRunnerOffline(cfg, opts.AgentID)
+		return err
+	}
+
+	if err := registerRunner(cfg, opts, socketPath, time.Now().UTC()); err != nil {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+		_ = ptmx.Close()
+		_ = cmd.Process.Kill()
+		<-done
+		_ = saveRunnerOfflineState(cfg, opts.AgentID, socketPath, cmd.Process.Pid, time.Now().UTC())
+		return err
+	}
+
+	restoreTerminal, rawEnabled, err := runnerMakeRaw(os.Stdin)
+	if err != nil {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+		_ = ptmx.Close()
+		_ = cmd.Process.Kill()
+		<-done
+		_ = saveRunnerOfflineState(cfg, opts.AgentID, socketPath, cmd.Process.Pid, time.Now().UTC())
+		_ = markRunnerOffline(cfg, opts.AgentID)
+		return fmt.Errorf("set stdin raw mode: %w", err)
+	}
+	if rawEnabled {
+		defer func() {
+			if err := restoreTerminal(); err != nil {
+				fmt.Fprintf(os.Stderr, "agentchute run: restore terminal: %v\n", err)
+			}
+		}()
+	}
+
+	rt := &runnerRuntime{
+		cfg:      cfg,
+		opts:     opts,
+		cwd:      cwd,
+		started:  time.Now().UTC(),
+		socket:   socketPath,
+		childPID: cmd.Process.Pid,
+		cmd:      cmd,
+		ptmx:     ptmx,
+		listener: listener,
+		done:     done,
+		wakeCh:   make(chan struct{}, 1),
+		stopCh:   make(chan struct{}),
+	}
+	nowUnix := time.Now().UnixNano()
+	rt.lastOutputUnixNano.Store(nowUnix)
+	rt.lastInputUnixNano.Store(nowUnix)
+	if err := rt.saveState(); err != nil {
+		fmt.Fprintf(os.Stderr, "agentchute run: write runner state: %v\n", err)
+	}
+
+	defer func() {
+		rt.stopLoops()
+		rt.closePTY()
+		_ = os.Remove(socketPath)
+		_ = rt.saveStateWithStatus("offline")
+		_ = markRunnerOffline(cfg, opts.AgentID)
+	}()
+
+	go rt.acceptWakeLoop()
+	go rt.pollLoop()
+	go rt.injectLoop()
+	go rt.copyPTYOutput()
+	go rt.copyInput()
+	go rt.resizeLoop()
+	go rt.shutdownSignalLoop()
+
+	err = <-done
+	rt.stopLoops()
+	if err != nil && !rt.shutdownRequested.Load() {
+		return fmt.Errorf("wrapper exited: %w", err)
+	}
+	return nil
+}
+
+func runnerChildEnv(cfg *loop.Config, opts runnerOptions) []string {
+	env := os.Environ()
+	env = append(env,
+		"AGENTCHUTE_AGENT_ID="+opts.AgentID,
+		"AGENTCHUTE_CONTROL_REPO="+cfg.ControlRepo,
+		"AGENTCHUTE_LOOP_DIR="+cfg.LoopDir,
+		"AGENTCHUTE_RUNNER=1",
+		"AGENTCHUTE_RUN_DEPTH="+strconv.Itoa(agentchuteRunDepth()+1),
+	)
+	return env
+}
+
+func agentchuteRunDepth() int {
+	n, _ := strconv.Atoi(os.Getenv("AGENTCHUTE_RUN_DEPTH"))
+	return n
+}
+
+func registerRunner(cfg *loop.Config, opts runnerOptions, socketPath string, now time.Time) error {
+	_, err := performRegister(cfg, registerOpts{
+		AgentID:            opts.AgentID,
+		Vendor:             opts.Vendor,
+		WakeMethod:         loop.RunnerWakeMethod,
+		WakeTarget:         loop.RunnerWakeTarget(socketPath),
+		WakeMethodProvided: true,
+		WakeTargetProvided: true,
+		ClearStaleTmuxWake: true,
+		WorkingRepos:       []string{cfg.ControlRepo},
+		Host:               localHostname(),
+		HostProvided:       true,
+	}, now)
+	return err
+}
+
+func markRunnerOffline(cfg *loop.Config, agentID string) error {
+	regPath := cfg.AgentRegistrationPath(agentID)
+	reg, err := loop.ReadRegistration(regPath)
+	if err != nil {
+		return err
+	}
+	reg.Status = loop.StatusOffline
+	reg.LastSeen = time.Now().UTC()
+	return loop.WriteRegistration(regPath, reg)
+}
+
+func refuseLiveRunnerCollision(cfg *loop.Config, agentID string) error {
+	state, err := loop.LoadRunnerState(cfg, agentID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read runner state: %w", err)
+	}
+	target := loop.RunnerWakeTarget(state.SocketPath)
+	if processAlive(state.RunnerPID) && loop.RunnerSocketReachable(target, 300*time.Millisecond) {
+		return fmt.Errorf("runner for %s is already active (pid=%d socket=%s)", agentID, state.RunnerPID, state.SocketPath)
+	}
+	_ = os.Remove(state.SocketPath)
+	return nil
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = p.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func startRunnerSocket(path string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	target := loop.RunnerWakeTarget(path)
+	if loop.RunnerSocketReachable(target, 300*time.Millisecond) {
+		return nil, fmt.Errorf("runner socket already reachable at %s", path)
+	}
+	_ = os.Remove(path)
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, fmt.Errorf("listen on runner socket: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	return listener, nil
+}
+
+func (r *runnerRuntime) acceptWakeLoop() {
+	for {
+		conn, err := r.listener.Accept()
+		if err != nil {
+			select {
+			case <-r.stopCh:
+				return
+			default:
+				fmt.Fprintf(os.Stderr, "agentchute run: accept wake: %v\n", err)
+				continue
+			}
+		}
+		go r.handleWakeConn(conn)
+	}
+}
+
+func (r *runnerRuntime) handleWakeConn(conn net.Conn) {
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	var req struct {
+		Op     string `json:"op"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(io.LimitReader(conn, 4096)).Decode(&req); err != nil {
+		return
+	}
+	switch req.Op {
+	case "wake":
+		r.enqueueWake()
+	case "status":
+		_ = r.saveState()
+	case "shutdown":
+		r.requestShutdown(syscall.SIGTERM)
+	}
+}
+
+func (r *runnerRuntime) pollLoop() {
+	ticker := time.NewTicker(time.Duration(r.opts.IntervalSeconds) * time.Second)
+	defer ticker.Stop()
+	r.pollOnce(false)
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case <-ticker.C:
+			r.pollOnce(true)
+		}
+	}
+}
+
+func (r *runnerRuntime) pollOnce(enqueueNew bool) {
+	now := time.Now().UTC()
+	if err := loop.UpdateLastSeen(r.cfg.AgentRegistrationPath(r.opts.AgentID), now); err != nil {
+		fmt.Fprintf(os.Stderr, "agentchute run: update last_seen: %v\n", err)
+	}
+	msgs, _, err := loop.ListInboxMessagesWithSkipped(r.cfg.AgentInboxDir(r.opts.AgentID))
+	if err != nil && !errors.Is(err, loop.ErrInboxMissing) {
+		fmt.Fprintf(os.Stderr, "agentchute run: list inbox: %v\n", err)
+	}
+	if len(msgs) > 0 {
+		newest := msgs[len(msgs)-1].Filename
+		r.mu.Lock()
+		seen := newest == r.lastObservedMessage
+		if !seen {
+			r.lastObservedMessage = newest
+		}
+		r.mu.Unlock()
+		if !seen && enqueueNew {
+			r.enqueueWake()
+		}
+	}
+	r.mu.Lock()
+	r.lastPoll = now
+	r.mu.Unlock()
+	if err := r.saveState(); err != nil {
+		fmt.Fprintf(os.Stderr, "agentchute run: write runner state: %v\n", err)
+	}
+}
+
+func (r *runnerRuntime) enqueueWake() {
+	if r.shutdownRequested.Load() {
+		return
+	}
+	r.mu.Lock()
+	r.pendingWake = true
+	r.mu.Unlock()
+	select {
+	case r.wakeCh <- struct{}{}:
+	default:
+	}
+	_ = r.saveState()
+}
+
+func (r *runnerRuntime) injectLoop() {
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case <-r.wakeCh:
+			if r.waitForInjectionWindow() {
+				r.injectPrompt()
+			}
+		}
+	}
+}
+
+func (r *runnerRuntime) waitForInjectionWindow() bool {
+	started := time.Now()
+	for {
+		if r.shutdownRequested.Load() {
+			return false
+		}
+		if r.isIdle() {
+			return true
+		}
+		switch r.opts.InterruptPolicy {
+		case interruptAfterIdle:
+			// Keep waiting.
+		case interruptAfterGrace:
+			if time.Since(started) >= r.opts.BusyGrace {
+				_ = r.writePTY([]byte{0x03})
+				time.Sleep(300 * time.Millisecond)
+				return true
+			}
+		case interruptAlways:
+			_ = r.writePTY([]byte{0x03})
+			time.Sleep(300 * time.Millisecond)
+			return true
+		}
+		select {
+		case <-r.stopCh:
+			return false
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+func (r *runnerRuntime) isIdle() bool {
+	lastOutput := r.lastOutputUnixNano.Load()
+	lastInput := r.lastInputUnixNano.Load()
+	last := lastOutput
+	if lastInput > last {
+		last = lastInput
+	}
+	return time.Since(time.Unix(0, last)) >= r.opts.IdleGrace
+}
+
+func (r *runnerRuntime) injectPrompt() {
+	line := r.opts.Prompt + "\r"
+	if err := r.writePTY([]byte(line)); err != nil {
+		fmt.Fprintf(os.Stderr, "agentchute run: inject prompt: %v\n", err)
+		return
+	}
+	now := time.Now().UTC()
+	r.mu.Lock()
+	r.pendingWake = false
+	r.lastInjection = now
+	r.mu.Unlock()
+	_ = r.saveState()
+}
+
+func (r *runnerRuntime) copyPTYOutput() {
+	buf := make([]byte, 32*1024)
+	for {
+		r.ptmxMu.Lock()
+		ptmx := r.ptmx
+		r.ptmxMu.Unlock()
+		if ptmx == nil {
+			return
+		}
+		n, err := ptmx.Read(buf)
+		if n > 0 {
+			r.lastOutputUnixNano.Store(time.Now().UnixNano())
+			if _, werr := os.Stdout.Write(buf[:n]); werr != nil {
+				fmt.Fprintf(os.Stderr, "agentchute run: write stdout: %v\n", werr)
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (r *runnerRuntime) copyInput() {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if n > 0 {
+			r.lastInputUnixNano.Store(time.Now().UnixNano())
+			if werr := r.writePTY(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (r *runnerRuntime) resizeLoop() {
+	stdin := os.Stdin
+	if runnerIsTerminal(stdin) {
+		_ = runnerpty.InheritSize(stdin, r.ptmx)
+	}
+	ch := make(chan os.Signal, 1)
+	signalNotifyResize(ch)
+	defer signalStopResize(ch)
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case <-ch:
+			if runnerIsTerminal(stdin) {
+				_ = runnerpty.InheritSize(stdin, r.ptmx)
+			}
+		}
+	}
+}
+
+func (r *runnerRuntime) shutdownSignalLoop() {
+	ch := make(chan os.Signal, 2)
+	signalNotifyShutdown(ch)
+	defer signalStopShutdown(ch)
+	select {
+	case <-r.stopCh:
+		return
+	case sig := <-ch:
+		if s, ok := sig.(syscall.Signal); ok {
+			r.requestShutdown(s)
+		} else {
+			r.requestShutdown(syscall.SIGTERM)
+		}
+	}
+}
+
+func (r *runnerRuntime) requestShutdown(sig syscall.Signal) {
+	if !r.shutdownRequested.CompareAndSwap(false, true) {
+		return
+	}
+	r.stopLoops()
+	if r.cmd != nil && r.cmd.Process != nil {
+		_ = r.cmd.Process.Signal(sig)
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			r.closePTY()
+			time.Sleep(2 * time.Second)
+			if processAlive(r.cmd.Process.Pid) {
+				_ = r.cmd.Process.Kill()
+			}
+		}()
+	}
+}
+
+func (r *runnerRuntime) stopLoops() {
+	r.stopOnce.Do(func() {
+		close(r.stopCh)
+		if r.listener != nil {
+			_ = r.listener.Close()
+		}
+	})
+}
+
+func (r *runnerRuntime) writePTY(p []byte) error {
+	if r.shutdownRequested.Load() {
+		return os.ErrClosed
+	}
+	r.ptmxMu.Lock()
+	defer r.ptmxMu.Unlock()
+	if r.ptmx == nil {
+		return os.ErrClosed
+	}
+	_, err := r.ptmx.Write(p)
+	return err
+}
+
+func (r *runnerRuntime) closePTY() {
+	r.ptmxMu.Lock()
+	defer r.ptmxMu.Unlock()
+	if r.ptmx != nil {
+		_ = r.ptmx.Close()
+		r.ptmx = nil
+	}
+}
+
+func (r *runnerRuntime) saveState() error {
+	return r.saveStateWithStatus("active")
+}
+
+func (r *runnerRuntime) saveStateWithStatus(status string) error {
+	r.mu.Lock()
+	st := loop.RunnerState{
+		AgentID:       r.opts.AgentID,
+		RunnerPID:     os.Getpid(),
+		ChildPID:      r.childPID,
+		SocketPath:    r.socket,
+		StartedAt:     r.started,
+		LastPoll:      r.lastPoll,
+		LastInjection: r.lastInjection,
+		PendingWake:   r.pendingWake,
+		Status:        status,
+	}
+	r.mu.Unlock()
+	return loop.SaveRunnerState(r.cfg, st)
+}
+
+func saveRunnerOfflineState(cfg *loop.Config, agentID, socketPath string, childPID int, now time.Time) error {
+	return loop.SaveRunnerState(cfg, loop.RunnerState{
+		AgentID:    agentID,
+		RunnerPID:  os.Getpid(),
+		ChildPID:   childPID,
+		SocketPath: socketPath,
+		StartedAt:  now,
+		Status:     "offline",
+	})
+}

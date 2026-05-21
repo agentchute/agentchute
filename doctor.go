@@ -590,6 +590,11 @@ func checkWakeTargetValidity(cfg *loop.Config, agentID string) doctorCheck {
 			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=tmux but target %q not currently addressable (`tmux list-panes -t %s` failed); pane may have closed", target, target)}
 		}
 		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=tmux, target=%s reachable", target)}
+	case loop.RunnerWakeMethod:
+		if !loop.RunnerSocketReachable(target, time.Second) {
+			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=%s but socket target %q is not reachable; runner may have exited", method, target)}
+		}
+		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=%s, target reachable", method)}
 	default:
 		return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=%s unknown to v0.1 reference CLI; senders cannot poke this agent unless an adapter is provided externally", method)}
 	}

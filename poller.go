@@ -230,6 +230,12 @@ func cmdPollerEnsure(args []string) error {
 	if err != nil {
 		return err
 	}
+	if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(common.AgentID)); err == nil && registrationHasReachableWake(reg) {
+		if !common.Quiet {
+			fmt.Printf("poller ensure: %s has reachable wake target (%s); background poller not required\n", common.AgentID, reg.WakeMethod)
+		}
+		return nil
+	}
 	if pane := currentTmuxPane(); pane != "" && tmuxTargetReachable(pane) {
 		if !common.Quiet {
 			fmt.Printf("poller ensure: %s is in tmux (%s); background poller not required\n", common.AgentID, pane)

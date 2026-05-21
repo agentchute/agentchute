@@ -1,6 +1,9 @@
 package loop
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +14,12 @@ const (
 	specFileName = "AGENTCHUTE.md"
 	loopDirName  = "loop"
 )
+
+var ErrNoControlRepo = errors.New("no agentchute control repo")
+
+func IsNoControlRepo(err error) bool {
+	return errors.Is(err, ErrNoControlRepo)
+}
 
 // Config is the resolved agentchute control location.
 type Config struct {
@@ -129,6 +138,26 @@ func (c *Config) PollerHeartbeatPath(agentID string) string {
 	return filepath.Join(c.AgentStateDir(agentID), "poller.json")
 }
 
+// RunnerStatePath returns the per-agent runner state path. This is
+// recipient-owned local state for agentchute's PTY runner; peers may use the
+// registration wake_target to poke the runner socket, but this diagnostic file
+// is not part of the wire protocol.
+func (c *Config) RunnerStatePath(agentID string) string {
+	return filepath.Join(c.AgentStateDir(agentID), "runner.json")
+}
+
+// RunnerSocketPath returns the default local Unix socket path for the
+// agentchute-run wake adapter.
+func (c *Config) RunnerSocketPath(agentID string) string {
+	inState := filepath.Join(c.AgentStateDir(agentID), "runner.sock")
+	if len(inState) < 100 {
+		return inState
+	}
+	sum := sha256.Sum256([]byte(c.LoopDir + "\x00" + agentID))
+	short := hex.EncodeToString(sum[:])[:16]
+	return filepath.Join(os.TempDir(), "agentchute-run", short+"-"+agentID+".sock")
+}
+
 // WatchdogLogPath returns the watchdog log path.
 func (c *Config) WatchdogLogPath() string {
 	return filepath.Join(c.LoopDir, "watchdog.log")
@@ -183,8 +212,8 @@ func discoverControlRepo(opts DiscoverOpts) (controlRepo, origin string, shadowe
 		}
 	}
 
-	return "", "", nil, fmt.Errorf("could not resolve a control repo: no --control-repo flag, no AGENTCHUTE_CONTROL_REPO env, no %s pointer in cwd ancestors, and no AGENTCHUTE.md + vendor loop dir found walking up from %q",
-		PointerFileName, opts.Cwd)
+	return "", "", nil, fmt.Errorf("%w: no --control-repo flag, no AGENTCHUTE_CONTROL_REPO env, no %s pointer in cwd ancestors, and no AGENTCHUTE.md + vendor loop dir found walking up from %q",
+		ErrNoControlRepo, PointerFileName, opts.Cwd)
 }
 
 // validateExplicitControlRepo checks that a flag- or env-provided control

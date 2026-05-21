@@ -1,0 +1,259 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/agentchute/agentchute/internal/loop"
+)
+
+type shimSpec struct {
+	Name       string
+	AgentID    string
+	Vendor     string
+	Candidates []string
+}
+
+var shimSpecs = []shimSpec{
+	{Name: "claude", AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}},
+	{Name: "claude-code", AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude-code", "claude"}},
+	{Name: "codex", AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}},
+	{Name: "gemini", AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli"}},
+	{Name: "gemini-cli", AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini-cli", "gemini"}},
+}
+
+func cmdShims(args []string) error {
+	if len(args) == 0 {
+		return shimsUsage(fmt.Errorf("missing subcommand"))
+	}
+	switch args[0] {
+	case "install":
+		return cmdShimsInstall(args[1:])
+	case "exec":
+		return cmdShimsExec(args[1:])
+	case "-h", "--help", "help":
+		fmt.Print(shimsHelp())
+		return nil
+	default:
+		return shimsUsage(fmt.Errorf("unknown subcommand %q", args[0]))
+	}
+}
+
+func cmdShimsInstall(args []string) error {
+	fs := flag.NewFlagSet("shims install", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var dir string
+	var force, quiet bool
+	fs.StringVar(&dir, "dir", "", "shim directory (default: $HOME/.agentchute/bin)")
+	fs.BoolVar(&force, "force", false, "overwrite existing shim files")
+	fs.BoolVar(&quiet, "quiet", false, "suppress status text")
+	if err := fs.Parse(args); err != nil {
+		return shimsUsage(err)
+	}
+	if fs.NArg() != 0 {
+		return shimsUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
+	}
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		dir = filepath.Join(home, ".agentchute", "bin")
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	if err := loop.EnsurePrivateDir(absDir); err != nil {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		return err
+	}
+	for _, spec := range shimSpecs {
+		path := filepath.Join(absDir, spec.Name)
+		if !force {
+			if _, err := os.Lstat(path); err == nil {
+				return fmt.Errorf("%s already exists; pass --force to overwrite", path)
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
+		if err := os.WriteFile(path, []byte(renderShimScript(exe, absDir, spec.Name)), 0o700); err != nil {
+			return err
+		}
+	}
+	if !quiet {
+		fmt.Printf("installed agentchute shims to %s\n", absDir)
+		if !pathContains(absDir) {
+			fmt.Printf("warning: %s is not on PATH; add it before your wrapper binaries\n", absDir)
+		}
+	}
+	return nil
+}
+
+func renderShimScript(agentchuteBin, shimDir, name string) string {
+	return fmt.Sprintf(`#!/bin/sh
+AGENTCHUTE_BIN=${AGENTCHUTE_BIN:-%s}
+exec "$AGENTCHUTE_BIN" shims exec --name %s --shim-dir %s -- "$@"
+`, shellQuote(agentchuteBin), shellQuote(name), shellQuote(shimDir))
+}
+
+func cmdShimsExec(args []string) error {
+	fs := flag.NewFlagSet("shims exec", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var name, shimDir string
+	fs.StringVar(&name, "name", "", "shim command name")
+	fs.StringVar(&shimDir, "shim-dir", "", "directory containing agentchute shims")
+	if err := fs.Parse(args); err != nil {
+		return shimsUsage(err)
+	}
+	spec, ok := shimSpecForName(name)
+	if !ok {
+		return fmt.Errorf("unknown shim name %q", name)
+	}
+	realWrapper, err := resolveRealWrapper(spec, shimDir)
+	if err != nil {
+		return err
+	}
+	wrapperArgs := append([]string{realWrapper}, fs.Args()...)
+	if os.Getenv("AGENTCHUTE_SHIM_BYPASS") == "1" || os.Getenv("AGENTCHUTE_RUNNER") == "1" {
+		return execReplace(realWrapper, wrapperArgs, os.Environ())
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	cfg, err := loop.Discover(loop.DiscoverOpts{
+		Cwd:            cwd,
+		EnvControlRepo: os.Getenv("AGENTCHUTE_CONTROL_REPO"),
+		EnvLoopDir:     os.Getenv("AGENTCHUTE_LOOP_DIR"),
+	})
+	if err != nil {
+		if loop.IsNoControlRepo(err) {
+			return execReplace(realWrapper, wrapperArgs, os.Environ())
+		}
+		return fmt.Errorf("agentchute shim discovery failed from %s: %w", cwd, err)
+	}
+	agentchuteBin, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	runArgs := []string{
+		agentchuteBin,
+		"run",
+		"--as", spec.AgentID,
+		"--vendor", spec.Vendor,
+		"--control-repo", cfg.ControlRepo,
+		"--loop-dir", cfg.LoopDir,
+		"--",
+	}
+	runArgs = append(runArgs, wrapperArgs...)
+	return execReplace(agentchuteBin, runArgs, os.Environ())
+}
+
+func shimSpecForName(name string) (shimSpec, bool) {
+	name = strings.TrimSpace(filepath.Base(name))
+	for _, spec := range shimSpecs {
+		if spec.Name == name {
+			return spec, true
+		}
+	}
+	return shimSpec{}, false
+}
+
+func resolveRealWrapper(spec shimSpec, shimDir string) (string, error) {
+	absShimDir := ""
+	if shimDir != "" {
+		if abs, err := filepath.Abs(shimDir); err == nil {
+			absShimDir = abs
+		}
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			dir = "."
+		}
+		absDir, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		if absShimDir != "" && samePath(absDir, absShimDir) {
+			continue
+		}
+		for _, candidate := range spec.Candidates {
+			path := filepath.Join(absDir, candidate)
+			if executableFileProblem(path) == "" {
+				return path, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("could not find real wrapper for shim %q on PATH outside %s", spec.Name, shimDir)
+}
+
+func samePath(a, b string) bool {
+	aa, errA := filepath.EvalSymlinks(a)
+	bb, errB := filepath.EvalSymlinks(b)
+	if errA == nil {
+		a = aa
+	}
+	if errB == nil {
+		b = bb
+	}
+	return a == b
+}
+
+func pathContains(dir string) bool {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
+		if entry == "" {
+			entry = "."
+		}
+		abs, err := filepath.Abs(entry)
+		if err == nil && samePath(abs, absDir) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func shimsUsage(err error) error {
+	if err == flag.ErrHelp {
+		return shimsHelpErr()
+	}
+	return fmt.Errorf("%w\n\n%s", err, shimsHelp())
+}
+
+func shimsHelpErr() error {
+	return fmt.Errorf("%w\n%s", flag.ErrHelp, shimsHelp())
+}
+
+func shimsHelp() string {
+	return strings.TrimSpace(`
+Usage:
+  agentchute shims install [--dir <path>] [--force] [--quiet]
+  agentchute shims exec --name <wrapper> --shim-dir <dir> -- [args...]
+
+Launcher shims make normal wrapper commands route through agentchute run
+inside initialized pools and pass through to the real wrapper elsewhere.
+`)
+}

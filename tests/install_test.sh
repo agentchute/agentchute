@@ -72,6 +72,41 @@ nl_dir=$(printf '/tmp/\nbad')
 assert_false "invalid dir: newline"     "is_valid_install_dir \"\$nl_dir\""
 
 # -----------------------------------------------------------------------
+# PATH helpers
+# -----------------------------------------------------------------------
+
+old_path=$PATH
+PATH="/usr/bin:/tmp/agentchute-bin"
+assert_true  "path contains exact dir"     'path_contains_dir /tmp/agentchute-bin'
+assert_false "path rejects substring dir"  'path_contains_dir /tmp/agentchute'
+PATH=$old_path
+
+old_home=${HOME:-}
+old_shell=${SHELL:-}
+old_profile=${AGENTCHUTE_PROFILE:-}
+old_no_path=${AGENTCHUTE_NO_PATH_UPDATE:-}
+profile_tmp=$(mktemp -d)
+HOME="$profile_tmp/home"
+SHELL="/bin/zsh"
+AGENTCHUTE_PROFILE="$profile_tmp/profile"
+AGENTCHUTE_NO_PATH_UPDATE=0
+PATH="/bin:/usr/bin"
+mkdir -p "$HOME/.agentchute/bin"
+ensure_path_available "$HOME/.agentchute/bin" "launcher shims" >/dev/null 2>&1
+assert_true "profile path block written" "grep -F '# agentchute PATH entry for launcher shims' \"\$AGENTCHUTE_PROFILE\" >/dev/null"
+assert_true "profile path uses HOME" "grep -F 'export PATH=\"\$HOME/.agentchute/bin:\$PATH\"' \"\$AGENTCHUTE_PROFILE\" >/dev/null"
+before_lines=$(wc -l <"$AGENTCHUTE_PROFILE" | tr -d ' ')
+ensure_path_available "$HOME/.agentchute/bin" "launcher shims" >/dev/null 2>&1
+after_lines=$(wc -l <"$AGENTCHUTE_PROFILE" | tr -d ' ')
+assert_eq "profile path block not duplicated" "$before_lines" "$after_lines"
+rm -rf "$profile_tmp"
+HOME=$old_home
+SHELL=$old_shell
+PATH=$old_path
+if [ -n "$old_profile" ]; then AGENTCHUTE_PROFILE=$old_profile; else unset AGENTCHUTE_PROFILE; fi
+if [ -n "$old_no_path" ]; then AGENTCHUTE_NO_PATH_UPDATE=$old_no_path; else unset AGENTCHUTE_NO_PATH_UPDATE; fi
+
+# -----------------------------------------------------------------------
 # extract_tag_from_url
 # -----------------------------------------------------------------------
 

@@ -11,6 +11,9 @@
 # Equivalent env vars (flags win on conflict):
 #   AGENTCHUTE_VERSION       pin a specific tag (default: latest release)
 #   AGENTCHUTE_INSTALL_DIR   override install dir (default: ~/.local/bin)
+#   AGENTCHUTE_SHIM_DIR      override launcher shim dir (default: ~/.agentchute/bin)
+#   AGENTCHUTE_PROFILE       shell profile to update when PATH needs entries
+#   AGENTCHUTE_NO_PATH_UPDATE=1  do not update shell profile; print hints only
 #   AGENTCHUTE_INIT=1        run `agentchute init` after install
 #   AGENTCHUTE_DRY_RUN=1     print the plan and exit; no mutation
 #
@@ -233,13 +236,51 @@ ensure_install_dir() {
 	printf '%s' "$dir"
 }
 
-# warn_path_missing prints a friendly add-to-PATH hint if install_dir isn't on
-# $PATH. No mutation of shell rc files.
-warn_path_missing() {
+# path_contains_dir returns 0 when dir is already present in the current PATH.
+path_contains_dir() {
 	install_dir="$1"
 	case ":$PATH:" in
 		*":$install_dir:"*) return 0 ;;
 	esac
+	return 1
+}
+
+# default_shell_profile prints the shell profile this installer can update.
+default_shell_profile() {
+	[ -n "${HOME:-}" ] || return 1
+	if [ -n "${AGENTCHUTE_PROFILE:-}" ]; then
+		printf '%s' "$AGENTCHUTE_PROFILE"
+		return 0
+	fi
+	case "${SHELL:-}" in
+		*zsh)  printf '%s' "$HOME/.zshrc" ;;
+		*bash)
+			if [ "$(uname -s 2>/dev/null || echo unknown)" = "Darwin" ]; then
+				printf '%s' "$HOME/.bash_profile"
+			else
+				printf '%s' "$HOME/.bashrc"
+			fi
+			;;
+		*sh)   printf '%s' "$HOME/.profile" ;;
+		*)     return 1 ;;
+	esac
+}
+
+# path_expr_for_profile prints a shell-profile expression for dir. Prefer
+# $HOME-relative entries so copied home directories remain portable.
+path_expr_for_profile() {
+	dir="$1"
+	case "$dir" in
+		"$HOME"/*) printf '$HOME/%s' "${dir#"$HOME"/}" ;;
+		*)         printf '%s' "$dir" ;;
+	esac
+}
+
+# warn_path_missing prints a friendly add-to-PATH hint if install_dir isn't on
+# $PATH. No mutation.
+warn_path_missing() {
+	install_dir="$1"
+	path_contains_dir "$install_dir" && return 0
 	warn "$install_dir is not on PATH"
 	case "${SHELL:-}" in
 		*zsh)  rcfile="\$HOME/.zshrc" ;;
@@ -248,6 +289,55 @@ warn_path_missing() {
 		*)     rcfile="your shell profile" ;;
 	esac
 	warn "  add to $rcfile:  export PATH=\"$install_dir:\$PATH\""
+}
+
+# ensure_path_available makes a best-effort update to the user's next shell.
+# The current process PATH cannot be changed for the parent shell, so the
+# caller still prints a restart/new-shell instruction.
+ensure_path_available() {
+	dir="$1"
+	label="$2"
+	path_contains_dir "$dir" && return 0
+
+	if [ "${AGENTCHUTE_NO_PATH_UPDATE:-0}" = "1" ]; then
+		warn_path_missing "$dir"
+		return 0
+	fi
+	case "$dir" in
+		*[[:space:]]*)
+			warn "$dir is not on PATH and contains whitespace; not editing shell profile automatically"
+			warn "  add: export PATH=\"$dir:\$PATH\""
+			return 0
+			;;
+	esac
+	profile=$(default_shell_profile) || {
+		warn_path_missing "$dir"
+		return 0
+	}
+	profile_dir=$(dirname -- "$profile")
+	mkdir -p "$profile_dir" || {
+		warn "could not create $profile_dir; add $dir to PATH manually"
+		return 0
+	}
+	expr=$(path_expr_for_profile "$dir")
+	begin="# agentchute PATH entry for $label ($expr) begin"
+	end="# agentchute PATH entry for $label ($expr) end"
+	if [ -f "$profile" ] && grep -F "$begin" "$profile" >/dev/null 2>&1; then
+		info "PATH profile entry for $label already present in $profile"
+		return 0
+	fi
+	{
+		printf '\n%s\n' "$begin"
+		printf 'case ":$PATH:" in\n'
+		printf '  *":%s:"*) ;;\n' "$expr"
+		printf '  *) export PATH="%s:$PATH" ;;\n' "$expr"
+		printf 'esac\n'
+		printf '%s\n' "$end"
+	} >>"$profile" || {
+		warn "could not update $profile; add $dir to PATH manually"
+		return 0
+	}
+	info "added $label PATH entry to $profile"
 }
 
 print_setup_next_steps() {
@@ -280,6 +370,7 @@ main() {
 	# Defaults pulled from env vars (flags override below).
 	version="${AGENTCHUTE_VERSION:-}"
 	install_dir="${AGENTCHUTE_INSTALL_DIR:-}"
+	shim_dir="${AGENTCHUTE_SHIM_DIR:-}"
 	do_init=0
 	dry_run=0
 	[ "${AGENTCHUTE_INIT:-0}" = "1" ] && do_init=1
@@ -309,7 +400,9 @@ flags:
   --dry-run  print the plan and exit; no mutation
 
 env vars (flags override):
-  AGENTCHUTE_VERSION, AGENTCHUTE_INSTALL_DIR, AGENTCHUTE_INIT=1, AGENTCHUTE_DRY_RUN=1
+  AGENTCHUTE_VERSION, AGENTCHUTE_INSTALL_DIR, AGENTCHUTE_SHIM_DIR,
+  AGENTCHUTE_PROFILE, AGENTCHUTE_NO_PATH_UPDATE=1,
+  AGENTCHUTE_INIT=1, AGENTCHUTE_DRY_RUN=1
 EOF
 				return 0
 				;;
@@ -357,6 +450,7 @@ agentchute install
   os/arch:        $os/$arch
   download:       $archive_url
   install dir:    $install_dir
+  shim dir:       ${shim_dir:-${HOME:-}/.agentchute/bin}
 EOF
 
 	# --dry-run wins over --init (per codex). Still resolves version (network OK,
@@ -407,7 +501,23 @@ EOF
 	info ""
 	info "Security: this verified release checksums; piping the installer still trusts this GitHub repository."
 
-	warn_path_missing "$install_dir"
+	ensure_path_available "$install_dir" "binary"
+
+	if [ -z "$shim_dir" ]; then
+		[ -n "${HOME:-}" ] || err "HOME unset; set AGENTCHUTE_SHIM_DIR explicitly for launcher shims"
+		shim_dir="${HOME}/.agentchute/bin"
+	fi
+	info ""
+	info "installing launcher shims to $shim_dir..."
+	if "$install_dir/agentchute" shims install --dir "$shim_dir" --force --quiet; then
+		info "  installed: claude, claude-code, codex, gemini, gemini-cli"
+		ensure_path_available "$shim_dir" "launcher shims"
+		if ! path_contains_dir "$shim_dir"; then
+			info "  open a new shell before restarting agents so launcher shims are on PATH"
+		fi
+	else
+		warn "failed to install launcher shims; run: agentchute shims install --force"
+	fi
 
 	# Tmux is the v0.1 reference peer-wake adapter. Not required to use the
 	# binary (CI, protocol-only, polling-only setups are valid), but without
