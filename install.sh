@@ -345,26 +345,18 @@ ensure_path_available() {
 
 print_setup_next_steps() {
 	info ""
-	info "next in your control repo:"
+	info "next: run setup from the repo where your agents will coordinate:"
 	info "  agentchute setup"
-	info ""
-	info "non-interactive:"
-	info "  agentchute setup --wake runner --wrappers all --yes"
-	info "  agentchute setup --wake tmux --wrappers all --yes"
-	info "restart Claude Code, codex, and Gemini CLI from that repo, then verify:"
-	info "  agentchute doctor --as claude-code"
-	info "  agentchute doctor --as codex"
-	info "  agentchute doctor --as gemini-cli"
+	info "then restart your agents"
+	info "optional check: agentchute doctor --as <agent-id>"
 }
 
 print_hooks_next_steps() {
 	info ""
-	info "next in your control repo:"
+	info "next: run setup from the repo where your agents will coordinate:"
 	info "  agentchute setup"
-	info "restart Claude Code, codex, and Gemini CLI from that repo, then verify:"
-	info "  agentchute doctor --as claude-code"
-	info "  agentchute doctor --as codex"
-	info "  agentchute doctor --as gemini-cli"
+	info "then restart your agents"
+	info "optional check: agentchute doctor --as <agent-id>"
 }
 
 # ---------- main flow ----------
@@ -560,7 +552,7 @@ EOF
 		if ! ( : </dev/tty ) 2>/dev/null && [ -z "$setup_wake" ]; then
 			info ""
 			warn "setup needs a tty when --wake is not provided; skipping setup"
-			warn "  run \`agentchute setup --wake runner --wrappers all --yes\` in your control repo"
+			warn "  run \`agentchute setup\` from your control repo"
 			return 2
 		fi
 		info ""

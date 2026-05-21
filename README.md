@@ -15,29 +15,7 @@
 curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
 ```
 
-The installer puts `agentchute` on disk and can launch `agentchute setup` for the current control repo. Setup installs hooks, installs runner shims only when requested, and adds PATH entries to your shell profile when needed. If PATH was updated, open a new shell before restarting agents.
-
-Then wire each control repo with one setup command:
-
-```sh
-agentchute setup
-```
-
-`setup` asks whether tmux, the runner/shims path, or both should be the primary wake path. Non-interactive forms:
-
-```sh
-agentchute setup --wake runner --wrappers all --yes
-agentchute setup --wake tmux --wrappers all --yes
-agentchute setup --wake both --wrappers all --yes
-```
-
-Restart Claude Code, codex, and Gemini CLI from that repo using their normal commands. In runner mode, the shims route those commands through `agentchute run`, so agents register, refresh `last_seen`, expose a wake socket, and poll their inbox outside tmux. Then verify:
-
-```sh
-agentchute doctor --as claude-code
-agentchute doctor --as codex
-agentchute doctor --as gemini-cli
-```
+Run that from the repo where your agents will coordinate. It installs the binary, starts the guided setup when a terminal is available, and tells you if anything still needs attention. Restart your agents after it finishes.
 
 </div>
 
@@ -70,23 +48,19 @@ The protocol doesn't require shims or hooks; they are the reference CLI's wrappe
 | **codex CLI** | `examples/hooks/codex/.codex/hooks.json` |
 | **Gemini CLI** | `examples/hooks/gemini/.gemini/settings.json` |
 
-To wire a repo after installing the binary:
+The installer runs setup automatically when it has a terminal. To re-run setup later, or to reconfigure an existing repo:
 
 ```sh
-# interactive
 agentchute setup
-
-# non-interactive
-agentchute setup --wake runner --wrappers all --yes
 ```
 
-`hooks install` is idempotent — same-content re-runs report `already current` and do nothing. By default `--scope repo` anchors at the control-repo root (the dir holding `AGENTCHUTE.md`), so install works from any subdirectory. Use `--scope user` to install under `$HOME` instead, `--dry-run` to preview, `--force` to overwrite a diverged hook file (a `.bak` backup is written first).
-
-When upgrading or retesting an existing repo, refresh shims and hooks explicitly so older templates pick up new lifecycle checks:
+For automation, choose the wake path explicitly:
 
 ```sh
 agentchute setup --wake runner --wrappers all --yes
 ```
+
+Use `--wake tmux` if tmux panes are your primary wake path, or `--wake both` if you want both tmux hooks and runner shims. Setup is idempotent: same-content re-runs report `already current`, and changed setup choices reconcile old setup-managed hooks, shims, and PATH blocks.
 
 Restart the wrapper. From then on:
 
@@ -102,23 +76,13 @@ Run `agentchute doctor --as <id>` after restarting the wrapper. It validates the
 
 ## Quickstart
 
-For normal use, setup handles the repo wiring:
+After install, restart the wrappers once. To inspect the setup:
 
 ```sh
-agentchute setup
+agentchute doctor --as <agent-id>
 ```
 
-The commands below are what the hooks call. With hooks installed, the wrapper runs them at the right lifecycle points for you. Run them by hand to learn the surface, or for the rare manual session.
-
-Restart the wrappers once. Then run:
-
-```sh
-agentchute doctor --as claude-code
-agentchute doctor --as codex
-agentchute doctor --as gemini-cli
-```
-
-If you are running without hooks, run the startup commands by hand in each agent's session:
+The commands below are what the hooks call. With hooks installed, the wrapper runs them at the right lifecycle points for you. Run them by hand only for a manual session.
 
 ```sh
 agentchute boot --as claude-code --vendor anthropic
