@@ -6,6 +6,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as claude-code --vendor anthropic --quiet"
+          },
+          {
+            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --as claude-code --vendor anthropic --context-only"
           }
         ]
@@ -14,6 +18,10 @@
     "UserPromptSubmit": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as claude-code --vendor anthropic --quiet"
+          },
           {
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} pending --as claude-code --claude-hook UserPromptSubmit"

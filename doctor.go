@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -166,7 +167,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doctorRepo
 	checks := []doctorCheck{
 		checkLoopDirScaffold(cfg),
 		checkBinaryOnPath(),
-		checkHookFilePresence(cfg),
+		checkHookFilePresence(cfg, agentID),
 		checkHookContentSanity(cfg),
 	}
 	if agentID != "" {
@@ -293,12 +294,30 @@ var hookFiles = []struct {
 	{"gemini-cli", []string{".gemini", "settings.json"}},
 }
 
-func checkHookFilePresence(cfg *loop.Config) doctorCheck {
+func checkHookFilePresence(cfg *loop.Config, agentID string) doctorCheck {
 	present := []string{}
+	presentSet := map[string]bool{}
 	for _, h := range hookFiles {
 		full := filepath.Join(append([]string{cfg.ControlRepo}, h.path...)...)
 		if _, err := os.Stat(full); err == nil {
 			present = append(present, h.wrapper)
+			presentSet[h.wrapper] = true
+		}
+	}
+	if wrapper, ok := hookWrapperForAgent(agentID); ok {
+		if !presentSet[wrapper] {
+			return doctorCheck{
+				Name:     "hook_file_presence",
+				Severity: severityBlocker,
+				Message:  fmt.Sprintf("acting wrapper hook for %s is missing; run `agentchute hooks install --wrapper %s`", agentID, wrapper),
+			}
+		}
+		if drift := actingHookDrift(cfg, wrapper); drift != "" {
+			return doctorCheck{
+				Name:     "hook_file_presence",
+				Severity: severityBlocker,
+				Message:  drift,
+			}
 		}
 	}
 	if len(present) == 0 {
@@ -312,6 +331,40 @@ func checkHookFilePresence(cfg *loop.Config) doctorCheck {
 		Name:     "hook_file_presence",
 		Severity: severityOK,
 		Message:  fmt.Sprintf("hook templates installed for: %s", strings.Join(present, ", ")),
+	}
+}
+
+func actingHookDrift(cfg *loop.Config, wrapper string) string {
+	for _, h := range hookWrappers {
+		if h.Name != wrapper {
+			continue
+		}
+		full := filepath.Join(cfg.ControlRepo, h.Dest)
+		installed, err := os.ReadFile(full)
+		if err != nil {
+			return fmt.Sprintf("acting wrapper hook for %s is unreadable at %s: %v", wrapper, full, err)
+		}
+		canonical, err := hooksFS.ReadFile(h.Src)
+		if err != nil {
+			return fmt.Sprintf("canonical hook template for %s is unreadable: %v", wrapper, err)
+		}
+		if !bytes.Equal(installed, canonical) {
+			return fmt.Sprintf("acting wrapper hook for %s differs from the canonical template; run `agentchute hooks install --wrapper %s --force`", wrapper, wrapper)
+		}
+	}
+	return ""
+}
+
+func hookWrapperForAgent(agentID string) (string, bool) {
+	switch strings.TrimSpace(agentID) {
+	case "claude-code":
+		return "claude-code", true
+	case "codex":
+		return "codex", true
+	case "gemini-cli":
+		return "gemini-cli", true
+	default:
+		return "", false
 	}
 }
 

@@ -256,7 +256,7 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 		reasons = append(reasons, fmt.Sprintf("%d unread direct message(s) in inbox", s.UnreadCount))
 	}
 	if s.MalformedCount > 0 {
-		reasons = append(reasons, fmt.Sprintf("%d malformed inbox file(s); run `agentchute check` to quarantine + notify (§11)", s.MalformedCount))
+		reasons = append(reasons, fmt.Sprintf("%d malformed inbox file(s); run `agentchute check --as %s` to quarantine + notify (§11)", s.MalformedCount, s.Agent))
 	}
 	if s.RepliesPending > 0 {
 		reasons = append(reasons, fmt.Sprintf("%d pending reply obligation(s) in ledger", s.RepliesPending))

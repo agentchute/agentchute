@@ -255,6 +255,49 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 	}
 }
 
+func TestDoctorAsBlocksWhenActingWrapperHookMissing(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	for _, dir := range []string{".claude", ".gemini"} {
+		if err := os.MkdirAll(filepath.Join(cfg.ControlRepo, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(cfg.ControlRepo, ".claude", "settings.json"), []byte(`{"hooks":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.ControlRepo, ".gemini", "settings.json"), []byte(`{"hooks":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runDoctorChecks(cfg, "codex", time.Now().UTC())
+	got := findCheck(t, r, "hook_file_presence")
+	if got.Severity != severityBlocker {
+		t.Fatalf("hook_file_presence severity = %q, want BLOCKER when codex hook is missing", got.Severity)
+	}
+	if !strings.Contains(got.Message, "hooks install --wrapper codex") {
+		t.Fatalf("message missing codex install hint: %q", got.Message)
+	}
+}
+
+func TestDoctorAsBlocksWhenActingWrapperHookDiverged(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	if err := os.MkdirAll(filepath.Join(cfg.ControlRepo, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.ControlRepo, ".codex", "hooks.json"), []byte(`{"hooks":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runDoctorChecks(cfg, "codex", time.Now().UTC())
+	got := findCheck(t, r, "hook_file_presence")
+	if got.Severity != severityBlocker {
+		t.Fatalf("hook_file_presence severity = %q, want BLOCKER when codex hook diverged", got.Severity)
+	}
+	if !strings.Contains(got.Message, "--force") {
+		t.Fatalf("message missing force reinstall hint: %q", got.Message)
+	}
+}
+
 func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	regPath := cfg.AgentRegistrationPath("claude-code")
@@ -281,6 +324,7 @@ func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 
 func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 	cfg := newDoctorCfg(t)
+	mustWriteCanonicalHook(t, cfg.ControlRepo, "claude-code")
 	regPath := cfg.AgentRegistrationPath("claude-code")
 	reg := &loop.Registration{
 		AgentID:     "claude-code",

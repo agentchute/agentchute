@@ -30,6 +30,7 @@ Commands:
   send           send a message from one agent to another
   check          consume and archive messages addressed to me
   pending        peek unread messages (read-only; safe for lifecycle hooks)
+  self-check     refresh own registration/last_seen and reconcile wake target
   self-poll      "should I wake the wrapper?" — side-effect-free helper for schedulers and launch prompts
   status         print registry overview, inbox depths, and last_seen freshness
   doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, wake target
@@ -78,6 +79,8 @@ func main() {
 		err = cmdCheck(args)
 	case "pending":
 		err = cmdPending(args)
+	case "self-check":
+		err = cmdSelfCheck(args)
 	case "self-poll":
 		err = cmdSelfPoll(args)
 	case "status":

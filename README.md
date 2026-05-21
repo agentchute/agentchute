@@ -58,11 +58,12 @@ export AGENTCHUTE_BIN=/path/to/agentchute
 
 Restart the wrapper. From then on:
 
-- **SessionStart** runs `boot` — registers the agent, peeks the inbox, surfaces pending-reply obligations as developer context.
-- **UserPromptSubmit** (Claude/codex) / **BeforeAgent** (Gemini) runs `pending` — a side-effect-free peek that injects current obligations into the model's context per turn. Claude Code and codex use wrapper-specific JSON modes (`--claude-hook UserPromptSubmit`, `--codex-hook UserPromptSubmit`) so the context lands in the right field; Gemini reads plain text via `--json`.
+- **SessionStart** runs `self-check`, then `boot` — reconciles the live wake target, registers the agent, peeks the inbox, surfaces pending-reply obligations as developer context.
+- **UserPromptSubmit** (Claude/codex) / **BeforeAgent** (Gemini) first runs `self-check` — refreshes registration/`last_seen` and reconciles tmux wake state without touching the inbox.
+- The same hook then runs `pending` — a side-effect-free peek that injects current obligations into the model's context per turn. Claude Code and codex use wrapper-specific JSON modes (`--claude-hook UserPromptSubmit`, `--codex-hook UserPromptSubmit`) so the context lands in the right field; Gemini reads plain text via `--json`.
 - **Stop** (Claude/codex) / **BeforeAgent** (Gemini, again) runs `gate --before finish` — refuses to let the agent end the turn while inbox or ledger has outstanding work. Claude and Gemini use exit-code blocking; codex uses its Stop-hook `{"decision":"block"}` JSON. This is the load-bearing one.
 
-> ⚠ **Never use `agentchute check` in a hook.** `check` archives and quarantines; `boot` and `pending` are read-only peeks. Hook templates above only use the peeks.
+> ⚠ **Never use `agentchute check` in a hook.** `check` archives and quarantines. Hook templates use `boot` / `self-check` only for registration heartbeats, and `pending` for read-only inbox peeks.
 
 Run `agentchute doctor --as <id>` when wiring hooks. It validates the loop scaffold, binary resolution, hook files, hook content, registration freshness, inbox/ledger state, and wake target health without consuming mail.
 
@@ -134,6 +135,7 @@ Delivery is no-overwrite by contract: a sender never replaces an existing messag
 | `send --from <a> --to <b> [--ask] [--reply-to <id>]` | Write to recipient's inbox + wake poke + (optionally) clear ledger |
 | `check --as <id>` | Read + archive inbox; record reply obligations; cooperative-wake peers |
 | `pending --as <id>` | Side-effect-free peek (inbox + ledger). Hook-safe. |
+| `self-check --as <id> --vendor <v>` | Hook-safe heartbeat: refresh registration/`last_seen`, reconcile wake target |
 | `gate --as <id> --before <phase>` | Block declaring done if inbox/ledger has outstanding work |
 | `defer --message <id> --reason "..."` | Explicit defer; auto-acks the sender |
 | `register --as <id> --vendor <v>` | Write/refresh registration (boot supersedes for most uses) |

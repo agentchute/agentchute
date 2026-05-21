@@ -6,6 +6,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as codex --vendor openai --quiet",
+            "statusMessage": "agentchute: self-check"
+          },
+          {
+            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --as codex --vendor openai --codex-hook SessionStart",
             "statusMessage": "agentchute: boot"
           }
@@ -15,6 +20,11 @@
     "UserPromptSubmit": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as codex --vendor openai --quiet",
+            "statusMessage": "agentchute: self-check"
+          },
           {
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} pending --as codex --codex-hook UserPromptSubmit",

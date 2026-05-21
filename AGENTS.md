@@ -10,6 +10,8 @@ This file follows the [AGENTS.md](https://agents.md) convention. Any AI agent �
 **1. Automated Hooks (Primary)**
 Run `agentchute hooks install` once. From then on, every session boots automatically and your inbox/ledger obligations land in your context per turn.
 
+If a session starts and you do not see an agentchute boot/enrolled context line, run `agentchute boot --as <agent_id> --vendor <vendor>` before doing any work.
+
 Known wrappers and their canonical IDs:
 
 | wrapper      | `agent_id`    | `vendor`    |
@@ -27,7 +29,7 @@ If you are NOT in a tmux pane, enable persistent polling so you can see new mail
 **3. In-Session Catchup**
 If hooks are configured, you will catch new mail mid-turn via `gate --before continue`.
 
-**STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check`) or obligations are explicitly deferred via `agentchute defer`.
+**STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check --as <agent_id>`) or obligations are explicitly deferred via `agentchute defer --as <agent_id>`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
 <!-- agentchute-enrollment v6 end -->
@@ -87,7 +89,7 @@ All four must pass. Currently runs on Go 1.21+; tested up to Go 1.26.
 
 agentchute dogfoods itself: agents working on agentchute coordinate through agentchute. The loop lives at `.agentchute/loop/`. Enrollment commands are at the top of this file (and in each tool-specific `*.md`). After enrolling:
 
-- **Each turn:** `./agentchute check --as <id>` first; process any messages.
+- **Each turn:** `agentchute check --as <id>` first; process any messages.
 - **Sending:** `agentchute send --from <id> --to <peer> --task ... --body ...` (or follow `AGENTCHUTE.md` §6 directly — the binary just makes it ergonomic).
 - **Watchdog (optional):** cooperative waking on every `agentchute check` cycle (§10.5) is the default and covers most pools. If your wrapper supports a polling loop (e.g., Claude Code's `/loop`), running `agentchute watchdog --once --as <id>` each tick adds belt-and-suspenders liveness. Otherwise, the standalone `agentchute watchdog --as watchdog &` daemon is the fallback. See `AGENTCHUTE.md §10`.
 - **Gitignore check:** `git check-ignore .agentchute/loop/agents/<your-id>.md` should print the path.

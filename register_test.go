@@ -11,6 +11,7 @@ import (
 )
 
 func TestRegisterAutoDetectsTmuxPane(t *testing.T) {
+	withFakeTmuxTargets(t, "%99")
 	root := t.TempDir()
 	origCwd, _ := os.Getwd()
 	if err := os.Chdir(root); err != nil {
@@ -47,9 +48,11 @@ func TestRegisterAutoDetectsTmuxPane(t *testing.T) {
 }
 
 // Re-running register without --wake-target and without TMUX_PANE set
-// must preserve the existing registration's wake_target rather than
-// silently clearing it. Explicit --wake-target "" remains the way to clear.
+// preserves the existing wake target. Active wrapper hooks use self-check
+// for aggressive wake reconciliation; register keeps the historical
+// explicit-enrollment merge behavior.
 func TestRegisterReRunPreservesExistingWakeTarget(t *testing.T) {
+	withFakeTmuxTargets(t, "%42")
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
@@ -71,14 +74,15 @@ func TestRegisterReRunPreservesExistingWakeTarget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if reg.WakeTarget != "%42" {
-			t.Errorf("expected preserved WakeTarget %%42, got %q", reg.WakeTarget)
+		if reg.WakeMethod != "tmux" || reg.WakeTarget != "%42" {
+			t.Errorf("expected preserved tmux wake, got method=%q target=%q", reg.WakeMethod, reg.WakeTarget)
 		}
 	})
 }
 
 // Explicit --wake-target "" on re-run still clears the binding.
 func TestRegisterReRunExplicitEmptyClearsWakeTarget(t *testing.T) {
+	withFakeTmuxTargets(t, "%42")
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
@@ -200,6 +204,7 @@ func TestRegisterBioFlagSetsAndOverwritesBody(t *testing.T) {
 }
 
 func TestRegisterExplicitEmptyTmuxPaneOverridesEnv(t *testing.T) {
+	withFakeTmuxTargets(t, "%99")
 	root := t.TempDir()
 	origCwd, _ := os.Getwd()
 	if err := os.Chdir(root); err != nil {

@@ -200,7 +200,7 @@ func emitPendingText(entries []pendingEntry, replies []loop.PendingReplyEntry, m
 			fmt.Println("(no unread messages; no pending reply obligations)")
 		}
 		if malformed > 0 {
-			fmt.Printf("(%d malformed file(s) skipped; run `agentchute check` to quarantine + notify)\n", malformed)
+			fmt.Printf("(%d malformed file(s) skipped; run `agentchute check --as %s` to quarantine + notify)\n", malformed, agentID)
 		}
 		return
 	}
@@ -231,7 +231,7 @@ func emitPendingText(entries []pendingEntry, replies []loop.PendingReplyEntry, m
 		}
 	}
 	if malformed > 0 {
-		fmt.Printf("(%d malformed file(s) skipped; run `agentchute check` to quarantine + notify)\n", malformed)
+		fmt.Printf("(%d malformed file(s) skipped; run `agentchute check --as %s` to quarantine + notify)\n", malformed, agentID)
 	}
 }
 
@@ -297,10 +297,10 @@ func buildPendingContext(entries []pendingEntry, replies []loop.PendingReplyEntr
 				fmt.Fprintf(&ctx, "  - %s from %s — %s\n", r.MessageID, r.From, r.Task)
 			}
 		}
-		ctx.WriteString("Run `agentchute check` to read and archive, reply via `agentchute send --reply-to`, or defer with `agentchute defer`.")
+		fmt.Fprintf(&ctx, "Run `agentchute check --as %s` to read and archive, reply via `agentchute send --from %s --to <peer> --reply-to <message-id>`, or defer with `agentchute defer --as %s --message <message-id>`.", agentID, agentID, agentID)
 	}
 	if malformed > 0 {
-		fmt.Fprintf(&ctx, "\n(%d malformed file(s) need quarantine; run `agentchute check`.)", malformed)
+		fmt.Fprintf(&ctx, "\n(%d malformed file(s) need quarantine; run `agentchute check --as %s`.)", malformed, agentID)
 	}
 	return ctx.String()
 }

@@ -148,6 +148,7 @@ func cmdBoot(args []string) error {
 		Host:           result.ResolvedHost,
 		WakeMethod:     result.ResolvedWakeMethod,
 		WakeTarget:     result.ResolvedWakeTarget,
+		Warnings:       result.Warnings,
 		Blocked:        len(unread) > 0 || len(pendingReplies) > 0,
 	}
 
@@ -191,6 +192,7 @@ type bootStatus struct {
 	Host           string                   `json:"host,omitempty"`
 	WakeMethod     string                   `json:"wake_method,omitempty"`
 	WakeTarget     string                   `json:"wake_target,omitempty"`
+	Warnings       []string                 `json:"warnings,omitempty"`
 	Blocked        bool                     `json:"blocked"`
 
 	// StaleReg / WakeStale reserved for forward-compat with spec rev3 §A.1's
@@ -219,7 +221,7 @@ func emitBootText(s bootStatus, quiet bool) {
 		}
 	}
 	if s.UnreadCount > 0 {
-		fmt.Printf("  unread: %d direct message(s) — run `agentchute check` to consume\n", s.UnreadCount)
+		fmt.Printf("  unread: %d direct message(s) — run `agentchute check --as %s` to consume\n", s.UnreadCount, s.Agent)
 		for _, u := range s.Unread {
 			flags := ""
 			if u.ReplyRequired {
@@ -232,7 +234,10 @@ func emitBootText(s bootStatus, quiet bool) {
 		fmt.Printf("  replies_pending: %d obligation(s) (gate --before finish blocks while open)\n", s.RepliesPending)
 	}
 	if s.MalformedCount > 0 {
-		fmt.Printf("  malformed: %d file(s) need quarantine — run `agentchute check`\n", s.MalformedCount)
+		fmt.Printf("  malformed: %d file(s) need quarantine — run `agentchute check --as %s`\n", s.MalformedCount, s.Agent)
+	}
+	for _, warning := range s.Warnings {
+		fmt.Printf("  warning: %s\n", warning)
 	}
 }
 
@@ -262,12 +267,12 @@ func emitBootPromptLine(s bootStatus) {
 	case s.UnreadCount == 0 && s.RepliesPending == 0:
 		fmt.Println("agentchute: inbox clear; no pending replies.")
 	case s.UnreadCount > 0 && s.RepliesPending > 0:
-		fmt.Printf("agentchute: %d unread message(s) and %d pending reply obligation(s) — run `agentchute check` and reply via `agentchute send --reply-to`.\n",
-			s.UnreadCount, s.RepliesPending)
+		fmt.Printf("agentchute: %d unread message(s) and %d pending reply obligation(s) — run `agentchute check --as %s` and reply via `agentchute send --from %s --to <peer> --reply-to <message-id>`.\n",
+			s.UnreadCount, s.RepliesPending, s.Agent, s.Agent)
 	case s.UnreadCount > 0:
-		fmt.Printf("agentchute: %d unread message(s) — run `agentchute check`.\n", s.UnreadCount)
+		fmt.Printf("agentchute: %d unread message(s) — run `agentchute check --as %s`.\n", s.UnreadCount, s.Agent)
 	default:
-		fmt.Printf("agentchute: %d pending reply obligation(s) — reply via `agentchute send --reply-to` or `agentchute defer`.\n", s.RepliesPending)
+		fmt.Printf("agentchute: %d pending reply obligation(s) — reply via `agentchute send --from %s --to <peer> --reply-to <message-id>` or `agentchute defer --as %s --message <message-id>`.\n", s.RepliesPending, s.Agent, s.Agent)
 	}
 }
 
@@ -292,10 +297,13 @@ func emitBootContextOnly(s bootStatus) error {
 			fmt.Printf("  - pending reply: %s from %s — %s\n", p.MessageID, p.From, p.Task)
 		}
 		fmt.Println()
-		fmt.Println("Run `agentchute check` to consume unread; reply via `agentchute send --reply-to` or `agentchute defer`.")
+		fmt.Printf("Run `agentchute check --as %s` to consume unread; reply via `agentchute send --from %s --to <peer> --reply-to <message-id>` or `agentchute defer --as %s --message <message-id>`.\n", s.Agent, s.Agent, s.Agent)
 	}
 	if s.MalformedCount > 0 {
-		fmt.Printf("agentchute: %d malformed file(s) await quarantine — run `agentchute check`.\n", s.MalformedCount)
+		fmt.Printf("agentchute: %d malformed file(s) await quarantine — run `agentchute check --as %s`.\n", s.MalformedCount, s.Agent)
+	}
+	for _, warning := range s.Warnings {
+		fmt.Printf("agentchute warning: %s\n", warning)
 	}
 	return nil
 }
@@ -320,10 +328,13 @@ func emitBootCodexSessionStart(s bootStatus) error {
 		for _, p := range s.PendingReplies {
 			fmt.Fprintf(&ctx, "\n  - pending reply: %s from %s — %s", p.MessageID, p.From, p.Task)
 		}
-		ctx.WriteString("\n\nRun `agentchute check` to consume unread; reply via `agentchute send --reply-to` or `agentchute defer`.")
+		fmt.Fprintf(&ctx, "\n\nRun `agentchute check --as %s` to consume unread; reply via `agentchute send --from %s --to <peer> --reply-to <message-id>` or `agentchute defer --as %s --message <message-id>`.", s.Agent, s.Agent, s.Agent)
 	}
 	if s.MalformedCount > 0 {
-		fmt.Fprintf(&ctx, "\nagentchute: %d malformed file(s) await quarantine.", s.MalformedCount)
+		fmt.Fprintf(&ctx, "\nagentchute: %d malformed file(s) await quarantine — run `agentchute check --as %s`.", s.MalformedCount, s.Agent)
+	}
+	for _, warning := range s.Warnings {
+		fmt.Fprintf(&ctx, "\nagentchute warning: %s", warning)
 	}
 	out := map[string]any{
 		"hookSpecificOutput": map[string]any{

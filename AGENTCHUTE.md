@@ -575,8 +575,8 @@ An agent's authority to mutate project state (edit files, commit, push, run side
 
 **Protocol overhead is pre-authorized.** The authority rule above gates *work*, not protocol maintenance. Work means project edits, task acceptance, side-effecting commands outside the loop directory, and unsolicited peer messaging. Protocol maintenance — the self-management actions below — is pre-authorized and required on every session start, without waiting for human instruction or inbox message:
 
-- **Self-registration (§5) on every session start.** Mandatory and idempotent — *run* the registration command (`agentchute register --as <id> --vendor <vendor>`) or perform the equivalent hand-protocol §5 write *every time the agent starts*, even when a registration file for this agent already exists. Existing files are likely stale: the previous session may have had a different `host`, `wake_target`, `wake_method`, pane ID, or working directory. **Verifying that a registration file exists is NOT sufficient.** The act of running `register` reconciles the registration against current `os.Hostname()`, `$TMUX_PANE`, and `cwd`. If a hand-protocol agent cannot run the CLI, it MUST hand-write the registration anyway, overwriting any prior file's fields with current values.
-- **Self-state updates**: `last_seen` at the start of every turn; `last_active` after consuming inbox messages; `status`, `restart_at` whenever the agent's wrapper has budget/reset visibility.
+- **Self-registration (§5) on every session start.** Mandatory and idempotent — *run* the registration command (`agentchute boot --as <id> --vendor <vendor>` or `agentchute register --as <id> --vendor <vendor>`) or perform the equivalent hand-protocol §5 write *every time the agent starts*, even when a registration file for this agent already exists. Existing files are likely stale: the previous session may have had a different `host`, `wake_target`, `wake_method`, pane ID, or working directory. **Verifying that a registration file exists is NOT sufficient.** The act of running registration reconciles the registration against current `os.Hostname()`, `$TMUX_PANE`, and `cwd`. If a hand-protocol agent cannot run the CLI, it MUST hand-write the registration anyway, overwriting any prior file's fields with current values.
+- **Self-state updates**: `last_seen` at the start of every turn; `last_active` after consuming inbox messages; `status`, `restart_at` whenever the agent's wrapper has budget/reset visibility. The reference CLI's hook-safe `agentchute self-check --as <id> --vendor <vendor>` refreshes `last_seen` and reconciles the agent's own wake target without consuming inbox mail.
 - **Own scaffold creation**: creating this agent's own protocol state within the existing pool's namespace — its own inbox, archive, and quarantine areas. The agent MUST NOT touch peer state or create the pool itself. _Reference CLI: `inbox/<self>/`, `archive/`, and `malformed/` under `.<vendor>/loop/`._ Shared bootstrap (e.g., `agentchute init` creating the whole pool tree from nothing) is *not* protocol overhead — it remains gated, run only when the human or a directly-addressed message asks for it.
 - **Own-inbox operations**: listing own inbox, reading own messages, archiving consumed messages, quarantining malformed files per §11.
 - **Cooperative waking (§10.5)** and watchdog-style peer-inbox-metadata reads — filenames and timestamps only; never opening peer message bodies.
@@ -667,6 +667,10 @@ As of v0.2, the recommended no-tmux polling patterns follow a three-tier model:
 - **Tier 3: Finish-hook continuation.** Active sessions catch new mail at the end of a turn via lifecycle hooks (e.g., `gate --before continue`).
 
 Always schedule the wrapper (which invokes the model), not a bare `agentchute check` loop. The model must own the consumption decision.
+
+In active wrapper sessions, `self-check` SHOULD run before every prompt/agent turn. This keeps `last_seen` fresh for non-tmux liveness and clears this agent's own tmux wake fields when the current process is not actually in a reachable tmux pane. `pending` remains the read-only inbox/ledger peek; `self-check` is the heartbeat.
+
+`boot` / `register` preserve an existing tmux wake binding when they run from a process that is not itself inside tmux. That preserves historical explicit-enrollment behavior and avoids scheduler preflights erasing a live pane address. The canonical wrapper hooks run `self-check` before `boot` at SessionStart and before `pending` on each prompt/agent turn; `self-check` is the command that treats wake bindings as live wrapper-process state and clears this agent's own tmux wake fields when the current wrapper is not in tmux. External schedulers SHOULD use side-effect-free `self-poll`, not `self-check`.
 
 ### 8.2 Wake responsibility
 
@@ -929,6 +933,10 @@ These templates show how to integrate the reference CLI into the lifecycle hooks
         "hooks": [
           {
             "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as claude-code --vendor anthropic --quiet"
+          },
+          {
+            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --as claude-code --vendor anthropic --context-only"
           }
         ]
@@ -937,6 +945,10 @@ These templates show how to integrate the reference CLI into the lifecycle hooks
     "UserPromptSubmit": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as claude-code --vendor anthropic --quiet"
+          },
           {
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} pending --as claude-code --claude-hook UserPromptSubmit"
@@ -959,8 +971,8 @@ These templates show how to integrate the reference CLI into the lifecycle hooks
 ```
 
 **Notes:**
-- **SessionStart**: Runs once per session start. Refreshes registration and surfaces inbox state as context.
-- **UserPromptSubmit**: Injects pending obligations into the model's context per turn. Uses the `--claude-hook` flag to emit the specific JSON shape required for Claude Code context injection.
+- **SessionStart**: Runs `self-check` once per session start to reconcile the live wake target, then runs `boot` to refresh registration and surface inbox state as context.
+- **UserPromptSubmit**: First runs `self-check` to refresh `last_seen` and reconcile wake state, then injects pending obligations into the model's context per turn. Uses the `--claude-hook` flag to emit the specific JSON shape required for Claude Code context injection.
 - **Stop**: Lifecycle gate. Exit 2 (blocked) triggers turn continuation.
 - **v0.1.2 note**: Operators SHOULD occasionally run `agentchute doctor --as claude-code` to verify hook health.
 
@@ -975,6 +987,10 @@ These templates show how to integrate the reference CLI into the lifecycle hooks
         "hooks": [
           {
             "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as codex --vendor openai --quiet"
+          },
+          {
+            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --as codex --vendor openai --codex-hook SessionStart"
           }
         ]
@@ -983,6 +999,10 @@ These templates show how to integrate the reference CLI into the lifecycle hooks
     "UserPromptSubmit": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as codex --vendor openai --quiet"
+          },
           {
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} pending --as codex --codex-hook UserPromptSubmit"
@@ -1017,6 +1037,11 @@ These templates show how to integrate the reference CLI into the lifecycle hooks
         "matcher": "startup",
         "hooks": [
           {
+            "name": "agentchute-self-check",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as gemini-cli --vendor google --quiet"
+          },
+          {
             "name": "agentchute-boot",
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --as gemini-cli --vendor google --context-only"
@@ -1028,6 +1053,11 @@ These templates show how to integrate the reference CLI into the lifecycle hooks
       {
         "matcher": "*",
         "hooks": [
+          {
+            "name": "agentchute-self-check",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as gemini-cli --vendor google --quiet"
+          },
           {
             "name": "agentchute-pending",
             "type": "command",

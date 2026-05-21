@@ -260,6 +260,7 @@ func TestGateBlocksOnMalformedInbox(t *testing.T) {
 // Codex review (c17e310): `release` phase must warn on WAKE_STALE peer
 // registrations per spec rev3 §A.3. Warn-only — does not block release.
 func TestGateReleaseWarnsOnWakeStalePeer(t *testing.T) {
+	withFakeTmuxTargets(t, "%1", "%2")
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
 		t.Setenv("TMUX_PANE", "%1")

@@ -41,6 +41,7 @@ type registerOpts struct {
 	WakeMethodProvided bool
 	WakeTargetProvided bool
 	BioProvided        bool
+	ClearStaleTmuxWake bool
 }
 
 // registerResult is performRegister's outcome.
@@ -59,13 +60,14 @@ type registerResult struct {
 	ResolvedWakeMethod string // post-merge wake_method actually written (may come from existing reg)
 	ResolvedWakeTarget string // post-merge wake_target actually written
 	ResolvedHost       string // post-merge host actually written
+	Warnings           []string
 }
 
 // performRegister writes / refreshes a registration on disk. Shared between
-// `register` and `boot --as`. Honors the same TMUX_PANE auto-detection and
-// existing-field-preservation rules cmdRegister has always implemented;
-// extracted so boot's session-start ritual matches register's behavior bit-
-// for-bit without duplicating the merge logic.
+// register-like commands so host/wake detection and existing-field merge
+// behavior stays centralized. By default, an existing tmux wake binding is
+// preserved when the current process is not in tmux; hook-driven self-checks
+// opt into ClearStaleTmuxWake because they describe the live wrapper process.
 func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*registerResult, error) {
 	if err := loop.ValidateAgentID(opts.AgentID); err != nil {
 		return nil, err
@@ -83,29 +85,17 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		}
 	}
 
-	// Auto-detect wake_target from TMUX_PANE only when we're sure the recipient
-	// wake method is tmux. Two safe cases:
-	//   1. Neither flag explicit (common: CLI invoked from inside tmux).
-	//   2. --wake-method=tmux is explicit but --wake-target is missing.
-	// If --wake-method is explicit and != "tmux" (or explicit ""), we must NOT
-	// silently bind a tmux pane address to a different / disabled adapter.
-	wakeMethod, wakeTarget := opts.WakeMethod, opts.WakeTarget
-	wakeTargetFromEnv := false
-	if !opts.WakeTargetProvided {
-		canInferTmuxPane := !opts.WakeMethodProvided || strings.TrimSpace(wakeMethod) == "tmux"
-		if canInferTmuxPane {
-			if tp := os.Getenv("TMUX_PANE"); tp != "" {
-				wakeTarget = tp
-				wakeTargetFromEnv = true
-				if !opts.WakeMethodProvided {
-					wakeMethod = "tmux"
-				}
-			}
-		}
-	}
-	wakeTargetResolved := opts.WakeTargetProvided || wakeTargetFromEnv
-
 	regPath := cfg.AgentRegistrationPath(opts.AgentID)
+	existing, err := loop.ReadRegistration(regPath)
+	existingFound := false
+	if err == nil {
+		existingFound = true
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read existing registration: %w", err)
+	}
+
+	wakeMethod, wakeTarget, warnings := resolveWakeForRegistration(opts, existing)
+
 	reg := &loop.Registration{
 		AgentID:      opts.AgentID,
 		Vendor:       opts.Vendor,
@@ -118,21 +108,9 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		Status:       loop.StatusActive,
 	}
 
-	existing, err := loop.ReadRegistration(regPath)
-	existingFound := false
-	if err == nil {
-		existingFound = true
+	if existingFound {
 		if len(opts.WorkingRepos) == 0 {
 			reg.WorkingRepos = existing.WorkingRepos
-		}
-		// Host is NOT preserved on re-register: if the agent has moved to a
-		// different machine, os.Hostname() should win, not the stale value
-		// in the existing registration. Explicit --host overrides above.
-		if !opts.WakeMethodProvided && !wakeTargetResolved {
-			reg.WakeMethod = existing.WakeMethod
-			reg.WakeTarget = existing.WakeTarget
-			wakeMethod = existing.WakeMethod
-			wakeTarget = existing.WakeTarget
 		}
 		if existing.LastActive != nil {
 			reg.LastActive = existing.LastActive
@@ -142,8 +120,6 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		// "this agent is active now": an agent previously marked exhausted/
 		// offline with a future RestartAt would otherwise stay invisible to
 		// watchdog pokes even after re-enrolling.
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("read existing registration: %w", err)
 	}
 
 	if opts.BioProvided {
@@ -167,7 +143,45 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		ResolvedWakeMethod: wakeMethod,
 		ResolvedWakeTarget: wakeTarget,
 		ResolvedHost:       host,
+		Warnings:           warnings,
 	}, nil
+}
+
+func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) (string, string, []string) {
+	wakeMethod, wakeTarget := opts.WakeMethod, opts.WakeTarget
+	var warnings []string
+
+	if opts.WakeMethodProvided || opts.WakeTargetProvided {
+		if !opts.WakeTargetProvided && strings.TrimSpace(wakeMethod) == "tmux" {
+			if pane := currentTmuxPane(); pane != "" && tmuxTargetReachable(pane) {
+				wakeTarget = pane
+			} else if pane != "" {
+				warnings = append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; explicit wake_method=tmux still needs --wake-target", pane))
+			}
+		}
+		return wakeMethod, wakeTarget, warnings
+	}
+
+	if pane := currentTmuxPane(); pane != "" {
+		if tmuxTargetReachable(pane) {
+			return "tmux", pane, warnings
+		}
+		if opts.ClearStaleTmuxWake {
+			return "", "", append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; clearing tmux wake target", pane))
+		}
+		if existing != nil {
+			return existing.WakeMethod, existing.WakeTarget, append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; preserving existing wake target", pane))
+		}
+		return "", "", append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; no wake target registered", pane))
+	}
+
+	if existing != nil && strings.TrimSpace(existing.WakeMethod) == "tmux" && opts.ClearStaleTmuxWake {
+		return "", "", warnings
+	}
+	if existing != nil {
+		return existing.WakeMethod, existing.WakeTarget, warnings
+	}
+	return "", "", warnings
 }
 
 func cmdRegister(args []string) error {

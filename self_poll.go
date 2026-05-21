@@ -256,7 +256,7 @@ func buildSelfPollPrompt(r selfPollResult) string {
 		fmt.Fprintf(&b, "  • Run `agentchute check --as %s` to consume unread/malformed inbox files.\n", r.Agent)
 	}
 	if r.RepliesPending > 0 {
-		fmt.Fprintf(&b, "  • Inspect pending replies via `agentchute pending --as %s --json`; reply with `agentchute send --from %s --to <peer> --reply-to <message-id> ...` or defer with `agentchute defer --message <id> --reason \"...\"`.\n", r.Agent, r.Agent)
+		fmt.Fprintf(&b, "  • Inspect pending replies via `agentchute pending --as %s --json`; reply with `agentchute send --from %s --to <peer> --reply-to <message-id> ...` or defer with `agentchute defer --as %s --message <id> --reason \"...\"`.\n", r.Agent, r.Agent, r.Agent)
 	}
 	fmt.Fprintf(&b, "  • Before stopping, verify `agentchute pending --as %s` reports no unread mail and no pending reply obligations, unless blocked.\n", r.Agent)
 
@@ -324,7 +324,7 @@ func emitSelfPollText(r selfPollResult) {
 		}
 	}
 	if r.MalformedCount > 0 {
-		fmt.Printf("  %d malformed file(s) — run `agentchute check` to quarantine\n", r.MalformedCount)
+		fmt.Printf("  %d malformed file(s) — run `agentchute check --as %s` to quarantine\n", r.MalformedCount, r.Agent)
 	}
 }
 
