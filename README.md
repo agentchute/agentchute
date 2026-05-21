@@ -15,6 +15,18 @@
 curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
 ```
 
+Then wire each control repo:
+
+```sh
+agentchute init --yes
+agentchute hooks install --wrapper all --scope repo
+agentchute doctor --as claude-code
+agentchute doctor --as codex
+agentchute doctor --as gemini-cli
+```
+
+Restart Claude Code, codex, and Gemini CLI from that repo after the doctor checks are clear.
+
 </div>
 
 ---
@@ -41,20 +53,29 @@ Hooks are the primary integration path for the reference CLI: each wrapper has a
 | **codex CLI** | `examples/hooks/codex/.codex/hooks.json` |
 | **Gemini CLI** | `examples/hooks/gemini/.gemini/settings.json` |
 
-To install (v0.2.1+):
+To wire a repo after installing the binary:
 
 ```sh
-# one command, all three wrappers
-agentchute hooks install --wrapper all
+# scaffold the control repo and enrollment docs
+agentchute init --yes
+
+# install hook automation for all three wrappers
+agentchute hooks install --wrapper all --scope repo
 
 # or one wrapper at a time
-agentchute hooks install --wrapper claude-code
+agentchute hooks install --wrapper claude-code --scope repo
 
 # if the binary isn't on PATH, set this in the env that launches the wrapper:
 export AGENTCHUTE_BIN=/path/to/agentchute
 ```
 
 `hooks install` is idempotent — same-content re-runs report `already current` and do nothing. By default `--scope repo` anchors at the control-repo root (the dir holding `AGENTCHUTE.md`), so install works from any subdirectory. Use `--scope user` to install under `$HOME` instead, `--dry-run` to preview, `--force` to overwrite a diverged hook file (a `.bak` backup is written first).
+
+When upgrading or retesting an existing repo, refresh hooks explicitly so older templates pick up new lifecycle checks:
+
+```sh
+agentchute hooks install --wrapper all --scope repo --force
+```
 
 Restart the wrapper. From then on:
 
@@ -73,9 +94,13 @@ These are the commands the hooks call. With hooks installed (above), the wrapper
 
 ```sh
 agentchute init --yes
+agentchute hooks install --wrapper all --scope repo
+agentchute doctor --as claude-code
+agentchute doctor --as codex
+agentchute doctor --as gemini-cli
 ```
 
-In each agent's pane:
+Restart the wrappers. If you are running without hooks, run the startup command by hand in each agent's pane:
 
 ```sh
 agentchute boot --as claude-code --vendor anthropic

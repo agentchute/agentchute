@@ -1,7 +1,8 @@
 #!/bin/sh
 # agentchute install — fetches the latest (or pinned) release binary from
 # GitHub releases, verifies its SHA256, and installs it. Optionally runs
-# `agentchute init` against the current directory.
+# `agentchute init` against the current directory; hooks still need to be
+# installed in the control repo with `agentchute hooks install`.
 #
 # Usage:
 #   sh install.sh [--version VERSION] [--to DIR] [--init] [--dry-run]
@@ -249,6 +250,27 @@ warn_path_missing() {
 	warn "  add to $rcfile:  export PATH=\"$install_dir:\$PATH\""
 }
 
+print_setup_next_steps() {
+	info ""
+	info "next in your control repo:"
+	info "  agentchute init --yes"
+	info "  agentchute hooks install --wrapper all --scope repo"
+	info "  agentchute doctor --as claude-code"
+	info "  agentchute doctor --as codex"
+	info "  agentchute doctor --as gemini-cli"
+	info "then restart Claude Code, codex, and Gemini CLI from that repo."
+}
+
+print_hooks_next_steps() {
+	info ""
+	info "next in your control repo:"
+	info "  agentchute hooks install --wrapper all --scope repo"
+	info "  agentchute doctor --as claude-code"
+	info "  agentchute doctor --as codex"
+	info "  agentchute doctor --as gemini-cli"
+	info "then restart Claude Code, codex, and Gemini CLI from that repo."
+}
+
 # ---------- main flow ----------
 
 main() {
@@ -282,7 +304,8 @@ usage:
 flags:
   --version  pin a specific tag (default: latest release)
   --to DIR   install dir (default: ~/.local/bin)
-  --init     run \`agentchute init\` after install (requires a tty)
+  --init     run \`agentchute init\` after install (requires a tty);
+             hooks still require \`agentchute hooks install\`
   --dry-run  print the plan and exit; no mutation
 
 env vars (flags override):
@@ -399,6 +422,9 @@ EOF
 	fi
 
 	# Optional init (per codex: explicit opt-in only; never auto-pass --yes).
+	# The copy-paste guidance uses `init --yes` because the user runs that
+	# command directly; installer `--init` stays interactive because it may be
+	# curl-piped.
 	if [ "$do_init" = "1" ]; then
 		# Actually try to open /dev/tty — `[ -e ]` / `[ -r ]` can lie when there
 		# is no controlling terminal. The subshell isolates the read attempt so
@@ -406,16 +432,16 @@ EOF
 		if ! ( : </dev/tty ) 2>/dev/null; then
 			info ""
 			warn "--init requested but no tty available (piped from curl?); skipping init"
-			warn "  run \`agentchute init\` in your project to scaffold"
+			warn "  run \`agentchute init --yes\` in your project, then \`agentchute hooks install --wrapper all --scope repo\`"
 			return 2
 		fi
 		info ""
 		info "running agentchute init in $orig_pwd..."
 		cd "$orig_pwd"
 		"$install_dir/agentchute" init </dev/tty
+		print_hooks_next_steps
 	else
-		info ""
-		info "next: run \`agentchute init\` in your project to scaffold (or pass --init to this installer)"
+		print_setup_next_steps
 	fi
 }
 
