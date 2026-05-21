@@ -10,6 +10,11 @@
             "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as gemini-cli --vendor google --quiet"
           },
           {
+            "name": "agentchute-poller",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as gemini-cli --vendor google --quiet"
+          },
+          {
             "name": "agentchute-boot",
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --as gemini-cli --vendor google --context-only"
@@ -25,6 +30,11 @@
             "name": "agentchute-self-check",
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as gemini-cli --vendor google --quiet"
+          },
+          {
+            "name": "agentchute-poller",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as gemini-cli --vendor google --quiet"
           },
           {
             "name": "agentchute-pending",

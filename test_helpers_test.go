@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 func mustMkdir(t *testing.T, path string) {
@@ -67,4 +70,17 @@ func mustWriteCanonicalHook(t *testing.T, root, wrapper string) {
 		return
 	}
 	t.Fatalf("unknown hook wrapper %q", wrapper)
+}
+
+func mustWriteFreshPollerHeartbeat(t *testing.T, cfg *loop.Config, agentID string) {
+	t.Helper()
+	if err := loop.SavePollerHeartbeat(cfg, loop.PollerHeartbeat{
+		AgentID:         agentID,
+		Method:          "test",
+		Host:            "test-host",
+		IntervalSeconds: loop.DefaultPollerIntervalSeconds,
+		LastSeen:        time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

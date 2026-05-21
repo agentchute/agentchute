@@ -255,20 +255,20 @@ print_setup_next_steps() {
 	info "next in your control repo:"
 	info "  agentchute init --yes"
 	info "  agentchute hooks install --wrapper all --scope repo"
+	info "restart Claude Code, codex, and Gemini CLI from that repo, then verify:"
 	info "  agentchute doctor --as claude-code"
 	info "  agentchute doctor --as codex"
 	info "  agentchute doctor --as gemini-cli"
-	info "then restart Claude Code, codex, and Gemini CLI from that repo."
 }
 
 print_hooks_next_steps() {
 	info ""
 	info "next in your control repo:"
 	info "  agentchute hooks install --wrapper all --scope repo"
+	info "restart Claude Code, codex, and Gemini CLI from that repo, then verify:"
 	info "  agentchute doctor --as claude-code"
 	info "  agentchute doctor --as codex"
 	info "  agentchute doctor --as gemini-cli"
-	info "then restart Claude Code, codex, and Gemini CLI from that repo."
 }
 
 # ---------- main flow ----------

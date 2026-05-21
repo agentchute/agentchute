@@ -35,6 +35,32 @@ func TestSelfPollIdleExitsZeroNoSideEffects(t *testing.T) {
 	}
 }
 
+func TestSelfPollHeartbeatWritesPollerState(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	withCwd(t, root, func() {
+		_, err := captureStdout(t, func() error {
+			return cmdSelfPoll(selfPollArgs("--heartbeat", "--heartbeat-method", "test-scheduler", "--heartbeat-interval", "30"))
+		})
+		if err != nil {
+			t.Fatalf("self-poll --heartbeat err = %v", err)
+		}
+	})
+	hb, err := loop.LoadPollerHeartbeat(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hb.Method != "test-scheduler" {
+		t.Errorf("Method = %q, want test-scheduler", hb.Method)
+	}
+	if hb.IntervalSeconds != 30 {
+		t.Errorf("IntervalSeconds = %d, want 30", hb.IntervalSeconds)
+	}
+	fresh, _, _ := loop.PollerFreshness(hb, time.Now().UTC())
+	if !fresh {
+		t.Fatalf("heartbeat not fresh: %+v", hb)
+	}
+}
+
 func TestSelfPollUnreadExitsTwo(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	inbox := cfg.AgentInboxDir("claude-code")

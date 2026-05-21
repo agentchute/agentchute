@@ -88,7 +88,7 @@ func cmdHooksInstall(args []string) error {
 	fs := flag.NewFlagSet("hooks install", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	// Default --wrapper to "all" so the v6 enrollment block's
+	// Default --wrapper to "all" so the enrollment block's
 	// `agentchute hooks install` (no flag) is a valid one-liner.
 	// Operators who want only one wrapper still pass --wrapper explicitly.
 	var wrapper, scope string

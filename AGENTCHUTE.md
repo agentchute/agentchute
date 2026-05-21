@@ -104,6 +104,8 @@ This section describes how the protocol primitives from §1 map onto a shared fi
       archive/                    # consumed messages (gitignored)
         <consumed-timestamp>_to-<recipient>_<original-inbox-filename>
       malformed/                  # quarantined non-conforming files (gitignored)
+      state/
+        <agent-id>/               # recipient-owned runtime state (gitignored)
       watchdog.log                # watchdog daemon log (gitignored, optional)
 ```
 
@@ -113,10 +115,10 @@ The reference agentchute CLI initializes new projects under `.agentchute/loop/` 
 
 ### Tracked vs gitignored
 
-`AGENTCHUTE.md` is the only file under this layout that MUST be tracked. The reference files under the loop directory (`loop/README.md`, `loop/agents/README.md`, `loop/agents/*.example.md`) are OPTIONAL — useful for vendor implementations distributing template content, but a fresh `agentchute init` does not require them. Live runtime state (registrations, inbox, archive, watchdog log) SHOULD be gitignored.
+`AGENTCHUTE.md` is the only file under this layout that MUST be tracked. The reference files under the loop directory (`loop/README.md`, `loop/agents/README.md`, `loop/agents/*.example.md`) are OPTIONAL — useful for vendor implementations distributing template content, but a fresh `agentchute init` does not require them. Live runtime state (registrations, inbox, archive, quarantine, recipient state, watchdog log) SHOULD be gitignored.
 
 - **Tracked (when present)**: `AGENTCHUTE.md`, `.<vendor>/loop/README.md`, `.<vendor>/loop/agents/README.md`, `.<vendor>/loop/agents/*.example.md`.
-- **Gitignored**: `.<vendor>/loop/agents/*.md` (live registrations contain machine-specific paths and frequently-updated `last_seen`), `.<vendor>/loop/inbox/`, `.<vendor>/loop/archive/`, `.<vendor>/loop/malformed/`, `.<vendor>/loop/watchdog.log`.
+- **Gitignored**: `.<vendor>/loop/agents/*.md` (live registrations contain machine-specific paths and frequently-updated `last_seen`), `.<vendor>/loop/inbox/`, `.<vendor>/loop/archive/`, `.<vendor>/loop/malformed/`, `.<vendor>/loop/state/`, `.<vendor>/loop/watchdog.log`.
 
 Recommended `.gitignore` patterns:
 
@@ -127,6 +129,7 @@ Recommended `.gitignore` patterns:
 .<vendor>/loop/inbox/
 .<vendor>/loop/archive/
 .<vendor>/loop/malformed/
+.<vendor>/loop/state/
 .<vendor>/loop/watchdog.log
 ```
 
@@ -660,25 +663,26 @@ Fallback keycodes if `Enter` does not commit on a particular CLI: try `C-m` (car
 
 The protocol does not require tmux. Without tmux, peer wake via the reference CLI's default adapter is unavailable — delivery still works (messages land in the recipient's inbox), but recipients must poll.
 
-As of v0.2, the recommended no-tmux polling patterns follow a three-tier model:
+As of v0.2, the recommended no-tmux polling patterns follow a four-tier model. Reference CLI lifecycle checks treat recipient liveness as proven only when either a reachable wake target exists or `state/<agent>/poller.json` contains a fresh poller heartbeat.
 
-- **Tier 1: Native recurring task.** Use the wrapper's built-in scheduler (e.g., Claude Code's `/loop`, Codex App Automations). This is the zero-infrastructure baseline.
-- **Tier 2: Preflighted scheduler.** For wrappers without a native loop (e.g., terminal `gemini-cli` or `codex-cli`). An external scheduler (launchd/systemd/cron) runs a side-effect-free preflight check (`agentchute self-poll --as <id>`) and only launches the wrapper when work exists. `self-poll` exits 2 whenever the wrapper should wake — unread mail, pending replies, malformed inbox files, or first-run `needs_boot` — so the scheduler wakes the wrapper through to its boot ritual on first install. (`agentchute pending` also surfaces `needs_boot` in v0.2.1+ as a read-only context-injection signal; it never returns exit 2 in hook-envelope modes, so it remains safe to wire as a UserPromptSubmit / BeforeAgent hook.)
-- **Tier 3: Finish-hook continuation.** Active sessions catch new mail at the end of a turn via lifecycle hooks (e.g., `gate --before continue`).
+- **Tier 1: Hook-managed poller.** Canonical wrapper hooks run `agentchute poller ensure --as <id> --vendor <v>`. In a reachable tmux pane this is a no-op because the wake adapter is sufficient. Outside tmux, it starts or verifies `agentchute poller run`, which writes the poller heartbeat and launches the wrapper when work exists.
+- **Tier 2: Native recurring task.** A wrapper's built-in scheduler (e.g., Claude Code's `/loop`, Codex App Automations) MAY replace `poller run` only if it calls `agentchute self-poll --as <id> --heartbeat` so the heartbeat remains fresh.
+- **Tier 3: Preflighted scheduler.** For wrappers without a native loop (e.g., terminal `gemini-cli` or `codex-cli`). An external scheduler (launchd/systemd/cron) runs `agentchute self-poll --as <id> --heartbeat` and only launches the wrapper when work exists. `self-poll` exits 2 whenever the wrapper should wake — unread mail, pending replies, malformed inbox files, or first-run `needs_boot` — so the scheduler wakes the wrapper through to its boot ritual on first install. (`agentchute pending` also surfaces `needs_boot` in v0.2.1+ as a read-only context-injection signal; it never returns exit 2 in hook-envelope modes, so it remains safe to wire as a UserPromptSubmit / BeforeAgent hook.)
+- **Tier 4: Finish-hook continuation.** Active sessions catch new mail at the end of a turn via lifecycle hooks (e.g., `gate --before continue`).
 
 Always schedule the wrapper (which invokes the model), not a bare `agentchute check` loop. The model must own the consumption decision.
 
-In active wrapper sessions, `self-check` SHOULD run before every prompt/agent turn. This keeps `last_seen` fresh for non-tmux liveness and clears this agent's own tmux wake fields when the current process is not actually in a reachable tmux pane. `pending` remains the read-only inbox/ledger peek; `self-check` is the heartbeat.
+In active wrapper sessions, `self-check` SHOULD run before every prompt/agent turn. This keeps registration `last_seen` fresh and clears this agent's own tmux wake fields when the current process is not actually in a reachable tmux pane. `pending` remains the read-only inbox/ledger peek. Non-tmux recipient liveness is proven separately by the poller heartbeat, not by registration `last_seen`.
 
-`boot` / `register` preserve an existing tmux wake binding when they run from a process that is not itself inside tmux. That preserves historical explicit-enrollment behavior and avoids scheduler preflights erasing a live pane address. The canonical wrapper hooks run `self-check` before `boot` at SessionStart and before `pending` on each prompt/agent turn; `self-check` is the command that treats wake bindings as live wrapper-process state and clears this agent's own tmux wake fields when the current wrapper is not in tmux. External schedulers SHOULD use side-effect-free `self-poll`, not `self-check`.
+`boot` / `register` preserve an existing tmux wake binding when they run from a process that is not itself inside tmux. That preserves historical explicit-enrollment behavior and avoids scheduler preflights erasing a live pane address. The canonical wrapper hooks run `self-check` before `boot` at SessionStart and before `pending` on each prompt/agent turn; `self-check` is the command that treats wake bindings as live wrapper-process state and clears this agent's own tmux wake fields when the current wrapper is not in tmux. External schedulers SHOULD use `self-poll --heartbeat`, not `self-check`.
 
 ### 8.2 Wake responsibility
 
-The protocol's discovery mechanism is recipient-side polling. A recipient agent MUST discover unread mail via its own inbox scans on its own cadence; it MUST NOT depend on external wake signals for correctness.
+The protocol's discovery mechanism is recipient-side polling. A recipient agent MUST discover unread mail via its own inbox scans on its own cadence; it MUST NOT depend on external wake signals for correctness. Senders are responsible for durable no-overwrite delivery; recipients are responsible for reading.
 
 Wake adapters (tmux, HTTP, SSH, etc.) are **best-effort convenience optimizations** that reduce polling latency. Senders MAY attempt wake via the recipient's declared `wake_method`; failure is logged and ignored. Recipients MAY use external wake hints as additional signals but MUST remain correct in their absence.
 
-The `wake_method` registration field declares the recipient's preferred convenience adapter, NOT a protocol requirement. Empty `wake_method` is equivalent to "I poll my own inbox."
+The `wake_method` registration field declares the recipient's preferred convenience adapter, NOT a protocol requirement. Empty `wake_method` is equivalent to "I poll my own inbox." In the reference CLI, a non-pokable recipient SHOULD keep `state/<agent>/poller.json` fresh via `poller run`, a native wrapper loop calling `self-poll --heartbeat`, or a generated service calling `self-poll --heartbeat`.
 
 ## 9. Liveness
 

@@ -31,7 +31,8 @@ Commands:
   check          consume and archive messages addressed to me
   pending        peek unread messages (read-only; safe for lifecycle hooks)
   self-check     refresh own registration/last_seen and reconcile wake target
-  self-poll      "should I wake the wrapper?" — side-effect-free helper for schedulers and launch prompts
+  self-poll      "should I wake the wrapper?" — read-only by default; optional poller heartbeat
+  poller         recipient-side poller heartbeat/run/status for non-tmux agents
   status         print registry overview, inbox depths, and last_seen freshness
   doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, wake target
   watch          recipient-side persistent watcher: fire OS notification / print / exec on new mail
@@ -83,6 +84,8 @@ func main() {
 		err = cmdSelfCheck(args)
 	case "self-poll":
 		err = cmdSelfPoll(args)
+	case "poller":
+		err = cmdPoller(args)
 	case "status":
 		err = cmdStatus(args)
 	case "doctor":

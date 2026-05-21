@@ -151,6 +151,13 @@ func cmdGate(args []string) error {
 			staleReg = true
 		}
 	}
+	livenessOK := false
+	livenessMessage := ""
+	if !missingReg {
+		liveness := evaluateRecipientLiveness(cfg, agentID, now)
+		livenessOK = liveness.OK
+		livenessMessage = liveness.Message
+	}
 
 	// Wake-stale — release-phase warn surface (per spec rev3 §A.3).
 	// Reads peer registrations and counts those that declare a wake_method
@@ -167,16 +174,18 @@ func cmdGate(args []string) error {
 	}
 
 	status := gateStatus{
-		Agent:          agentID,
-		Phase:          phase,
-		UnreadCount:    len(msgs),
-		MalformedCount: len(skipped),
-		RepliesPending: len(pendingReplies),
-		StaleReg:       staleReg,
-		MissingReg:     missingReg,
-		StaleRegAge:    regAge.String(),
-		WakeStale:      wakeStaleCount > 0,
-		WakeStaleCount: wakeStaleCount,
+		Agent:           agentID,
+		Phase:           phase,
+		UnreadCount:     len(msgs),
+		MalformedCount:  len(skipped),
+		RepliesPending:  len(pendingReplies),
+		StaleReg:        staleReg,
+		MissingReg:      missingReg,
+		StaleRegAge:     regAge.String(),
+		WakeStale:       wakeStaleCount > 0,
+		WakeStaleCount:  wakeStaleCount,
+		LivenessOK:      livenessOK,
+		LivenessMessage: livenessMessage,
 	}
 
 	// Apply the phase predicates to build the blocking-reasons list and
@@ -212,19 +221,21 @@ func cmdGate(args []string) error {
 
 // gateStatus is the cross-format result of a gate evaluation.
 type gateStatus struct {
-	Agent          string   `json:"agent"`
-	Phase          string   `json:"phase"`
-	UnreadCount    int      `json:"unread_count"`
-	MalformedCount int      `json:"malformed_count"`
-	RepliesPending int      `json:"replies_pending"`
-	StaleReg       bool     `json:"stale_reg"`
-	MissingReg     bool     `json:"missing_reg,omitempty"` // own registration absent (subset of StaleReg)
-	StaleRegAge    string   `json:"stale_reg_age,omitempty"`
-	WakeStale      bool     `json:"wake_stale"`
-	WakeStaleCount int      `json:"wake_stale_count,omitempty"`
-	Blocked        bool     `json:"blocked"`
-	Reasons        []string `json:"reasons,omitempty"`
-	Warnings       []string `json:"warnings,omitempty"` // non-blocking signals (e.g., wake_stale on release)
+	Agent           string   `json:"agent"`
+	Phase           string   `json:"phase"`
+	UnreadCount     int      `json:"unread_count"`
+	MalformedCount  int      `json:"malformed_count"`
+	RepliesPending  int      `json:"replies_pending"`
+	StaleReg        bool     `json:"stale_reg"`
+	MissingReg      bool     `json:"missing_reg,omitempty"` // own registration absent (subset of StaleReg)
+	StaleRegAge     string   `json:"stale_reg_age,omitempty"`
+	WakeStale       bool     `json:"wake_stale"`
+	WakeStaleCount  int      `json:"wake_stale_count,omitempty"`
+	LivenessOK      bool     `json:"liveness_ok"`
+	LivenessMessage string   `json:"liveness_message,omitempty"`
+	Blocked         bool     `json:"blocked"`
+	Reasons         []string `json:"reasons,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"` // non-blocking signals (e.g., wake_stale on release)
 }
 
 func isValidGatePhase(phase string) bool {
@@ -267,6 +278,9 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 	// itself to the pool; it can neither commit, finish, nor continue.
 	if s.MissingReg {
 		reasons = append(reasons, "not registered (run `agentchute boot --as <id> --vendor <vendor>` first; §5.7)")
+	}
+	if !s.MissingReg && !s.LivenessOK {
+		reasons = append(reasons, fmt.Sprintf("recipient liveness not proven (%s)", s.LivenessMessage))
 	}
 
 	// commit + release additionally block on age-stale registration unless
@@ -412,6 +426,9 @@ Phases:
              (strongest gate; for end-of-turn use)
   continue   same predicate as finish; for in-session decision hooks
              (gemini AfterAgent, codex Stop) that ask "continue the turn?"
+
+All phases also block if this agent is not registered or recipient liveness
+is not proven by a reachable wake target or fresh poller heartbeat.
 
 Exit codes:
   0  clear to proceed
