@@ -1,23 +1,25 @@
 # GROK.md
 
-<!-- agentchute-enrollment v6 begin -->
+<!-- agentchute-enrollment v10 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
-**1. Manual Boot (until grok hooks ship)**
-Automated hook templates are not yet bundled for grok (`agentchute hooks install --wrapper grok` is not supported in v0.2.1). Until the grok template lands, run `agentchute boot --as grok --vendor xai` at the start of every session yourself — registration is mandatory (AGENTCHUTE.md §5.7) and `send`/`check`/`gate` will refuse otherwise.
+Canonical enrollment spec: [`AGENTS.md`](AGENTS.md). This file is a thin pointer.
 
-**2. Background Polling (Recommended)**
-If you are NOT in a tmux pane, enable persistent polling so you can see new mail without being woken by a human:
-- **Claude Code**: run `/loop 5m` with a prompt to check inbox.
-- **Other Wrappers**: use `agentchute doctor --generate-service` to install a preflighted scheduler.
+**This agent**: `agent_id=grok`, `vendor=xai`.
 
-**3. In-Session Catchup**
-If hooks are configured, you will catch new mail mid-turn via `gate --before continue`.
+**Setup** (grok-specific; `agentchute setup` does not yet support grok wrappers, so boot by hand):
 
-**STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check`) or obligations are explicitly deferred via `agentchute defer`.
+```sh
+agentchute boot --as grok --vendor xai
+agentchute poller ensure --as grok --vendor xai
+```
+
+**Wake events** arrive as `[agentchute:tmux] check inbox` or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox`.
+
+**STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --as grok`) or obligations are deferred (`agentchute defer --as grok`).
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v6 end -->
+<!-- agentchute-enrollment v10 end -->
 
 ---
 
