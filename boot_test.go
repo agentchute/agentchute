@@ -259,26 +259,6 @@ func TestBootCodexHookSessionStartShape(t *testing.T) {
 	})
 }
 
-func TestBootEmitPromptLineSingleLine(t *testing.T) {
-	root := setupBootFixture(t)
-	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "%1")
-		out, err := captureStdout(t, func() error {
-			return cmdBoot(bootArgs("--emit-prompt-line"))
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Single line: exactly one trailing newline, no embedded newlines.
-		trimmed := strings.TrimRight(out, "\n")
-		if strings.Contains(trimmed, "\n") {
-			t.Errorf("--emit-prompt-line output spans multiple lines: %q", out)
-		}
-		if !strings.Contains(trimmed, "agentchute") {
-			t.Errorf("--emit-prompt-line missing brand prefix: %q", trimmed)
-		}
-	})
-}
 
 // --quiet on clean boot should produce no output.
 func TestBootQuietSuppressesCleanOutput(t *testing.T) {

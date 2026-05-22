@@ -26,7 +26,7 @@ func cmdBoot(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	var agentID, vendor, host, wakeMethod, wakeTarget, controlRepo, loopDir, bio, codexHook string
-	var quiet, noArchive, emitPromptLine, jsonOut, contextOnly bool
+	var quiet, jsonOut, contextOnly bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, local, human)")
 	fs.StringVar(&host, "host", "", "host this agent runs on (defaults to OS hostname)")
@@ -36,8 +36,6 @@ func cmdBoot(args []string) error {
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.StringVar(&bio, "bio", "", "short self-description for the registration body (markdown allowed)")
 	fs.BoolVar(&quiet, "quiet", false, "suppress success output, only emit on warnings/blockers")
-	fs.BoolVar(&noArchive, "no-archive", false, "paranoia flag: boot never archives regardless")
-	fs.BoolVar(&emitPromptLine, "emit-prompt-line", false, "emit a single prompt-friendly line (for wrappers without hooks)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
 	fs.BoolVar(&contextOnly, "context-only", false, "hook-safe mode: emit unread/pending state as text and always exit 0 (unless command failure)")
 	fs.StringVar(&codexHook, "codex-hook", "", "codex hook JSON shape for the named event (SessionStart)")
@@ -48,12 +46,6 @@ func cmdBoot(args []string) error {
 	if fs.NArg() != 0 {
 		return bootUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
-
-	// Carry --no-archive forward for documentation symmetry; boot itself
-	// never archives. Reference the variable so go vet doesn't flag it as
-	// unused, while keeping the flag visible for operators who set it
-	// defensively on hook commands.
-	_ = noArchive
 
 	opts := registerOpts{
 		Host:               host,
@@ -164,8 +156,6 @@ func cmdBoot(args []string) error {
 		if err := emitBootJSON(status); err != nil {
 			return err
 		}
-	case emitPromptLine:
-		emitBootPromptLine(status)
 	default:
 		emitBootText(status, quiet)
 	}
@@ -259,22 +249,6 @@ func emitBootJSON(s bootStatus) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(s)
-}
-
-// emitBootPromptLine emits a single line designed to be appended to a
-// wrapper's system prompt by an operator that hasn't installed hooks yet.
-func emitBootPromptLine(s bootStatus) {
-	switch {
-	case s.UnreadCount == 0 && s.RepliesPending == 0:
-		fmt.Println("agentchute: inbox clear; no pending replies.")
-	case s.UnreadCount > 0 && s.RepliesPending > 0:
-		fmt.Printf("agentchute: %d unread message(s) and %d pending reply obligation(s) — run `agentchute check --as %s` and reply via `agentchute send --from %s --to <peer> --reply-to <message-id>`.\n",
-			s.UnreadCount, s.RepliesPending, s.Agent, s.Agent)
-	case s.UnreadCount > 0:
-		fmt.Printf("agentchute: %d unread message(s) — run `agentchute check --as %s`.\n", s.UnreadCount, s.Agent)
-	default:
-		fmt.Printf("agentchute: %d pending reply obligation(s) — reply via `agentchute send --from %s --to <peer> --reply-to <message-id>` or `agentchute defer --as %s --message <message-id>`.\n", s.RepliesPending, s.Agent, s.Agent)
-	}
 }
 
 // emitBootContextOnly is the generic hook-safe text output suitable for
@@ -383,8 +357,6 @@ Flags:
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --quiet               suppress success output (warnings/blockers still emit)
-  --no-archive          paranoia flag; boot itself never archives anyway
-  --emit-prompt-line    emit a single prompt-friendly line
   --json                structured JSON output
   --context-only        hook-safe mode; always exits 0 unless command failure
   --codex-hook <event>  codex hook JSON shape (SessionStart)

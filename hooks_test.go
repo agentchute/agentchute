@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -305,17 +306,21 @@ func TestHooksInstallEmbeddedTemplatesPresent(t *testing.T) {
 	// Sanity check: the embed.FS actually has all three wrapper payloads.
 	// Catches the dotfile-embedding gotcha (//go:embed needs the `all:`
 	// prefix to include hidden directories like .claude/).
-	paths, err := hooksListEmbeddedTemplates()
-	if err != nil {
-		t.Fatal(err)
-	}
 	want := map[string]bool{
 		"examples/hooks/claude-code/.claude/settings.json": false,
 		"examples/hooks/codex/.codex/hooks.json":           false,
 		"examples/hooks/gemini/.gemini/settings.json":      false,
 	}
-	for _, p := range paths {
-		want[p] = true
+	if err := fs.WalkDir(hooksFS, "examples/hooks", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			want[path] = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	for k, found := range want {
 		if !found {

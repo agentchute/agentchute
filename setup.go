@@ -491,7 +491,7 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		}
 		profile := setupProfilePath(opts.Profile)
 		pathBlock := currentNeedsShims && !opts.NoProfile && profile != "" &&
-			(setupProfileHasBlock(profile) || !setupPathContains(opts.ShimDir))
+			(setupProfileHasBlock(profile) || !pathContains(opts.ShimDir))
 		if err := writeSetupGlobalState(setupGlobalState{
 			Version:        1,
 			Wake:           opts.Wake,
@@ -584,8 +584,8 @@ func runInDir(dir string, fn func() error) error {
 }
 
 func setupEnsureShimPath(opts setupOptions) error {
-	if opts.NoProfile || setupPathContains(opts.ShimDir) {
-		if !setupPathContains(opts.ShimDir) {
+	if opts.NoProfile || pathContains(opts.ShimDir) {
+		if !pathContains(opts.ShimDir) {
 			fmt.Printf("warning: add %s to PATH before your wrapper binaries\n", opts.ShimDir)
 		}
 		return nil
@@ -621,23 +621,6 @@ func setupProfilePath(override string) string {
 	default:
 		return ""
 	}
-}
-
-func setupPathContains(dir string) bool {
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return false
-	}
-	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
-		if entry == "" {
-			entry = "."
-		}
-		abs, err := filepath.Abs(entry)
-		if err == nil && samePath(abs, absDir) {
-			return true
-		}
-	}
-	return false
 }
 
 func setupWritePathBlock(profile, dir string) error {

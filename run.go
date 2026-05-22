@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -329,14 +328,8 @@ func runnerChildEnv(cfg *loop.Config, opts runnerOptions) []string {
 		"AGENTCHUTE_CONTROL_REPO="+cfg.ControlRepo,
 		"AGENTCHUTE_LOOP_DIR="+cfg.LoopDir,
 		"AGENTCHUTE_RUNNER=1",
-		"AGENTCHUTE_RUN_DEPTH="+strconv.Itoa(agentchuteRunDepth()+1),
 	)
 	return env
-}
-
-func agentchuteRunDepth() int {
-	n, _ := strconv.Atoi(os.Getenv("AGENTCHUTE_RUN_DEPTH"))
-	return n
 }
 
 func registerRunner(cfg *loop.Config, opts runnerOptions, socketPath string, now time.Time) error {

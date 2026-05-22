@@ -10,10 +10,9 @@ import (
 )
 
 type recipientLiveness struct {
-	OK        bool
-	Via       string
-	Message   string
-	BlockText string
+	OK      bool
+	Via     string
+	Message string
 }
 
 func evaluateRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) recipientLiveness {
@@ -80,9 +79,8 @@ func stalePollerLiveness(agentID, vendor, detail string) recipientLiveness {
 	}
 	start := fmt.Sprintf("agentchute poller ensure --as %s --vendor %s", agentID, vendor)
 	return recipientLiveness{
-		OK:        false,
-		Via:       "none",
-		Message:   fmt.Sprintf("no reachable wake target and no fresh poller heartbeat (%s); run `%s`", detail, start),
-		BlockText: fmt.Sprintf("recipient liveness not proven: %s", detail),
+		OK:      false,
+		Via:     "none",
+		Message: fmt.Sprintf("no reachable wake target and no fresh poller heartbeat (%s); run `%s`", detail, start),
 	}
 }
