@@ -101,6 +101,26 @@ This is **in scope for v0.1**, not an extension. The §10.5 cooperative waking a
 
 Caveat: not every distributed filesystem preserves `rename(2)` atomicity across clients. NFSv3 in particular has well-known rename races. agentchute's correctness depends on the underlying filesystem honoring atomic create/rename — deploy on a substrate that does.
 
+### Cross-pool agents (bridge / proxy pattern)
+
+A single physical agent process MAY participate in multiple agentchute pools simultaneously. This is the pattern for agents that have resource access, credentials, or knowledge other peers don't have, and that act as a firewall / proxy / router *in the application-policy sense* — protocol-level routing remains a v2 deferred item (§13).
+
+The protocol already supports this pattern via existing primitives (pool-scoped identity per §7.5; per-pool registrations). v0.1 adds no new fields, commands, or config. The v0.1 reference CLI exposes pool selection via the `--control-repo` flag, the `AGENTCHUTE_CONTROL_REPO` env var, and the `.agentchute-control-repo` pointer file (see §4.1).
+
+**Identity in multiple pools.** Because identity is pool-scoped (§7.5), the same physical process can be `review-gateway` in a low-trust pool and `release-assistant` in a high-trust pool. Per-pool aliases are RECOMMENDED for bridge roles — they model the different trust contexts honestly and let the bridge apply different policies per role. Same `agent_id` across pools is allowed, but MUST NOT be assumed to imply the same physical process. The bridge agent maintains its own internal alias-to-process mapping.
+
+**Wake delivery across pools.** A bridge MAY register the same physical `wake_target` in multiple pools (e.g., one tmux pane registered under different aliases in each pool), but only if the agent's local `check` routine polls every relevant pool when it wakes. Otherwise the poke is lossy — a peer in pool A pokes the pane, the agent runs `check` against pool A only, pool B's queued message sits stale. Alternatives: per-pool wake methods/targets, or rely on polling cadence and the watchdog.
+
+**Operations.** A bridge process serializes its work per pool: for each pool the bridge participates in, it checks that pool's inbox, processes addressed messages, and replies — all using that pool's identity and substrate locator. Reference CLI mechanics: pool selection happens via `--control-repo`.
+
+**Authority across pools is NOT transitive.** A directly-addressed message in pool A authorizes the recipient bridge to apply *its own policy*. It does NOT grant pool A peers any authority in pool B. It does NOT prove that pool B would accept the same request. When the bridge decides to act in pool B as a consequence of a request in pool A, that is a NEW action under the bridge's policy, not protocol-level forwarding. The bridge sends from its pool-B identity, accountable to pool B's coordination conventions.
+
+**Authorization laundering — the inverse-firewall hazard.** This is the most important risk in the bridge pattern, and it is exactly the inverse of the firewall intent: a peer in low-trust pool A asks the bridge to perform an action in high-trust pool B that B's peers would NOT have accepted directly. By naively translating A's request into a B-side message, the bridge accidentally lends pool A's caller the capabilities granted by pool B's trust context. Bridges MUST treat cross-pool forwarding as an explicit policy decision. They SHOULD reject or transform requests rather than translate them blindly.
+
+**Information leakage.** Bridges SHOULD avoid disclosing source-pool content, metadata, peer identities, message timing, file paths, or pool topology to other pools unless their policy explicitly allows. The same "MUST NOT open peer message bodies" rule from §10.5 applies; the bridge has full access to its OWN inboxes in each pool but does not have license to redistribute that content across pool boundaries.
+
+**Loop amplification.** A → bridge-AB → B → bridge-BA → A risks recirculating requests indefinitely. Bridges SHOULD use `in_reply_to` references or correlation IDs in message bodies to recognize their own forwarded requests and stop the cycle.
+
 ### Cross-folder enrollment via the `.agentchute-control-repo` pointer file
 
 When agents live in different folders that belong to one logical project (e.g., separate repos sharing a parent dir), each non-control folder MAY drop a tracked `.agentchute-control-repo` pointer file at its root. The file contains one non-comment path line pointing at the project's canonical control repo. The reference CLI discovers it on cwd-ancestor walk and resolves it during normal startup (see AGENTCHUTE.md §4.1 step 3 — the control-repo cascade). Sibling-repo pointers like `../coordination` are the primary case.

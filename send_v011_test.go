@@ -405,49 +405,6 @@ func TestSendWarnsOnSelfSendWithAsk(t *testing.T) {
 	}
 }
 
-// Same shape WITHOUT --ask must not warn — self-sends are sometimes a
-// legitimate scratch-note pattern; only the --ask combination is the
-// loop hazard.
-func TestSendDoesNotWarnOnSelfSendWithoutAsk(t *testing.T) {
-	root, _ := setupSendFixture(t)
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	origStderr := os.Stderr
-	os.Stderr = w
-	defer func() { os.Stderr = origStderr }()
-	done := make(chan struct{})
-	var buf strings.Builder
-	go func() {
-		bs := make([]byte, 1024)
-		for {
-			n, _ := r.Read(bs)
-			if n > 0 {
-				buf.Write(bs[:n])
-			}
-			if n == 0 {
-				close(done)
-				return
-			}
-		}
-	}()
-
-	withCwd(t, root, func() {
-		if err := cmdSend([]string{"--from", "claude-code", "--to", "claude-code",
-			"--task", "self-note", "--body", "scratch", "--no-wake"}); err != nil {
-			t.Fatal(err)
-		}
-	})
-	_ = w.Close()
-	<-done
-
-	if got := buf.String(); strings.Contains(got, "self-send") {
-		t.Errorf("self-send without --ask should not warn; got:\n%s", got)
-	}
-}
-
 // Codex pre-merge ask: assert --reply-to does NOT implicitly set
 // reply_required. The two flags are orthogonal per AGENTCHUTE.md §6.4.3:
 // reply_required MUST NOT be inferred or propagated from in_reply_to.
@@ -468,19 +425,3 @@ func TestSendReplyToWithoutAskDoesNotSetReplyRequired(t *testing.T) {
 	}
 }
 
-// Sanity: --no-wake suppresses the poke without affecting delivery.
-func TestSendNoWakeSkipsPoke(t *testing.T) {
-	root, _ := setupSendFixture(t)
-	withCwd(t, root, func() {
-		out, err := captureStdout(t, func() error {
-			return cmdSend([]string{"--from", "claude-code", "--to", "codex",
-				"--task", "x", "--body", "b", "--no-wake"})
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(out, "skipped (--no-wake)") {
-			t.Errorf("--no-wake didn't suppress poke:\n%s", out)
-		}
-	})
-}

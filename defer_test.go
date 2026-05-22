@@ -184,44 +184,54 @@ func TestDeferRequiresReason(t *testing.T) {
 	})
 }
 
-func TestNormalizeDeferUntilParsesDurations(t *testing.T) {
-	got, err := normalizeDeferUntil("24h")
-	if err != nil {
-		t.Fatal(err)
+func TestNormalizeDeferUntil(t *testing.T) {
+	pastRFC := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		name    string
+		input   string
+		wantErr bool
+		check   func(t *testing.T, got string)
+	}{
+		{"parses durations", "24h", false, func(t *testing.T, got string) {
+			parsed, err := time.Parse(time.RFC3339, got)
+			if err != nil {
+				t.Fatalf("not RFC3339: %q (%v)", got, err)
+			}
+			if d := time.Until(parsed); d < 23*time.Hour || d > 25*time.Hour {
+				t.Errorf("24h offset out of range: %s", got)
+			}
+		}},
+		{"accepts RFC3339", "2026-05-26T00:00:00Z", false, func(t *testing.T, got string) {
+			if got != "2026-05-26T00:00:00Z" {
+				t.Errorf("got %q", got)
+			}
+		}},
+		{"empty passes through", "", false, func(t *testing.T, got string) {
+			if got != "" {
+				t.Errorf("got %q, want empty", got)
+			}
+		}},
+		{"rejects garbage", "tomorrow morning", true, nil},
+		{"rejects past RFC3339", pastRFC, true, nil},
+		{"rejects zero duration", "0s", true, nil},
+		{"rejects negative duration", "-1h", true, nil},
 	}
-	parsed, err := time.Parse(time.RFC3339, got)
-	if err != nil {
-		t.Fatalf("did not produce a valid RFC3339 timestamp: %q (%v)", got, err)
-	}
-	if d := time.Until(parsed); d < 23*time.Hour || d > 25*time.Hour {
-		t.Errorf("24h offset produced timestamp %s outside expected range", got)
-	}
-}
-
-func TestNormalizeDeferUntilAcceptsRFC3339(t *testing.T) {
-	in := "2026-05-26T00:00:00Z"
-	got, err := normalizeDeferUntil(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != in {
-		t.Errorf("got %q, want %q", got, in)
-	}
-}
-
-func TestNormalizeDeferUntilEmptyPassesThrough(t *testing.T) {
-	got, err := normalizeDeferUntil("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestNormalizeDeferUntilRejectsGarbage(t *testing.T) {
-	if _, err := normalizeDeferUntil("tomorrow morning"); err == nil {
-		t.Fatal("expected error for unparseable --until")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := normalizeDeferUntil(c.input)
+			if c.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.check != nil {
+				c.check(t, got)
+			}
+		})
 	}
 }
 
@@ -266,18 +276,3 @@ func ensurePrivateDirHelper(filePath string) error {
 	return os.MkdirAll(filepath.Dir(filePath), 0o700)
 }
 
-func TestNormalizeDeferUntilRejectsPastTimestamp(t *testing.T) {
-	past := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
-	if _, err := normalizeDeferUntil(past); err == nil {
-		t.Fatalf("expected error for past RFC3339 timestamp %q", past)
-	}
-}
-
-func TestNormalizeDeferUntilRejectsNonPositiveDuration(t *testing.T) {
-	if _, err := normalizeDeferUntil("0s"); err == nil {
-		t.Fatal("expected error for zero duration")
-	}
-	if _, err := normalizeDeferUntil("-1h"); err == nil {
-		t.Fatal("expected error for negative duration")
-	}
-}

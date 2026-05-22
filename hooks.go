@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -239,28 +238,6 @@ func installOneHook(w hookWrapper, scopeRoot string, dryRun, force bool) error {
 
 	fmt.Printf("hooks install %s → %s (%d bytes)\n", w.Name, dest, len(src))
 	return nil
-}
-
-// hooksListEmbeddedTemplates is a small helper used by tests + doctor to
-// enumerate the hook templates baked into the binary. Returns the
-// embedded source paths so callers can hash or compare them.
-func hooksListEmbeddedTemplates() ([]string, error) {
-	var out []string
-	walkErr := fs.WalkDir(hooksFS, "examples/hooks", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		out = append(out, path)
-		return nil
-	})
-	if walkErr != nil {
-		return nil, walkErr
-	}
-	sort.Strings(out)
-	return out, nil
 }
 
 func hooksUsage(err error) error {

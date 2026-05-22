@@ -80,21 +80,7 @@ After install, restart the wrappers once. To inspect the setup:
 agentchute doctor --as <agent-id>
 ```
 
-The commands below are what the hooks call. With hooks installed, the wrapper runs them at the right lifecycle points for you. Run them by hand only for a manual session.
-
-```sh
-agentchute boot --as claude-code --vendor anthropic
-agentchute poller ensure --as claude-code --vendor anthropic
-agentchute boot --as codex       --vendor openai
-agentchute poller ensure --as codex       --vendor openai
-```
-
-If you are bypassing launcher shims but still want the no-tmux runner, launch the wrapper through `agentchute run`:
-
-```sh
-agentchute run --as codex --vendor openai -- codex
-agentchute run --as gemini-cli --vendor google -- gemini
-```
+With hooks installed (the default after `agentchute setup`), the wrapper runs `boot` / `pending` / `gate` at the right lifecycle points for you — see [Manual session](#manual-session-without-hooks) at the bottom for the by-hand equivalents.
 
 Send a review request:
 
@@ -217,56 +203,26 @@ Go 1.21+. The core stays stdlib; the PTY runner uses `github.com/creack/pty`. Be
 
 MIT — see [`LICENSE`](LICENSE).
 
+## Releases
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.3.2** — one-line install, launcher shims, bracketed wake prompts.
+
+## Manual session (without hooks)
+
+If you're driving an agent by hand — no `setup`, no hooks — these are the per-turn equivalents the hooks normally call for you:
+
+```sh
+agentchute boot --as claude-code --vendor anthropic
+agentchute poller ensure --as claude-code --vendor anthropic
+```
+
+If you're bypassing launcher shims but still want the no-tmux runner, launch the wrapper through `agentchute run`:
+
+```sh
+agentchute run --as codex --vendor openai -- codex
+agentchute run --as gemini-cli --vendor google -- gemini
+```
+
 ---
 
 *Built by [reHuman Labs](https://rehumanlabs.com). Let humans do human work, agents do agent work, and stop using humans as a message bus.*
-
-## Releases
-
-### v0.2.1 (2026-05-20)
-
-The **enforced enrollment** release. Self-registration was normative in the spec (§5) but the reference CLI treated it as optional; agents could call `send` and `check` forever without ever publishing a registration record. v0.2.1 closes the gap end-to-end.
-
-- **AGENTCHUTE.md §5.7** (new, normative): conforming implementations MUST refuse to perform active agent operations (consume, send, gate completion) without a registration record. Read-only diagnostics MAY surface a needs-registration signal instead of refusing, so wrappers can detect and remediate the gap.
-- **Active commands refuse on missing self-registration**: `check`, `send --from`, `watch`, `status --as`, and `gate --before finish|continue` now exit with a clear pointer to `agentchute boot --as <id> --vendor <vendor>`. The previous silent-tolerance behavior is gone.
-- **`internal/loop.ErrInboxMissing` sentinel**: `ListInboxMessages*` now distinguishes "inbox dir doesn't exist" from "inbox is empty". Callers act-as-agent map to `needs_boot`; peer-liveness paths (watchdog) skip without failing the pass.
-- **`pending` surfaces `needs_boot`** in text / `--json` / `--claude-hook UserPromptSubmit` / `--codex-hook UserPromptSubmit` modes (read-only, always exit 0 for hook envelopes; `--fail-if-any` exits 2 because that mode IS a scheduler preflight).
-- **`agentchute hooks install --wrapper <name>`** (new): writes the canonical hook template into `.claude/settings.json` / `.codex/hooks.json` / `.gemini/settings.json`. Atomic temp+rename, 0600/0700 modes, idempotent re-runs, `--scope repo|user`, `--dry-run`, `--force` with `.bak` backup. Makes the v6 enrollment block's "run this once" property real.
-- **v6 enrollment block**: drops the "If hooks are configured, this runs automatically" hedge; leads with `agentchute hooks install` as the primary path.
-
-**Breaking change**: any caller running `send` / `check` / `watch` / `status --as` / `gate finish|continue` without a prior `boot` now gets a loud error pointing at the fix. Pools where every agent has already booted at least once are unaffected.
-
-### v0.2.0 (2026-05-20)
-
-The **no-tmux release**. Recipient-side polling becomes the canonical discovery mechanism; tmux is demoted to one optional convenience adapter.
-
-- **§8.2 wake responsibility** (AGENTCHUTE.md): normative text declaring that recipients MUST discover unread mail through their own inbox scans on their own cadence. Wake adapters are best-effort latency optimizations.
-- **`agentchute self-poll --as <id>`**: side-effect-free "should I wake the wrapper?" helper for schedulers and launch prompts. Exits 2 on unread mail, pending replies, malformed inbox files, or first-run `needs_boot`. JSON output for schedulers; `--prompt-text` for model-facing launch fragments (with prompt-injection guard on peer-supplied metadata).
-- **`agentchute gate --before continue`**: in-session continuation gate. Sibling of `--before finish` with wrapper-specific output framing (`--gemini-hook AfterAgent` emits `{"decision":"deny|allow","reason":"..."}`, always exit 0).
-- **`agentchute doctor --generate-service <kind>`**: emits launchd / systemd-service / systemd-timer / portable shell-script unit files for the preflighted-scheduler pattern. Single-flight via POSIX `mkdir`-as-lock, strict input validation on `--as` / `--vendor` / `--repo` (shell-injection-safe), plain-text wrapper prompts.
-- **Three-tier polling model** (AGENTCHUTE.md §8.1): native loop (Claude `/loop`, Codex App Automations) / preflighted scheduler / finish-hook continuation.
-- **v5 enrollment block**: `agentchute init` writes the new three-tier polling guidance into `CLAUDE.md` / `CODEX.md` / `GEMINI.md` / `GROK.md` / `AGENTS.md`.
-
-### v0.1.3 (2026-05-20)
-
-- **`watch` dedupe by filename**: two distinct files sharing a `message_id` no longer suppress the second notification (§6.4.1 compliance fix).
-- **`AGENTCHUTE_BIN` executable check**: `doctor` now requires the override to be a real regular file with the executable bit set; directories and non-executable files are rejected.
-
-### v0.1.2 (2026-05-20)
-
-- **`agentchute doctor`**: diagnostic aggregator with severity-tagged checks (scaffold, hook content, registration, ledger, wake target).
-- **`agentchute watch --as <id> --notify`**: non-consuming watcher; OS notification / print / exec on new mail. Recipient-side watcher (§10.9).
-- **`agentchute status` without `--as`**: prints the pool overview as a side-effect-free read.
-- **Claude Code `UserPromptSubmit` hook JSON**: `pending --claude-hook UserPromptSubmit` emits the nested `hookSpecificOutput.additionalContext` contract.
-
-### v0.1.1 (2026-05-19)
-
-- **Lifecycle primitives**: `boot`, `pending`, `gate`, `defer` for mechanical protocol compliance.
-- **Universal hook templates**: Claude Code, codex, Gemini CLI session-start and turn-gate hooks.
-- **Pending-reply ledger**: durable local state at `<loop>/state/<agent>/pending-replies.json` tracking `reply_required` obligations.
-- **Protocol additions**: `reply_required`, `priority`, `in_reply_to` frontmatter fields (AGENTCHUTE.md §6.4).
-- **`AGENTCHUTE_BIN` env override** for binary discovery.
-
-### v0.1.0 (2026-05-13)
-
-Initial reference CLI release.

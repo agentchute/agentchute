@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v0.3.2: one-line setup and transparent coordination — agentchute</title>
+<meta name="description" content="agentchute v0.3.2 collapses install + repo wiring into a single command, routes normal wrapper commands through a launcher shim, and makes peer wake events visibly machine-typed.">
+<meta property="og:title" content="v0.3.2: one-line setup and transparent coordination">
+<meta property="og:description" content="agentchute v0.3.2 collapses install + repo wiring into a single command, routes normal wrapper commands through a launcher shim, and makes peer wake events visibly machine-typed.">
+<meta property="og:url" content="https://agentchute.dev/blog/v0-3-2-setup-and-shims.html">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-05-21">
+<meta property="article:author" content="agentchute team">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="v0.3.2: one-line setup and transparent coordination">
+<meta name="twitter:description" content="agentchute v0.3.2 collapses install + repo wiring into a single command, routes normal wrapper commands through a launcher shim, and makes peer wake events visibly machine-typed.">
+<link rel="canonical" href="https://agentchute.dev/blog/v0-3-2-setup-and-shims.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">May 21, 2026 · agentchute team</p>
+    <h1>v0.3.2: one-line setup and transparent coordination</h1>
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      Installing agentchute used to be a five-step ritual. v0.3.2 makes it a single line,
+      and routes the wrapper commands you already use through the coordination layer
+      without you needing to learn anything new.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+
+    <p>
+      <strong>The goal stays the same: simple protocol, simple implementation.</strong>
+    </p>
+
+    <p>
+      Dogfooding v0.2 made the friction visible. Setting up a new control repo took
+      <code>init</code>, then <code>hooks install</code>, then doctor-by-doctor verification,
+      then PATH wrangling for the shims. Four steps to get to "agents can message each
+      other in this repo." v0.3.2 collapses that into one command.
+    </p>
+
+    <h2>The single line</h2>
+
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
+
+    <p>
+      The installer now auto-runs <code>agentchute setup</code>. It detects your wrappers
+      on PATH, prompts for your primary wake path (<code>tmux</code>, <code>runner</code>,
+      or <code>both</code>), installs the lifecycle hooks, installs launcher shims when
+      runner mode is selected, and updates your shell profile in one pass — inside a
+      single sentinel-bounded block so re-running it stays idempotent.
+    </p>
+
+    <p>
+      A new init guard refuses to scaffold <code>$HOME</code> or any
+      non-project directory as a control repo, so a curl-piped install from the wrong
+      shell can't silently turn your home directory into a pool.
+    </p>
+
+    <h2>Launcher shims: keep using <code>claude</code>, <code>codex</code>, <code>gemini</code></h2>
+
+    <p>
+      The biggest change in v0.3.2 is the launcher shim. In runner mode, <code>setup</code>
+      drops thin shims into <code>$HOME/.agentchute/bin</code> and prepends that to your
+      PATH. When you type <code>claude</code>, <code>codex</code>, or <code>gemini</code>
+      inside a control repo, the shim routes the call through
+      <code>agentchute run --as &lt;id&gt; --vendor &lt;vendor&gt; -- &lt;wrapper&gt;</code>.
+    </p>
+
+    <p>
+      The runner launches the wrapper under a PTY, registers
+      <code>wake_method: agentchute-run</code> with a local Unix socket as the wake target,
+      refreshes <code>last_seen</code> on every poll, watches the inbox, and injects a wake
+      prompt when mail arrives. Outside a control repo, the shim is a pass-through; the
+      wrapper runs exactly as it did before.
+    </p>
+
+    <p>
+      The net effect: nothing new to type. Your existing muscle memory now coordinates.
+    </p>
+
+    <h2>Wake events are visibly machine-typed</h2>
+
+    <p>
+      Earlier versions injected a bare <code>check</code> into the recipient pane, which is
+      indistinguishable from a human typing the word. v0.3.2 changes the wake prompt to a
+      tagged form:
+    </p>
+
+    <pre><code>[agentchute:tmux] check inbox
+[agentchute:run] check inbox</code></pre>
+
+    <p>
+      The bracketed prefix is reference-adapter metadata; the model-facing instruction is
+      still <em>check inbox</em>. Other conforming implementations are free to use different
+      wake prompts as long as inbox delivery stays durable and recipient-owned
+      (<a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md#8-tmux-wake-adapter-v01-reference">spec §8</a>).
+      The leading bracket means a model can tell a wake event from a typed prompt without
+      heuristics — humans don't start prompts with <code>[</code>.
+    </p>
+
+    <h2>Stale tmux registration cleanup</h2>
+
+    <p>
+      v0.3.2 also adds a narrow garbage collector. If a peer registration on the same host
+      points at a tmux pane that no longer exists, register/boot/self-check will delete it.
+      The conditions are exact and conservative: parseable peer, peer is not self, host
+      matches, <code>wake_method: tmux</code>, and <code>wake_target</code> is unreachable on the
+      local tmux server. Cross-host peers are never touched; non-tmux peers are never
+      touched; malformed registrations stay quarantined per §11 rather than being deleted.
+    </p>
+
+    <p>
+      The spec was extended at
+      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md#72-inbox-only-authority-to-mutate">§7.2</a>
+      to authorize this as protocol maintenance — narrow, mechanical, optional — without
+      reopening the broader "peers don't touch each other's state" boundary.
+    </p>
+
+    <h2>Upgrade</h2>
+
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
+agentchute setup</code></pre>
+
+    <p>
+      <code>setup</code> is idempotent and supports <code>--dry-run</code> for safe inspection
+      before any file is touched. If you change wake modes later — tmux to runner, or back
+      — re-running <code>setup</code> reconciles the difference, removing what the new mode
+      doesn't need.
+    </p>
+
+    <p>
+      The protocol still fits in one file. The reference CLI just got smaller in the
+      places that matter most.
+    </p>
+
+  </div>
+</section>
+
+</article>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p>agentchute — MIT licensed. <a href="https://github.com/agentchute/agentchute">github</a> · <a href="../spec.html">spec</a> · <a href="../">home</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

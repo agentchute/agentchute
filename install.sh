@@ -17,7 +17,6 @@
 #   AGENTCHUTE_SETUP=0       skip setup after install
 #   AGENTCHUTE_WAKE          pass --wake to setup (runner | tmux | both)
 #   AGENTCHUTE_WRAPPERS      pass --wrappers to setup (default: all)
-#   AGENTCHUTE_INIT=1        deprecated alias for setup
 #   AGENTCHUTE_DRY_RUN=1     print the plan and exit; no mutation
 #
 # Security: this script verifies release checksums; piping the installer
@@ -351,14 +350,6 @@ print_setup_next_steps() {
 	info "optional check: agentchute doctor --as <agent-id>"
 }
 
-print_hooks_next_steps() {
-	info ""
-	info "next: run setup from the repo where your agents will coordinate:"
-	info "  agentchute setup"
-	info "then restart your agents"
-	info "optional check: agentchute doctor --as <agent-id>"
-}
-
 # ---------- main flow ----------
 
 main() {
@@ -373,7 +364,6 @@ main() {
 	setup_wake="${AGENTCHUTE_WAKE:-}"
 	setup_wrappers="${AGENTCHUTE_WRAPPERS:-all}"
 	dry_run=0
-	[ "${AGENTCHUTE_INIT:-0}" = "1" ] && do_setup=1
 	[ "${AGENTCHUTE_DRY_RUN:-0}" = "1" ] && dry_run=1
 
 	# Flag parsing.
@@ -389,7 +379,6 @@ main() {
 			--wake=*)    setup_wake="${1#--wake=}" ;;
 			--wrappers)  shift; setup_wrappers="${1:-}"; [ -n "$setup_wrappers" ] || err "--wrappers requires a value" ;;
 			--wrappers=*) setup_wrappers="${1#--wrappers=}" ;;
-			--init)      do_setup=1 ;;
 			--dry-run)   dry_run=1 ;;
 			-h|--help)
 				cat <<EOF
@@ -405,14 +394,13 @@ flags:
   --no-setup  skip setup and print the command to run later
   --wake MODE pass --wake to setup (runner | tmux | both)
   --wrappers  pass --wrappers to setup (default: all)
-  --init      deprecated alias for --setup
   --dry-run   print the plan and exit; no mutation
 
 env vars (flags override):
   AGENTCHUTE_VERSION, AGENTCHUTE_INSTALL_DIR, AGENTCHUTE_SHIM_DIR,
   AGENTCHUTE_PROFILE, AGENTCHUTE_NO_PATH_UPDATE=1,
   AGENTCHUTE_SETUP=0|1|auto, AGENTCHUTE_WAKE, AGENTCHUTE_WRAPPERS,
-  AGENTCHUTE_INIT=1, AGENTCHUTE_DRY_RUN=1
+  AGENTCHUTE_DRY_RUN=1
 EOF
 				return 0
 				;;
