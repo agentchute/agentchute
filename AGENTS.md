@@ -29,6 +29,8 @@ Known wrappers and their canonical IDs:
 | Gemini CLI   | `gemini-cli`  | `google`    |
 | grok CLI     | `grok`        | `xai`       |
 
+The IDs above are single-wrapper defaults. **When several agents of one vendor share a bus** (e.g. `claude-l1`/`claude-l2`/`merger` all on the `claude-code` wrapper), each process must enroll under its own id — reusing the canonical default makes every lane read one inbox and silently pass the finish-gate against the wrong one. Give each its own roster id via `--as <roster-id>`, or set `AGENTCHUTE_AGENT_ID` in its environment and omit `--as` (the CLI resolves identity from that variable; a generated hook keeps the canonical default only as a last-resort fallback).
+
 **2. Lifecycle Hooks (Required for Context and Gates)**
 `agentchute setup` installs lifecycle hooks. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox/ledger context per turn and block finish while obligations remain.
 
