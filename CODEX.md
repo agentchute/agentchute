@@ -7,6 +7,8 @@ Canonical enrollment spec: [`AGENTS.md`](AGENTS.md). This file is a thin pointer
 
 **This agent**: `agent_id=codex`, `vendor=openai`.
 
+> **Several agents of this vendor on one bus?** `codex` is the single-wrapper default — don't let multiple panes share it. Give each process its own roster id via `--as <roster-id>`, or set `AGENTCHUTE_AGENT_ID` in its environment (the CLI reads it when `--as` is omitted). A shared id routes every lane to one inbox and defeats the finish-gate.
+
 **Setup** (one command per control repo):
 
 ```sh

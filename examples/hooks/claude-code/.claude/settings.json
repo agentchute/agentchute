@@ -6,15 +6,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as claude-code --vendor anthropic --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as \"${AGENTCHUTE_AGENT_ID:-claude-code}\" --vendor anthropic --quiet"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as claude-code --vendor anthropic --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as \"${AGENTCHUTE_AGENT_ID:-claude-code}\" --vendor anthropic --quiet"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} boot --as claude-code --vendor anthropic --context-only"
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --as \"${AGENTCHUTE_AGENT_ID:-claude-code}\" --vendor anthropic --context-only"
           }
         ]
       }
@@ -24,15 +24,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as claude-code --vendor anthropic --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as \"${AGENTCHUTE_AGENT_ID:-claude-code}\" --vendor anthropic --quiet"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as claude-code --vendor anthropic --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as \"${AGENTCHUTE_AGENT_ID:-claude-code}\" --vendor anthropic --quiet"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} pending --as claude-code --claude-hook UserPromptSubmit"
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --as \"${AGENTCHUTE_AGENT_ID:-claude-code}\" --claude-hook UserPromptSubmit"
           }
         ]
       }
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} gate --as claude-code --before finish --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} gate --as \"${AGENTCHUTE_AGENT_ID:-claude-code}\" --before finish --json"
           }
         ]
       }
