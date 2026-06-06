@@ -348,6 +348,9 @@ print_setup_next_steps() {
 	info "  agentchute setup"
 	info "then restart your agents"
 	info "optional check: agentchute doctor --as <agent-id>"
+	info "upgrading from an older release? setup migrates a legacy .rehumanlabs/loop"
+	info "in that repo to .agentchute/loop automatically (safe cases; it refuses to"
+	info "auto-merge if both hold live state)."
 }
 
 # ---------- main flow ----------
