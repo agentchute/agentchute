@@ -219,6 +219,8 @@ Triggers include malformed inbox filenames, unparseable frontmatter, or unparsea
 ## 14. Vendor namespace conventions
 Implementations namespace state under a vendor-owned identifier (e.g., `.agentchute/`, `.examplecorp/`). `AGENTCHUTE.md` is shared; vendor-specific notes live in `.<vendor>/loop/README.md`.
 
+> **Legacy namespace migration.** The reference implementation previously used the `.rehumanlabs/` namespace (renamed to `.agentchute/` in v0.2.2). Because discovery (§4.2) auto-matches any `.<vendor>/loop/`, a leftover `.rehumanlabs/loop` makes discovery ambiguous. `agentchute setup`/`init` migrate it for the current control repo: rename when the canonical namespace is absent, move a scaffold-only legacy loop aside, or promote legacy state over an empty canonical loop. If **both** hold live state it refuses and asks the operator to consolidate by hand — never an automatic merge. (`reHuman Labs` remains the maker's credit in `README.md`; that's brand, not a namespace.)
+
 ---
 
 ## Appendix B. Reference implementation hook templates

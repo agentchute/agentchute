@@ -219,7 +219,19 @@ func computeInitPlan(root, namespace string, inGit bool) (initPlan, error) {
 		EnrollmentBlocks: make(map[string]string),
 	}
 
-	if err := guardInitLoopNamespace(root, namespace); err != nil {
+	// 0. Legacy namespace migration (.rehumanlabs -> canonical). Must precede the
+	// ambiguity guard: a stranded legacy loop would otherwise trip the
+	// "multiple loop namespaces" refusal. Safe cases become an apply-time action
+	// (shown in dry-run); the unsafe both-live case errors here.
+	migrationAction, migratingRel, err := planLegacyMigration(root, namespace)
+	if err != nil {
+		return plan, err
+	}
+	if migrationAction != nil {
+		plan.Actions = append(plan.Actions, *migrationAction)
+	}
+
+	if err := guardInitLoopNamespace(root, namespace, migratingRel); err != nil {
 		return plan, err
 	}
 
@@ -280,7 +292,11 @@ func computeInitPlan(root, namespace string, inGit bool) (initPlan, error) {
 	return plan, nil
 }
 
-func guardInitLoopNamespace(root, namespace string) error {
+// guardInitLoopNamespace refuses to initialize when more than one loop namespace
+// would be discoverable (discovery would be ambiguous). ignoreRel, when non-empty,
+// is a loop rel path that a planned migration will remove before apply, so it is
+// not counted as a conflict.
+func guardInitLoopNamespace(root, namespace, ignoreRel string) error {
 	existing, err := findInitLoopDirs(root)
 	if err != nil {
 		return err
@@ -292,6 +308,9 @@ func guardInitLoopNamespace(root, namespace string) error {
 		if rel == target {
 			targetExists = true
 			continue
+		}
+		if ignoreRel != "" && rel == ignoreRel {
+			continue // a planned migration removes this loop before apply
 		}
 		conflicts = append(conflicts, rel)
 	}
