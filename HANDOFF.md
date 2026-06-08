@@ -12,6 +12,8 @@ Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.3.6
 
 Restart note: `v0.3.6` is the hotfix release intended for the stop/reinstall/restart test. Standard `install.sh` should resolve `v0.3.6` after the release workflow publishes it. This release includes the setup-time live registration cleanup (`agentchute setup` clears ignored `agents/*.md` so agents re-enroll with fresh contextual IDs and wake targets).
 
+Final pre-restart verification on 2026-06-08: `main`, `origin/main`, and tag `v0.3.6` all point at `cabe00d`; GitHub CI and the GoReleaser release workflow both passed; `/releases/latest` resolves to `v0.3.6`; release assets exist for darwin/linux amd64/arm64 plus `checksums.txt`; `sh install.sh --no-setup --dry-run` resolves `v0.3.6`.
+
 Recent shipped work:
 
 - Contextual identity defaults: explicit `--as`, then `AGENTCHUTE_AGENT_ID`, then current tmux pane registration, then `<wrapper>-<folder>`.
