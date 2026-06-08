@@ -18,10 +18,10 @@ func TestInitFreshEmpty(t *testing.T) {
 	}
 
 	expectAction(t, plan, "AGENTCHUTE.md", "write")
-	expectAction(t, plan, "CLAUDE.md", "create v10")
-	expectAction(t, plan, "CODEX.md", "create v10")
-	expectAction(t, plan, "GEMINI.md", "create v10")
-	expectAction(t, plan, "AGENTS.md", "create v10")
+	expectAction(t, plan, "CLAUDE.md", "create v11")
+	expectAction(t, plan, "CODEX.md", "create v11")
+	expectAction(t, plan, "GEMINI.md", "create v11")
+	expectAction(t, plan, "AGENTS.md", "create v11")
 	expectAction(t, plan, ".gitignore", "skip") // not in git
 	expectAction(t, plan, ".agentchute/loop/agents", "mkdir 0700")
 	expectAction(t, plan, ".agentchute/loop/inbox", "mkdir 0700")
@@ -80,14 +80,14 @@ func TestInitPrependsBlockWhenNoMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "prepend v10")
+	expectAction(t, plan, "CLAUDE.md", "prepend v11")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "agentchute-enrollment v10 begin") {
+	if !strings.Contains(string(got), "agentchute-enrollment v11 begin") {
 		t.Errorf("CLAUDE.md missing marker after prepend:\n%s", got)
 	}
 	if !strings.HasSuffix(string(got), originalContent) {
@@ -110,7 +110,7 @@ func TestInitSkipsWhenMarkerCurrentAndMatches(t *testing.T) {
 
 // Existing CLAUDE.md with an OLDER agentchute-enrollment marker → replace marked
 // region with the current version. (Prior to v4, this test used an older
-// marker at the current version to test the drift path; with v4 current, the v1
+// marker at the current version to test the drift path; with the current marker, the v1
 // marker exercises the older-version path.)
 func TestInitReplacesDriftedV1Content(t *testing.T) {
 	root := t.TempDir()
@@ -121,7 +121,7 @@ func TestInitReplacesDriftedV1Content(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "replace v1→v10")
+	expectAction(t, plan, "CLAUDE.md", "replace v1→v11")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
@@ -136,10 +136,38 @@ func TestInitReplacesDriftedV1Content(t *testing.T) {
 	}
 }
 
+func TestInitUpgradesV10EnrollmentBlockToV11(t *testing.T) {
+	root := t.TempDir()
+	stale := "<!-- agentchute-enrollment v10 begin -->\nstale env guidance\n<!-- agentchute-enrollment v10 end -->\n\nMy notes.\n"
+	mustWrite(t, filepath.Join(root, "CODEX.md"), []byte(stale))
+
+	plan, err := computeInitPlan(root, "agentchute", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectAction(t, plan, "CODEX.md", "replace v10→v11")
+	applyAll(t, plan)
+
+	got, err := os.ReadFile(filepath.Join(root, "CODEX.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "stale env guidance") {
+		t.Errorf("CODEX.md still contains stale enrollment content after upgrade:\n%s", text)
+	}
+	if !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Errorf("CODEX.md missing env identity guidance after upgrade:\n%s", text)
+	}
+	if !strings.Contains(text, "My notes.") {
+		t.Errorf("CODEX.md lost preserved user content after upgrade:\n%s", text)
+	}
+}
+
 // Existing file with a future version marker → leave alone with warning.
 func TestInitLeavesNewerVersionAlone(t *testing.T) {
 	root := t.TempDir()
-	future := "<!-- agentchute-enrollment v11 begin -->\nfuture\n<!-- agentchute-enrollment v11 end -->\n"
+	future := "<!-- agentchute-enrollment v12 begin -->\nfuture\n<!-- agentchute-enrollment v12 end -->\n"
 	mustWrite(t, filepath.Join(root, "CLAUDE.md"), []byte(future))
 
 	plan, err := computeInitPlan(root, "agentchute", false)

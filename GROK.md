@@ -1,25 +1,31 @@
 # GROK.md
 
-<!-- agentchute-enrollment v10 begin -->
+<!-- agentchute-enrollment v11 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 Canonical enrollment spec: [`AGENTS.md`](AGENTS.md). This file is a thin pointer.
 
-**This agent**: `agent_id=grok`, `vendor=xai`.
+**Default wrapper identity**: base `agent_id=grok`, `vendor=xai`. When `--as` and `AGENTCHUTE_AGENT_ID` are omitted, the CLI derives a project-scoped id like `grok-<folder>` and adds `-2`, `-3`, etc. if another live lane already owns that id.
+
+For a custom stable lane name, set the session identity first:
+
+```sh
+export AGENTCHUTE_AGENT_ID="<roster-id>"
+```
 
 **Setup** (grok-specific; `agentchute setup` does not yet support grok wrappers, so boot by hand):
 
 ```sh
-agentchute boot --as grok --vendor xai
-agentchute poller ensure --as grok --vendor xai
+agentchute boot --vendor xai
+agentchute poller ensure --vendor xai
 ```
 
 **Wake events** arrive as `[agentchute:tmux] check inbox` or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox`.
 
-**STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --as grok`) or obligations are deferred (`agentchute defer --as grok`).
+**STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --vendor xai`) or obligations are deferred (`agentchute defer --vendor xai --message <message-id> --reason "..."`).
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v10 end -->
+<!-- agentchute-enrollment v11 end -->
 
 ---
 

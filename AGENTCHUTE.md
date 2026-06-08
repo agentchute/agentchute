@@ -1,6 +1,6 @@
 # AGENTCHUTE.md
 
-*Open spec for inbox-based agent coordination. Protocol working draft v1; reference CLI v0.1.*
+*Open spec for inbox-based agent coordination. Protocol working draft v1; reference CLI implementation.*
 
 ---
 
@@ -19,9 +19,9 @@ The protocol is a small set of implementation-agnostic primitives. Conforming im
 - **Optional wake.** Senders MAY signal the recipient via a pluggable wake adapter. Wake is a latency hint; recipient-side polling is the correctness mechanism (§8.2). **The wake mechanism is implementation-specific.**
 - **Self-registration.** Each agent publishes a record naming itself, its wake method/target (if any), and operational metadata.
 
-### Reference implementation (v0.1)
+### Reference implementation
 
-The v0.1 reference CLI maps these primitives onto local filesystem choices:
+The reference CLI maps these primitives onto local filesystem choices:
 - **Inbox medium**: `.md` files under a vendor loop directory (`.<vendor>/loop/inbox/`).
 - **Transport**: atomic create-temp + rename.
 - **Wake**: `tmux send-keys` injection of `[agentchute:tmux] check inbox` (peer-to-peer) or `agentchute-run` (PTY runner injection).
@@ -63,12 +63,12 @@ The vendor prefix (e.g., `.agentchute/`, `.examplecorp/`) anchors the namespace 
 
 ## 4. Discovery (filesystem reference implementation)
 
-The v0.1 reference CLI resolves two distinct paths:
+The reference CLI resolves two distinct paths:
 
 ### 4.1 Control repo cascade
 1. **`--control-repo <path>` flag.**
 2. **`AGENTCHUTE_CONTROL_REPO` env var.**
-3. **`.agentchute-control-repo` pointer file.** Walk from cwd up to root. Nearer pointer wins.
+3. **`.agentchute-control-repo` pointer file.** Walk from cwd up to root. Nearer pointer wins. This is the reference mechanism for worktree or sibling-folder participants that share one central control repo.
 4. **Cwd walk.** Walk up to root looking for `AGENTCHUTE.md` + a loop directory.
 
 ### 4.2 Loop dir cascade
@@ -225,7 +225,7 @@ Implementations namespace state under a vendor-owned identifier (e.g., `.agentch
 
 ## Appendix B. Reference implementation hook templates
 
-See `README.md` or `docs/hooks.md` for current Claude Code, Codex, and Gemini CLI hook templates.
+See `README.md` or `examples/hooks/` for current Claude Code, Codex, and Gemini CLI hook templates.
 
 ## Appendix C. Hand-protocol walkthrough
 

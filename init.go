@@ -30,7 +30,7 @@ var enrollmentMarkerRE = regexp.MustCompile(`<!-- agentchute-enrollment v(\d+) (
 var embeddedSpecContent string
 
 const (
-	enrollmentVersion       = 10
+	enrollmentVersion       = 11
 	gitignoreVersion        = 2
 	gitignoreBeginV1        = "# agentchute-gitignore v2 begin"
 	gitignoreEndV1          = "# agentchute-gitignore v2 end"
@@ -39,7 +39,7 @@ const (
 )
 
 // enrollmentWrapperTemplate is rendered into CLAUDE.md / CODEX.md / GEMINI.md
-// with concrete --as / --vendor values inlined per wrapper. Single source of
+// with concrete default identity / vendor values inlined per wrapper. Single source of
 // truth: templates/enrollment/wrapper.md at repo root (so the dev repo's
 // wrapper files and the embedded init payload stay in sync; CI lint catches
 // drift).

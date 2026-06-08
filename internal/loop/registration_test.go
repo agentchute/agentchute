@@ -90,6 +90,31 @@ func TestWriteRegistrationRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteRegistrationExclusiveRefusesExisting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codex.md")
+	reg := &Registration{
+		AgentID:     "codex",
+		Vendor:      "openai",
+		ControlRepo: "/tmp/repo",
+		LastSeen:    time.Now().UTC(),
+		Status:      StatusActive,
+	}
+	if err := WriteRegistrationExclusive(path, reg); err != nil {
+		t.Fatal(err)
+	}
+	reg.Host = "other"
+	if err := WriteRegistrationExclusive(path, reg); !os.IsExist(err) {
+		t.Fatalf("second exclusive write err = %v, want os.IsExist", err)
+	}
+	got, err := ReadRegistration(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Host != "" {
+		t.Fatalf("exclusive collision overwrote registration: %#v", got)
+	}
+}
+
 func TestUpdateLastSeenPreservesBody(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "codex.md")
 	mustWrite(t, path, []byte(`---

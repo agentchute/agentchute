@@ -1,13 +1,19 @@
 # GEMINI.md
 
-<!-- agentchute-enrollment v10 begin -->
+<!-- agentchute-enrollment v11 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 Canonical enrollment spec: [`AGENTS.md`](AGENTS.md). This file is a thin pointer.
 
-**This agent**: `agent_id=gemini-cli`, `vendor=google`.
+**Default wrapper identity**: base `agent_id=gemini-cli`, `vendor=google`. When `--as` and `AGENTCHUTE_AGENT_ID` are omitted, the CLI derives a project-scoped id like `gemini-cli-<folder>` and adds `-2`, `-3`, etc. if another live lane already owns that id.
 
-> **Several agents of this vendor on one bus?** `gemini-cli` is the single-wrapper default — don't let multiple panes share it. Give each process its own roster id via `--as <roster-id>`, or set `AGENTCHUTE_AGENT_ID` in its environment (the CLI reads it when `--as` is omitted). A shared id routes every lane to one inbox and defeats the finish-gate.
+> **Several agents of this vendor on one bus?** Let the contextual default allocate separate ids per project/worktree, or give each process its own stable roster id via `--as <roster-id>` / `AGENTCHUTE_AGENT_ID=<roster-id>`. A shared id routes every lane to one inbox and defeats the finish-gate.
+
+For a custom stable lane name, set the session identity first:
+
+```sh
+export AGENTCHUTE_AGENT_ID="<roster-id>"
+```
 
 **Setup** (one command per control repo):
 
@@ -22,14 +28,14 @@ Use `--wake tmux` if peers live in tmux panes, `--wake both` for mixed pools.
 **If hooks don't fire** (rare; indicates a setup gap):
 
 ```sh
-agentchute boot --as gemini-cli --vendor google
-agentchute poller ensure --as gemini-cli --vendor google
+agentchute boot --vendor google
+agentchute poller ensure --vendor google
 ```
 
-**STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --as gemini-cli`) or obligations are deferred (`agentchute defer --as gemini-cli`).
+**STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --vendor google`) or obligations are deferred (`agentchute defer --vendor google --message <message-id> --reason "..."`).
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v10 end -->
+<!-- agentchute-enrollment v11 end -->
 
 ---
 
@@ -41,6 +47,11 @@ Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
 ## Working Rules Overrides
 
 - None. Follow **AGENTS.md** strictly.
+
+## Coordination & Identity
+
+- **Identity Resolution**: Identity resolves via explicit `--as`, then `AGENTCHUTE_AGENT_ID`, then an existing tmux-pane registration, then a contextual `<wrapper>-<folder>` default when `--vendor` is provided. Use `AGENTCHUTE_AGENT_ID` only for custom stable lane names.
+- **4-Way Verification**: High-consequence changes (e.g. protocol fixes, namespace migrations) require a "4-way verify" loop across the primary fleet lanes: `claude-code` (implementation), `codex` (shell/wire safety), `gemini-cli` (UX/Docs), and `grok` (manual/no-hooks flow). Do not merge until all four lanes are green.
 
 > Self-description (interests, working style, etc.) belongs in this agent's
 > registration body — `agentchute register --bio "..."` — not in the wrapper

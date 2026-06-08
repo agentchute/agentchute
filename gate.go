@@ -49,9 +49,10 @@ func cmdGate(args []string) error {
 	fs := flag.NewFlagSet("gate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, before, controlRepo, loopDir, codexHook, geminiHook string
+	var agentID, vendor, before, controlRepo, loopDir, codexHook, geminiHook string
 	var jsonOut, requireConfirm, ackStaleReg bool
 	fs.StringVar(&agentID, "as", "", "agent id (or $AGENTCHUTE_AGENT_ID)")
+	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
 	fs.StringVar(&before, "before", "", "lifecycle phase: consensus|commit|release|finish|continue")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or $AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or $AGENTCHUTE_LOOP_DIR)")
@@ -68,22 +69,6 @@ func cmdGate(args []string) error {
 		return gateUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID == "" {
-		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(agentID); err != nil {
-		return err
-	}
-
-	phase := strings.TrimSpace(before)
-	if phase == "" {
-		return gateUsage(fmt.Errorf("--before <phase> is required"))
-	}
-	if !isValidGatePhase(phase) {
-		return gateUsage(fmt.Errorf("unknown phase %q (valid: consensus|commit|release|finish|continue)", phase))
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -97,6 +82,22 @@ func cmdGate(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	if err != nil {
+		return err
+	}
+	if err := loop.ValidateAgentID(agentID); err != nil {
+		return err
+	}
+
+	phase := strings.TrimSpace(before)
+	if phase == "" {
+		return gateUsage(fmt.Errorf("--before <phase> is required"))
+	}
+	if !isValidGatePhase(phase) {
+		return gateUsage(fmt.Errorf("unknown phase %q (valid: consensus|commit|release|finish|continue)", phase))
 	}
 
 	now := time.Now().UTC()
@@ -412,7 +413,7 @@ func gateHelpErr() error {
 
 func gateHelp() string {
 	return strings.TrimSpace(`
-Usage: agentchute gate --as <id> --before <phase> [flags]
+Usage: agentchute gate [--vendor <vendor>] [--as <id>] --before <phase> [flags]
 
 Lifecycle gate. Reports whether the agent is clear to proceed past the
 named phase. Read-only: never refreshes registration, never archives,
@@ -436,8 +437,9 @@ Exit codes:
   1  command failure (binary error, filesystem error, etc.)
 
 Flags:
-  --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
   --before <phase>      consensus|commit|release|finish|continue (required)
+  --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
+  --vendor <vendor>     vendor or origin (anthropic, openai, google, xai)
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --json                structured JSON output

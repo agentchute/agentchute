@@ -37,6 +37,8 @@ type registerOpts struct {
 	Bio             string
 	WorkingRepos    []string
 
+	ContextualIdentity bool
+	ContextualBaseID   string
 	HostProvided       bool
 	WakeMethodProvided bool
 	WakeTargetProvided bool
@@ -87,6 +89,21 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		}
 	}
 
+	result, err := performRegisterOnce(cfg, opts, host, now)
+	if err == nil {
+		return result, nil
+	}
+	for attempts := 0; opts.ContextualIdentity && os.IsExist(err) && attempts < 100; attempts++ {
+		opts.AgentID = nextContextualAgentIDByFilesystem(cfg, opts.ContextualBaseID, opts.AgentID)
+		result, err = performRegisterOnce(cfg, opts, host, now)
+		if err == nil {
+			return result, nil
+		}
+	}
+	return nil, err
+}
+
+func performRegisterOnce(cfg *loop.Config, opts registerOpts, host string, now time.Time) (*registerResult, error) {
 	regPath := cfg.AgentRegistrationPath(opts.AgentID)
 	existing, err := loop.ReadRegistration(regPath)
 	existingFound := false
@@ -128,7 +145,14 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		reg.Body = opts.Bio
 	}
 
-	if err := loop.WriteRegistration(regPath, reg); err != nil {
+	if !existingFound && opts.ContextualIdentity {
+		if err := loop.WriteRegistrationExclusive(regPath, reg); err != nil {
+			if os.IsExist(err) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("write registration: %w", err)
+		}
+	} else if err := loop.WriteRegistration(regPath, reg); err != nil {
 		return nil, fmt.Errorf("write registration: %w", err)
 	}
 
@@ -156,6 +180,24 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		PeerWakeStale:      peerWakeStale,
 		Warnings:           warnings,
 	}, nil
+}
+
+func nextContextualAgentIDByFilesystem(cfg *loop.Config, baseID, current string) string {
+	if strings.TrimSpace(baseID) == "" {
+		baseID = current
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", baseID, i)
+		if candidate == current {
+			continue
+		}
+		if _, err := os.Stat(cfg.AgentRegistrationPath(candidate)); os.IsNotExist(err) {
+			return candidate
+		}
+		if i > 100 {
+			return candidate
+		}
+	}
 }
 
 func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) (string, string, []string) {
@@ -245,13 +287,6 @@ func cmdRegister(args []string) error {
 		return registerUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID == "" {
-		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	opts.AgentID = agentID
-	opts.Vendor = strings.TrimSpace(vendor)
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -266,6 +301,19 @@ func cmdRegister(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	contextualBase, contextual, err := contextualIdentityBase(agentID, vendor)
+	if err != nil {
+		return err
+	}
+	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	if err != nil {
+		return err
+	}
+	opts.AgentID = agentID
+	opts.Vendor = resolveAgentVendor(vendor, agentID, cfg)
+	opts.ContextualIdentity = contextual
+	opts.ContextualBaseID = contextualBase
 
 	now := time.Now().UTC()
 	result, err := performRegister(cfg, opts, now)

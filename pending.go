@@ -24,10 +24,12 @@ func cmdPending(args []string) error {
 	fs := flag.NewFlagSet("pending", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, controlRepo, loopDir, codexHook, claudeHook, staleAfter string
+	var agentID, vendor, controlRepo, loopDir, staleAfter, codexHook, claudeHook string
 	var jsonOut, failIfAny, showBody bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
-	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
+	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
+	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or $AGENTCHUTE_CONTROL_REPO)")
+
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
 	fs.BoolVar(&failIfAny, "fail-if-any", false, "exit 2 if any unread messages")
@@ -43,23 +45,6 @@ func cmdPending(args []string) error {
 		return pendingUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID == "" {
-		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(agentID); err != nil {
-		return err
-	}
-
-	var staleThreshold time.Duration
-	if staleAfter != "" {
-		d, err := time.ParseDuration(staleAfter)
-		if err != nil {
-			return fmt.Errorf("invalid --stale-after: %w", err)
-		}
-		staleThreshold = d
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -72,6 +57,14 @@ func cmdPending(args []string) error {
 		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
 	})
 	if err != nil {
+		return err
+	}
+
+	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	if err != nil {
+		return err
+	}
+	if err := loop.ValidateAgentID(agentID); err != nil {
 		return err
 	}
 
@@ -111,6 +104,15 @@ func cmdPending(args []string) error {
 		return fmt.Errorf("load pending-reply ledger: %w", err)
 	}
 	pendingReplies := ledger.PendingEntries()
+
+	var staleThreshold time.Duration
+	if staleAfter != "" {
+		d, err := time.ParseDuration(staleAfter)
+		if err != nil {
+			return fmt.Errorf("invalid --stale-after: %w", err)
+		}
+		staleThreshold = d
+	}
 
 	now := time.Now().UTC()
 	entries := make([]pendingEntry, 0, len(msgs))
@@ -368,7 +370,7 @@ func pendingHelpErr() error {
 
 func pendingHelp() string {
 	return strings.TrimSpace(`
-Usage: agentchute pending --as <id> [flags]
+Usage: agentchute pending [--vendor <vendor>] [--as <id>] [flags]
 
 List unread inbox messages without archiving, quarantining, or poking peers.
 Strictly side-effect-free; safe to invoke from lifecycle hooks. Distinct from
@@ -376,7 +378,9 @@ Strictly side-effect-free; safe to invoke from lifecycle hooks. Distinct from
 
 Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
-  --control-repo <path> control repo path (or $AGENTCHUTE_CONTROL_REPO)
+  --vendor <vendor>     vendor or origin (anthropic, openai, google, xai)
+  --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
+
   --loop-dir <path>     loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --json                structured JSON output
   --fail-if-any         exit 2 if any unread messages

@@ -6,17 +6,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as \"${AGENTCHUTE_AGENT_ID:-codex}\" --vendor openai --quiet",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor openai --quiet",
             "statusMessage": "agentchute: self-check"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as \"${AGENTCHUTE_AGENT_ID:-codex}\" --vendor openai --quiet",
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor openai --quiet",
             "statusMessage": "agentchute: poller"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} boot --as \"${AGENTCHUTE_AGENT_ID:-codex}\" --vendor openai --codex-hook SessionStart",
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --vendor openai --codex-hook SessionStart",
             "statusMessage": "agentchute: boot"
           }
         ]
@@ -27,17 +27,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as \"${AGENTCHUTE_AGENT_ID:-codex}\" --vendor openai --quiet",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor openai --quiet",
             "statusMessage": "agentchute: self-check"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as \"${AGENTCHUTE_AGENT_ID:-codex}\" --vendor openai --quiet",
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor openai --quiet",
             "statusMessage": "agentchute: poller"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} pending --as \"${AGENTCHUTE_AGENT_ID:-codex}\" --codex-hook UserPromptSubmit",
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --vendor openai --codex-hook UserPromptSubmit",
             "statusMessage": "agentchute: pending inbox"
           }
         ]
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} gate --as \"${AGENTCHUTE_AGENT_ID:-codex}\" --before finish --codex-hook Stop",
+            "command": "${AGENTCHUTE_BIN:-agentchute} gate --vendor openai --before finish --codex-hook Stop",
             "timeout": 30,
             "statusMessage": "agentchute: finish gate"
           }

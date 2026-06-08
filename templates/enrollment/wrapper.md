@@ -1,11 +1,17 @@
-<!-- agentchute-enrollment v10 begin -->
+<!-- agentchute-enrollment v11 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 Canonical enrollment spec: [`AGENTS.md`](AGENTS.md). This file is a thin pointer.
 
-**This agent**: `agent_id={{AS}}`, `vendor={{VENDOR}}`.
+**Default wrapper identity**: base `agent_id={{AS}}`, `vendor={{VENDOR}}`. When `--as` and `AGENTCHUTE_AGENT_ID` are omitted, the CLI derives a project-scoped id like `{{AS}}-<folder>` and adds `-2`, `-3`, etc. if another live lane already owns that id.
 
-> **Several agents of this vendor on one bus?** `{{AS}}` is the single-wrapper default — don't let multiple panes share it. Give each process its own roster id via `--as <roster-id>`, or set `AGENTCHUTE_AGENT_ID` in its environment (the CLI reads it when `--as` is omitted). A shared id routes every lane to one inbox and defeats the finish-gate.
+> **Several agents of this vendor on one bus?** Let the contextual default allocate separate ids per project/worktree, or give each process its own stable roster id via `--as <roster-id>` / `AGENTCHUTE_AGENT_ID=<roster-id>`. A shared id routes every lane to one inbox and defeats the finish-gate.
+
+For a custom stable lane name, set the session identity first:
+
+```sh
+export AGENTCHUTE_AGENT_ID="<roster-id>"
+```
 
 **Setup** (one command per control repo):
 
@@ -20,11 +26,11 @@ Use `--wake tmux` if peers live in tmux panes, `--wake both` for mixed pools.
 **If hooks don't fire** (rare; indicates a setup gap):
 
 ```sh
-agentchute boot --as {{AS}} --vendor {{VENDOR}}
-agentchute poller ensure --as {{AS}} --vendor {{VENDOR}}
+agentchute boot --vendor {{VENDOR}}
+agentchute poller ensure --vendor {{VENDOR}}
 ```
 
-**STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --as {{AS}}`) or obligations are deferred (`agentchute defer --as {{AS}}`).
+**STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --vendor {{VENDOR}}`) or obligations are deferred (`agentchute defer --vendor {{VENDOR}} --message <message-id> --reason "..."`).
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v10 end -->
+<!-- agentchute-enrollment v11 end -->

@@ -91,13 +91,13 @@ wake_method: tmux
 wake_target: "L=admin;target=mysession:0.0"
 ```
 
-The reference CLI does NOT parse this richer form in v0.1. Community-extended tmux adapters MAY.
+The reference CLI does NOT parse this richer form. Community-extended tmux adapters MAY.
 
 ### Cross-machine pools
 
 When the shared filesystem spans multiple machines (NFS, SSHFS, etc.), agentchute's message delivery semantics still hold. Wake delivery becomes machine-local: a `tmux send-keys` from Machine A cannot reach Machine B's tmux server. Each machine in such a pool must supply its own wake mechanism — a local watchdog, peer cooperation among same-host agents, or recipient self-polling.
 
-This is **in scope for v0.1**, not an extension. The §10.5 cooperative waking algorithm skips cross-host peers proactively when the peer's registration declares a `host` that differs from the local host.
+This is **in scope for the reference protocol**, not an extension. The §10.5 cooperative waking algorithm skips cross-host peers proactively when the peer's registration declares a `host` that differs from the local host.
 
 Caveat: not every distributed filesystem preserves `rename(2)` atomicity across clients. NFSv3 in particular has well-known rename races. agentchute's correctness depends on the underlying filesystem honoring atomic create/rename — deploy on a substrate that does.
 
@@ -105,7 +105,7 @@ Caveat: not every distributed filesystem preserves `rename(2)` atomicity across 
 
 A single physical agent process MAY participate in multiple agentchute pools simultaneously. This is the pattern for agents that have resource access, credentials, or knowledge other peers don't have, and that act as a firewall / proxy / router *in the application-policy sense* — protocol-level routing remains a v2 deferred item (§13).
 
-The protocol already supports this pattern via existing primitives (pool-scoped identity per §7.5; per-pool registrations). v0.1 adds no new fields, commands, or config. The v0.1 reference CLI exposes pool selection via the `--control-repo` flag, the `AGENTCHUTE_CONTROL_REPO` env var, and the `.agentchute-control-repo` pointer file (see §4.1).
+The protocol already supports this pattern via existing primitives (pool-scoped identity per §7.5; per-pool registrations). It needs no new fields, commands, or config. The reference CLI exposes pool selection via the `--control-repo` flag, the `AGENTCHUTE_CONTROL_REPO` env var, and the `.agentchute-control-repo` pointer file (see §4.1).
 
 **Identity in multiple pools.** Because identity is pool-scoped (§7.5), the same physical process can be `review-gateway` in a low-trust pool and `release-assistant` in a high-trust pool. Per-pool aliases are RECOMMENDED for bridge roles — they model the different trust contexts honestly and let the bridge apply different policies per role. Same `agent_id` across pools is allowed, but MUST NOT be assumed to imply the same physical process. The bridge agent maintains its own internal alias-to-process mapping.
 
@@ -125,7 +125,7 @@ The protocol already supports this pattern via existing primitives (pool-scoped 
 
 When agents live in different folders that belong to one logical project (e.g., separate repos sharing a parent dir), each non-control folder MAY drop a tracked `.agentchute-control-repo` pointer file at its root. The file contains one non-comment path line pointing at the project's canonical control repo. The reference CLI discovers it on cwd-ancestor walk and resolves it during normal startup (see AGENTCHUTE.md §4.1 step 3 — the control-repo cascade). Sibling-repo pointers like `../coordination` are the primary case.
 
-This is **in scope for v0.1**, not an extension. The pointer file parser, ancestor walk, sibling-repo escape, and origin-tracking display (`agentchute status` shows `(via pointer:<path>)`) all ship with the reference CLI today. The `agentchute prepare-pool --target <folder>` command scaffolds the pointer file plus ENROLLMENT-rendered wrapper files in one or more sibling folders in a single atomic pass.
+This is **in scope for the reference CLI**, not an extension. The pointer file parser, ancestor walk, sibling-repo escape, and origin-tracking display (`agentchute status` shows `(via pointer:<path>)`) all ship today. The `agentchute prepare-pool --target <folder>` command scaffolds the pointer file plus ENROLLMENT-rendered wrapper files in one or more sibling folders in a single atomic pass.
 
 Caveat for portability: tracked pointer files SHOULD use relative paths so they survive across clones and machines with different mount points. Absolute paths are accepted but break the moment the project is cloned elsewhere.
 

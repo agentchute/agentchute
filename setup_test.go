@@ -89,6 +89,42 @@ func TestSetupTmuxDoesNotInstallShims(t *testing.T) {
 	}
 }
 
+func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	stale := "<!-- agentchute-enrollment v10 begin -->\nstale identity instructions\n<!-- agentchute-enrollment v10 end -->\n\nLocal notes.\n"
+	mustWrite(t, filepath.Join(root, "CODEX.md"), []byte(stale))
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "tmux", "--wrappers", "none", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	got, err := os.ReadFile(filepath.Join(root, "CODEX.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "stale identity instructions") {
+		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
+	}
+	if !strings.Contains(text, "agentchute-enrollment v11 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v11 env identity guidance:\n%s", text)
+	}
+	if !strings.Contains(text, "Local notes.") {
+		t.Fatalf("setup lost non-enrollment content:\n%s", text)
+	}
+}
+
 func TestSetupModeSwitchToTmuxRemovesPriorSetupShimsAndProfileBlock(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))

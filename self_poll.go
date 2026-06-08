@@ -46,11 +46,12 @@ func cmdSelfPoll(args []string) error {
 	fs := flag.NewFlagSet("self-poll", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, controlRepo, loopDir, heartbeatMethod string
+	var agentID, vendor, controlRepo, loopDir, heartbeatMethod string
 	var heartbeat bool
 	var heartbeatInterval int
 	var jsonOut, promptText bool
 	fs.StringVar(&agentID, "as", "", "agent id (or $AGENTCHUTE_AGENT_ID)")
+	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or $AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or $AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output for schedulers")
@@ -69,14 +70,6 @@ func cmdSelfPoll(args []string) error {
 		return selfPollUsage(fmt.Errorf("--json and --prompt-text are mutually exclusive"))
 	}
 
-	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID == "" {
-		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(agentID); err != nil {
-		return err
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -89,6 +82,13 @@ func cmdSelfPoll(args []string) error {
 		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
 	})
 	if err != nil {
+		return err
+	}
+	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	if err != nil {
+		return err
+	}
+	if err := loop.ValidateAgentID(agentID); err != nil {
 		return err
 	}
 
@@ -390,7 +390,7 @@ func selfPollHelpErr() error {
 
 func selfPollHelp() string {
 	return strings.TrimSpace(`
-Usage: agentchute self-poll --as <id> [--json | --prompt-text] [--heartbeat]
+Usage: agentchute self-poll [--vendor <vendor>] [--as <id>] [--json | --prompt-text] [--heartbeat]
 
 'Should I wake the wrapper?' helper. Reads the inbox and pending-reply
 ledger; emits a structured verdict and a recommended model-facing prompt.
@@ -404,6 +404,7 @@ Exit codes (like pending --fail-if-any):
 
 Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
+  --vendor <vendor>     vendor or origin (anthropic, openai, google, xai)
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --json                structured JSON for schedulers (includes

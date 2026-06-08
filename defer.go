@@ -37,8 +37,9 @@ func cmdDefer(args []string) error {
 	fs := flag.NewFlagSet("defer", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, messageID, reason, until, controlRepo, loopDir string
+	var agentID, vendor, messageID, reason, until, controlRepo, loopDir string
 	fs.StringVar(&agentID, "as", "", "agent id (or $AGENTCHUTE_AGENT_ID)")
+	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
 	fs.StringVar(&messageID, "message", "", "message_id of the obligation to defer (required)")
 	fs.StringVar(&reason, "reason", "", "human-readable reason for the deferral (required)")
 	fs.StringVar(&until, "until", "", "optional duration (e.g. 24h) or absolute RFC3339 timestamp for the unblock")
@@ -52,13 +53,6 @@ func cmdDefer(args []string) error {
 		return deferUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID == "" {
-		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(agentID); err != nil {
-		return err
-	}
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
 		return deferUsage(fmt.Errorf("--message <id> is required"))
@@ -88,6 +82,13 @@ func cmdDefer(args []string) error {
 		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
 	})
 	if err != nil {
+		return err
+	}
+	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	if err != nil {
+		return err
+	}
+	if err := loop.ValidateAgentID(agentID); err != nil {
 		return err
 	}
 
@@ -217,7 +218,7 @@ func deferHelpErr() error {
 
 func deferHelp() string {
 	return strings.TrimSpace(`
-Usage: agentchute defer --as <id> --message <message-id> --reason "..." [--until <duration-or-timestamp>]
+Usage: agentchute defer [--vendor <vendor>] [--as <id>] --message <message-id> --reason "..." [--until <duration-or-timestamp>]
 
 Defer a pending-reply obligation. Updates the recipient's pending-reply
 ledger entry to status=deferred (which no longer blocks gate --before
@@ -225,6 +226,7 @@ finish) and sends an automatic acknowledgment to the original sender.
 
 Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
+  --vendor <vendor>     vendor or origin for contextual identity defaults
   --message <id>        message_id of the obligation to defer (required)
   --reason "..."        human-readable reason for the deferral (required)
   --until <when>        optional Go duration (e.g. 24h, 90m) or RFC3339 timestamp

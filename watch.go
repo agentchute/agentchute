@@ -40,10 +40,11 @@ func cmdWatch(args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, controlRepo, loopDir, execCmd string
+	var agentID, vendor, controlRepo, loopDir, execCmd string
 	var notify, printOnly bool
 	var interval time.Duration
 	fs.StringVar(&agentID, "as", "", "agent id to watch (or $AGENTCHUTE_AGENT_ID)")
+	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or $AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or $AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&notify, "notify", false, "fire an OS notification on each new message (osascript on macOS, notify-send on Linux)")
@@ -56,14 +57,6 @@ func cmdWatch(args []string) error {
 	}
 	if fs.NArg() != 0 {
 		return watchUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
-	}
-
-	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID == "" {
-		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(agentID); err != nil {
-		return err
 	}
 
 	if !notify && !printOnly && execCmd == "" {
@@ -85,6 +78,13 @@ func cmdWatch(args []string) error {
 		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
 	})
 	if err != nil {
+		return err
+	}
+	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	if err != nil {
+		return err
+	}
+	if err := loop.ValidateAgentID(agentID); err != nil {
 		return err
 	}
 
@@ -328,7 +328,7 @@ func watchHelpErr() error {
 
 func watchHelp() string {
 	return strings.TrimSpace(`
-Usage: agentchute watch --as <id> [--notify] [--print] [--exec <cmd>] [--interval <dur>]
+Usage: agentchute watch [--vendor <vendor>] [--as <id>] [--notify] [--print] [--exec <cmd>] [--interval <dur>]
 
 Recipient-side persistent watcher. Polls the agent's inbox at --interval
 (default 10s) and fires configured actions on each NEW message. Non-
@@ -340,6 +340,7 @@ launch.
 
 Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
+  --vendor <vendor>     vendor or origin (anthropic, openai, google, xai)
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --notify              OS notification per new message (osascript / notify-send)

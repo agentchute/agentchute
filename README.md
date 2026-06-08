@@ -58,7 +58,7 @@ For automation, choose the wake path explicitly:
 agentchute setup --wake runner --wrappers all --yes
 ```
 
-Use `--wake tmux` if tmux panes are your primary wake path, or `--wake both` if you want both tmux hooks and runner shims. Setup is idempotent: same-content re-runs report `already current`, and changed setup choices reconcile old setup-managed hooks, shims, and PATH blocks.
+Use `--wake tmux` if tmux panes are your primary wake path, or `--wake both` if you want both tmux hooks and runner shims. Setup is idempotent: same-content re-runs report `already current`, and changed setup choices reconcile old setup-managed hooks, shims, PATH blocks, and ENROLLMENT blocks in `AGENTS.md` / wrapper `.md` files. After upgrading agentchute, re-run `agentchute setup --yes` or `agentchute init --yes` in each control repo to refresh those marked blocks.
 
 Restart the wrapper. From then on:
 
@@ -131,30 +131,32 @@ Delivery is no-overwrite by contract: a sender never replaces an existing messag
 | Command | Purpose |
 |---|---|
 | `init` | Scaffold loop dirs + drop ENROLLMENT block into wrapper files |
-| `boot --as <id> --vendor <v>` | Session-start: register + peek inbox + pending-reply summary |
-| `run --as <id> --vendor <v> -- <wrapper>` | Launch a wrapper under the PTY runner with registration, polling, and wake socket |
+| `boot --vendor <v> [--as <id>]` | Session-start: register + peek inbox + pending-reply summary |
+| `run --vendor <v> [--as <id>] -- <wrapper>` | Launch a wrapper under the PTY runner with registration, polling, and wake socket |
 | `setup [--wake tmux|runner|both]` | One-command control-repo setup: init + hooks + selected runner shims |
 | `shims install [--force]` | Install launcher shims so normal wrapper commands route through `agentchute run` inside pools |
-| `send --from <a> --to <b> [--ask] [--reply-to <id>]` | Write to recipient's inbox + wake poke + (optionally) clear ledger |
-| `check --as <id>` | Read + archive inbox; record reply obligations; cooperative-wake peers |
-| `pending --as <id>` | Side-effect-free peek (inbox + ledger). Hook-safe. |
-| `self-check --as <id> --vendor <v>` | Hook-safe heartbeat: refresh registration/`last_seen`, reconcile wake target, prune stale same-host tmux peers |
-| `poller ensure --as <id> --vendor <v>` | Start/verify recipient polling when no tmux wake target is available |
+| `send --to <b> [--from <a>] [--ask] [--reply-to <id>]` | Write to recipient's inbox + wake poke + (optionally) clear ledger |
+| `check [--vendor <v>] [--as <id>]` | Read + archive inbox; record reply obligations; cooperative-wake peers |
+| `pending [--vendor <v>] [--as <id>]` | Side-effect-free peek (inbox + ledger). Hook-safe. |
+| `self-check --vendor <v> [--as <id>]` | Hook-safe heartbeat: refresh registration/`last_seen`, reconcile wake target, prune stale same-host tmux peers |
+| `poller ensure --vendor <v> [--as <id>]` | Start/verify recipient polling when no tmux wake target is available |
 | `poller status --as <id>` | Verify fresh `state/<id>/poller.json` heartbeat |
-| `gate --as <id> --before <phase>` | Block declaring done if inbox/ledger has outstanding work or liveness is unproven |
-| `defer --message <id> --reason "..."` | Explicit defer; auto-acks the sender |
-| `register --as <id> --vendor <v>` | Write/refresh registration and prune stale same-host tmux peers (boot supersedes for most uses) |
+| `gate --before <phase> [--vendor <v>] [--as <id>]` | Block declaring done if inbox/ledger has outstanding work or liveness is unproven |
+| `defer --message <id> --reason "..." [--vendor <v>] [--as <id>]` | Explicit defer; auto-acks the sender |
+| `register --vendor <v> [--as <id>]` | Write/refresh registration and prune stale same-host tmux peers (boot supersedes for most uses) |
 | `status [--as <id>]` | Pool overview: inbox depths, `last_seen`, wake targets |
 | `doctor [--as <id>] [--json]` | Diagnostic aggregator: scaffold, binary, hook content, registration, inbox/ledger, wake target. Exit nonzero on BLOCKER. |
-| `watch --as <id> [--notify] [--print] [--exec <cmd>]` | Recipient-side non-consuming watcher for new mail; useful outside tmux |
+| `watch [--vendor <v>] [--as <id>] [--notify] [--print] [--exec <cmd>]` | Recipient-side non-consuming watcher for new mail; useful outside tmux |
 | `watchdog --as <id>` | Optional liveness sidecar; pokes peers with stale inboxes |
 | `prepare-pool --target <dir>` | Connect sibling folders via pointer files |
-| `self-poll --as <id> [--heartbeat]` | "Should I wake?" helper for schedulers; `--heartbeat` proves polling is alive |
+| `self-poll [--vendor <v>] [--as <id>] [--heartbeat]` | "Should I wake?" helper for schedulers; `--heartbeat` proves polling is alive |
 | `gate --before continue --gemini-hook AfterAgent` | In-session catchup decision JSON (v0.2) |
 | `doctor --generate-service <kind>` | Emit launchd / systemd / shell unit files for the preflighted scheduler (v0.2) |
 | `hooks install --wrapper <name>` | Write the canonical hook template into `.claude/` / `.codex/` / `.gemini/` (v0.2.1) |
 
 Run `agentchute <command> --help` for flags. All commands accept `--control-repo`, `--loop-dir`, and `--json` where applicable.
+
+Commands that act as the current agent accept explicit `--as <id>`, read `AGENTCHUTE_AGENT_ID`, reuse a live registration for the current tmux pane, or derive `<wrapper>-<folder>` when a vendor/wrapper is known. Set `AGENTCHUTE_AGENT_ID` only for a custom stable lane name.
 
 ## No binary required
 
@@ -162,22 +164,47 @@ The binary is convenience, not the protocol. A hand-protocol agent reads [`AGENT
 
 Hand-protocol agents and CLI agents share the same loop directory cleanly — mix and match in the same pool.
 
+## Project Boundaries
+
+By default, agents only communicate within their own project pool. A pool is defined by a discovered control repo and its `.agentchute/loop` directory.
+
+Unrelated projects on the same machine or tmux server are naturally isolated:
+1. **Discovery**: `agentchute` stays inside the current repo unless explicitly pointed elsewhere via `--control-repo`, `AGENTCHUTE_CONTROL_REPO`, or a `.agentchute-control-repo` pointer.
+2. **Contextual identity**: agents default to `<wrapper>-<folder-slug>`, so `codex` in project A and `codex` in project B get distinct inboxes such as `codex-proj-a` and `codex-proj-b`.
+
+Cross-project communication is possible but requires explicit setup (see Worktree Teams below).
+
+## Worktree Teams
+
+When each agent team works in its own Git worktree but should coordinate through one larger project pool, keep one central control repo with the loop and point each worktree back to it:
+
+```sh
+# Run once in the central control repo.
+agentchute setup --wake runner --wrappers all --yes
+
+# Run from the central control repo, once per participant worktree.
+agentchute prepare-pool --target ../project-codex --yes
+agentchute prepare-pool --target ../project-claude --yes
+```
+
+`prepare-pool` writes a `.agentchute-control-repo` pointer plus ENROLLMENT files into each worktree. Normal commands run from that worktree discover the central pool through the pointer, so all prepared worktrees share one inbox medium. **Identity is contextual**: agents in worktrees derive IDs from the worktree folder name, such as `codex-agentchute-feat1`, unless `AGENTCHUTE_AGENT_ID` or `--as` supplies a custom lane name.
+
 ## Running without tmux
 
 At the protocol boundary, senders write to your inbox and you are responsible for reading it. The reference CLI's no-tmux discovery mechanism is **recipient-side polling**. Wake pokes are optional optimizations. For non-tmux agents, `doctor` and `gate` require either a reachable wake target (`tmux` or `agentchute-run`) or a fresh `state/<agent>/poller.json` heartbeat.
 
 Recommended polling tiers:
 
-1. **Runner / launcher shims**: `agentchute run --as <id> --vendor <v> -- <wrapper>` launches the wrapper under a PTY, registers `wake_method: agentchute-run`, keeps `last_seen` fresh, polls the inbox, and injects `[agentchute:run] check inbox` when work arrives. `agentchute setup --wake runner` makes this the default for normal wrapper commands inside pools.
-2. **Hook-managed poller fallback**: The canonical hooks run `agentchute poller ensure --as <id> --vendor <v>`. In tmux or under a reachable runner it no-ops; otherwise it starts/verifies `agentchute poller run`, which keeps `state/<id>/poller.json` fresh and launches the wrapper when `self-poll` finds work.
-3. **Native Loops**: If your wrapper supports recurring tasks, use them only if they update the poller heartbeat. Claude Code `/loop` or Codex App Automations should call `agentchute self-poll --as <id> --heartbeat`.
-4. **Preflighted Scheduler**: `agentchute doctor --generate-service` emits launchd/systemd/script schedulers that run `agentchute self-poll --as <id> --heartbeat` and only launch the wrapper when work exists.
+1. **Runner / launcher shims**: `agentchute run --vendor <v> -- <wrapper>` launches the wrapper under a PTY, registers `wake_method: agentchute-run`, keeps `last_seen` fresh, polls the inbox, and injects `[agentchute:run] check inbox` when work arrives. `agentchute setup --wake runner` makes this the default for normal wrapper commands inside pools.
+2. **Hook-managed poller fallback**: The canonical hooks run `agentchute poller ensure --vendor <v>`. In tmux or under a reachable runner it no-ops; otherwise it starts/verifies `agentchute poller run`, which keeps `state/<id>/poller.json` fresh and launches the wrapper when `self-poll` finds work.
+3. **Native Loops**: If your wrapper supports recurring tasks, use them only if they update the poller heartbeat. Claude Code `/loop` or Codex App Automations should call `agentchute self-poll --vendor <v> --heartbeat`.
+4. **Preflighted Scheduler**: `agentchute doctor --generate-service` emits launchd/systemd/script schedulers that run `agentchute self-poll --heartbeat` and only launch the wrapper when work exists.
 5. **In-Session Catchup**: Active sessions catch new mail at lifecycle boundaries via hooks (e.g., `gate --before continue`).
 
 For regular terminal sessions, use the non-consuming watcher:
 
 ```sh
-agentchute watch --as <id> --notify
+agentchute watch --vendor <v> --notify
 ```
 
 Schedule the wrapper, not bare `agentchute check`. `check` consumes mail; `self-poll --heartbeat`, `pending`, `boot`, `doctor`, and `watch` are the safe inspection surfaces.
@@ -205,22 +232,22 @@ MIT — see [`LICENSE`](LICENSE).
 
 ## Releases
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.3.2** — one-line install, launcher shims, bracketed wake prompts.
+See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.3.4** — setup/init migrate legacy `.rehumanlabs/loop`, generated hooks honor contextual identity, and the dogfood bus carried the release blog.
 
 ## Manual session (without hooks)
 
 If you're driving an agent by hand — no `setup`, no hooks — these are the per-turn equivalents the hooks normally call for you:
 
 ```sh
-agentchute boot --as claude-code --vendor anthropic
-agentchute poller ensure --as claude-code --vendor anthropic
+agentchute boot --vendor anthropic
+agentchute poller ensure --vendor anthropic
 ```
 
 If you're bypassing launcher shims but still want the no-tmux runner, launch the wrapper through `agentchute run`:
 
 ```sh
-agentchute run --as codex --vendor openai -- codex
-agentchute run --as gemini-cli --vendor google -- gemini
+agentchute run --vendor openai -- codex
+agentchute run --vendor google -- gemini
 ```
 
 ---

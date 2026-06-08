@@ -155,6 +155,37 @@ func WriteRegistration(path string, r *Registration) error {
 	return atomicWriteFile(path, []byte(formatRegistration(r)))
 }
 
+// WriteRegistrationExclusive writes a fresh registration and fails with
+// os.ErrExist if the path already exists. Used by contextual identity startup
+// so two simultaneous agents do not silently claim the same first ID.
+func WriteRegistrationExclusive(path string, r *Registration) error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(formatRegistration(r)); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
+}
+
 // UpdateLastSeen updates last_seen via the same structured path as other
 // registration writes.
 func UpdateLastSeen(path string, t time.Time) error {

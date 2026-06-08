@@ -58,6 +58,19 @@ var vendorPresets = map[string]struct{ Vendor, Wrapper string }{
 	"gemini-cli":  {"google", "gemini"},
 }
 
+func wrapperForVendor(vendor string) string {
+	switch strings.TrimSpace(vendor) {
+	case "anthropic":
+		return "claude"
+	case "openai":
+		return "codex"
+	case "google":
+		return "gemini"
+	default:
+		return ""
+	}
+}
+
 func handleGenerateService(args []string) error {
 	fs := flag.NewFlagSet("doctor --generate-service", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -142,6 +155,12 @@ func generateService(p serviceParams) error {
 		if p.Wrapper == "" {
 			p.Wrapper = preset.Wrapper
 		}
+	}
+	if p.Vendor == "" {
+		p.Vendor = vendorForAgentID(p.AgentID)
+	}
+	if p.Wrapper == "" {
+		p.Wrapper = wrapperForVendor(p.Vendor)
 	}
 	// Codex re-review #3 (2026-05-20): --vendor lands inside the
 	// generated prompt; an unvalidated `bad$(rm -rf /)` evaluates in the

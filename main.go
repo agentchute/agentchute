@@ -31,11 +31,13 @@ Commands:
   send           send a message from one agent to another
   check          consume and archive messages addressed to me
   pending        peek unread messages (read-only; safe for lifecycle hooks)
+  default-id     print the contextual default agent id for a wrapper/vendor
   run            launch a wrapper under the PTY runner and local wake socket
   setup          one-command control-repo setup for tmux, runner, or both wake paths
   self-check     refresh own registration/last_seen and reconcile wake target
   self-poll      "should I wake the wrapper?" — read-only by default; optional poller heartbeat
   poller         recipient-side poller heartbeat/run/status for non-tmux agents
+  identity       resolve and print the contextual agent identity (alias of default-id)
   shims          install/pass-through launcher shims for known wrappers
   status         print registry overview, inbox depths, and last_seen freshness
   doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, wake target
@@ -94,6 +96,10 @@ func main() {
 		err = cmdSelfPoll(args)
 	case "poller":
 		err = cmdPoller(args)
+	case "default-id":
+		err = cmdIdentity(args)
+	case "identity":
+		err = cmdIdentity(args)
 	case "shims":
 		err = cmdShims(args)
 	case "status":

@@ -194,7 +194,6 @@ func cmdShimsExec(args []string) error {
 	runArgs := []string{
 		agentchuteBin,
 		"run",
-		"--as", spec.AgentID,
 		"--vendor", spec.Vendor,
 		"--control-repo", cfg.ControlRepo,
 		"--loop-dir", cfg.LoopDir,

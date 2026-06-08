@@ -7,17 +7,17 @@
           {
             "name": "agentchute-self-check",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as \"${AGENTCHUTE_AGENT_ID:-gemini-cli}\" --vendor google --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor google --quiet"
           },
           {
             "name": "agentchute-poller",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as \"${AGENTCHUTE_AGENT_ID:-gemini-cli}\" --vendor google --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor google --quiet"
           },
           {
             "name": "agentchute-boot",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} boot --as \"${AGENTCHUTE_AGENT_ID:-gemini-cli}\" --vendor google --context-only"
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --vendor google --context-only"
           }
         ]
       }
@@ -29,22 +29,22 @@
           {
             "name": "agentchute-self-check",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --as \"${AGENTCHUTE_AGENT_ID:-gemini-cli}\" --vendor google --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor google --quiet"
           },
           {
             "name": "agentchute-poller",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --as \"${AGENTCHUTE_AGENT_ID:-gemini-cli}\" --vendor google --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor google --quiet"
           },
           {
             "name": "agentchute-pending",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} pending --as \"${AGENTCHUTE_AGENT_ID:-gemini-cli}\" --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --vendor google --json"
           },
           {
             "name": "agentchute-gate",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} gate --as \"${AGENTCHUTE_AGENT_ID:-gemini-cli}\" --before finish --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} gate --vendor google --before finish --json"
           }
         ]
       }

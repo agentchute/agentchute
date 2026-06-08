@@ -28,23 +28,24 @@ VENDOR=".myorg"   # change to your owned namespace, e.g., .yourcompany
     exit 1
 }
 
-mkdir -p "${REPO_ROOT}/${VENDOR}/loop/"{agents,inbox,archive,malformed}
+mkdir -p "${REPO_ROOT}/${VENDOR}/loop/"{agents,inbox,archive,malformed,state}
 
 # Recommended: ignore agent-local state in git.
-# v1 begin/end markers match what `agentchute init` emits, so a later
+# v2 begin/end markers match what `agentchute init` emits, so a later
 # `agentchute init` recognizes this stanza and doesn't append a duplicate.
 GITIGNORE="${REPO_ROOT}/.gitignore"
 if ! grep -q "${VENDOR}/loop/inbox" "${GITIGNORE}" 2>/dev/null; then
     cat >> "${GITIGNORE}" <<EOF
-# agentchute-gitignore v1 begin
+# agentchute-gitignore v2 begin
 ${VENDOR}/loop/agents/*.md
 !${VENDOR}/loop/agents/*.example.md
 !${VENDOR}/loop/agents/README.md
 ${VENDOR}/loop/inbox/
 ${VENDOR}/loop/archive/
 ${VENDOR}/loop/malformed/
+${VENDOR}/loop/state/
 ${VENDOR}/loop/watchdog.log
-# agentchute-gitignore v1 end
+# agentchute-gitignore v2 end
 EOF
 fi
 

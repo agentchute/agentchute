@@ -348,9 +348,10 @@ print_setup_next_steps() {
 	info "  agentchute setup"
 	info "then restart your agents"
 	info "optional check: agentchute doctor --as <agent-id>"
-	info "upgrading from an older release? setup migrates a legacy .rehumanlabs/loop"
-	info "in your control repo to .agentchute/loop automatically (safe cases; it refuses to"
-	info "auto-merge if both hold live state)."
+	info "upgrading from an older release? re-run setup in each control repo to"
+	info "refresh ENROLLMENT blocks; setup also migrates a legacy .rehumanlabs/loop"
+	info "to .agentchute/loop automatically in safe cases and refuses to auto-merge"
+	info "if both hold live state."
 }
 
 # ---------- main flow ----------

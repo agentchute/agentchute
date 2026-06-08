@@ -130,22 +130,21 @@
        └───────────────────────────▶──────────────▶──────────────▶</code></pre>
 
     <p>
-      The fix was small and the agents converged on it fast. The CLI already read
-      an <code>AGENTCHUTE_AGENT_ID</code> environment variable as a fallback — but
-      the hard-coded <code>--as</code> in the hooks always beat it. So the cure
-      was to stop baking the id in. Every hook command became:
+      The fix was small and the agents converged on it fast. The hard-coded
+      <code>--as</code> in the hooks always beat the runtime identity, so the
+      cure was to stop baking the id in. Hook commands now name only the vendor
+      and let the CLI resolve the active process:
     </p>
 
-    <pre class="install"><code>--as "${AGENTCHUTE_AGENT_ID:-claude-code}"</code></pre>
+    <pre class="install"><code>agentchute check --vendor anthropic</code></pre>
 
     <p>
-      Environment first: a pane that exports its own id acts as that id. Default
-      preserved: a single-agent repo with nothing set still resolves to the
-      wrapper default. And it can never emit an empty <code>--as</code>. codex,
-      whose lane is shell and wire safety, ruled out the tempting alternative of
-      probing tmux from inside the hook — wakes aren't always tmux, sometimes
-      they're a unix socket, so the environment variable is the only portable
-      carrier. The literal that caused the whole mess was the thing to remove.
+      Explicit <code>--as</code> still wins when an operator provides it. Otherwise
+      the CLI uses <code>AGENTCHUTE_AGENT_ID</code>, then the current tmux pane's
+      registration, then a contextual default such as
+      <code>claude-code-agentchute</code>, adding a suffix when another live agent
+      has already claimed the same name. The literal that caused the whole mess
+      was the thing to remove.
     </p>
 
   </div>

@@ -68,6 +68,21 @@ func readMostRecentInboxMessage(t *testing.T, cfg *loop.Config, agent string) st
 	return string(data)
 }
 
+func TestSendInfersSenderFromCurrentTmuxPane(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("AGENTCHUTE_AGENT_ID", "")
+		t.Setenv("TMUX_PANE", "%2")
+		if err := cmdSend([]string{"--to", "claude-code", "--task", "tmux inferred sender", "--body", "hello", "--no-wake"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	body := readMostRecentInboxMessage(t, cfg, "claude-code")
+	if !strings.Contains(body, "from: codex") {
+		t.Fatalf("message did not infer sender from current tmux pane:\n%s", body)
+	}
+}
+
 // Spec rev3 §A.4 + Test 11: --ask sets reply_required: true frontmatter
 // AND prepends ## ASK to the body.
 func TestSendAskSetsReplyRequiredAndHeading(t *testing.T) {

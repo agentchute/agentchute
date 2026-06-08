@@ -50,6 +50,8 @@ type runnerOptions struct {
 	IdleGrace       time.Duration
 	BusyGrace       time.Duration
 	WrapperArgs     []string
+	ContextualID    bool
+	ContextualBase  string
 }
 
 func cmdRun(args []string) error {
@@ -71,25 +73,6 @@ func cmdRun(args []string) error {
 		return runUsage(err)
 	}
 
-	opts.AgentID = strings.TrimSpace(firstNonEmpty(opts.AgentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if opts.AgentID == "" {
-		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(opts.AgentID); err != nil {
-		return err
-	}
-	opts.Vendor = strings.TrimSpace(opts.Vendor)
-	if opts.Vendor == "" {
-		if preset, ok := vendorPresets[opts.AgentID]; ok {
-			opts.Vendor = preset.Vendor
-		}
-	}
-	if opts.Vendor == "" {
-		return fmt.Errorf("missing --vendor (recommended values: anthropic, openai, google)")
-	}
-	if err := loop.ValidateAgentID(opts.Vendor); err != nil {
-		return fmt.Errorf("--vendor: %w", err)
-	}
 	if opts.IntervalSeconds < loop.MinPollerIntervalSeconds {
 		return fmt.Errorf("--interval must be >= %d seconds", loop.MinPollerIntervalSeconds)
 	}
@@ -115,6 +98,12 @@ func cmdRun(args []string) error {
 	if len(opts.WrapperArgs) == 0 {
 		return runUsage(fmt.Errorf("missing wrapper command after --"))
 	}
+	opts.Vendor = strings.TrimSpace(opts.Vendor)
+	if opts.Vendor == "" {
+		if spec, ok := shimSpecForName(filepath.Base(opts.WrapperArgs[0])); ok {
+			opts.Vendor = spec.Vendor
+		}
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -130,6 +119,26 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	contextualBase, contextual, err := contextualIdentityBase(opts.AgentID, opts.Vendor)
+	if err != nil {
+		return err
+	}
+	opts.AgentID, err = resolveAgentID(opts.AgentID, opts.Vendor, cfg)
+	if err != nil {
+		return err
+	}
+	if err := loop.ValidateAgentID(opts.AgentID); err != nil {
+		return err
+	}
+	opts.Vendor = resolveAgentVendor(opts.Vendor, opts.AgentID, cfg)
+	if opts.Vendor == "" {
+		return fmt.Errorf("missing --vendor (recommended values: anthropic, openai, google)")
+	}
+	if err := loop.ValidateAgentID(opts.Vendor); err != nil {
+		return fmt.Errorf("--vendor: %w", err)
+	}
+	opts.ContextualID = contextual
+	opts.ContextualBase = contextualBase
 	return runWrapper(cfg, opts, cwd)
 }
 
@@ -170,7 +179,7 @@ func runHelpErr() error {
 
 func runHelp() string {
 	return strings.TrimSpace(`
-Usage: agentchute run --as <id> --vendor <vendor> [flags] -- <wrapper> [args...]
+Usage: agentchute run --vendor <vendor> [--as <id>] [flags] -- <wrapper> [args...]
 
 Launch an interactive wrapper under agentchute's PTY runner. The runner owns
 registration, last_seen heartbeat updates, a local wake socket, inbox polling,
@@ -345,6 +354,8 @@ func registerRunner(cfg *loop.Config, opts runnerOptions, socketPath string, now
 		WorkingRepos:       []string{cfg.ControlRepo},
 		Host:               localHostname(),
 		HostProvided:       true,
+		ContextualIdentity: opts.ContextualID,
+		ContextualBaseID:   opts.ContextualBase,
 	}, now)
 	return err
 }

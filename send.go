@@ -55,13 +55,6 @@ func cmdSend(args []string) error {
 		return sendUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	fromID = strings.TrimSpace(firstNonEmpty(fromID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if fromID == "" {
-		return fmt.Errorf("missing --from; pass explicitly or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(fromID); err != nil {
-		return fmt.Errorf("--from: %w", err)
-	}
 	toID = strings.TrimSpace(toID)
 	if toID == "" {
 		return fmt.Errorf("missing --to (recipient agent id)")
@@ -95,6 +88,13 @@ func cmdSend(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	fromID, err = resolveAgentID(fromID, "", cfg)
+	if err != nil {
+		return fmt.Errorf("missing --from; pass explicitly, set AGENTCHUTE_AGENT_ID, or run from a registered tmux pane")
+	}
+	if err := loop.ValidateAgentID(fromID); err != nil {
+		return fmt.Errorf("--from: %w", err)
 	}
 
 	if body == "" {

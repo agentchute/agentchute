@@ -25,10 +25,11 @@ func cmdCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, controlRepo, loopDir string
+	var agentID, vendor, controlRepo, loopDir string
 	var noArchive bool
 	var limit int
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
+	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&noArchive, "no-archive", false, "dry run: suppress inbox/cooperation side effects (no archive, quarantine, corrective sends, or cooperative pokes); own last_seen still updates")
@@ -39,14 +40,6 @@ func cmdCheck(args []string) error {
 	}
 	if fs.NArg() != 0 {
 		return checkUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
-	}
-
-	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID == "" {
-		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(agentID); err != nil {
-		return err
 	}
 
 	cwd, err := os.Getwd()
@@ -61,6 +54,14 @@ func cmdCheck(args []string) error {
 		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
 	})
 	if err != nil {
+		return err
+	}
+
+	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	if err != nil {
+		return err
+	}
+	if err := loop.ValidateAgentID(agentID); err != nil {
 		return err
 	}
 
@@ -260,7 +261,7 @@ func runCooperativeWaking(cfg *loop.Config, agentID string, now time.Time) {
 }
 
 func checkUsage(err error) error {
-	return fmt.Errorf("%w\nusage: agentchute check --as <agent-id> [--control-repo <path>] [--loop-dir <path>] [--no-archive] [--limit <n>]", err)
+	return fmt.Errorf("%w\nusage: agentchute check [--as <agent-id>] [--vendor <v>] [--control-repo <path>] [--loop-dir <path>] [--no-archive] [--limit <n>]", err)
 }
 
 // recordReplyObligation parses the just-archived message's frontmatter

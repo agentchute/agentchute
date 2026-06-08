@@ -4,7 +4,7 @@ This file follows the [AGENTS.md](https://agents.md) convention. Any AI agent �
 
 ---
 
-<!-- agentchute-enrollment v10 begin -->
+<!-- agentchute-enrollment v11 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 **1. Setup / Startup Path**
@@ -18,7 +18,15 @@ agentchute setup --wake both --wrappers all --yes
 
 Start sessions with the normal wrapper command from a control repo. In runner mode, the shim routes through `agentchute run`, which registers you, refreshes `last_seen`, exposes a reachable `agentchute-run` wake socket, polls your inbox, and injects `[agentchute:run] check inbox` when mail arrives. In tmux mode, peer wakes inject `[agentchute:tmux] check inbox`. Treat the bracketed prefix as machine metadata and follow the inbox-check instruction.
 
-If a session starts and you do not see agentchute boot/enrolled context, run `agentchute run --as <agent_id> --vendor <vendor> -- <wrapper>` or, as a manual fallback, `agentchute boot --as <agent_id> --vendor <vendor>` and `agentchute poller ensure --as <agent_id> --vendor <vendor>` before doing any work.
+**The project is the communication boundary**: agents by default only see and talk to peers in the same discovered project pool. Unrelated projects on one host or tmux server are isolated because each project has its own pool and, when identity is not explicit, the CLI derives project-scoped IDs from the folder name (for example, `codex-agentchute`).
+
+If a session starts and you do not see agentchute boot/enrolled context, run the wrapper with its vendor so the CLI can derive the contextual identity:
+
+```sh
+agentchute run --vendor <vendor> -- <wrapper>
+```
+
+As a manual fallback, run `agentchute boot --vendor <vendor>` and `agentchute poller ensure --vendor <vendor>` before doing any work. For a custom stable lane name, set `AGENTCHUTE_AGENT_ID=<roster-id>` or pass `--as <roster-id>` explicitly.
 
 Known wrappers and their canonical IDs:
 
@@ -29,25 +37,25 @@ Known wrappers and their canonical IDs:
 | Gemini CLI   | `gemini-cli`  | `google`    |
 | grok CLI     | `grok`        | `xai`       |
 
-The IDs above are single-wrapper defaults. **When several agents of one vendor share a bus** (e.g. `claude-l1`/`claude-l2`/`merger` all on the `claude-code` wrapper), each process must enroll under its own id — reusing the canonical default makes every lane read one inbox and silently pass the finish-gate against the wrong one. Give each its own roster id via `--as <roster-id>`, or set `AGENTCHUTE_AGENT_ID` in its environment and omit `--as` (the CLI resolves identity from that variable; a generated hook keeps the canonical default only as a last-resort fallback).
+The IDs above are wrapper bases. With no explicit identity, the reference CLI derives `<base>-<folder>` and reserves live conflicts with `-2`, `-3`, etc. **When several agents of one vendor share a bus** (e.g. `claude-l1`/`claude-l2`/`merger` all on the `claude-code` wrapper), each process must still enroll under its own id. Use contextual defaults for ordinary project/worktree lanes; use `AGENTCHUTE_AGENT_ID=<roster-id>` or `--as <roster-id>` for named lanes.
 
 **2. Lifecycle Hooks (Required for Context and Gates)**
 `agentchute setup` installs lifecycle hooks. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox/ledger context per turn and block finish while obligations remain.
 
 **3. Recipient Polling Fallback**
 Senders only deliver to your inbox. If you are not launched through `agentchute run` and are NOT in a tmux pane, keep recipient polling alive:
-- **Runner default**: `agentchute run --as <agent_id> --vendor <vendor> -- <wrapper>` polls and exposes a reachable wake socket.
-- **Hook-managed fallback**: `agentchute poller ensure --as <agent_id> --vendor <vendor>` starts/verifies `poller run` and writes `state/<agent_id>/poller.json`.
+- **Runner default**: `agentchute run --vendor <vendor> -- <wrapper>` polls and exposes a reachable wake socket.
+- **Hook-managed fallback**: `agentchute poller ensure --vendor <vendor>` starts/verifies `poller run` and writes `state/<agent_id>/poller.json`.
 - **Native loops**: if your wrapper has a recurring task feature, it may replace `poller run` only if it keeps a fresh poller heartbeat.
 - **Generated services**: `agentchute doctor --generate-service` emits launchd/systemd/script schedulers that call `self-poll --heartbeat`.
 
 **4. In-Session Catchup**
 If hooks are configured, you will catch new mail mid-turn via `gate --before continue`.
 
-**STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check --as <agent_id>`) or obligations are explicitly deferred via `agentchute defer --as <agent_id>`.
+**STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check --vendor <vendor>`, or pass `--as <agent_id>`) or obligations are explicitly deferred via `agentchute defer --vendor <vendor> --message <message-id> --reason "..."`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v10 end -->
+<!-- agentchute-enrollment v11 end -->
 
 ---
 
@@ -101,10 +109,10 @@ All four must pass. Currently runs on Go 1.21+; tested up to Go 1.26.
 
 ## Coordinating with other agents in this repo
 
-agentchute dogfoods itself: agents working on agentchute coordinate through agentchute. The loop lives at `.agentchute/loop/`. Enrollment commands are at the top of this file (and in each tool-specific `*.md`). After enrolling:
+agentchute dogfoods itself: agents working on agentchute coordinate through agentchute. The loop lives at `.agentchute/loop/`. **The project is the communication boundary**: agents by default only see and talk to peers in the same pool. Enrollment commands are at the top of this file. After enrolling:
 
-- **Each turn:** `agentchute check --as <id>` first; process any messages.
-- **Sending:** `agentchute send --from <id> --to <peer> --task ... --body ...` (or follow `AGENTCHUTE.md` §6 directly — the binary just makes it ergonomic).
+- **Each turn:** run `agentchute check --vendor <vendor>` first, or pass `--as <id>` for a custom/non-wrapper lane. Process any messages.
+- **Sending:** `agentchute send --to <peer> --task ... --body ...` from a registered pane, or pass `--from <id>` explicitly (or follow `AGENTCHUTE.md` §6 directly — the binary just makes it ergonomic).
 - **Watchdog (optional):** cooperative waking on every `agentchute check` cycle (§10.5) is the default and covers most pools. If your wrapper supports a polling loop (e.g., Claude Code's `/loop`), running `agentchute watchdog --once --as <id>` each tick adds belt-and-suspenders liveness. Otherwise, the standalone `agentchute watchdog --as watchdog &` daemon is the fallback. See `AGENTCHUTE.md §10`.
 - **Gitignore check:** `git check-ignore .agentchute/loop/agents/<your-id>.md` should print the path.
 

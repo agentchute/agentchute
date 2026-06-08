@@ -57,22 +57,6 @@ func bindPollerCommon(fs *flag.FlagSet, p *pollerCommon) {
 }
 
 func resolvePollerCommon(p *pollerCommon) (*loop.Config, error) {
-	p.AgentID = strings.TrimSpace(firstNonEmpty(p.AgentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if p.AgentID == "" {
-		return nil, fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(p.AgentID); err != nil {
-		return nil, err
-	}
-	p.Vendor = strings.TrimSpace(p.Vendor)
-	if p.Vendor != "" {
-		if err := loop.ValidateAgentID(p.Vendor); err != nil {
-			return nil, fmt.Errorf("--vendor %q must be a shell-safe slug (same rule as agent_id): %w", p.Vendor, err)
-		}
-	}
-	if p.Interval < loop.MinPollerIntervalSeconds {
-		return nil, fmt.Errorf("--interval must be >= %d seconds", loop.MinPollerIntervalSeconds)
-	}
 	if p.Repo == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -96,6 +80,24 @@ func resolvePollerCommon(p *pollerCommon) (*loop.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	p.AgentID, err = resolveAgentID(p.AgentID, p.Vendor, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := loop.ValidateAgentID(p.AgentID); err != nil {
+		return nil, err
+	}
+	p.Vendor = resolveAgentVendor(p.Vendor, p.AgentID, cfg)
+	if p.Vendor != "" {
+		if err := loop.ValidateAgentID(p.Vendor); err != nil {
+			return nil, fmt.Errorf("--vendor %q must be a shell-safe slug (same rule as agent_id): %w", p.Vendor, err)
+		}
+	}
+	if p.Interval < loop.MinPollerIntervalSeconds {
+		return nil, fmt.Errorf("--interval must be >= %d seconds", loop.MinPollerIntervalSeconds)
+	}
+
 	return cfg, nil
 }
 
@@ -115,6 +117,9 @@ func serviceParamsForPoller(p pollerCommon) serviceParams {
 		if sp.Wrapper == "" {
 			sp.Wrapper = preset.Wrapper
 		}
+	}
+	if sp.Wrapper == "" {
+		sp.Wrapper = wrapperForVendor(sp.Vendor)
 	}
 	return sp
 }

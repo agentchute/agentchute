@@ -61,16 +61,6 @@ func cmdSelfCheck(args []string) error {
 		}
 	})
 
-	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID == "" {
-		return fmt.Errorf("missing agent identity; pass --as or set AGENTCHUTE_AGENT_ID")
-	}
-	if err := loop.ValidateAgentID(agentID); err != nil {
-		return err
-	}
-	opts.AgentID = agentID
-	opts.Vendor = strings.TrimSpace(vendor)
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -85,6 +75,22 @@ func cmdSelfCheck(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	contextualBase, contextual, err := contextualIdentityBase(agentID, vendor)
+	if err != nil {
+		return err
+	}
+	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	if err != nil {
+		return err
+	}
+	if err := loop.ValidateAgentID(agentID); err != nil {
+		return err
+	}
+	opts.AgentID = agentID
+	opts.Vendor = resolveAgentVendor(vendor, agentID, cfg)
+	opts.ContextualIdentity = contextual
+	opts.ContextualBaseID = contextualBase
 
 	now := time.Now().UTC()
 	result, err := performRegister(cfg, opts, now)

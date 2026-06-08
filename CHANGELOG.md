@@ -4,6 +4,23 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.3.4 (2026-06-08)
+
+Dogfood release after the v0.3.3 simplification pass.
+
+- **Generated hooks honor contextual identity**: repo hook templates omit hardcoded `--as` values; the CLI uses explicit `--as`, `AGENTCHUTE_AGENT_ID`, the current tmux pane registration, or a `<wrapper>-<folder>` contextual default.
+- **Legacy namespace migration**: `setup` / `init` migrate safe `.rehumanlabs/loop` cases into `.agentchute/loop` and refuse ambiguous live-state merges.
+- **Fixture hardening**: lifecycle gate and doctor unread fixtures were refreshed for current hook/gate behavior.
+- **Blog**: added "The agents debugged their own message bus".
+
+## v0.3.3 (2026-06-08)
+
+Simplification pass.
+
+- Collapsed stale design docs and release scaffolding into the current README / AGENTCHUTE.md / CHANGELOG shape.
+- Simplified enrollment guidance and wrapper-specific files.
+- Removed obsolete runner-design and script-test artifacts.
+
 ## v0.3.2 (2026-05-21)
 
 The **setup command and one-line install** release. Install + repo wiring collapses into a single command; peer wake events become visibly machine-typed; launcher shims route normal wrapper commands through the runner without the user learning a new command.
