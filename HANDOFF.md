@@ -10,7 +10,9 @@ Latest release: `v0.3.5`
 
 Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.3.5
 
-The current main branch is post-`v0.3.5` and includes CI fixture fixes plus contributor credit. Run `git log --oneline --decorate -8` for the exact tip.
+The current main branch is post-`v0.3.5` and is pushed to `origin/main` at `95a252d docs: clean stale handoff artifacts`.
+
+Important restart note: the standard installer resolves the latest GitHub Release, which is still `v0.3.5`. The setup-time live registration cleanup (`agentchute setup` clearing ignored `agents/*.md` so agents re-enroll cleanly) landed after `v0.3.5` in commit `95a252d`. To test that behavior via normal reinstall, publish a new release first or install/build from `origin/main`.
 
 Recent shipped work:
 
@@ -19,6 +21,7 @@ Recent shipped work:
 - v11 enrollment refresh for existing `AGENTS.md`, `CLAUDE.md`, `CODEX.md`, `GEMINI.md`, and `GROK.md` blocks.
 - Worktree/project pool guidance: agents communicate inside their discovered pool by default; cross-worktree/top-project pools require explicit pointer/env/flag setup.
 - v0.3.5 blog article and illustration for the improved tmux/worktree reference path.
+- Post-release repo cleanup: stale `V0.1.1-HANDOFF.md` removed, `HANDOFF.md` refreshed, Grok loop example added, scratch files ignored, and setup now clears stale live registrations before installing hooks/shims.
 
 ## Local State
 
