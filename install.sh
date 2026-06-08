@@ -273,7 +273,7 @@ default_shell_profile() {
 path_expr_for_profile() {
 	dir="$1"
 	case "$dir" in
-		"$HOME"/*) printf '$HOME/%s' "${dir#"$HOME"/}" ;;
+		"$HOME"/*) printf '%s/%s' "\$HOME" "${dir#"$HOME"/}" ;;
 		*)         printf '%s' "$dir" ;;
 	esac
 }
@@ -330,9 +330,9 @@ ensure_path_available() {
 	fi
 	{
 		printf '\n%s\n' "$begin"
-		printf 'case ":$PATH:" in\n'
+		printf '%s\n' "case \":\$PATH:\" in"
 		printf '  *":%s:"*) ;;\n' "$expr"
-		printf '  *) export PATH="%s:$PATH" ;;\n' "$expr"
+		printf '  *) export PATH="%s:%s" ;;\n' "$expr" "\$PATH"
 		printf 'esac\n'
 		printf '%s\n' "$end"
 	} >>"$profile" || {

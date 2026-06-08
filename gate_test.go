@@ -43,6 +43,7 @@ func TestGateConsensusBlocksOnPendingReply(t *testing.T) {
 		if err := loop.RecordPendingReply(cfg, "claude-code", entry, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 
 		// gate --before consensus must exit 2.
 		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("consensus")) })
@@ -99,6 +100,7 @@ func TestGateConsensusIgnoresStaleReg(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 		regPath := cfg.AgentRegistrationPath("claude-code")
 		reg, err := loop.ReadRegistration(regPath)
 		if err != nil {
@@ -130,6 +132,7 @@ func TestGateCommitBlocksOnStaleRegAndUnblocksWithAck(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 		regPath := cfg.AgentRegistrationPath("claude-code")
 		reg, err := loop.ReadRegistration(regPath)
 		if err != nil {
@@ -206,6 +209,11 @@ func TestGateCodexHookStopClearShape(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--codex-hook", "Stop")) })
 		if err != nil {
 			t.Errorf("err = %v, want nil", err)
@@ -436,6 +444,11 @@ func TestGateGeminiHookAfterAgentClearShape(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 		out, err := captureStdout(t, func() error {
 			return cmdGate(gateArgs("continue", "--gemini-hook", "AfterAgent"))
 		})
