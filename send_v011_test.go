@@ -18,12 +18,10 @@ func setupSendFixture(t *testing.T) (string, *loop.Config) {
 	t.Helper()
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "%1")
-		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--wake-method", "tmux", "--wake-target", "%1"}); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("TMUX_PANE", "%2")
-		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
+		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai", "--wake-method", "tmux", "--wake-target", "%2"}); err != nil {
 			t.Fatal(err)
 		}
 	})
