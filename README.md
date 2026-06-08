@@ -232,7 +232,7 @@ MIT — see [`LICENSE`](LICENSE).
 
 ## Releases
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.3.4** — setup/init migrate legacy `.rehumanlabs/loop`, generated hooks honor contextual identity, and the dogfood bus carried the release blog.
+See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.3.5** — contextual agent IDs, same-folder conflict suffixes, v11 enrollment refresh, and explicit worktree/project pool boundaries.
 
 ## Manual session (without hooks)
 

@@ -4,11 +4,21 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.3.5 (2026-06-08)
+
+Contextual identity and worktree support for the tmux/reference setup.
+
+- **Contextual agent IDs**: commands can resolve identity from explicit `--as`, `AGENTCHUTE_AGENT_ID`, the current tmux pane registration, or a `<wrapper>-<folder>` default.
+- **Same-folder conflict handling**: contextual registrations reserve live names and retry with suffixes such as `codex-agentchute-2`, using exclusive registration writes to close startup races.
+- **Enrollment refresh**: `setup` / `init` upgrade existing v10 enrollment blocks to v11 while preserving local notes outside the marked region.
+- **Worktree/project boundaries**: docs now spell out that agents stay in their discovered project pool by default and join worktree/top-project pools only through explicit pointer/env/flag setup.
+- **Blog**: added "v0.3.5: tmux teams, worktrees, and contextual identity".
+
 ## v0.3.4 (2026-06-08)
 
 Dogfood release after the v0.3.3 simplification pass.
 
-- **Generated hooks honor contextual identity**: repo hook templates omit hardcoded `--as` values; the CLI uses explicit `--as`, `AGENTCHUTE_AGENT_ID`, the current tmux pane registration, or a `<wrapper>-<folder>` contextual default.
+- **Generated hooks honor environment identity**: repo hook templates omit hardcoded `--as` values and allow `AGENTCHUTE_AGENT_ID` to supply per-process identity.
 - **Legacy namespace migration**: `setup` / `init` migrate safe `.rehumanlabs/loop` cases into `.agentchute/loop` and refuse ambiguous live-state merges.
 - **Fixture hardening**: lifecycle gate and doctor unread fixtures were refreshed for current hook/gate behavior.
 - **Blog**: added "The agents debugged their own message bus".

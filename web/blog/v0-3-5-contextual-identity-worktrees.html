@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v0.3.5: tmux teams, worktrees, and contextual identity — agentchute</title>
+<meta name="description" content="agentchute v0.3.5 improves the tmux reference path with contextual agent IDs, safer setup refreshes, worktree-aware pools, and hook templates that no longer hardcode identities.">
+<meta property="og:title" content="v0.3.5: tmux teams, worktrees, and contextual identity">
+<meta property="og:description" content="The tmux reference path now handles worktrees and same-folder agents with contextual IDs, safer enrollment refreshes, and hook templates that no longer hardcode identities.">
+<meta property="og:url" content="https://agentchute.dev/blog/v0-3-5-contextual-identity-worktrees.html">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://agentchute.dev/images/blog/v0-3-4-worktrees.png">
+<meta property="article:published_time" content="2026-06-08">
+<meta property="article:author" content="agentchute team">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="v0.3.5: tmux teams, worktrees, and contextual identity">
+<meta name="twitter:description" content="The tmux reference path now handles worktrees and same-folder agents with contextual IDs, safer enrollment refreshes, and hook templates that no longer hardcode identities.">
+<meta name="twitter:image" content="https://agentchute.dev/images/blog/v0-3-4-worktrees.png">
+<link rel="canonical" href="https://agentchute.dev/blog/v0-3-5-contextual-identity-worktrees.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">June 8, 2026 · agentchute team</p>
+    <h1>v0.3.5: tmux teams, worktrees, and contextual identity</h1>
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      The tmux reference setup used to assume one wrapper, one folder, one identity.
+      v0.3.5 makes that path work for real teams: multiple agents, worktrees, and
+      unrelated projects sharing one tmux server without stealing each other's inboxes.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+
+    <figure class="blog-image">
+      <img src="../images/blog/v0-3-4-worktrees.png" alt="Diagram of multiple labeled tmux panes and worktrees routing into one shared agentchute inbox pool, separated from an unrelated repo pool by a boundary wall." loading="lazy" width="1200" height="675">
+      <figcaption>Contextual identities let tmux panes and worktrees share the right pool without sharing one inbox.</figcaption>
+    </figure>
+
+    <p>
+      The underlying protocol did not change: per-recipient inboxes, optional wake
+      hints, and recipient-owned consumption. The reference CLI got better at the
+      part operators actually hit first: enrollment and identity.
+    </p>
+
+    <h2>Hooks stopped hardcoding identities</h2>
+
+    <p>
+      Generated Claude Code, Codex, and Gemini hooks now pass
+      <code>--vendor</code> instead of baking in <code>--as codex</code>,
+      <code>--as claude-code</code>, or <code>--as gemini-cli</code>. That lets
+      the CLI resolve the current process identity at runtime:
+    </p>
+
+    <pre><code>explicit --as
+AGENTCHUTE_AGENT_ID
+current tmux pane registration
+&lt;wrapper&gt;-&lt;folder&gt;</code></pre>
+
+    <p>
+      In a normal tmux wake, the agent can now obey
+      <code>[agentchute:tmux] check inbox</code> without memorizing a hardcoded
+      id from a markdown file. If the pane is already registered, agentchute
+      reuses that registration. If it is a fresh pane, it derives a contextual
+      id such as <code>codex-agentchute</code>.
+    </p>
+
+    <h2>Same folder, multiple agents</h2>
+
+    <p>
+      Contextual ids are based on the git or worktree root folder, so the common
+      case is readable by default:
+    </p>
+
+    <pre><code>codex-agentchute
+claude-code-agentchute
+gemini-cli-agentchute
+grok-agentchute</code></pre>
+
+    <p>
+      If two live agents of the same wrapper start in the same folder, the next
+      one gets a suffix: <code>codex-agentchute-2</code>,
+      <code>codex-agentchute-3</code>, and so on. The resolver checks live
+      registrations, fresh poller heartbeats, and current wake targets; the final
+      registration write uses exclusive create so two simultaneous startups
+      cannot silently claim the same first id.
+    </p>
+
+    <h2>Worktrees stay local until you join them</h2>
+
+    <p>
+      A git worktree has its own root folder, so a team running in
+      <code>agentchute-ui</code> and another in <code>agentchute-release</code>
+      naturally get distinct identities. Unrelated repos on the same tmux server
+      also stay in their own discovered pools.
+    </p>
+
+    <p>
+      When a top project and its worktrees should coordinate together, make that
+      explicit with the existing pool pointer path:
+      <code>AGENTCHUTE_CONTROL_REPO</code>, <code>--control-repo</code>, a tracked
+      <code>.agentchute-control-repo</code> file, or
+      <code>agentchute prepare-pool --target &lt;folder&gt;</code>. That is the
+      rule: default local, cross-folder only by explicit setup.
+    </p>
+
+    <h2>Setup refreshes existing markdown</h2>
+
+    <p>
+      Re-running <code>agentchute setup</code> or <code>agentchute init</code>
+      now refreshes existing enrollment blocks to v11 instead of leaving stale
+      instructions behind. Local notes outside the marked block are preserved.
+      The tool-specific files now all point back to the shared
+      <code>AGENTS.md</code> guidance and describe the same identity behavior.
+    </p>
+
+    <p>
+      The result is a better tmux reference example without a bigger protocol:
+      fewer copied literals, fewer accidental shared inboxes, and a safer path
+      for worktree-based agent teams.
+    </p>
+
+  </div>
+</section>
+
+</article>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p>agentchute — MIT licensed. <a href="https://github.com/agentchute/agentchute">github</a> · <a href="../spec.html">spec</a> · <a href="../">home</a></p>
+  </div>
+</footer>
+
+</body>
+</html>
