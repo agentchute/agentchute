@@ -162,6 +162,7 @@ func TestEndToEndMsg43b6Reproduction(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 
 		// Step 3: gate --before consensus blocks
 		_, gerr := captureStdout(t, func() error { return cmdGate(gateArgs("consensus")) })

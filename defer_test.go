@@ -125,6 +125,7 @@ func TestDeferTransitionsLedgerAndAcksSender(t *testing.T) {
 	}
 
 	// Gate finish must now pass.
+	mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 	withCwd(t, root, func() {
 		_, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
 		if err != nil {
@@ -201,8 +202,8 @@ func TestNormalizeDeferUntil(t *testing.T) {
 				t.Errorf("24h offset out of range: %s", got)
 			}
 		}},
-		{"accepts RFC3339", "2026-05-26T00:00:00Z", false, func(t *testing.T, got string) {
-			if got != "2026-05-26T00:00:00Z" {
+		{"accepts RFC3339", "2099-05-26T00:00:00Z", false, func(t *testing.T, got string) {
+			if got != "2099-05-26T00:00:00Z" {
 				t.Errorf("got %q", got)
 			}
 		}},
@@ -275,4 +276,3 @@ func TestDeferRejectsLedgerEntryWithMismatchedTo(t *testing.T) {
 func ensurePrivateDirHelper(filePath string) error {
 	return os.MkdirAll(filepath.Dir(filePath), 0o700)
 }
-

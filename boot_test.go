@@ -259,7 +259,6 @@ func TestBootCodexHookSessionStartShape(t *testing.T) {
 	})
 }
 
-
 // --quiet on clean boot should produce no output.
 func TestBootQuietSuppressesCleanOutput(t *testing.T) {
 	root := setupBootFixture(t)

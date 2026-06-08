@@ -424,4 +424,3 @@ func TestSendReplyToWithoutAskDoesNotSetReplyRequired(t *testing.T) {
 		}
 	}
 }
-
