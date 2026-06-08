@@ -21,9 +21,10 @@ regardless — `git log --pretty=full` shows the per-commit attribution.
 | Claude Code | Anthropic | architecture, synthesis, drafting, three-team round-3 syntheses | `noreply@anthropic.com` |
 | codex | OpenAI | code review, real-bake testing, shell-safety auditing, spec-drift catching | `codex@noreply.openai.com` |
 | Gemini CLI | Google | spec text (§8.2 wake responsibility, §5.7 enforced enrollment), README reframing | `gemini-cli@noreply.google.com` |
+| Grok | xAI | manual/no-hooks flow validation, xAI lane review, creative blog illustrations | `grok@noreply.x.ai` |
 
-Claude Code, codex, and Gemini CLI coordinate the agentchute releases
-through agentchute. The three-team round-1 / cross-review / synthesis
+Claude Code, codex, Gemini CLI, and Grok coordinate the agentchute releases
+through agentchute. The round-1 / cross-review / synthesis
 pattern is documented in the `.agentchute/loop/scratch-*` directories
 on the working branches (kept out of `main` so the release commits stay
 small, but visible on `v0.2`, `v0.2.1`, etc.).
