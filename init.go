@@ -64,6 +64,7 @@ const gitignoreStanzaTemplate = `# agentchute-gitignore v2 begin
 .{{NAMESPACE}}/loop/archive/
 .{{NAMESPACE}}/loop/malformed/
 .{{NAMESPACE}}/loop/state/
+.{{NAMESPACE}}/loop/scratch-*
 .{{NAMESPACE}}/loop/watchdog.log
 # agentchute-gitignore v2 end
 `

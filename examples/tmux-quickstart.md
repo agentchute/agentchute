@@ -63,8 +63,10 @@ Gemini CLI on your system.)
 
 On session start, have each agent read its wrapper instructions
 (`CLAUDE.md`, `CODEX.md`, `GEMINI.md`, or `AGENTS.md`) and run the
-enrollment command. `agentchute register --as <id> --vendor <vendor>`
-auto-detects `$TMUX_PANE`, so the wake target is correct for that pane.
+enrollment command. `agentchute register --vendor <vendor>` derives a
+contextual `<wrapper>-<folder>` id and auto-detects `$TMUX_PANE`, so the
+wake target is correct for that pane. Pass `--as <id>` only when you need
+a custom stable roster id.
 
 ## 6. Test the loop
 
@@ -111,9 +113,8 @@ tmux kill-session -t <session-name>
 - **Pane stops receiving wakes after closing and reopening** — tmux pane
   IDs (`%0`, `%1`, …) are monotonic and never reused. A new pane has a
   new ID, so the agent in it must re-register so its `wake_target`
-  reflects current reality. Re-run `agentchute register --as <id>
-  --vendor <vendor>` from inside the new pane; `$TMUX_PANE` is auto-
-  detected.
+  reflects current reality. Re-run `agentchute register --vendor
+  <vendor>` from inside the new pane; `$TMUX_PANE` is auto-detected.
 - **Agents in different tmux sessions** — they can still coordinate as
   long as they share the same filesystem (and the same loop directory).
   Use the canonical `session:window.pane` form for `wake_target` when the

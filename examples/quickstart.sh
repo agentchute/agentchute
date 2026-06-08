@@ -44,6 +44,7 @@ ${VENDOR}/loop/inbox/
 ${VENDOR}/loop/archive/
 ${VENDOR}/loop/malformed/
 ${VENDOR}/loop/state/
+${VENDOR}/loop/scratch-*
 ${VENDOR}/loop/watchdog.log
 # agentchute-gitignore v2 end
 EOF

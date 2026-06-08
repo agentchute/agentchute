@@ -20,5 +20,6 @@
 .agentchute/loop/archive/
 .agentchute/loop/malformed/
 .agentchute/loop/state/
+.agentchute/loop/scratch-*
 .agentchute/loop/watchdog.log
 # agentchute-gitignore v2 end

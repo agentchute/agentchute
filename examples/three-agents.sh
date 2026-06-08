@@ -45,6 +45,9 @@ GEMINI_PANE="%2"
 # ---------------------------------------------------------------------------
 # 2. Each agent registers with its own vendor.
 # ---------------------------------------------------------------------------
+# Fixed-cast demos use explicit --as names so the transcript is stable. In
+# normal wrapper setup, --vendor is enough for contextual <wrapper>-<folder>
+# IDs, with --as reserved for custom roster lanes.
 agentchute register --as claude-code --vendor anthropic --wake-method tmux --wake-target "${CLAUDE_PANE}"
 agentchute register --as codex       --vendor openai    --wake-method tmux --wake-target "${CODEX_PANE}"
 agentchute register --as gemini-cli  --vendor google    --wake-method tmux --wake-target "${GEMINI_PANE}"

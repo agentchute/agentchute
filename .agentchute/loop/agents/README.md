@@ -13,7 +13,7 @@ YAML frontmatter (required) + free-text Markdown body (optional):
 ```markdown
 ---
 agent_id: <slug>              # required; short identifier
-vendor: <vendor>              # required; e.g., anthropic, openai, google, local, human
+vendor: <vendor>              # required; e.g., anthropic, openai, google, xai, local, human
 control_repo: <abs-path>      # required; absolute path to the control repo
 working_repos:                # optional; list of repos this agent edits
   - <abs-path>
@@ -39,8 +39,10 @@ Easiest path — use the binary:
 
 ```sh
 # from the repo root, after `go build -o agentchute`
-./agentchute register --as <your-id> --vendor <vendor-slug> --wake-method tmux --wake-target <pane-id>
+./agentchute register --vendor <vendor-slug> --wake-method tmux --wake-target <pane-id>
 ```
+
+Pass `--as <your-id>` when you need a custom stable roster id instead of the contextual default.
 
 By hand:
 

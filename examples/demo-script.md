@@ -74,6 +74,10 @@ Both panes print `[claude] online` / `[codex] online`.
 The wrappers' enrollment block normally runs this on session start; we run
 it manually for the demo so it's visible.
 
+This demo uses explicit `--as` names so the cast stays stable on camera.
+In normal wrapper setup, `--vendor` is enough for contextual IDs such as
+`codex-<folder>`.
+
 ```
 # pane 0:
 agentchute register --as claude-code --vendor anthropic

@@ -162,8 +162,9 @@ func setupHelp() string {
 Usage:
   agentchute setup [--wake tmux|runner|both] [--wrappers all|none|<list>] [--yes] [--dry-run]
 
-Scaffolds the control repo with agentchute init, installs lifecycle hooks for
-the selected wrappers, and installs launcher shims only for runner/both modes.
+Scaffolds the control repo with agentchute init, clears stale live
+registrations so agents re-enroll, installs lifecycle hooks for the selected
+wrappers, and installs launcher shims only for runner/both modes.
 
 Flags:
   --wake <mode>          tmux | runner | both (prompted when omitted)
@@ -393,6 +394,7 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 		fmt.Fprintf(w, "  wrappers:     %s\n", strings.Join(wrappers, ", "))
 	}
 	fmt.Fprintf(w, "  init:         %s\n", filepath.Join(root, "AGENTCHUTE.md"))
+	fmt.Fprintln(w, "  registrations: clear live agents/*.md on apply")
 	if len(wrappers) > 0 {
 		fmt.Fprintln(w, "  hooks:        repo scope, force/idempotent")
 	}
@@ -436,6 +438,13 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		})
 		if err != nil {
 			return fmt.Errorf("discover initialized repo: %w", err)
+		}
+		cleared, err := clearSetupLiveRegistrations(cfg)
+		if err != nil {
+			return err
+		}
+		if len(cleared) > 0 {
+			fmt.Printf("cleared %d stale live registration(s): %s\n", len(cleared), strings.Join(cleared, ", "))
 		}
 		globalState, _ := readSetupGlobalState()
 		poolState, _ := readSetupPoolState(cfg)
@@ -514,6 +523,41 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		}
 		return nil
 	})
+}
+
+func clearSetupLiveRegistrations(cfg *loop.Config) ([]string, error) {
+	entries, err := os.ReadDir(cfg.AgentsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read live registrations: %w", err)
+	}
+
+	var cleared []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".example.md") || name == "README.md" {
+			continue
+		}
+		path := filepath.Join(cfg.AgentsDir(), name)
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("inspect live registration %s: %w", name, err)
+		}
+		if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, fmt.Errorf("remove live registration %s: %w", name, err)
+		}
+		cleared = append(cleared, name)
+	}
+	sort.Strings(cleared)
+	return cleared, nil
 }
 
 func hookWrapperByName(name string) (hookWrapper, bool) {

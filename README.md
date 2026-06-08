@@ -58,7 +58,7 @@ For automation, choose the wake path explicitly:
 agentchute setup --wake runner --wrappers all --yes
 ```
 
-Use `--wake tmux` if tmux panes are your primary wake path, or `--wake both` if you want both tmux hooks and runner shims. Setup is idempotent: same-content re-runs report `already current`, and changed setup choices reconcile old setup-managed hooks, shims, PATH blocks, and ENROLLMENT blocks in `AGENTS.md` / wrapper `.md` files. After upgrading agentchute, re-run `agentchute setup --yes` or `agentchute init --yes` in each control repo to refresh those marked blocks.
+Use `--wake tmux` if tmux panes are your primary wake path, or `--wake both` if you want both tmux hooks and runner shims. Setup is idempotent: same-content re-runs report `already current`, changed setup choices reconcile old setup-managed hooks, shims, PATH blocks, and ENROLLMENT blocks in `AGENTS.md` / wrapper `.md` files, and live `agents/*.md` registrations are cleared so wrappers re-enroll with fresh contextual IDs. After upgrading agentchute, re-run `agentchute setup --yes` in each control repo and restart the wrappers.
 
 Restart the wrapper. From then on:
 
@@ -133,7 +133,7 @@ Delivery is no-overwrite by contract: a sender never replaces an existing messag
 | `init` | Scaffold loop dirs + drop ENROLLMENT block into wrapper files |
 | `boot --vendor <v> [--as <id>]` | Session-start: register + peek inbox + pending-reply summary |
 | `run --vendor <v> [--as <id>] -- <wrapper>` | Launch a wrapper under the PTY runner with registration, polling, and wake socket |
-| `setup [--wake tmux|runner|both]` | One-command control-repo setup: init + hooks + selected runner shims |
+| `setup [--wake tmux|runner|both]` | One-command control-repo setup: init + clear stale registrations + hooks + selected runner shims |
 | `shims install [--force]` | Install launcher shims so normal wrapper commands route through `agentchute run` inside pools |
 | `send --to <b> [--from <a>] [--ask] [--reply-to <id>]` | Write to recipient's inbox + wake poke + (optionally) clear ledger |
 | `check [--vendor <v>] [--as <id>]` | Read + archive inbox; record reply obligations; cooperative-wake peers |

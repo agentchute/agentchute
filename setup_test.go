@@ -89,6 +89,39 @@ func TestSetupTmuxDoesNotInstallShims(t *testing.T) {
 	}
 }
 
+func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	agentsDir := filepath.Join(root, ".agentchute", "loop", "agents")
+	mustMkdir(t, agentsDir)
+	mustWrite(t, filepath.Join(agentsDir, "codex-agentchute.md"), []byte("---\nagent_id: codex-agentchute\nvendor: openai\ncontrol_repo: "+root+"\nhost: test\nlast_seen: 2026-01-01T00:00:00Z\nstatus: active\n---\n"))
+	mustWrite(t, filepath.Join(agentsDir, "codex.example.md"), []byte("tracked example\n"))
+	mustWrite(t, filepath.Join(agentsDir, "README.md"), []byte("format reference\n"))
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "tmux", "--wrappers", "none", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Join(agentsDir, "codex-agentchute.md")); !os.IsNotExist(err) {
+		t.Fatalf("live registration should be cleared by setup: %v", err)
+	}
+	for _, keep := range []string{"codex.example.md", "README.md"} {
+		if _, err := os.Stat(filepath.Join(agentsDir, keep)); err != nil {
+			t.Fatalf("%s should be preserved: %v", keep, err)
+		}
+	}
+}
+
 func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))
