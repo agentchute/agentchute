@@ -325,6 +325,11 @@ func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	mustWriteCanonicalHook(t, cfg.ControlRepo, "claude-code")
+	stub := filepath.Join(cfg.ControlRepo, "stub-agentchute")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTCHUTE_BIN", stub)
 	regPath := cfg.AgentRegistrationPath("claude-code")
 	reg := &loop.Registration{
 		AgentID:     "claude-code",
