@@ -4,6 +4,14 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.3.6 (2026-06-08)
+
+Hotfix release for reinstalling upgraded control repos before restarting agent teams.
+
+- **Setup clears stale live registrations**: `agentchute setup` removes ignored live `agents/*.md` files while preserving tracked examples and `agents/README.md`, forcing agents to re-enroll with fresh contextual IDs and wake targets after install/upgrade.
+- **Gitignore drift fix**: the embedded init `.gitignore` stanza and quickstart example now ignore `.agentchute/loop/scratch-*`.
+- **Repo cleanup**: removed obsolete `V0.1.1-HANDOFF.md`, refreshed `HANDOFF.md`, added a tracked Grok loop example, and clarified contextual-registration examples.
+
 ## v0.3.5 (2026-06-08)
 
 Contextual identity and worktree support for the tmux/reference setup.

@@ -232,7 +232,7 @@ MIT — see [`LICENSE`](LICENSE).
 
 ## Releases
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.3.5** — contextual agent IDs, same-folder conflict suffixes, v11 enrollment refresh, and explicit worktree/project pool boundaries.
+See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.3.6** — setup clears stale live registrations on upgrade, with contextual agent IDs, same-folder conflict suffixes, v11 enrollment refresh, and explicit worktree/project pool boundaries.
 
 ## Manual session (without hooks)
 

@@ -6,13 +6,11 @@ Read this after `AGENTS.md` and before touching anything. This file should stay 
 
 ## Current State
 
-Latest release: `v0.3.5`
+Latest release: `v0.3.6`
 
-Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.3.5
+Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.3.6
 
-The current main branch is post-`v0.3.5` and is pushed to `origin/main` at `95a252d docs: clean stale handoff artifacts`.
-
-Important restart note: the standard installer resolves the latest GitHub Release, which is still `v0.3.5`. The setup-time live registration cleanup (`agentchute setup` clearing ignored `agents/*.md` so agents re-enroll cleanly) landed after `v0.3.5` in commit `95a252d`. To test that behavior via normal reinstall, publish a new release first or install/build from `origin/main`.
+Restart note: `v0.3.6` is the hotfix release intended for the stop/reinstall/restart test. Standard `install.sh` should resolve `v0.3.6` after the release workflow publishes it. This release includes the setup-time live registration cleanup (`agentchute setup` clears ignored `agents/*.md` so agents re-enroll with fresh contextual IDs and wake targets).
 
 Recent shipped work:
 
@@ -22,6 +20,18 @@ Recent shipped work:
 - Worktree/project pool guidance: agents communicate inside their discovered pool by default; cross-worktree/top-project pools require explicit pointer/env/flag setup.
 - v0.3.5 blog article and illustration for the improved tmux/worktree reference path.
 - Post-release repo cleanup: stale `V0.1.1-HANDOFF.md` removed, `HANDOFF.md` refreshed, Grok loop example added, scratch files ignored, and setup now clears stale live registrations before installing hooks/shims.
+
+## Restart Context
+
+After reinstall, start wrappers from this repo without custom `AGENTCHUTE_AGENT_ID` unless a named stable lane is required. The expected default identity path is `--as` > `AGENTCHUTE_AGENT_ID` > existing current-tmux-pane registration > contextual `<wrapper>-<folder>` with `-2`, `-3`, etc. for live conflicts.
+
+If restart behavior looks wrong, first run:
+
+```sh
+agentchute version
+agentchute status
+agentchute doctor --as <actual-agent-id>
+```
 
 ## Local State
 
