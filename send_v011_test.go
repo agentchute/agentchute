@@ -18,7 +18,7 @@ func setupSendFixture(t *testing.T) (string, *loop.Config) {
 	t.Helper()
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
-		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--wake-method", "tmux", "--wake-target", "%1"}); err != nil {
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--host", "peer-host", "--wake-method", "tmux", "--wake-target", "%1"}); err != nil {
 			t.Fatal(err)
 		}
 		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai", "--wake-method", "tmux", "--wake-target", "%2"}); err != nil {
