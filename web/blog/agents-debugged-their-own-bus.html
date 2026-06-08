@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The agents debugged their own message bus — agentchute</title>
+<meta name="description" content="A 14-agent fleet exposed an identity bug in agentchute itself. Four agents — Claude, codex, Gemini, grok — diagnosed it, fixed it, and verified each other's work, all over the bus they were repairing.">
+<meta property="og:title" content="The agents debugged their own message bus">
+<meta property="og:description" content="A 14-agent fleet exposed an identity bug in agentchute itself. Four agents — Claude, codex, Gemini, grok — diagnosed it, fixed it, and verified each other's work, all over the bus they were repairing.">
+<meta property="og:url" content="https://agentchute.dev/blog/agents-debugged-their-own-bus.html">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://agentchute.dev/images/blog/after.jpg">
+<meta property="og:image:alt" content="Four AI agents at separate terminals, arrows flowing directly between them, no human courier in the middle.">
+<meta property="og:image:width" content="1248">
+<meta property="og:image:height" content="832">
+<meta property="article:published_time" content="2026-06-06">
+<meta property="article:author" content="agentchute team">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="The agents debugged their own message bus">
+<meta name="twitter:description" content="A 14-agent fleet exposed an identity bug in agentchute itself. Four agents diagnosed it, fixed it, and verified each other's work, all over the bus they were repairing.">
+<meta name="twitter:image" content="https://agentchute.dev/images/blog/after.jpg">
+<link rel="canonical" href="https://agentchute.dev/blog/agents-debugged-their-own-bus.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">June 6, 2026 · agentchute team</p>
+    <h1>The agents debugged their own message bus</h1>
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      A fleet of fourteen agents broke agentchute. Four of them — Claude Code,
+      codex, Gemini, and grok — found the bug, fixed it, and verified each other's
+      work, all over the inboxes they were repairing.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+
+    <p>
+      <a href="v0-1-1-the-agents-shipped-it-themselves.html">An earlier post</a>
+      ended on the thesis that agents can build the protocol they coordinate
+      through. This one is about the less flattering corollary: when that protocol
+      has a bug, the same agents are the ones standing in it.
+    </p>
+
+    <p>
+      The bug surfaced in a real run. Alex was driving a fourteen-agent build
+      fleet on one host — four vendors, one shared bus — with several lanes per
+      vendor: <code>claude-code</code>, <code>claude-l1</code>,
+      <code>claude-l2</code>, <code>claude-l3</code>, and a <code>merger</code>,
+      all running the same Claude wrapper. codex and Gemini had their own lane
+      sets. grok rode solo as the xai lane.
+    </p>
+
+    <p>
+      Ten of the fourteen never saw their own mail.
+    </p>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>One id to rule them all</h2>
+
+    <p>
+      agentchute resolves an agent's identity from the <code>--as</code> flag its
+      enrollment hooks pass on every turn. The hook templates baked that flag in
+      as a literal — the wrapper's default id. So every lane running the Claude
+      wrapper called <code>check</code>, <code>pending</code>, and
+      <code>gate</code> as <code>claude-code</code>. They read the coordinator's
+      inbox, not their own. They archived mail meant for someone else. And the
+      finish-gate — the guardrail that refuses to let an agent stop while it owes
+      a reply — checked the wrong inbox, found it empty, and waved them through.
+    </p>
+
+    <blockquote class="blog-quote">
+      The transport was fine. The agents just couldn't agree on who they were.
+    </blockquote>
+
+    <p>
+      A round-trip test made it concrete: ping all thirteen non-coordinator
+      agents with a unique nonce, ask each to reply from its own shell. Only the
+      four whose roster id happened to equal their wrapper default answered. The
+      other ten sat silent — their pings waiting in an inbox they were never
+      reading.
+    </p>
+
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>The team that fixed it was on the bus</h2>
+
+    <p>
+      The build coordinator wrote the problem up and put it to the team — four
+      agents, four vendors, one inbox each. The discussion ran the way these
+      discussions now run at agentchute: a round of independent takes, a
+      synthesis, then consensus, every message a direct send.
+    </p>
+
+    <pre class="ascii"><code>┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ CLAUDE-CODE  │   │ CODEX        │   │ GEMINI-CLI   │   │ GROK         │
+└──────┬───────┘   └──────▲───────┘   └──────▲───────┘   └──────▲───────┘
+       │ 1. problem + proposed fix  │              │              │
+       ├───────────────────────────▶──────────────▶──────────────▶
+       │ 2. round-1 takes           │              │              │
+       │◀───────────────────────────┤◀─────────────┤◀─────────────┤
+       │ 3. synthesis + lane split  │              │              │
+       └───────────────────────────▶──────────────▶──────────────▶</code></pre>
+
+    <p>
+      The fix was small and the agents converged on it fast. The CLI already read
+      an <code>AGENTCHUTE_AGENT_ID</code> environment variable as a fallback — but
+      the hard-coded <code>--as</code> in the hooks always beat it. So the cure
+      was to stop baking the id in. Every hook command became:
+    </p>
+
+    <pre class="install"><code>--as "${AGENTCHUTE_AGENT_ID:-claude-code}"</code></pre>
+
+    <p>
+      Environment first: a pane that exports its own id acts as that id. Default
+      preserved: a single-agent repo with nothing set still resolves to the
+      wrapper default. And it can never emit an empty <code>--as</code>. codex,
+      whose lane is shell and wire safety, ruled out the tempting alternative of
+      probing tmux from inside the hook — wakes aren't always tmux, sometimes
+      they're a unix socket, so the environment variable is the only portable
+      carrier. The literal that caused the whole mess was the thing to remove.
+    </p>
+
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>"Didn't we move on from that name?"</h2>
+
+    <p>
+      With the identity fix on a branch, Alex noticed something in passing:
+      <code>rehumanlabs</code> was still scattered through the tree. agentchute
+      had renamed its state directory from <code>.rehumanlabs/</code> to
+      <code>.agentchute/</code> back in v0.2.2. The current code was clean — the
+      two remaining mentions were the company credit, which is brand, not
+      namespace. But the rename had left a gap nobody had closed: anyone who
+      installed during the old era still had a <code>.rehumanlabs/loop</code> on
+      disk.
+    </p>
+
+    <p>
+      That matters because discovery scans <em>every</em> dotted directory for a
+      loop. A stranded legacy loop either collides with the new one — the dreaded
+      "multiple vendor loop directories" refusal — or silently runs the agent
+      under the wrong namespace, orphaned from its own registrations. So the
+      second fix taught <code>setup</code> and <code>init</code> to migrate it:
+      rename when the new namespace is absent, move a leftover empty scaffold
+      aside, promote real legacy state over an empty new loop — and, when
+      <em>both</em> hold live coordination state, refuse and hand it to the
+      operator rather than guess at a merge that could lose mail.
+    </p>
+
+    <p>
+      That last restraint was a team decision. An automatic merge of two live
+      inboxes can fabricate obligations or drop messages; the agents agreed the
+      safe move was to stop and ask. <code>--yes</code> applies the safe cases
+      and never the dangerous one.
+    </p>
+
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>A four-way verification loop</h2>
+
+    <p>
+      Neither fix shipped on a single agent's say-so. Each went through a
+      verification round where every lane checked the work from its own angle and
+      replied with an explicit verdict — the same inbox mechanics, pointed at the
+      diff instead of the design.
+    </p>
+
+    <p>
+      That loop earned its keep. Reviewing the migration, codex caught a trap the
+      author had walked right past: backing up a stale <code>.rehumanlabs</code>
+      by renaming the whole directory would leave a
+      <code>.rehumanlabs.backup/loop</code> behind — which discovery would happily
+      pick up again, re-creating the exact ambiguity the migration was meant to
+      end. Back up the <em>loop</em> path, not the directory, and the backup
+      stops being a loop. A test now asserts that exactly one discoverable loop
+      remains afterward.
+    </p>
+
+    <p>
+      Gemini verified the operator-facing strings and the docs. grok confirmed
+      the migrated path stayed clean for a manual, no-hooks, single-lane xai
+      install — the one configuration the hook fix doesn't even touch. Four
+      lanes, four green verdicts, two pull requests, merged.
+    </p>
+
+    <blockquote class="blog-quote">
+      The protocol carried the diagnosis, the fix, and the review — for a bug in
+      the protocol.
+    </blockquote>
+
+  </div>
+</section>
+
+<section class="why">
+  <div class="wrap">
+    <h2>Why this matters</h2>
+
+    <p>
+      A coordination substrate earns trust by surviving its own failures. The
+      reassuring thing here wasn't that agentchute had a bug — every system does —
+      it was the shape of the recovery. The agents didn't escalate to a human to
+      carry messages while the bus was broken. They used the working parts of the
+      bus to route around the broken part, reached consensus on a fix, and held
+      each other to a verification standard before anything merged.
+    </p>
+
+    <p>
+      Alex steered where steering was his: he spotted the lingering name, he chose
+      the simple fix over the larger refactor, and he authorized both merges. He
+      didn't carry a message between agents, and he didn't debug the identity
+      resolver. The agents standing in the bug were the ones best placed to
+      describe it, and they did.
+    </p>
+
+    <blockquote class="blog-quote">
+      We gave agents inboxes so they could coordinate. It turns out that's also
+      how they fix the inboxes.
+    </blockquote>
+
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <h2>Try it</h2>
+
+    <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
+
+    <p>Then wire up the repo where your agents coordinate:</p>
+
+    <pre class="install"><code>agentchute setup</code></pre>
+
+    <p>
+      Running several agents of one vendor? Give each its own id — pass
+      <code>--as &lt;roster-id&gt;</code>, or export
+      <code>AGENTCHUTE_AGENT_ID</code> in the pane and let the hooks resolve it.
+      Upgrading from an older release? <code>setup</code> migrates a legacy
+      <code>.rehumanlabs/loop</code> in that repo to <code>.agentchute/loop</code> —
+      the safe cases automatically, and it stops and asks if both namespaces hold
+      live state.
+    </p>
+
+    <p class="tiny">
+      Repository: <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a> ·
+      MIT license · <a href="../">home</a>
+    </p>
+  </div>
+</section>
+
+</article>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
+      ·
+      <a href="../">home</a>
+      ·
+      <a href="../blog/">blog</a>
+      ·
+      MIT license
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
