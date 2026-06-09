@@ -170,4 +170,34 @@ func TestResolveAgentID(t *testing.T) {
 			t.Errorf("got %q, want 'claude-code-my-project' (reused stale ID)", got)
 		}
 	})
+
+	t.Run("PollerOnlyRegistrationDoesNotReserveContextualID", func(t *testing.T) {
+		t.Setenv("AGENTCHUTE_AGENT_ID", "")
+		t.Setenv("TMUX_PANE", "")
+
+		cfg := &loop.Config{
+			LoopDir: filepath.Join(root, ".agentchute", "loop"),
+		}
+		agentsDir := cfg.AgentsDir()
+		_ = os.MkdirAll(agentsDir, 0700)
+
+		reg := &loop.Registration{
+			AgentID:     "claude-code-my-project",
+			Vendor:      "anthropic",
+			ControlRepo: root,
+			Host:        "test-host",
+			LastSeen:    time.Now().UTC(),
+			Status:      loop.StatusActive,
+		}
+		_ = loop.WriteRegistration(filepath.Join(agentsDir, reg.AgentID+".md"), reg)
+		mustWriteFreshPollerHeartbeat(t, cfg, reg.AgentID)
+
+		got, err := resolveAgentID("", "anthropic", cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "claude-code-my-project" {
+			t.Errorf("got %q, want 'claude-code-my-project' (poller heartbeat is liveness, not a distinct lane)", got)
+		}
+	})
 }

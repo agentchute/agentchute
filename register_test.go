@@ -276,6 +276,122 @@ func TestRegisterPrunesStaleSameHostPeerTmuxRegistration(t *testing.T) {
 	})
 }
 
+func TestRegisterPrunesSamePaneTmuxRegistration(t *testing.T) {
+	withFakeTmuxTargets(t, "%1")
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		host, _ := os.Hostname()
+		old := &loop.Registration{
+			AgentID:     "old-agent",
+			Vendor:      "anthropic",
+			ControlRepo: root,
+			Host:        host,
+			WakeMethod:  "tmux",
+			WakeTarget:  "%1",
+			LastSeen:    time.Now().UTC().Truncate(time.Second),
+			Status:      loop.StatusActive,
+		}
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath(old.AgentID), old); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Setenv("TMUX_PANE", "%1")
+		out, err := captureStdout(t, func() error {
+			return cmdRegister([]string{"--as", "new-agent", "--vendor", "openai"})
+		})
+		if err != nil {
+			t.Fatalf("register: %v", err)
+		}
+		if !strings.Contains(out, "pruned_tmux:") {
+			t.Fatalf("register output did not report same-pane pruning:\n%s", out)
+		}
+		if _, err := os.Stat(cfg.AgentRegistrationPath(old.AgentID)); !os.IsNotExist(err) {
+			t.Fatalf("same-pane tmux registration should be removed, stat err=%v", err)
+		}
+		reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath("new-agent"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reg.WakeMethod != "tmux" || reg.WakeTarget != "%1" {
+			t.Fatalf("new registration wake = %s:%s, want tmux:%%1", reg.WakeMethod, reg.WakeTarget)
+		}
+	})
+}
+
+func TestPerformRegisterConcurrentSamePaneKeepsSingleRegistration(t *testing.T) {
+	withFakeTmuxTargets(t, "%7")
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		t.Setenv("TMUX_PANE", "%7")
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		racers := []registerOpts{
+			{AgentID: "claude-code-proj", Vendor: "anthropic", PruneStalePeerTmux: true},
+			{AgentID: "codex-proj", Vendor: "openai", PruneStalePeerTmux: true},
+			{AgentID: "gemini-cli-proj", Vendor: "google", PruneStalePeerTmux: true},
+			{AgentID: "grok-proj", Vendor: "xai", PruneStalePeerTmux: true},
+		}
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make(chan error, len(racers))
+		now := time.Now().UTC()
+		for _, opts := range racers {
+			opts := opts
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if _, err := performRegister(cfg, opts, now); err != nil {
+					errs <- err
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Errorf("performRegister racer failed: %v", err)
+		}
+		if t.Failed() {
+			t.FailNow()
+		}
+
+		entries, err := os.ReadDir(cfg.AgentsDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".md") {
+				ids = append(ids, strings.TrimSuffix(e.Name(), ".md"))
+			}
+		}
+		if len(ids) != 1 {
+			t.Fatalf("concurrent same-pane register produced identities %v, want exactly one", ids)
+		}
+		reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(ids[0]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reg.WakeMethod != "tmux" || reg.WakeTarget != "%7" {
+			t.Fatalf("surviving registration wake = %s:%s, want tmux:%%7", reg.WakeMethod, reg.WakeTarget)
+		}
+	})
+}
+
 // --bio sets the registration body. Without --bio on a re-register, the
 // existing body is preserved (idempotence). With --bio, the body is
 // overwritten with the new text.

@@ -128,6 +128,16 @@ func performRegisterOnce(cfg *loop.Config, opts registerOpts, host string, now t
 
 	wakeMethod, wakeTarget, warnings := resolveWakeForRegistration(opts, existing)
 
+	publish := func() (*registerResult, error) {
+		return publishRegistrationOnce(cfg, opts, host, now, regPath, existing, existingFound, wakeMethod, wakeTarget, warnings)
+	}
+	if strings.TrimSpace(wakeMethod) == "tmux" && strings.TrimSpace(wakeTarget) != "" {
+		return withTmuxPaneRegistrationLock(cfg, host, wakeTarget, publish)
+	}
+	return publish()
+}
+
+func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, now time.Time, regPath string, existing *loop.Registration, existingFound bool, wakeMethod, wakeTarget string, warnings []string) (*registerResult, error) {
 	reg := &loop.Registration{
 		AgentID:      opts.AgentID,
 		Vendor:       opts.Vendor,
@@ -176,10 +186,18 @@ func performRegisterOnce(cfg *loop.Config, opts registerOpts, host string, now t
 
 	var peerWakeStale []peerWakeStale
 	if opts.PruneStalePeerTmux {
-		peerWakeStale, err = pruneStalePeerTmuxRegistrations(cfg, opts.AgentID)
+		stale, err := pruneStalePeerTmuxRegistrations(cfg, opts.AgentID)
 		if err != nil {
 			return nil, fmt.Errorf("prune stale peer tmux registrations: %w", err)
 		}
+		peerWakeStale = append(peerWakeStale, stale...)
+	}
+	if strings.TrimSpace(wakeMethod) == "tmux" && strings.TrimSpace(wakeTarget) != "" {
+		samePane, err := pruneSamePanePeerTmuxRegistrations(cfg, opts.AgentID, host, wakeTarget)
+		if err != nil {
+			return nil, fmt.Errorf("prune same-pane tmux registrations: %w", err)
+		}
+		peerWakeStale = append(peerWakeStale, samePane...)
 	}
 
 	return &registerResult{

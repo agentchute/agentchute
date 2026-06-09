@@ -219,7 +219,10 @@ func registrationReservesIdentity(cfg *loop.Config, reg *loop.Registration, now 
 	if reg.Status == loop.StatusOffline || reg.Status == loop.StatusExhausted {
 		return false
 	}
-	if !reg.IsPokable() && !pollerHeartbeatReservesIdentity(cfg, reg.AgentID, now) {
+	if !reg.IsPokable() {
+		// A poller heartbeat proves recipient liveness, but it does not identify a
+		// distinct interactive lane. Reserving poller-only registrations makes
+		// hook-managed no-tmux sessions suffix on every lifecycle command.
 		return false
 	}
 	if reg.LastSeen.IsZero() {
@@ -230,16 +233,4 @@ func registrationReservesIdentity(cfg *loop.Config, reg *loop.Registration, now 
 		age = 0
 	}
 	return age < StaleRegThreshold
-}
-
-func pollerHeartbeatReservesIdentity(cfg *loop.Config, agentID string, now time.Time) bool {
-	if cfg == nil {
-		return false
-	}
-	hb, err := loop.LoadPollerHeartbeat(cfg, agentID)
-	if err != nil {
-		return false
-	}
-	fresh, _, _ := loop.PollerFreshness(hb, now)
-	return fresh
 }
