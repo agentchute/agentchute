@@ -41,9 +41,9 @@ func TestPreparePoolPlanFreshTarget(t *testing.T) {
 	if tp.PointerAction.Apply == nil {
 		t.Error("PointerAction.Apply must be non-nil for fresh target")
 	}
-	// 4 wrappers (CLAUDE/CODEX/GEMINI/AGENTS)
-	if len(tp.WrapperActions) != 4 {
-		t.Fatalf("WrapperActions count = %d, want 4", len(tp.WrapperActions))
+	// 5 wrappers (CLAUDE/CODEX/GEMINI/GROK/AGENTS)
+	if len(tp.WrapperActions) != 5 {
+		t.Fatalf("WrapperActions count = %d, want 5", len(tp.WrapperActions))
 	}
 	for _, w := range tp.WrapperActions {
 		if w.Action != "create v11" {
@@ -366,9 +366,9 @@ func TestPreparePoolApplyEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	// 1 pointer + 4 wrappers = 5 actions.
-	if applied != 5 {
-		t.Errorf("applied = %d, want 5", applied)
+	// 1 pointer + 5 wrappers (CLAUDE/CODEX/GEMINI/GROK/AGENTS) = 6 actions.
+	if applied != 6 {
+		t.Errorf("applied = %d, want 6", applied)
 	}
 
 	pointerPath := filepath.Join(target, loop.PointerFileName)

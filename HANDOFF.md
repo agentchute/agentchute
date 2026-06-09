@@ -1,18 +1,18 @@
 # agentchute — current handoff
 
-Last updated: 2026-06-08.
+Last updated: 2026-06-09.
 
 Read this after `AGENTS.md` and before touching anything. This file should stay short and current; release history belongs in `CHANGELOG.md`, and protocol history belongs in `AGENTCHUTE.md`.
 
 ## Current State
 
-Latest release: `v0.3.6`
+Latest release: `v0.3.7`
 
-Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.3.6
+Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.3.7
 
-Restart note: `v0.3.6` is the hotfix release intended for the stop/reinstall/restart test. Standard `install.sh` should resolve `v0.3.6` after the release workflow publishes it. This release includes the setup-time live registration cleanup (`agentchute setup` clears ignored `agents/*.md` so agents re-enroll with fresh contextual IDs and wake targets).
+Restart note: `v0.3.7` is the hotfix release intended for the duplicate-contextual-registration and Grok parity restart test. Standard `install.sh` should resolve `v0.3.7` after the release workflow publishes it. This release fixes same-pane contextual startup races, removes redundant SessionStart self-check hooks, and adds first-class Grok runner/shim setup support.
 
-Final pre-restart verification on 2026-06-08: `main`, `origin/main`, and tag `v0.3.6` all point at `cabe00d`; GitHub CI and the GoReleaser release workflow both passed; `/releases/latest` resolves to `v0.3.6`; release assets exist for darwin/linux amd64/arm64 plus `checksums.txt`; `sh install.sh --no-setup --dry-run` resolves `v0.3.6`.
+Local pre-release verification on 2026-06-09: `gofmt -w .`, `go vet ./...`, `go test ./...`, and `go build ./...` passed; Grok and Gemini both reported no findings on the unstaged diff; live dogfood registrations were cleaned to one agent each for Claude, Codex, Gemini, and Grok.
 
 Recent shipped work:
 
@@ -22,6 +22,7 @@ Recent shipped work:
 - Worktree/project pool guidance: agents communicate inside their discovered pool by default; cross-worktree/top-project pools require explicit pointer/env/flag setup.
 - v0.3.5 blog article and illustration for the improved tmux/worktree reference path.
 - Post-release repo cleanup: stale `V0.1.1-HANDOFF.md` removed, `HANDOFF.md` refreshed, Grok loop example added, scratch files ignored, and setup now clears stale live registrations before installing hooks/shims.
+- v0.3.7 hotfix: same-pane contextual registration adoption, atomic exclusive registration publish, SessionStart self-check dedup, and first-class Grok runner/shim setup support.
 
 ## Restart Context
 

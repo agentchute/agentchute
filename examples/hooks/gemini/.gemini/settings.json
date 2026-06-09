@@ -5,11 +5,6 @@
         "matcher": "startup",
         "hooks": [
           {
-            "name": "agentchute-self-check",
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor google --quiet"
-          },
-          {
             "name": "agentchute-poller",
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor google --quiet"

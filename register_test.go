@@ -4,11 +4,83 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
+
+// Concurrent SessionStart commands (boot + self-check fire from the same hook)
+// share one tmux pane and one contextual base. Both resolve the base before
+// either write is visible; the exclusive-write loser used to fall into the
+// os.IsExist loop and suffix itself to "<base>-2", producing duplicate live
+// registrations for one wrapper in one pane. The collision handler must instead
+// re-read the now-visible same-pane same-vendor registration and adopt it.
+func TestPerformRegisterConcurrentSamePaneReusesBase(t *testing.T) {
+	withFakeTmuxTargets(t, "%1")
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		t.Setenv("AGENTCHUTE_AGENT_ID", "")
+		t.Setenv("TMUX_PANE", "%1")
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := "claude-code-" + getFolderSlug(root)
+
+		// Race many startup commands at once. With the bug, at least one loses
+		// the exclusive create and suffixes to "<base>-2".
+		const racers = 12
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make(chan error, racers)
+		now := time.Now().UTC()
+		for i := 0; i < racers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				opts := registerOpts{
+					AgentID:            base,
+					Vendor:             "anthropic",
+					ContextualIdentity: true,
+					ContextualBaseID:   base,
+					PruneStalePeerTmux: true,
+				}
+				if _, err := performRegister(cfg, opts, now); err != nil {
+					errs <- err
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Errorf("performRegister racer failed: %v", err)
+		}
+		if t.Failed() {
+			t.FailNow()
+		}
+
+		entries, err := os.ReadDir(cfg.AgentsDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".md") {
+				ids = append(ids, strings.TrimSuffix(e.Name(), ".md"))
+			}
+		}
+		if len(ids) != 1 || ids[0] != base {
+			t.Fatalf("concurrent same-pane register produced duplicate identities %v, want exactly [%s]", ids, base)
+		}
+	})
+}
 
 func TestRegisterAutoDetectsTmuxPane(t *testing.T) {
 	withFakeTmuxTargets(t, "%99")

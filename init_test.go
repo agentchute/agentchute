@@ -21,6 +21,7 @@ func TestInitFreshEmpty(t *testing.T) {
 	expectAction(t, plan, "CLAUDE.md", "create v11")
 	expectAction(t, plan, "CODEX.md", "create v11")
 	expectAction(t, plan, "GEMINI.md", "create v11")
+	expectAction(t, plan, "GROK.md", "create v11")
 	expectAction(t, plan, "AGENTS.md", "create v11")
 	expectAction(t, plan, ".gitignore", "skip") // not in git
 	expectAction(t, plan, ".agentchute/loop/agents", "mkdir 0700")
@@ -39,7 +40,7 @@ func TestInitFreshAppliedThenReplanIsNoOp(t *testing.T) {
 	applyAll(t, plan)
 
 	// Sanity: files exist with expected content.
-	for _, f := range []string{"AGENTCHUTE.md", "CLAUDE.md", "CODEX.md", "GEMINI.md", "AGENTS.md"} {
+	for _, f := range []string{"AGENTCHUTE.md", "CLAUDE.md", "CODEX.md", "GEMINI.md", "GROK.md", "AGENTS.md"} {
 		if _, err := os.Stat(filepath.Join(root, f)); err != nil {
 			t.Fatalf("expected %s to exist: %v", f, err)
 		}

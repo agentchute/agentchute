@@ -30,14 +30,16 @@ func TestTemplatesMatchRepoWrappers(t *testing.T) {
 			wrapperFile: "GEMINI.md",
 			render:      func() string { return renderWrapperBlock("gemini-cli", "google") },
 		},
-		// GROK.md intentionally diverges from the standard
-		// wrapper.md template in v0.2.1: `agentchute hooks install`
-		// does not yet ship a grok template, so the GROK.md
-		// enrollment block points at manual boot instead of
-		// promising automation that doesn't exist. Add a grok
-		// template + restore this entry when the grok wrapper
-		// ships.
-		// {wrapperFile: "GROK.md", render: ...},
+		// GROK.md tracks the standard wrapper.md template like every
+		// other wrapper. The grok CLI has no repo hook system, so its
+		// wake path is the runner shim (`agentchute setup --wake runner
+		// --wrappers grok`) rather than lifecycle hooks — but the
+		// enrollment block itself is identical to the shared template,
+		// so it must not drift.
+		{
+			wrapperFile: "GROK.md",
+			render:      func() string { return renderWrapperBlock("grok", "xai") },
+		},
 		{
 			wrapperFile: "AGENTS.md",
 			render:      func() string { return enrollmentAgentsTemplate },

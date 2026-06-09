@@ -24,6 +24,7 @@ var shimSpecs = []shimSpec{
 	{Name: "codex", AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}},
 	{Name: "gemini", AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli"}},
 	{Name: "gemini-cli", AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini-cli", "gemini"}},
+	{Name: "grok", AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
 }
 
 func cmdShims(args []string) error {
@@ -49,7 +50,7 @@ func cmdShimsInstall(args []string) error {
 	var dir, wrapper string
 	var force, quiet bool
 	fs.StringVar(&dir, "dir", "", "shim directory (default: $HOME/.agentchute/bin)")
-	fs.StringVar(&wrapper, "wrapper", "all", "wrapper key(s): claude-code,codex,gemini-cli or all")
+	fs.StringVar(&wrapper, "wrapper", "all", "wrapper key(s): claude-code,codex,gemini-cli,grok or all")
 	fs.BoolVar(&force, "force", false, "overwrite existing shim files")
 	fs.BoolVar(&quiet, "quiet", false, "suppress status text")
 	if err := fs.Parse(args); err != nil {
@@ -137,7 +138,7 @@ func selectShimSpecs(wrapper string) ([]shimSpec, error) {
 	}
 	for key := range wanted {
 		if !matched[key] {
-			return nil, fmt.Errorf("--wrapper %q is not recognized; known: claude-code, codex, gemini-cli, all", key)
+			return nil, fmt.Errorf("--wrapper %q is not recognized; known: claude-code, codex, gemini-cli, grok, all", key)
 		}
 	}
 	return selected, nil
@@ -293,6 +294,8 @@ func shimsHelp() string {
 Usage:
   agentchute shims install [--dir <path>] [--wrapper <name[,name...]>] [--force] [--quiet]
   agentchute shims exec --name <wrapper> --shim-dir <dir> -- [args...]
+
+Wrapper keys: claude-code, codex, gemini-cli, grok (or all).
 
 Launcher shims make normal wrapper commands route through agentchute run
 inside initialized pools and pass through to the real wrapper elsewhere.

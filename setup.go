@@ -64,7 +64,7 @@ func cmdSetup(args []string) error {
 
 	var opts setupOptions
 	fs.StringVar(&opts.Wake, "wake", "", "primary wake path: tmux | runner | both")
-	fs.StringVar(&opts.Wrappers, "wrappers", "all", "all (detected on PATH), none, or comma list: claude-code,codex,gemini-cli")
+	fs.StringVar(&opts.Wrappers, "wrappers", "all", "all (detected on PATH), none, or comma list: claude-code,codex,gemini-cli,grok")
 	fs.StringVar(&opts.ControlRepo, "control-repo", "", "control repo path (default: env or current git/cwd root)")
 	fs.StringVar(&opts.ShimDir, "shim-dir", "", "launcher shim directory (default: $HOME/.agentchute/bin)")
 	fs.StringVar(&opts.Profile, "profile", "", "shell profile to update for launcher shims")
@@ -169,7 +169,7 @@ wrappers, and installs launcher shims only for runner/both modes.
 Flags:
   --wake <mode>          tmux | runner | both (prompted when omitted)
   --wrappers <set>       all (detected on PATH), none, or comma list
-                         (claude-code,codex,gemini-cli; default all)
+                         (claude-code,codex,gemini-cli,grok; default all)
   --control-repo <path>  repo to initialize (default env or current git/cwd root)
   --shim-dir <path>      launcher shim directory (default $HOME/.agentchute/bin)
   --profile <path>       shell profile to update for launcher shims
@@ -293,6 +293,42 @@ func setupPromptInput() (io.Reader, func(), error) {
 	return f, func() { _ = f.Close() }, nil
 }
 
+// setupWrapper describes a wrapper that `agentchute setup` knows about. The
+// set is broader than hookWrappers: a wrapper is enrollable through the runner
+// shim (which routes any vendor through `agentchute run`) even when its CLI has
+// no repo hook system. Hookable wrappers additionally have a hookWrappers entry
+// whose lifecycle hooks setup installs; hookless wrappers (e.g. grok, whose CLI
+// exposes no settings.json/hooks.json) rely on the shim wake path alone.
+type setupWrapper struct {
+	Name       string
+	Candidates []string
+	Hookable   bool
+}
+
+var setupWrappers = []setupWrapper{
+	{Name: "claude-code", Candidates: []string{"claude", "claude-code"}, Hookable: true},
+	{Name: "codex", Candidates: []string{"codex"}, Hookable: true},
+	{Name: "gemini-cli", Candidates: []string{"gemini", "gemini-cli"}, Hookable: true},
+	{Name: "grok", Candidates: []string{"grok"}, Hookable: false},
+}
+
+func wrapperIsKnownForSetup(name string) bool {
+	for _, w := range setupWrappers {
+		if w.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func setupWrapperNames() []string {
+	names := make([]string, 0, len(setupWrappers))
+	for _, w := range setupWrappers {
+		names = append(names, w.Name)
+	}
+	return names
+}
+
 func resolveSetupWrappers(raw, shimDir string) ([]string, map[string]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "all" {
@@ -301,10 +337,6 @@ func resolveSetupWrappers(raw, shimDir string) ([]string, map[string]string, err
 	if raw == "none" {
 		return nil, detectSetupWrapperPaths(shimDir), nil
 	}
-	known := map[string]bool{}
-	for _, w := range hookWrappers {
-		known[w.Name] = true
-	}
 	seen := map[string]bool{}
 	var wrappers []string
 	for _, part := range strings.Split(raw, ",") {
@@ -312,8 +344,8 @@ func resolveSetupWrappers(raw, shimDir string) ([]string, map[string]string, err
 		if key == "" {
 			continue
 		}
-		if !known[key] {
-			return nil, nil, fmt.Errorf("--wrappers %q is not recognized; known: claude-code, codex, gemini-cli, all, none", key)
+		if !wrapperIsKnownForSetup(key) {
+			return nil, nil, fmt.Errorf("--wrappers %q is not recognized; known: %s, all, none", key, strings.Join(setupWrapperNames(), ", "))
 		}
 		if !seen[key] {
 			wrappers = append(wrappers, key)
@@ -329,7 +361,7 @@ func resolveSetupWrappers(raw, shimDir string) ([]string, map[string]string, err
 func detectSetupWrappers(shimDir string) []string {
 	paths := detectSetupWrapperPaths(shimDir)
 	var wrappers []string
-	for _, w := range hookWrappers {
+	for _, w := range setupWrappers {
 		if paths[w.Name] != "" {
 			wrappers = append(wrappers, w.Name)
 		}
@@ -339,8 +371,8 @@ func detectSetupWrappers(shimDir string) []string {
 
 func detectSetupWrapperPaths(shimDir string) map[string]string {
 	out := map[string]string{}
-	for _, w := range hookWrappers {
-		for _, candidate := range setupWrapperCandidates(w.Name) {
+	for _, w := range setupWrappers {
+		for _, candidate := range w.Candidates {
 			path := findExecutableOutsideDir(candidate, shimDir)
 			if path != "" {
 				out[w.Name] = path
@@ -349,19 +381,6 @@ func detectSetupWrapperPaths(shimDir string) map[string]string {
 		}
 	}
 	return out
-}
-
-func setupWrapperCandidates(name string) []string {
-	switch name {
-	case "claude-code":
-		return []string{"claude", "claude-code"}
-	case "codex":
-		return []string{"codex"}
-	case "gemini-cli":
-		return []string{"gemini", "gemini-cli"}
-	default:
-		return []string{name}
-	}
 }
 
 func findExecutableOutsideDir(name, skipDir string) string {
@@ -409,7 +428,7 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 		}
 	}
 	if opts.Wrappers == "all" {
-		for _, wrapper := range hookWrappers {
+		for _, wrapper := range setupWrappers {
 			if detected[wrapper.Name] == "" {
 				fmt.Fprintf(w, "  detected:     %s not found on PATH; skipped\n", wrapper.Name)
 			} else {
@@ -456,6 +475,12 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		for _, wrapper := range wrappers {
 			hook, ok := hookWrapperByName(wrapper)
 			if !ok {
+				// Known but hookless wrapper (e.g. grok: its CLI has no repo
+				// hook system). It is enrolled through the runner shim only;
+				// there is no lifecycle hook to install.
+				if wrapperIsKnownForSetup(wrapper) {
+					continue
+				}
 				return fmt.Errorf("hooks install %s: unknown wrapper", wrapper)
 			}
 			if err := installOneHook(hook, root, false, true); err != nil {

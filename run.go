@@ -61,7 +61,7 @@ func cmdRun(args []string) error {
 	var opts runnerOptions
 	var idleGrace, busyGrace time.Duration
 	fs.StringVar(&opts.AgentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
-	fs.StringVar(&opts.Vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google)")
+	fs.StringVar(&opts.Vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google, xai)")
 	fs.StringVar(&opts.ControlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&opts.LoopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.IntVar(&opts.IntervalSeconds, "interval", defaultRunnerIntervalSeconds, "inbox poll interval in seconds")
@@ -187,7 +187,7 @@ and prompt injection when mail arrives.
 
 Flags:
   --as <id>                  agent id (or $AGENTCHUTE_AGENT_ID)
-  --vendor <vendor>          vendor or origin (anthropic, openai, google)
+  --vendor <vendor>          vendor or origin (anthropic, openai, google, xai)
   --interval <seconds>       inbox poll interval (minimum 5; default 5)
   --interrupt-policy <mode>  after-idle|after-grace|always (default after-idle; idle is heuristic)
   --prompt <text>            prompt injected on wake (default "[agentchute:run] check inbox")

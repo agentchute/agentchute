@@ -81,6 +81,7 @@ var wrapperTargets = []wrapperTarget{
 	{"CLAUDE.md", "claude-code", "anthropic"},
 	{"CODEX.md", "codex", "openai"},
 	{"GEMINI.md", "gemini-cli", "google"},
+	{"GROK.md", "grok", "xai"},
 }
 
 // initAction represents one row in the plan: what we want to do to one path,

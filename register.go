@@ -94,7 +94,20 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		return result, nil
 	}
 	for attempts := 0; opts.ContextualIdentity && os.IsExist(err) && attempts < 100; attempts++ {
-		opts.AgentID = nextContextualAgentIDByFilesystem(cfg, opts.ContextualBaseID, opts.AgentID)
+		// A concurrent startup command (e.g. boot + self-check fired from the
+		// same SessionStart hook) may have just created the same-pane
+		// same-vendor registration we were about to claim exclusively. Both
+		// processes resolved the same contextual base before either write was
+		// visible; suffixing here would mint a spurious "<base>-2" duplicate
+		// for one wrapper in one pane. If the pane now owns a matching live id,
+		// adopt it — the retry takes the existing-registration merge path and
+		// refreshes it in place. Only suffix when the colliding registration
+		// belongs to a different pane (a genuine distinct lane).
+		if adoptID, ok := agentIDForCurrentTmuxPane(cfg, opts.Vendor); ok {
+			opts.AgentID = adoptID
+		} else {
+			opts.AgentID = nextContextualAgentIDByFilesystem(cfg, opts.ContextualBaseID, opts.AgentID)
+		}
 		result, err = performRegisterOnce(cfg, opts, host, now)
 		if err == nil {
 			return result, nil

@@ -4,6 +4,16 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.3.7 (2026-06-09)
+
+Hotfix release for contextual identity startup races and Grok parity.
+
+- **Contextual registration race fix**: concurrent same-pane startup registrations now adopt the already-published same-pane same-vendor registration instead of minting a spurious `-2` identity.
+- **Atomic exclusive registration publish**: exclusive registration writes publish fully-written files via temp-file + hard-link semantics, so losing racers do not observe empty registrations.
+- **Hook template dedup**: removed redundant `self-check` from SessionStart hook templates; `boot` owns startup registration while per-turn `self-check` remains.
+- **Grok first-class setup path**: `setup`, `shims`, `init`, `doctor`, `GROK.md`, and drift tests now treat Grok as a first-class wrapper through the runner/shim wake path. Grok remains hookless by design because the Grok CLI has no repo lifecycle hook system.
+- **Tests**: added concurrent same-pane registration coverage plus Grok setup/shim parity and hook SessionStart assertions.
+
 ## v0.3.6 (2026-06-08)
 
 Hotfix release for reinstalling upgraded control repos before restarting agent teams.

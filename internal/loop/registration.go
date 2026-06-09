@@ -158,31 +158,49 @@ func WriteRegistration(path string, r *Registration) error {
 // WriteRegistrationExclusive writes a fresh registration and fails with
 // os.ErrExist if the path already exists. Used by contextual identity startup
 // so two simultaneous agents do not silently claim the same first ID.
+//
+// The destination is published atomically: content is written to a temp file
+// first, then hard-linked into place. os.Link fails with EEXIST (recognized by
+// os.IsExist) when the target already exists, preserving exclusive semantics —
+// but unlike an O_EXCL create followed by a separate write, the visible file is
+// never observed empty. That matters under the SessionStart race: a losing
+// racer that reads the just-created same-pane registration must see its full
+// wake_target to adopt it instead of suffixing.
 func WriteRegistrationExclusive(path string, r *Registration) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+
+	tmp, err := os.CreateTemp(dir, ".tmp_"+filepath.Base(path)+"_")
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString(formatRegistration(r)); err != nil {
-		_ = f.Close()
-		_ = os.Remove(path)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // best-effort: removed after link, or on any failure.
+
+	if _, err := tmp.WriteString(formatRegistration(r)); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(path)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(path)
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
 		return err
 	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmpName, path); err != nil {
+		return err // EEXIST surfaces as os.IsExist for the contextual-collision loop.
+	}
+	_ = syncDir(dir)
 	return nil
 }
 
