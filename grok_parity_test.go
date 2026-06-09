@@ -152,3 +152,122 @@ func TestSetupRunnerInstallsGrokShimNoHook(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupTmuxInstallsGrokShimBecauseHookless(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	profile := filepath.Join(home, ".zshrc")
+
+	withCwd(t, root, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdSetup([]string{
+				"--wake", "tmux",
+				"--wrappers", "grok",
+				"--profile", profile,
+				"--yes",
+			})
+		}); err != nil {
+			t.Fatalf("cmdSetup grok tmux: %v", err)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "grok")); err != nil {
+		t.Errorf("grok shim not installed by tmux setup: %v", err)
+	}
+	for _, p := range []string{".grok/settings.json", ".grok/hooks.json"} {
+		if _, err := os.Stat(filepath.Join(root, p)); err == nil {
+			t.Errorf("setup wrote a grok hook file %s; grok has no hook system", p)
+		}
+	}
+}
+
+func TestSetupTmuxMixedWrappersOnlyShimsHookless(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	profile := filepath.Join(home, ".zshrc")
+
+	withCwd(t, root, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdSetup([]string{
+				"--wake", "tmux",
+				"--wrappers", "codex,grok",
+				"--profile", profile,
+				"--yes",
+			})
+		}); err != nil {
+			t.Fatalf("cmdSetup mixed tmux: %v", err)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Join(root, ".codex", "hooks.json")); err != nil {
+		t.Fatalf("codex hooks not installed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "grok")); err != nil {
+		t.Errorf("grok shim not installed by mixed tmux setup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "codex")); !os.IsNotExist(err) {
+		t.Errorf("codex shim should not be installed by tmux setup: %v", err)
+	}
+}
+
+func TestSetupModeSwitchToTmuxKeepsOnlyHooklessShims(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	profile := filepath.Join(home, ".zshrc")
+	shimDir := filepath.Join(home, ".agentchute", "bin")
+
+	withCwd(t, root, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdSetup([]string{
+				"--wake", "runner",
+				"--wrappers", "codex,grok",
+				"--profile", profile,
+				"--yes",
+			})
+		}); err != nil {
+			t.Fatalf("cmdSetup mixed runner: %v", err)
+		}
+		t.Setenv("PATH", shimDir+string(os.PathListSeparator)+"/usr/bin:/bin")
+		if _, err := captureStdout(t, func() error {
+			return cmdSetup([]string{
+				"--wake", "tmux",
+				"--wrappers", "codex,grok",
+				"--profile", profile,
+				"--yes",
+			})
+		}); err != nil {
+			t.Fatalf("cmdSetup mixed tmux: %v", err)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Join(shimDir, "grok")); err != nil {
+		t.Errorf("grok shim should remain after tmux switch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(shimDir, "codex")); !os.IsNotExist(err) {
+		t.Errorf("codex shim should be removed after tmux switch: %v", err)
+	}
+}

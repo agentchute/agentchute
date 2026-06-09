@@ -25,7 +25,7 @@ Use `--wake tmux` if peers live in tmux panes, `--wake both` for mixed pools.
 
 **Wake events** arrive as `[agentchute:tmux] check inbox` or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox`.
 
-**If hooks don't fire** (rare; indicates a setup gap):
+**If startup enrollment doesn't run** (rare; indicates a setup gap):
 
 ```sh
 agentchute boot --vendor anthropic

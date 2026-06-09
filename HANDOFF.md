@@ -6,11 +6,13 @@ Read this after `AGENTS.md` and before touching anything. This file should stay 
 
 ## Current State
 
-Latest release: `v0.3.7`
+Latest release: `v0.3.8`
 
-Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.3.7
+Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.3.8
 
-Restart note: `v0.3.7` is the hotfix release intended for the duplicate-contextual-registration and Grok parity restart test. Standard `install.sh` should resolve `v0.3.7` after the release workflow publishes it. This release fixes same-pane contextual startup races, removes redundant SessionStart self-check hooks, and adds first-class Grok runner/shim setup support.
+Restart note: `v0.3.8` is the hotfix release for Grok startup enrollment in tmux-first pools. Standard `install.sh` should resolve `v0.3.8` after the release workflow publishes it. This release keeps a launcher shim for hookless selected wrappers such as Grok even when `setup --wake tmux` is used, and clarifies that agents should run `boot` + `poller ensure` if an initial `check` reports missing registration.
+
+Final v0.3.7 release verification on 2026-06-09: `main`, `origin/main`, and tag `v0.3.7` point at commit `fa58ab9`; GitHub CI and the GoReleaser release workflow both passed; release assets exist for darwin/linux amd64/arm64 plus `checksums.txt`; `install.sh --no-setup --dry-run` resolves `v0.3.7`; a temp GitHub install downloaded the `v0.3.7` darwin/arm64 asset, verified SHA256, installed successfully, and reported `agentchute 0.3.7`.
 
 Local pre-release verification on 2026-06-09: `gofmt -w .`, `go vet ./...`, `go test ./...`, and `go build ./...` passed; Grok and Gemini both reported no findings on the unstaged diff; live dogfood registrations were cleaned to one agent each for Claude, Codex, Gemini, and Grok.
 
@@ -23,6 +25,7 @@ Recent shipped work:
 - v0.3.5 blog article and illustration for the improved tmux/worktree reference path.
 - Post-release repo cleanup: stale `V0.1.1-HANDOFF.md` removed, `HANDOFF.md` refreshed, Grok loop example added, scratch files ignored, and setup now clears stale live registrations before installing hooks/shims.
 - v0.3.7 hotfix: same-pane contextual registration adoption, atomic exclusive registration publish, SessionStart self-check dedup, and first-class Grok runner/shim setup support.
+- v0.3.8 hotfix: tmux-mode setup now keeps launcher shims for hookless selected wrappers, especially Grok, so startup enrollment is automatic even without lifecycle hooks.
 
 ## Restart Context
 

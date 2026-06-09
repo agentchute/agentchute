@@ -404,6 +404,9 @@ func findExecutableOutsideDir(name, skipDir string) string {
 }
 
 func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []string, detected map[string]string) {
+	shimWrappers := setupShimWrappers(opts.Wake, wrappers)
+	hookWrappers := setupHookableWrappers(wrappers)
+
 	fmt.Fprintln(w, "agentchute setup")
 	fmt.Fprintf(w, "  control repo: %s\n", root)
 	fmt.Fprintf(w, "  wake:         %s\n", opts.Wake)
@@ -414,11 +417,14 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 	}
 	fmt.Fprintf(w, "  init:         %s\n", filepath.Join(root, "AGENTCHUTE.md"))
 	fmt.Fprintln(w, "  registrations: clear live agents/*.md on apply")
-	if len(wrappers) > 0 {
+	if len(hookWrappers) > 0 {
 		fmt.Fprintln(w, "  hooks:        repo scope, force/idempotent")
 	}
-	if setupNeedsShims(opts.Wake) {
+	if len(shimWrappers) > 0 {
 		fmt.Fprintf(w, "  shims:        %s\n", opts.ShimDir)
+		if opts.Wake == setupWakeTmux {
+			fmt.Fprintf(w, "  shim wrappers: %s (hookless startup enrollment)\n", strings.Join(shimWrappers, ", "))
+		}
 		if opts.NoProfile {
 			fmt.Fprintln(w, "  profile:      skipped (--no-profile)")
 		} else if profile := setupProfilePath(opts.Profile); profile != "" {
@@ -443,6 +449,51 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 
 func setupNeedsShims(wake string) bool {
 	return wake == setupWakeRunner || wake == setupWakeBoth
+}
+
+func setupShimWrappers(wake string, wrappers []string) []string {
+	if setupNeedsShims(wake) {
+		return compactSetupWrappers(wrappers, func(setupWrapper) bool { return true })
+	}
+	if wake == setupWakeTmux {
+		return compactSetupWrappers(wrappers, func(w setupWrapper) bool { return !w.Hookable })
+	}
+	return nil
+}
+
+func setupHookableWrappers(wrappers []string) []string {
+	return compactSetupWrappers(wrappers, func(w setupWrapper) bool { return w.Hookable })
+}
+
+func compactSetupWrappers(wrappers []string, keep func(setupWrapper) bool) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, name := range wrappers {
+		w, ok := setupWrapperByName(name)
+		if !ok || !keep(w) || seen[name] {
+			continue
+		}
+		out = append(out, name)
+		seen[name] = true
+	}
+	return out
+}
+
+func setupWrapperByName(name string) (setupWrapper, bool) {
+	for _, w := range setupWrappers {
+		if w.Name == name {
+			return w, true
+		}
+	}
+	return setupWrapper{}, false
+}
+
+func previousSetupShimWrappers(state setupGlobalState) []string {
+	wrappers := setupShimWrappers(state.Wake, state.Wrappers)
+	if len(wrappers) == 0 && state.ShimsInstalled {
+		return state.Wrappers
+	}
+	return wrappers
 }
 
 func applySetup(root string, opts setupOptions, wrappers []string) error {
@@ -488,8 +539,9 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			}
 		}
 
-		currentNeedsShims := setupNeedsShims(opts.Wake) && len(wrappers) > 0
-		for _, wrapper := range droppedWrappers(globalState.Wrappers, wrappers) {
+		currentShimWrappers := setupShimWrappers(opts.Wake, wrappers)
+		currentNeedsShims := len(currentShimWrappers) > 0
+		for _, wrapper := range droppedWrappers(previousSetupShimWrappers(globalState), currentShimWrappers) {
 			if err := removeSetupShimsForWrapper(globalState.ShimDir, wrapper); err != nil {
 				return err
 			}
@@ -498,7 +550,7 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			if err := cmdShims([]string{
 				"install",
 				"--dir", opts.ShimDir,
-				"--wrapper", strings.Join(wrappers, ","),
+				"--wrapper", strings.Join(currentShimWrappers, ","),
 				"--force",
 			}); err != nil {
 				return fmt.Errorf("shims install: %w", err)
@@ -533,7 +585,7 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			ShimDir:        opts.ShimDir,
 			Profile:        profile,
 			PathBlock:      pathBlock,
-			ShimsInstalled: setupNeedsShims(opts.Wake) && len(wrappers) > 0,
+			ShimsInstalled: currentNeedsShims,
 			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			return err

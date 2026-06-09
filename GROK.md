@@ -25,7 +25,7 @@ Use `--wake tmux` if peers live in tmux panes, `--wake both` for mixed pools.
 
 **Wake events** arrive as `[agentchute:tmux] check inbox` or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox`.
 
-**If hooks don't fire** (rare; indicates a setup gap):
+**If startup enrollment doesn't run** (rare; indicates a setup gap):
 
 ```sh
 agentchute boot --vendor xai
@@ -41,7 +41,7 @@ Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
 
 ## Grok-Specific Notes
 
-- **Wake path is the runner shim, not lifecycle hooks.** The grok CLI has no repo hook system (no `settings.json`/`hooks.json`, no SessionStart/UserPromptSubmit/Stop events), so `agentchute setup --wrappers grok` installs a launcher shim that routes `grok` through `agentchute run` and skips hook install. Use `--wake runner` (or `both`); a pure `--wake tmux` pool relies on peer pokes plus the polling baseline. `agentchute hooks install` has no grok target by design.
+- **Wake path is the runner shim, not lifecycle hooks.** The grok CLI has no repo hook system (no `settings.json`/`hooks.json`, no SessionStart/UserPromptSubmit/Stop events), so `agentchute setup --wrappers grok` installs a launcher shim that routes `grok` through `agentchute run` and skips hook install. In runner/both mode this follows the normal shim path; in tmux mode setup still installs the Grok shim because no hook can run startup enrollment. `agentchute hooks install` has no grok target by design.
 - Treat `AGENTCHUTE.md` as the wire-contract source of truth. If code behavior and spec text disagree, surface the mismatch before patching.
 - Standard pre-commit ritual from `AGENTS.md`: `gofmt -w .`, `go vet ./...`, `go test ./...`, `go build ./...`.
 - Use `.agentchute/loop/` for coordination. Check your inbox at turn start, archive consumed messages, and reply through agentchute or the documented file protocol.

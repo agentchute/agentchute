@@ -4,6 +4,15 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.3.8 (2026-06-09)
+
+Hotfix release for Grok startup enrollment in tmux-first pools.
+
+- **Grok tmux setup fix**: `agentchute setup --wake tmux --wrappers grok` now installs the Grok launcher shim because Grok has no lifecycle hook that can run startup enrollment.
+- **Mixed-wrapper shim cleanup**: tmux-mode setup now keeps shims only for hookless selected wrappers; switching from runner mode to tmux removes hook-capable wrapper shims while retaining Grok.
+- **Enrollment guidance**: generated `AGENTS.md` / wrapper enrollment text now tells agents to run `boot` + `poller ensure` if an initial `check` reports missing registration, instead of stopping.
+- **Docs/tests**: README and Grok notes now distinguish hook-capable SessionStart enrollment from hookless runner-shim startup; tests cover Grok-only, mixed-wrapper, and mode-switch setup behavior.
+
 ## v0.3.7 (2026-06-09)
 
 Hotfix release for contextual identity startup races and Grok parity.

@@ -10,7 +10,7 @@ agentchute setup --wake tmux --wrappers all --yes
 agentchute setup --wake both --wrappers all --yes
 ```
 
-Start sessions with the normal wrapper command from a control repo. In runner mode, the shim routes through `agentchute run`, which registers you, refreshes `last_seen`, exposes a reachable `agentchute-run` wake socket, polls your inbox, and injects `[agentchute:run] check inbox` when mail arrives. In tmux mode, peer wakes inject `[agentchute:tmux] check inbox`. Treat the bracketed prefix as machine metadata and follow the inbox-check instruction.
+Start sessions with the normal wrapper command from a control repo. In runner mode, the shim routes through `agentchute run`, which registers you, refreshes `last_seen`, exposes a reachable `agentchute-run` wake socket, polls your inbox, and injects `[agentchute:run] check inbox` when mail arrives. In tmux mode, peer wakes inject `[agentchute:tmux] check inbox`. Hookless wrappers such as Grok still need a startup shim because they have no lifecycle hook that can run `boot`; setup installs that shim when such a wrapper is selected. Treat the bracketed prefix as machine metadata and follow the inbox-check instruction.
 
 **The project is the communication boundary**: agents by default only see and talk to peers in the same discovered project pool. Unrelated projects on one host or tmux server are isolated because each project has its own pool and, when identity is not explicit, the CLI derives project-scoped IDs from the folder name (for example, `codex-agentchute`).
 
@@ -20,7 +20,7 @@ If a session starts and you do not see agentchute boot/enrolled context, run the
 agentchute run --vendor <vendor> -- <wrapper>
 ```
 
-As a manual fallback, run `agentchute boot --vendor <vendor>` and `agentchute poller ensure --vendor <vendor>` before doing any work. For a custom stable lane name, set `AGENTCHUTE_AGENT_ID=<roster-id>` or pass `--as <roster-id>` explicitly.
+As a manual fallback, run `agentchute boot --vendor <vendor>` and `agentchute poller ensure --vendor <vendor>` before doing any work, then run `agentchute check --vendor <vendor>`. If a first `check` says you are not registered, do this fallback immediately instead of stopping. For a custom stable lane name, set `AGENTCHUTE_AGENT_ID=<roster-id>` or pass `--as <roster-id>` explicitly.
 
 Known wrappers and their canonical IDs:
 
@@ -34,7 +34,7 @@ Known wrappers and their canonical IDs:
 The IDs above are wrapper bases. With no explicit identity, the reference CLI derives `<base>-<folder>` and reserves live conflicts with `-2`, `-3`, etc. **When several agents of one vendor share a bus** (e.g. `claude-l1`/`claude-l2`/`merger` all on the `claude-code` wrapper), each process must still enroll under its own id. Use contextual defaults for ordinary project/worktree lanes; use `AGENTCHUTE_AGENT_ID=<roster-id>` or `--as <roster-id>` for named lanes.
 
 **2. Lifecycle Hooks (Required for Context and Gates)**
-`agentchute setup` installs lifecycle hooks. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox/ledger context per turn and block finish while obligations remain.
+`agentchute setup` installs lifecycle hooks for hook-capable wrappers. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox/ledger context per turn and block finish while obligations remain. Hookless wrappers rely on `agentchute run` / launcher shims for startup enrollment.
 
 **3. Recipient Polling Fallback**
 Senders only deliver to your inbox. If you are not launched through `agentchute run` and are NOT in a tmux pane, keep recipient polling alive:
