@@ -46,6 +46,7 @@ type setupGlobalState struct {
 	Wrappers       []string `json:"wrappers"`
 	ShimDir        string   `json:"shim_dir,omitempty"`
 	Profile        string   `json:"profile,omitempty"`
+	NoProfile      bool     `json:"no_profile,omitempty"`
 	PathBlock      bool     `json:"path_block"`
 	ShimsInstalled bool     `json:"shims_installed"`
 	Aliases        bool     `json:"aliases,omitempty"`
@@ -638,6 +639,8 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			Wake:           opts.Wake,
 			Wrappers:       wrappers,
 			ShimDir:        opts.ShimDir,
+			Profile:        opts.Profile,
+			NoProfile:      opts.NoProfile,
 			ShimsInstalled: currentNeedsShims,
 			Aliases:        currentNeedsShims && opts.Aliases,
 			PathBlock:      pathBlock,

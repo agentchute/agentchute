@@ -4,6 +4,18 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.6.0 (2026-06-17)
+
+- **One-command full update (`agentchute update [--version <tag>]`)**: self-updates the binary and re-syncs the control repo in one step. Pure Go (no `curl | sh`): resolves the target release (latest by default), downloads the release archive + `checksums.txt`, verifies the exact-filename SHA-256 before extracting only the `agentchute` member, and atomically replaces the running binary (same-dir temp → fsync → rename; any download/verify failure leaves the binary untouched). It then re-execs the **new** binary's `setup` — replaying the pool's saved wake mode, wrappers (including `--wrappers none`), shim dir, and profile — so hooks, shims, and enrollment templates re-sync to the new version. Refuses to run from a launcher shim or without saved setup state; `--dry-run` prints the plan (and active agents it would disrupt) without mutating anything. Because `setup` clears live registrations, it prints a loud warning that every active agent must be restarted.
+
+## v0.5.1 (2026-06-17)
+
+Hotfix release from a deep audit of the v0.5.0 herdr wake adapter. No protocol or wire changes.
+
+- **Explicit herdr wake observability**: `--wake-method herdr` outside a herdr pane (`HERDR_PANE_ID` unset) now warns and enrolls non-pokable instead of silently registering an unwakeable agent (matches the tmux path).
+- **Identity-adoption precedence**: herdr pane identity adoption now runs before tmux adoption, matching the wake-detection precedence (herdr > tmux) so a stray `TMUX_PANE` cannot win.
+- **Diagnostics + docs**: `herdr agent rename` failures surface herdr's stderr; `setup --wake` help/usage, `install.sh --wake`, and the enrollment/usage text now list `herdr` consistently.
+
 ## v0.5.0 (2026-06-17)
 
 Native herdr wake adapter — the herdr analog of the tmux adapter, for pools that run inside herdr (github.com/ogulcancelik/herdr) panes.
