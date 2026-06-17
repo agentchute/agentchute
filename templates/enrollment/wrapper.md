@@ -1,4 +1,4 @@
-<!-- agentchute-enrollment v13 begin -->
+<!-- agentchute-enrollment v14 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 Canonical enrollment spec: [`AGENTS.md`](AGENTS.md). This file is a thin pointer.
@@ -21,7 +21,7 @@ agentchute setup --wake runner --wrappers {{AGENT_ID}} --yes
 
 > **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the namespaced launcher for this wrapper.
 
-Use `--wake tmux` if peers live in tmux panes, `--wake herdr` if in herdr panes, `--wake both` for mixed pools.
+Use `--wake runner` for the universal launcher+socket path; add `tmux` or `herdr` if peers reach you via pane send-keys (e.g. `--wake runner,tmux`).
 
 Start runner-mode sessions with the installed `ac-*` launcher for this wrapper.
 
@@ -38,4 +38,4 @@ agentchute poller ensure --vendor {{VENDOR}}
 **STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --vendor {{VENDOR}}`) or obligations are deferred (`agentchute defer --vendor {{VENDOR}} --message <message-id> --reason "..."`).
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v13 end -->
+<!-- agentchute-enrollment v14 end -->

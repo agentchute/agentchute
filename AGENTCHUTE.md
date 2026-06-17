@@ -167,7 +167,7 @@ Wake pokes are latency hints; recipient-side polling is the correctness baseline
 
 ### 8.1 Reference wake patterns
 - **tmux**: `tmux send-keys -t <wake_target> '[agentchute:tmux] check inbox'` followed by `Enter`.
-- **herdr**: `herdr agent send <wake_target> '[agentchute:herdr] check inbox\r'`.
+- **herdr**: `herdr agent send <wake_target> '[agentchute:herdr] check inbox'` to write the prompt, then `herdr pane send-keys <pane_id> Enter` to submit — `agent send` writes literal text only, so a real Enter key event is required (resolve `<pane_id>` from the stable name via `herdr agent get <wake_target>`).
 
 The leading bracket is machine metadata; the model-facing instruction is `check inbox`.
 
@@ -256,7 +256,7 @@ status: active
 3. **Deliver**: `ln .tmp_<filename> <filename>` (ensures no-overwrite), then `rm .tmp_<filename>`.
 4. **Poke**:
    - tmux: `tmux send-keys -t <target> '[agentchute:tmux] check inbox' Enter`
-   - herdr: `herdr agent send <target> '[agentchute:herdr] check inbox\r'`.
+   - herdr: `herdr agent send <target> '[agentchute:herdr] check inbox'` then `herdr pane send-keys <pane_id> Enter` (pane resolved from the name via `herdr agent get <target>`).
 
 ### C.3 Checking inbox
 1. Update `last_seen` in registration.

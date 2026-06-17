@@ -310,6 +310,56 @@ func TestDoctorAsBlocksWhenActingWrapperHookDiverged(t *testing.T) {
 	}
 }
 
+// A tmux/herdr-only wake set — including the combined "tmux,herdr" — installs
+// only hookless shims, so a hookable wrapper (codex) relies on its lifecycle
+// hook and shadowing is not applicable. Regression for the pre-fix `wake ==
+// tmux || wake == herdr` equality, which failed any multi-token set and emitted
+// false shadowing WARNs.
+func TestDoctorShadowingSkipsHookableWrapperForTmuxHerdrSet(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	// Cover BOTH the base id and the contextual id real setups enroll with —
+	// the contextual case is the one the exact-match bug missed.
+	for _, agentID := range []string{"codex", "codex-agentchute", "claude-code-agentchute"} {
+		for _, wake := range []string{"tmux", "herdr", "tmux,herdr"} {
+			got := checkWrapperShadowing(cfg, agentID, doctorOptions{PoolState: &setupPoolState{Wake: wake}})
+			if got.Severity != severitySkip {
+				t.Fatalf("wrapper_shadowing severity = %q for agent %q wake %q, want SKIP; msg=%q", got.Severity, agentID, wake, got.Message)
+			}
+		}
+		// When runner is in the set, shims ARE required on PATH, so never skip.
+		got := checkWrapperShadowing(cfg, agentID, doctorOptions{PoolState: &setupPoolState{Wake: "runner,tmux"}})
+		if got.Severity == severitySkip {
+			t.Fatalf("wrapper_shadowing must not skip for agent %q when runner is in the set; msg=%q", agentID, got.Message)
+		}
+	}
+}
+
+// hookWrapperForAgent and shimNamesForAgent must resolve contextual ids
+// (codex-agentchute) to their canonical wrapper, not only exact base ids.
+func TestWrapperResolutionHandlesContextualIDs(t *testing.T) {
+	cases := []struct {
+		id          string
+		wantWrapper string
+		hookable    bool
+		wantShim    string
+	}{
+		{"codex", "codex", true, "ac-codex"},
+		{"codex-agentchute", "codex", true, "ac-codex"},
+		{"claude-code-agentchute", "claude-code", true, "ac-claude"},
+		{"gemini-cli-agentchute", "gemini-cli", true, "ac-gemini"},
+		{"grok-agentchute", "", false, "ac-grok"}, // hookless, but still shimmed
+	}
+	for _, tc := range cases {
+		w, ok := hookWrapperForAgent(tc.id)
+		if ok != tc.hookable || (ok && w != tc.wantWrapper) {
+			t.Errorf("hookWrapperForAgent(%q) = (%q,%v), want (%q,%v)", tc.id, w, ok, tc.wantWrapper, tc.hookable)
+		}
+		if names := shimNamesForAgent(tc.id); len(names) != 1 || names[0] != tc.wantShim {
+			t.Errorf("shimNamesForAgent(%q) = %v, want [%s]", tc.id, names, tc.wantShim)
+		}
+	}
+}
+
 func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	regPath := cfg.AgentRegistrationPath("claude-code")

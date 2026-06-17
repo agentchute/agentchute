@@ -4,11 +4,11 @@ This file follows the [AGENTS.md](https://agents.md) convention. Any AI agent �
 
 ---
 
-<!-- agentchute-enrollment v13 begin -->
+<!-- agentchute-enrollment v14 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 **1. Setup / Startup Path**
-Run `agentchute setup` once per control repo. Choose `tmux` when tmux is the primary wake path, `herdr` when herdr is the primary wake path, `runner` when launcher shims should route wrappers through `agentchute run`, or `both` for mixed pools. The canonical post-install step is:
+Run `agentchute setup` once per control repo. Use `--wake runner` for the universal launcher+socket path; add `tmux` or `herdr` if peers reach you via pane send-keys (e.g. `--wake runner,tmux`). The selection decides which infrastructure to install; each agent still wakes by a single method chosen at launch. The canonical post-install step is:
 
 ```sh
 agentchute setup --wake runner --wrappers all --yes
@@ -55,7 +55,7 @@ If hooks are configured, you will catch new mail mid-turn via `gate --before con
 **STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check --vendor <vendor>`, or pass `--as <agent_id>`) or obligations are explicitly deferred via `agentchute defer --vendor <vendor> --message <message-id> --reason "..."`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v13 end -->
+<!-- agentchute-enrollment v14 end -->
 
 ---
 

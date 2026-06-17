@@ -323,7 +323,11 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 		shimDir = filepath.Join(home, ".agentchute", "bin")
 	}
 
-	if wake == setupWakeTmux || wake == setupWakeHerdr {
+	// Set-aware: the lifecycle-hook skip applies only when runner is NOT among
+	// the wake paths (runner installs all shims and requires them on PATH). A
+	// tmux/herdr-only set — single or combined ("tmux,herdr") — installs only
+	// hookless shims, so hookable wrappers rely on their lifecycle hook.
+	if !setupNeedsShims(wake) && (wakeSetContains(wake, setupWakeTmux) || wakeSetContains(wake, setupWakeHerdr)) {
 		if _, hookable := hookWrapperForAgent(agentID); hookable {
 			return doctorCheck{Name: "wrapper_shadowing", Severity: severitySkip, Message: fmt.Sprintf("%s wake uses lifecycle hooks for this wrapper; launcher shim is optional", wake)}
 		}
@@ -354,9 +358,12 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 }
 
 func shimNamesForAgent(agentID string) []string {
+	agentID = strings.TrimSpace(agentID)
 	if agentID != "" {
 		for _, spec := range shimSpecs {
-			if spec.AgentID == agentID {
+			// Match contextual ids (codex-agentchute) to their canonical shim,
+			// not just exact base ids.
+			if registrationMatchesCanonical(agentID, spec.AgentID) {
 				return []string{spec.Name}
 			}
 		}
@@ -441,17 +448,18 @@ func actingHookDrift(cfg *loop.Config, wrapper string) string {
 	return ""
 }
 
+// hookWrapperForAgent resolves an agent id to its canonical hookable wrapper.
+// Real setups enroll with contextual ids (e.g. codex-agentchute), so match by
+// canonical base — exact or "<base>-" prefix — not exact base id only.
+// Hookless wrappers (grok) are intentionally absent.
 func hookWrapperForAgent(agentID string) (string, bool) {
-	switch strings.TrimSpace(agentID) {
-	case "claude-code":
-		return "claude-code", true
-	case "codex":
-		return "codex", true
-	case "gemini-cli":
-		return "gemini-cli", true
-	default:
-		return "", false
+	agentID = strings.TrimSpace(agentID)
+	for _, w := range setupWrappers {
+		if w.Hookable && registrationMatchesCanonical(agentID, w.Name) {
+			return w.Name, true
+		}
 	}
+	return "", false
 }
 
 // checkHookContentSanity scans installed hook templates per-occurrence

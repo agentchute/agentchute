@@ -61,7 +61,7 @@ agentchute setup --wake runner --wrappers all --yes
 
 > **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH; the launchers use `ac-*` names, so they do not need to precede real wrapper binaries.
 
-Use `--wake tmux` if tmux panes are your primary wake path, `--wake herdr` if herdr panes are primary, or `--wake both` if you want hooks plus runner shims.
+`--wake` accepts any comma-separated combination of `runner`, `tmux`, and `herdr` (or `all`). Use `--wake runner` for the universal launcher+socket path, add `tmux`/`herdr` when peers reach you by send-keys into a pane, e.g. `--wake runner,tmux`. Each agent still wakes by a single method chosen at launch; the selection only decides which infrastructure setup installs. (`--wake both` is a deprecated alias for `all`.)
 Hookless wrappers such as Grok still get a launcher shim in tmux/herdr modes because no lifecycle hook can run startup enrollment for them. Setup is idempotent: same-content re-runs report `already current`, changed setup choices reconcile old setup-managed hooks, shims, PATH blocks, and ENROLLMENT blocks in `AGENTS.md` / wrapper `.md` files, and live `agents/*.md` registrations are cleared so wrappers re-enroll with fresh contextual IDs. To upgrade an existing install and re-sync this folder in one step, run `agentchute update` (see [Updating](#updating)).
 
 Restart the wrapper. From then on:
@@ -137,7 +137,7 @@ Delivery is no-overwrite by contract: a sender never replaces an existing messag
 | `init` | Scaffold loop dirs + drop ENROLLMENT block into wrapper files |
 | `boot --vendor <v> [--as <id>]` | Session-start: register + peek inbox + pending-reply summary |
 | `run --vendor <v> [--as <id>] -- <wrapper>` | Launch a wrapper under the PTY runner with registration, polling, and wake socket |
-| `setup [--wake tmux|herdr|runner|both]` | One-command control-repo setup: init + clear stale registrations + hooks + selected launcher shims |
+| `setup [--wake runner[,tmux][,herdr]\|all]` | One-command control-repo setup: init + clear stale registrations + hooks + selected launcher shims |
 | `update [--version <tag>]` | Self-update the binary to a release, then re-sync this repo's setup |
 | `shims install [--force] [--aliases]` | Install namespaced launcher shims (`ac-*`); `--aliases` also installs legacy same-name aliases |
 | `send --to <b> [--from <a>] [--ask] [--reply-to <id>]` | Write to recipient's inbox + wake poke + (optionally) clear ledger |

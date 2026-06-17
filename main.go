@@ -33,7 +33,7 @@ Commands:
   pending        peek unread messages (read-only; safe for lifecycle hooks)
   default-id     print the contextual default agent id for a wrapper/vendor
   run            launch a wrapper under the PTY runner and local wake socket
-  setup          one-command control-repo setup for tmux, herdr, runner, or both wake paths
+  setup          one-command control-repo setup for any combination of runner/tmux/herdr wake paths
   update         self-update the binary to a release, then re-sync this repo's setup
   self-check     refresh own registration/last_seen and reconcile wake target
   self-poll      "should I wake the wrapper?" — read-only by default; optional poller heartbeat

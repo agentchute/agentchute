@@ -2,9 +2,11 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // herdrBinary is the executable name to invoke. Variable so tests can place a
@@ -17,20 +19,23 @@ var herdrBinary = "herdr"
 // is machine metadata and the instruction is "check inbox".
 const herdrWakePrompt = "[agentchute:herdr] check inbox"
 
-// herdrSubmit is the byte appended to the wake prompt to commit the turn.
-// It MUST be a carriage return (0x0d), not a line feed (0x0a): herdr's
-// `agent send` writes the text bytes literally to the recipient pane, and
-// standard agent TUIs submit their input on CR. A trailing LF only inserts a
-// newline in a multiline editor and never fires a turn — empirically verified
-// against the live herdr 0.7.0 keystroke path. This single-byte distinction is
-// why a one-shot `agent send` works where a separate send-keys Enter does not.
-const herdrSubmit = "\r"
-
-// PokeHerdrTargetContext sends the agentchute wake prompt to a herdr agent by
-// its stable name (the agentchute agent_id, bound to the pane via
-// `herdr agent rename` at registration). One argv invocation:
+// PokeHerdrTargetContext delivers the agentchute wake prompt to a herdr agent
+// by its stable name, then submits the turn with a real Enter key event.
 //
-//	herdr agent send <target> "[agentchute:herdr] check inbox\r"
+// herdr 0.7.0 splits these two operations, and conflating them is why an older
+// one-shot `agent send "<text>\r"` silently failed to wake anyone:
+//
+//   - `herdr agent send <name> <text>` writes LITERAL text to the agent's input
+//     (herdr's own help: "agent send writes literal text; use pane run when you
+//     want command text plus Enter"). A trailing CR is rendered as a literal
+//     character; recipient TUIs bind submit to an Enter KEY EVENT, not a raw
+//     byte in the text stream, so the turn never fires.
+//   - `herdr pane send-keys <pane_id> Enter` injects the Enter key event that
+//     actually submits.
+//
+// So we mirror the tmux adapter: send the text, wait pokeSleep, send Enter as a
+// separate key event. The stable agent name must be resolved to its CURRENT
+// pane id (panes can move) via `agent get`, because pane commands reject names.
 //
 // The dispatcher in wake.go calls this via herdrAdapter when a peer declares
 // wake_method: herdr.
@@ -38,26 +43,72 @@ const herdrSubmit = "\r"
 // Behavior:
 //   - If target is empty, returns nil immediately. Non-pokable agents poll
 //     themselves; the protocol allows this (AGENTCHUTE.md §6.2).
-//   - Otherwise runs a single `herdr agent send`. Unlike the tmux adapter, no
-//     second Enter call and no inter-key sleep are needed: the trailing CR in
-//     the text submits the turn in one shot.
+//   - Resolves the pane first (fail fast rather than type into a vanished
+//     pane), sends the text, waits pokeSleep, then sends Enter. The context
+//     controls the delay and the herdr command timeouts.
 //
-// The target is ALWAYS a stable herdr agent name, never an ephemeral pane id,
-// and is passed as a separate argv argument. The adapter never shell-evaluates
-// the target or the prompt.
+// The target is ALWAYS a stable herdr agent name and every argument is passed
+// as a separate argv element; the adapter never shell-evaluates input.
 func PokeHerdrTargetContext(ctx context.Context, target string) error {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, herdrBinary, "agent", "send", target, herdrWakePrompt+herdrSubmit)
-	out, err := cmd.CombinedOutput()
+	paneID, err := herdrPaneIDForAgent(ctx, target)
 	if err != nil {
-		trimmed := strings.TrimSpace(string(out))
-		if trimmed != "" {
-			return fmt.Errorf("herdr agent send: %w: %s", err, trimmed)
-		}
+		return fmt.Errorf("resolve herdr pane for %q: %w", target, err)
+	}
+	if err := runHerdr(ctx, "agent", "send", target, herdrWakePrompt); err != nil {
 		return fmt.Errorf("herdr agent send: %w", err)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(pokeSleep):
+	}
+	if err := runHerdr(ctx, "pane", "send-keys", paneID, "Enter"); err != nil {
+		return fmt.Errorf("herdr pane send-keys Enter: %w", err)
+	}
+	return nil
+}
+
+// herdrPaneIDForAgent resolves a stable herdr agent name to its current pane id
+// via `herdr agent get <name>`, whose JSON shape is {"result":{"agent":{...,
+// "pane_id":"w3:p4",...}}}.
+func herdrPaneIDForAgent(ctx context.Context, target string) (string, error) {
+	out, err := exec.CommandContext(ctx, herdrBinary, "agent", "get", target).Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			if trimmed := strings.TrimSpace(string(ee.Stderr)); trimmed != "" {
+				return "", fmt.Errorf("%w: %s", err, trimmed)
+			}
+		}
+		return "", err
+	}
+	var resp struct {
+		Result struct {
+			Agent struct {
+				PaneID string `json:"pane_id"`
+			} `json:"agent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return "", fmt.Errorf("parse `herdr agent get` output: %w", err)
+	}
+	paneID := strings.TrimSpace(resp.Result.Agent.PaneID)
+	if paneID == "" {
+		return "", fmt.Errorf("no pane_id reported for agent %q", target)
+	}
+	return paneID, nil
+}
+
+func runHerdr(ctx context.Context, args ...string) error {
+	out, err := exec.CommandContext(ctx, herdrBinary, args...).CombinedOutput()
+	if err != nil {
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			return fmt.Errorf("%w: %s", err, trimmed)
+		}
+		return err
 	}
 	return nil
 }

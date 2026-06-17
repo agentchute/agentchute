@@ -70,7 +70,7 @@ The tmux adapter is one instance of a generic "deliver a keystroke or trigger to
 | Multiplexer / OS | Wake trigger | Status |
 |---|---|---|
 | **tmux** | `tmux send-keys` | shipped in reference CLI |
-| **herdr** | `herdr agent send` (text + CR) | shipped in v0.5.0 |
+| **herdr** | `herdr agent send` (text) + `pane send-keys Enter` | shipped in v0.5.0 |
 | **macOS** | `osascript` (notification) | shipped in v0.1.2 (notifies human) |
 | **Linux** | `notify-send` | shipped in v0.1.2 (notifies human) |
 | **wezterm** | `wezterm cli send-text` | protocol-compatible, awaits CLI adapter |
@@ -88,7 +88,7 @@ Beyond multiplexers, "wake adapter" is conceptually open: SSH-tunneled remote po
 herdr (github.com/ogulcancelik/herdr) is an agent-aware terminal multiplexer used as the production runtime for many agentchute pools. The reference CLI ships a native `herdr` wake adapter (v0.5.0).
 
 - **Identity / wake_target**: the adapter targets the recipient by a stable herdr *agent name*, never an ephemeral pane id (pane ids are not persistent across herdr restarts). At registration and on every `self-check`, the agent binds its pane to its agentchute `agent_id` with `herdr agent rename <HERDR_PANE_ID> <agent_id>` and records `wake_method: herdr`, `wake_target: <agent_id>`. herdr resolves the name to the current pane internally, so the target survives pane re-layout and tab moves.
-- **Poke**: one argv call — `herdr agent send <agent_id> "[agentchute:herdr] check inbox\r"`. The trailing carriage return (0x0d) submits the turn; a line feed (0x0a) would only insert a newline in a multiline editor and never fire a turn. No second keypress and no inter-key delay are needed (unlike tmux's two-step send-keys + Enter).
+- **Poke**: mirrors the tmux two-step. `herdr agent send <agent_id> "[agentchute:herdr] check inbox"` writes the prompt as **literal text** (herdr's `agent send` does not submit — its own help: "use pane run when you want command text plus Enter"); then, after a brief inter-key delay, `herdr pane send-keys <pane_id> Enter` injects a real Enter **key event** that the recipient TUI treats as submit. A trailing CR in the text is rendered as a literal byte and never fires a turn. The stable `<agent_id>` is resolved to its current `<pane_id>` via `herdr agent get <agent_id>` (pane commands reject names; panes move). All arguments are argv-only — never shell-evaluated.
 - **Coexistence / precedence**: auto-detection registers herdr only for *bare* launches inside a herdr pane (`HERDR_ENV`/`HERDR_PANE_ID` present). Agents launched through `agentchute run` (the `ac-*` shims) keep the runner-socket wake — the runner owns the PTY and is never overridden by herdr just because the herdr env is also set. Precedence: explicit `--wake-method` → runner (under `agentchute run`) → herdr → tmux → non-pokable.
 - **Hookless wrappers**: a wrapper with no lifecycle hooks (e.g. Grok) cannot self-enroll on a bare herdr launch, so it stays on the runner-socket path (`ac-grok`). Native herdr wake is for hook-capable lanes or a manual `agentchute boot`.
 - **Identity collisions**: a contextual identity is already disambiguated with `-2`/`-3` suffixes, so its herdr name is unique. An *explicit* `--as`/`AGENTCHUTE_AGENT_ID` whose name is already bound to a different live pane is not hijacked — the herdr wake is skipped with a warning rather than making `herdr agent send <name>` ambiguous.

@@ -30,7 +30,7 @@ var enrollmentMarkerRE = regexp.MustCompile(`<!-- agentchute-enrollment v(\d+) (
 var embeddedSpecContent string
 
 const (
-	enrollmentVersion       = 13
+	enrollmentVersion       = 14
 	gitignoreVersion        = 2
 	gitignoreBeginV1        = "# agentchute-gitignore v2 begin"
 	gitignoreEndV1          = "# agentchute-gitignore v2 end"

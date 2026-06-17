@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 func TestSetupRunnerInstallsAllFourShimsRegardlessOfDetection(t *testing.T) {
@@ -68,12 +70,143 @@ func TestSetupRunnerInstallsAllFourShimsRegardlessOfDetection(t *testing.T) {
 	}
 }
 
+func TestNormalizeSetupWakeCombinations(t *testing.T) {
+	cases := []struct {
+		in        string
+		want      string
+		deprecate bool
+		wantErr   bool
+	}{
+		{in: "runner", want: "runner"},
+		{in: "tmux", want: "tmux"},
+		{in: "herdr", want: "herdr"},
+		{in: "runner,tmux", want: "runner,tmux"},
+		{in: "tmux,runner", want: "runner,tmux"},   // canonical order
+		{in: "herdr,runner", want: "runner,herdr"}, // canonical order
+		{in: "runner,tmux,herdr", want: "runner,tmux,herdr"},
+		{in: "RUNNER, TMUX", want: "runner,tmux"},       // case + spaces
+		{in: "runner,runner,tmux", want: "runner,tmux"}, // dedup
+		{in: "all", want: "runner,tmux,herdr"},          // keyword
+		{in: "both", want: "runner,tmux,herdr", deprecate: true},
+		{in: "", wantErr: true},
+		{in: ",", wantErr: true},
+		{in: "runner,", wantErr: true},      // trailing comma → empty token
+		{in: "runner,,tmux", wantErr: true}, // doubled comma → empty token
+		{in: "tmux, ,herdr", wantErr: true}, // whitespace-only token
+		{in: "bogus", wantErr: true},
+		{in: "runner,bogus", wantErr: true},
+	}
+	for _, tc := range cases {
+		got, deprecation, err := normalizeSetupWake(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("normalizeSetupWake(%q): expected error, got %q", tc.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("normalizeSetupWake(%q): unexpected error: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("normalizeSetupWake(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if (deprecation != "") != tc.deprecate {
+			t.Errorf("normalizeSetupWake(%q) deprecation = %q, want deprecate=%v", tc.in, deprecation, tc.deprecate)
+		}
+	}
+}
+
+func TestSetupShimWrappersForWakeCombinations(t *testing.T) {
+	wrappers := []string{"claude-code", "codex", "gemini-cli", "grok"}
+	// runner anywhere in the set installs all four shims.
+	for _, wake := range []string{"runner", "runner,tmux", "runner,tmux,herdr"} {
+		if got := setupShimWrappers(wake, wrappers); len(got) != 4 {
+			t.Errorf("setupShimWrappers(%q) = %v, want all 4", wake, got)
+		}
+		if !setupNeedsShims(wake) {
+			t.Errorf("setupNeedsShims(%q) = false, want true", wake)
+		}
+	}
+	// tmux/herdr without runner installs hookless shims only (grok).
+	for _, wake := range []string{"tmux", "herdr", "tmux,herdr"} {
+		got := setupShimWrappers(wake, wrappers)
+		if len(got) != 1 || got[0] != "grok" {
+			t.Errorf("setupShimWrappers(%q) = %v, want [grok]", wake, got)
+		}
+		if setupNeedsShims(wake) {
+			t.Errorf("setupNeedsShims(%q) = true, want false", wake)
+		}
+	}
+}
+
+// Legacy installs persisted Wake:"both" (a runner-equivalent that installed all
+// shims). Read-time canonicalization must expand it so previousSetupShimWrappers
+// reports the full shim set the old install actually wrote — not just the
+// detected wrapper list — otherwise a narrowing re-setup orphans shims.
+func TestPersistedBothWakeCanonicalizedForShimCleanup(t *testing.T) {
+	if got := canonicalizePersistedWake("both"); got != "runner,tmux,herdr" {
+		t.Fatalf(`canonicalizePersistedWake("both") = %q, want "runner,tmux,herdr"`, got)
+	}
+	canon := setupGlobalState{Wake: canonicalizePersistedWake("both"), Wrappers: []string{"codex"}, ShimsInstalled: true}
+	if got := previousSetupShimWrappers(canon); len(got) != 4 {
+		t.Fatalf("previousSetupShimWrappers(canonicalized both) = %v, want all 4 setup wrappers", got)
+	}
+	// Document the bug canonicalization prevents: raw "both" falls back to the
+	// detected wrapper list (1), so the other 3 prior shims would be orphaned.
+	raw := setupGlobalState{Wake: "both", Wrappers: []string{"codex"}, ShimsInstalled: true}
+	if got := previousSetupShimWrappers(raw); len(got) == 4 {
+		t.Fatalf("raw \"both\" unexpectedly resolved all 4 (%v); canonicalization would be redundant", got)
+	}
+	// Invalid/empty persisted values pass through untouched.
+	if got := canonicalizePersistedWake(""); got != "" {
+		t.Fatalf(`canonicalizePersistedWake("") = %q, want ""`, got)
+	}
+}
+
+// Pins the read-time canonicalization in BOTH state readers — not just the
+// helper. If the `state.Wake = canonicalizePersistedWake(...)` assignments are
+// removed, these reads return raw "both" and this fails.
+func TestReadSetupStateCanonicalizesLegacyBothWake(t *testing.T) {
+	// Pool state reader.
+	root := t.TempDir()
+	cfg := &loop.Config{ControlRepo: root, LoopDir: filepath.Join(root, "loop")}
+	stateDir := filepath.Join(cfg.LoopDir, "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(stateDir, "setup.json"), []byte(`{"version":1,"wake":"both","wrappers":["codex"]}`))
+	pool, err := readSetupPoolState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.Wake != "runner,tmux,herdr" {
+		t.Fatalf("readSetupPoolState legacy both Wake = %q, want canonical runner,tmux,herdr", pool.Wake)
+	}
+
+	// Global state reader (XDG path).
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	gpath := filepath.Join(home, ".config", "agentchute", "setup.json")
+	if err := os.MkdirAll(filepath.Dir(gpath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, gpath, []byte(`{"version":1,"wake":"both","wrappers":["codex"],"shims_installed":true}`))
+	global, err := readSetupGlobalState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if global.Wake != "runner,tmux,herdr" {
+		t.Fatalf("readSetupGlobalState legacy both Wake = %q, want canonical runner,tmux,herdr", global.Wake)
+	}
+}
+
 func TestSetupHelpAndInvalidWakeMentionHerdr(t *testing.T) {
 	help := setupHelp()
 	for _, want := range []string{
-		"--wake tmux|herdr|runner|both",
-		"tmux | herdr | runner | both",
-		"hookless\nwrappers in tmux/herdr modes",
+		"--wake runner[,tmux][,herdr] | all",
+		"any comma-separated combination of runner, tmux, herdr",
+		"hookless wrappers when only tmux/herdr are selected",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("setup help missing %q:\n%s", want, help)
@@ -95,7 +228,7 @@ func TestSetupHelpAndInvalidWakeMentionHerdr(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected invalid wake error")
 		}
-		if !strings.Contains(err.Error(), "tmux, herdr, runner, both") {
+		if !strings.Contains(err.Error(), "runner, tmux, herdr") {
 			t.Fatalf("invalid wake error should mention herdr, got %v", err)
 		}
 	})
@@ -205,8 +338,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v13 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v13 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v14 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v14 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)
