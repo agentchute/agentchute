@@ -18,6 +18,23 @@ func pendingArgs(extra ...string) []string {
 	return append(base, extra...)
 }
 
+// readFrontmatter is the shared hook-safe peek helper used by pending, boot,
+// self-poll, and watch. It must refuse to read a peer-planted file that
+// exceeds the inbox cap, matching the capped consume path in check.go — a
+// validly named but oversized inbox file must not be slurped unbounded just
+// to peek frontmatter (codex review finding, 2026-06-16).
+func TestReadFrontmatterRejectsOversizeFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oversize.md")
+	big := make([]byte, loop.MaxInboxMessageBytes+1)
+	if err := os.WriteFile(path, big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readFrontmatter(path); err == nil {
+		t.Fatal("expected oversize rejection from readFrontmatter, got nil error")
+	}
+}
+
 // Spec rev3 §A.9: pending --json now reports pending-reply ledger entries
 // alongside the unread inbox count, so per-turn hook context surfaces the
 // full obligation picture.

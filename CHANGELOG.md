@@ -4,6 +4,12 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.3.9 (2026-06-09)
+
+Hotfix release for duplicate tmux pane registrations.
+
+- **Duplicate pane-registration fix**: an agent that restarts or re-enrolls in the same tmux pane no longer accumulates multiple live registrations for that pane. Same-pane re-registration now reconciles to a single lane, so peer wakes are not split across stale registrations and the finish-gate is not defeated (`identity.go`, `register.go`, `tmux_state.go`).
+
 ## v0.3.8 (2026-06-09)
 
 Hotfix release for Grok startup enrollment in tmux-first pools.

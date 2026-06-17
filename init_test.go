@@ -18,11 +18,11 @@ func TestInitFreshEmpty(t *testing.T) {
 	}
 
 	expectAction(t, plan, "AGENTCHUTE.md", "write")
-	expectAction(t, plan, "CLAUDE.md", "create v11")
-	expectAction(t, plan, "CODEX.md", "create v11")
-	expectAction(t, plan, "GEMINI.md", "create v11")
-	expectAction(t, plan, "GROK.md", "create v11")
-	expectAction(t, plan, "AGENTS.md", "create v11")
+	expectAction(t, plan, "CLAUDE.md", "create v12")
+	expectAction(t, plan, "CODEX.md", "create v12")
+	expectAction(t, plan, "GEMINI.md", "create v12")
+	expectAction(t, plan, "GROK.md", "create v12")
+	expectAction(t, plan, "AGENTS.md", "create v12")
 	expectAction(t, plan, ".gitignore", "skip") // not in git
 	expectAction(t, plan, ".agentchute/loop/agents", "mkdir 0700")
 	expectAction(t, plan, ".agentchute/loop/inbox", "mkdir 0700")
@@ -81,14 +81,14 @@ func TestInitPrependsBlockWhenNoMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "prepend v11")
+	expectAction(t, plan, "CLAUDE.md", "prepend v12")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "agentchute-enrollment v11 begin") {
+	if !strings.Contains(string(got), "agentchute-enrollment v12 begin") {
 		t.Errorf("CLAUDE.md missing marker after prepend:\n%s", got)
 	}
 	if !strings.HasSuffix(string(got), originalContent) {
@@ -97,6 +97,27 @@ func TestInitPrependsBlockWhenNoMarker(t *testing.T) {
 }
 
 // Existing CLAUDE.md with a v1 marker and matching content → skip.
+// renderWrapperBlock must fully substitute every template token; a leaked
+// {{...}} means a token-name drift between the template and renderWrapperBlock
+// (e.g. template uses {{AGENT_ID}} while the code still replaces {{AS}}), which
+// silently ships literal placeholders into the concrete enrollment files.
+func TestRenderWrapperBlockLeavesNoUnexpandedTokens(t *testing.T) {
+	for _, w := range []struct{ id, vendor string }{
+		{"claude-code", "anthropic"},
+		{"codex", "openai"},
+		{"gemini-cli", "google"},
+		{"grok", "xai"},
+	} {
+		block := renderWrapperBlock(w.id, w.vendor)
+		if strings.Contains(block, "{{") {
+			t.Errorf("%s: rendered block contains unexpanded token(s):\n%s", w.id, block)
+		}
+		if !strings.Contains(block, w.id) {
+			t.Errorf("%s: rendered block missing the agent id", w.id)
+		}
+	}
+}
+
 func TestInitSkipsWhenMarkerCurrentAndMatches(t *testing.T) {
 	root := t.TempDir()
 	block := renderWrapperBlock("claude-code", "anthropic")
@@ -122,7 +143,7 @@ func TestInitReplacesDriftedV1Content(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "replace v1→v11")
+	expectAction(t, plan, "CLAUDE.md", "replace v1→v12")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
@@ -137,16 +158,16 @@ func TestInitReplacesDriftedV1Content(t *testing.T) {
 	}
 }
 
-func TestInitUpgradesV10EnrollmentBlockToV11(t *testing.T) {
+func TestInitUpgradesV11EnrollmentBlockToV12(t *testing.T) {
 	root := t.TempDir()
-	stale := "<!-- agentchute-enrollment v10 begin -->\nstale env guidance\n<!-- agentchute-enrollment v10 end -->\n\nMy notes.\n"
+	stale := "<!-- agentchute-enrollment v11 begin -->\nstale env guidance\n<!-- agentchute-enrollment v11 end -->\n\nMy notes.\n"
 	mustWrite(t, filepath.Join(root, "CODEX.md"), []byte(stale))
 
 	plan, err := computeInitPlan(root, "agentchute", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CODEX.md", "replace v10→v11")
+	expectAction(t, plan, "CODEX.md", "replace v11→v12")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CODEX.md"))
@@ -168,7 +189,7 @@ func TestInitUpgradesV10EnrollmentBlockToV11(t *testing.T) {
 // Existing file with a future version marker → leave alone with warning.
 func TestInitLeavesNewerVersionAlone(t *testing.T) {
 	root := t.TempDir()
-	future := "<!-- agentchute-enrollment v12 begin -->\nfuture\n<!-- agentchute-enrollment v12 end -->\n"
+	future := "<!-- agentchute-enrollment v13 begin -->\nfuture\n<!-- agentchute-enrollment v13 end -->\n"
 	mustWrite(t, filepath.Join(root, "CLAUDE.md"), []byte(future))
 
 	plan, err := computeInitPlan(root, "agentchute", false)

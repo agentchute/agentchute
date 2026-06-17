@@ -349,7 +349,12 @@ func emitHookContextJSON(event, additionalContext string) error {
 // reply_required just because of trailing whitespace on the delimiter
 // (codex final-pass note on 0d468fa).
 func readFrontmatter(path string) (map[string]string, string, error) {
-	data, err := os.ReadFile(path)
+	// Cap the read at the inbox message limit, matching the consume path
+	// (check.go). pending/boot/self-poll/watch are hook-safe peek paths; a
+	// peer could plant a validly named but oversized inbox file, and reading
+	// it unbounded just to inspect frontmatter would let that peer OOM the
+	// consumer.
+	data, err := loop.ReadFileLimit(path, loop.MaxInboxMessageBytes)
 	if err != nil {
 		return nil, "", err
 	}

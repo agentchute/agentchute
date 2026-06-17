@@ -97,6 +97,9 @@ func cmdSelfCheck(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := saveActiveSessionHeartbeat(cfg, agentID, "self-check", now); err != nil {
+		return fmt.Errorf("write active session heartbeat: %w", err)
+	}
 
 	status := selfCheckStatus{
 		Agent:              agentID,

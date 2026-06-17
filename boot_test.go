@@ -41,6 +41,10 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 // loop dir scaffolding. Caller passes a body fn; cwd is restored on return.
 func setupBootFixture(t *testing.T) string {
 	t.Helper()
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
@@ -190,6 +194,10 @@ func TestBootWithPendingReplyLedgerReturnsBlocked(t *testing.T) {
 // Test 8 line 5: command failure (e.g., loop dir missing) → exit 1 (NOT 2).
 // The error must NOT be errBlocked.
 func TestBootMissingLoopDirReturnsCommandFailure(t *testing.T) {
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 	// Note: no .examplecorp/loop directory; Discover should fail.

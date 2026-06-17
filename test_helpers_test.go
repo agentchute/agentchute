@@ -79,6 +79,7 @@ func mustWriteFreshPollerHeartbeat(t *testing.T, cfg *loop.Config, agentID strin
 		Method:          "test",
 		Host:            "test-host",
 		IntervalSeconds: loop.DefaultPollerIntervalSeconds,
+		LaunchEnabled:   true,
 		LastSeen:        time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)

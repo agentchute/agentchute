@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -321,6 +322,11 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	go rt.copyInput()
 	go rt.resizeLoop()
 	go rt.shutdownSignalLoop()
+	if stale, err := clearStaleRunnerWakeTargets(cfg, opts.AgentID); err != nil {
+		fmt.Fprintf(os.Stderr, "agentchute run: clear stale runner wake: %v\n", err)
+	} else if len(stale) > 0 {
+		fmt.Fprintf(os.Stderr, "agentchute run: cleared stale runner wake for %s\n", strings.Join(stale, ", "))
+	}
 
 	err = <-done
 	rt.stopLoops()
@@ -337,6 +343,7 @@ func runnerChildEnv(cfg *loop.Config, opts runnerOptions) []string {
 		"AGENTCHUTE_CONTROL_REPO="+cfg.ControlRepo,
 		"AGENTCHUTE_LOOP_DIR="+cfg.LoopDir,
 		"AGENTCHUTE_RUNNER=1",
+		"AGENTCHUTE_RUNNER_PID="+strconv.Itoa(os.Getpid()),
 	)
 	return env
 }
@@ -380,11 +387,87 @@ func refuseLiveRunnerCollision(cfg *loop.Config, agentID string) error {
 		return fmt.Errorf("read runner state: %w", err)
 	}
 	target := loop.RunnerWakeTarget(state.SocketPath)
-	if processAlive(state.RunnerPID) && loop.RunnerSocketReachable(target, 300*time.Millisecond) {
+	if processAlive(state.RunnerPID) && runnerStateHealthy(state, target, 300*time.Millisecond) {
 		return fmt.Errorf("runner for %s is already active (pid=%d socket=%s)", agentID, state.RunnerPID, state.SocketPath)
 	}
 	_ = os.Remove(state.SocketPath)
 	return nil
+}
+
+func runnerStateHealthy(state *loop.RunnerState, target string, timeout time.Duration) bool {
+	if state == nil {
+		return false
+	}
+	resp, err := loop.PingRunner(target, timeout)
+	if err != nil {
+		return false
+	}
+	if state.RunnerPID > 0 && resp.RunnerPID > 0 && state.RunnerPID != resp.RunnerPID {
+		return false
+	}
+	if state.ChildPID > 0 && resp.ChildPID > 0 && state.ChildPID != resp.ChildPID {
+		return false
+	}
+	return true
+}
+
+func clearStaleRunnerWakeTargets(cfg *loop.Config, selfID string) ([]string, error) {
+	regs, errs := loop.ReadRegistrationsLenient(cfg.AgentsDir())
+	if len(errs) > 0 {
+		// Keep runner startup non-blocking; malformed peer registrations are
+		// diagnosed elsewhere, and startup should still heal the readable peers.
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "agentchute run: skip unreadable registration %s: %v\n", filepath.Base(e.Path), e.Err)
+		}
+	}
+	localHost := strings.TrimSpace(localHostname())
+	now := time.Now().UTC()
+	var cleared []string
+	for _, reg := range regs {
+		if reg.AgentID == selfID || reg.WakeMethod != loop.RunnerWakeMethod || strings.TrimSpace(reg.WakeTarget) == "" {
+			continue
+		}
+		if localHost != "" && strings.TrimSpace(reg.Host) != "" && reg.Host != localHost {
+			continue
+		}
+		if runnerRegistrationHealthy(cfg, reg, 300*time.Millisecond) {
+			continue
+		}
+		reg.WakeMethod = ""
+		reg.WakeTarget = ""
+		reg.Status = loop.StatusOffline
+		reg.LastSeen = now
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath(reg.AgentID), reg); err != nil {
+			return cleared, err
+		}
+		cleared = append(cleared, reg.AgentID)
+	}
+	return cleared, nil
+}
+
+func runnerRegistrationHealthy(cfg *loop.Config, reg *loop.Registration, timeout time.Duration) bool {
+	resp, err := loop.PingRunner(reg.WakeTarget, timeout)
+	if err != nil {
+		return false
+	}
+	state, err := loop.LoadRunnerState(cfg, reg.AgentID)
+	if err != nil {
+		return true
+	}
+	socketPath, err := loop.ParseRunnerWakeTarget(reg.WakeTarget)
+	if err != nil {
+		return false
+	}
+	if state.SocketPath != "" && state.SocketPath != socketPath {
+		return false
+	}
+	if state.RunnerPID > 0 && resp.RunnerPID > 0 && state.RunnerPID != resp.RunnerPID {
+		return false
+	}
+	if state.ChildPID > 0 && resp.ChildPID > 0 && state.ChildPID != resp.ChildPID {
+		return false
+	}
+	return true
 }
 
 func processAlive(pid int) bool {
@@ -446,12 +529,30 @@ func (r *runnerRuntime) handleWakeConn(conn net.Conn) {
 		return
 	}
 	switch req.Op {
+	case "ping":
+		_ = json.NewEncoder(conn).Encode(r.pingResponse("active"))
 	case "wake":
 		r.enqueueWake()
+		_ = json.NewEncoder(conn).Encode(r.pingResponse("active"))
 	case "status":
 		_ = r.saveState()
+		_ = json.NewEncoder(conn).Encode(r.pingResponse("active"))
 	case "shutdown":
+		_ = json.NewEncoder(conn).Encode(r.pingResponse("shutting_down"))
 		r.requestShutdown(syscall.SIGTERM)
+	}
+}
+
+func (r *runnerRuntime) pingResponse(status string) loop.RunnerPingResponse {
+	r.mu.Lock()
+	pendingWake := r.pendingWake
+	r.mu.Unlock()
+	return loop.RunnerPingResponse{
+		OK:          true,
+		RunnerPID:   os.Getpid(),
+		ChildPID:    r.childPID,
+		PendingWake: pendingWake,
+		Status:      status,
 	}
 }
 

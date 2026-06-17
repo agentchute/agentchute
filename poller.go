@@ -43,6 +43,7 @@ type pollerCommon struct {
 	Command     string
 	Interval    int
 	Quiet       bool
+	Launch      bool
 }
 
 func bindPollerCommon(fs *flag.FlagSet, p *pollerCommon) {
@@ -109,6 +110,7 @@ func serviceParamsForPoller(p pollerCommon) serviceParams {
 		Command:  strings.TrimSpace(p.Command),
 		Interval: p.Interval,
 		Repo:     p.Repo,
+		Launch:   p.Launch,
 	}
 	if preset, ok := vendorPresets[p.AgentID]; ok {
 		if sp.Vendor == "" {
@@ -131,6 +133,7 @@ func cmdPollerRun(args []string) error {
 	var once bool
 	bindPollerCommon(fs, &common)
 	fs.BoolVar(&once, "once", false, "run one poll tick and exit")
+	fs.BoolVar(&common.Launch, "launch", false, "launch the wrapper when work is pending; default is heartbeat-only")
 	if err := fs.Parse(args); err != nil {
 		return pollerUsage(err)
 	}
@@ -142,7 +145,7 @@ func cmdPollerRun(args []string) error {
 		return err
 	}
 	params := serviceParamsForPoller(common)
-	if params.Command == "" && params.Wrapper == "" {
+	if params.Launch && params.Command == "" && params.Wrapper == "" {
 		return fmt.Errorf("cannot infer wrapper command for agent %q; pass --command", common.AgentID)
 	}
 
@@ -183,6 +186,7 @@ func pollerTick(cfg *loop.Config, p serviceParams, rt *pollerRuntime, startedAt 
 		Host:            localHostname(),
 		PID:             os.Getpid(),
 		IntervalSeconds: p.Interval,
+		LaunchEnabled:   p.Launch,
 		LastSeen:        time.Now().UTC(),
 		StartedAt:       startedAt,
 	}); err != nil {
@@ -198,6 +202,12 @@ func pollerTick(cfg *loop.Config, p serviceParams, rt *pollerRuntime, startedAt 
 		}
 		return nil
 	}
+	if !p.Launch {
+		if rt != nil {
+			rt.reap()
+		}
+		return nil
+	}
 	if rt != nil {
 		rt.reap()
 		if rt.running != nil {
@@ -206,6 +216,7 @@ func pollerTick(cfg *loop.Config, p serviceParams, rt *pollerRuntime, startedAt 
 	}
 	cmd := exec.Command("sh", "-c", wrapperInvocation(p))
 	cmd.Dir = p.Repo
+	cmd.Env = pollerWrapperEnv(os.Environ(), cfg, p.AgentID)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -220,11 +231,37 @@ func pollerTick(cfg *loop.Config, p serviceParams, rt *pollerRuntime, startedAt 
 	return nil
 }
 
+func pollerWrapperEnv(env []string, cfg *loop.Config, agentID string) []string {
+	env = withoutEnv(env, "AGENTCHUTE_AGENT_ID", "AGENTCHUTE_CONTROL_REPO", "AGENTCHUTE_LOOP_DIR")
+	return append(env,
+		"AGENTCHUTE_AGENT_ID="+agentID,
+		"AGENTCHUTE_CONTROL_REPO="+cfg.ControlRepo,
+		"AGENTCHUTE_LOOP_DIR="+cfg.LoopDir,
+	)
+}
+
+func withoutEnv(env []string, keys ...string) []string {
+	blocked := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		blocked[key] = true
+	}
+	filtered := env[:0]
+	for _, kv := range env {
+		key, _, ok := strings.Cut(kv, "=")
+		if ok && blocked[key] {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
+}
+
 func cmdPollerEnsure(args []string) error {
 	fs := flag.NewFlagSet("poller ensure", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var common pollerCommon
 	bindPollerCommon(fs, &common)
+	fs.BoolVar(&common.Launch, "launch", false, "start a poller that launches the wrapper when work is pending; default is heartbeat-only")
 	if err := fs.Parse(args); err != nil {
 		return pollerUsage(err)
 	}
@@ -237,17 +274,25 @@ func cmdPollerEnsure(args []string) error {
 	}
 	if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(common.AgentID)); err == nil && registrationHasReachableWake(reg) {
 		if !common.Quiet {
-			fmt.Printf("poller ensure: %s has reachable wake target (%s); background poller not required\n", common.AgentID, reg.WakeMethod)
+			fmt.Printf("poller ensure: %s has reachable wake target (%s); poller not required\n", common.AgentID, reg.WakeMethod)
 		}
 		return nil
 	}
 	if pane := currentTmuxPane(); pane != "" && tmuxTargetReachable(pane) {
 		if !common.Quiet {
-			fmt.Printf("poller ensure: %s is in tmux (%s); background poller not required\n", common.AgentID, pane)
+			fmt.Printf("poller ensure: %s is in tmux (%s); poller not required\n", common.AgentID, pane)
 		}
 		return nil
 	} else if pane != "" && !common.Quiet {
-		fmt.Printf("poller ensure: %s has unreachable TMUX_PANE=%s; starting background poller\n", common.AgentID, pane)
+		fmt.Printf("poller ensure: %s has unreachable TMUX_PANE=%s; starting heartbeat poller\n", common.AgentID, pane)
+	}
+	if !common.Launch {
+		if session, err := loop.LoadActiveSession(cfg, common.AgentID); err == nil && activeSessionAlive(session) {
+			if !common.Quiet {
+				fmt.Printf("poller ensure: %s has active wrapper session (pid=%d); poller not required\n", common.AgentID, session.PID)
+			}
+			return nil
+		}
 	}
 	if fresh, summary := pollerFreshSummary(cfg, common.AgentID, time.Now().UTC()); fresh {
 		if !common.Quiet {
@@ -298,6 +343,9 @@ func startDetachedPoller(cfg *loop.Config, p pollerCommon) error {
 	}
 	if p.Vendor != "" {
 		args = append(args, "--vendor", p.Vendor)
+	}
+	if p.Launch {
+		args = append(args, "--launch")
 	}
 	if strings.TrimSpace(p.Command) != "" {
 		args = append(args, "--command", p.Command)
@@ -411,13 +459,14 @@ func pollerHelp() string {
 	return strings.TrimSpace(`
 Usage: agentchute poller <run|ensure|status> [flags]
 
-Recipient-side poller for agents without a reachable wake adapter. Senders
-only deliver to the inbox; recipients prove they are reading by keeping a
-fresh state/<agent>/poller.json heartbeat.
+Recipient-side poller for agents without a reachable wake adapter. By default
+it is heartbeat-only: it proves this host can see the inbox but does not launch
+or consume wrapper mail. Pass --launch when an off-turn wrapper launch should
+process pending mail.
 
 Subcommands:
-  run      long-lived poll loop; launches the wrapper when self-poll finds work
-  ensure   no-op in a reachable tmux pane; otherwise start poller run if stale
+  run      long-lived poll loop; with --launch, launches the wrapper on work
+  ensure   no-op in a reachable tmux pane; otherwise start heartbeat poller
   status   report whether the poller heartbeat is fresh
 
 Common flags:
@@ -429,6 +478,7 @@ Common flags:
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --quiet               suppress status text
+  --launch              launch the wrapper when work is pending (run/ensure)
 
 Extra flags:
   poller run --once     run one tick and exit

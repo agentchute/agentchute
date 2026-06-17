@@ -353,6 +353,13 @@ func TestGateFinishRequiresRecipientLiveness(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(cfg.ActiveSessionPath("claude-code")); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
 		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--json")) })
 		if !errors.Is(err, errBlocked) {
 			t.Fatalf("finish without wake or poller err = %v, want errBlocked", err)
@@ -361,14 +368,74 @@ func TestGateFinishRequiresRecipientLiveness(t *testing.T) {
 			t.Errorf("output should mention liveness/poller: %q", out)
 		}
 
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
+		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
+		if err != nil {
+			t.Errorf("finish with launch-enabled poller heartbeat err = %v, want nil", err)
+		}
+	})
+}
+
+func TestGateFinishAcceptsActiveSessionHeartbeat(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--wake-target", ""}); err != nil {
+			t.Fatal(err)
+		}
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
 		}
-		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
-		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
+		if err := loop.SaveActiveSession(cfg, loop.ActiveSession{
+			AgentID:  "claude-code",
+			Host:     localHostname(),
+			PID:      os.Getpid(),
+			LastSeen: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
 		if err != nil {
-			t.Errorf("finish with fresh poller heartbeat err = %v, want nil", err)
+			t.Fatalf("finish with active session heartbeat err = %v; output=%q", err, out)
+		}
+		if !strings.Contains(out, "clear") {
+			t.Errorf("gate output = %q, want clear", out)
+		}
+	})
+}
+
+func TestGateFinishRejectsHeartbeatOnlyPoller(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "")
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(cfg.ActiveSessionPath("claude-code")); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if err := loop.SavePollerHeartbeat(cfg, loop.PollerHeartbeat{
+			AgentID:         "claude-code",
+			Method:          "poller-run",
+			Host:            localHostname(),
+			PID:             os.Getpid(),
+			IntervalSeconds: loop.DefaultPollerIntervalSeconds,
+			LastSeen:        time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--json")) })
+		if !errors.Is(err, errBlocked) {
+			t.Fatalf("finish with heartbeat-only poller err = %v, want errBlocked; output=%q", err, out)
+		}
+		if !strings.Contains(out, "heartbeat-only") {
+			t.Errorf("output should explain heartbeat-only poller is insufficient: %q", out)
 		}
 	})
 }

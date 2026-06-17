@@ -16,6 +16,8 @@ import (
 // peers so the wake receipt has something to report on.
 func setupSendFixture(t *testing.T) (string, *loop.Config) {
 	t.Helper()
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
 		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--host", "peer-host", "--wake-method", "tmux", "--wake-target", "%1"}); err != nil {

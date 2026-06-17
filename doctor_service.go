@@ -47,15 +47,24 @@ type serviceParams struct {
 	Interval int
 	Repo     string
 	Out      string
+	Launch   bool
+
+	ControlRepo string
+	LoopDir     string
 }
 
 // vendorPresets maps an agent ID to its default vendor + wrapper CLI.
 // Operators can override via --vendor / --command. These match the
 // established v0.1 enrollment conventions.
-var vendorPresets = map[string]struct{ Vendor, Wrapper string }{
-	"claude-code": {"anthropic", "claude"},
-	"codex":       {"openai", "codex"},
-	"gemini-cli":  {"google", "gemini"},
+var vendorPresets = map[string]struct {
+	Vendor     string
+	Wrapper    string
+	Candidates []string
+}{
+	"claude-code": {"anthropic", "claude", []string{"claude", "claude-code"}},
+	"codex":       {"openai", "codex", []string{"codex"}},
+	"gemini-cli":  {"google", "gemini", []string{"gemini", "gemini-cli"}},
+	"grok":        {"xai", "grok", []string{"grok"}},
 }
 
 func wrapperForVendor(vendor string) string {
@@ -146,6 +155,21 @@ func generateService(p serviceParams) error {
 	// command-substitutes. Validate against a strict whitelist.
 	if !repoCharRE.MatchString(p.Repo) {
 		return fmt.Errorf("--repo %q contains characters not in [A-Za-z0-9_/.- ]; move the repo or use --command", p.Repo)
+	}
+	if p.ControlRepo == "" || p.LoopDir == "" {
+		cfg, err := loop.Discover(loop.DiscoverOpts{
+			Cwd:            p.Repo,
+			EnvControlRepo: os.Getenv("AGENTCHUTE_CONTROL_REPO"),
+			EnvLoopDir:     os.Getenv("AGENTCHUTE_LOOP_DIR"),
+		})
+		if err == nil {
+			if p.ControlRepo == "" {
+				p.ControlRepo = cfg.ControlRepo
+			}
+			if p.LoopDir == "" {
+				p.LoopDir = cfg.LoopDir
+			}
+		}
 	}
 
 	if preset, ok := vendorPresets[p.AgentID]; ok {
@@ -259,9 +283,20 @@ func wrapperInvocation(p serviceParams) string {
 func preflightTick(p serviceParams) string {
 	lockDir := fmt.Sprintf("/tmp/agentchute-%s.lock", p.AgentID)
 	return fmt.Sprintf(
-		`( cd %q || exit 0; agentchute self-poll --as %s --heartbeat --heartbeat-method scheduler --heartbeat-interval %d >/dev/null 2>&1; rc=$?; [ "$rc" -ne 2 ] && exit 0; mkdir %s 2>/dev/null || exit 0; trap "rmdir %s" EXIT; sh -c %q )`,
-		p.Repo, p.AgentID, p.Interval, lockDir, lockDir, wrapperInvocation(p),
+		`( cd %q || exit 0; agentchute self-poll --as %s --heartbeat --heartbeat-method scheduler --heartbeat-interval %d >/dev/null 2>&1; rc=$?; [ "$rc" -ne 2 ] && exit 0; mkdir %s 2>/dev/null || exit 0; trap "rmdir %s" EXIT; %s sh -c %q )`,
+		p.Repo, p.AgentID, p.Interval, lockDir, lockDir, preflightWrapperEnvPrefix(p), wrapperInvocation(p),
 	)
+}
+
+func preflightWrapperEnvPrefix(p serviceParams) string {
+	parts := []string{"AGENTCHUTE_AGENT_ID=" + p.AgentID}
+	if strings.TrimSpace(p.ControlRepo) != "" {
+		parts = append(parts, fmt.Sprintf("AGENTCHUTE_CONTROL_REPO=%q", p.ControlRepo))
+	}
+	if strings.TrimSpace(p.LoopDir) != "" {
+		parts = append(parts, fmt.Sprintf("AGENTCHUTE_LOOP_DIR=%q", p.LoopDir))
+	}
+	return strings.Join(parts, " ")
 }
 
 func renderLaunchdPlist(p serviceParams) string {

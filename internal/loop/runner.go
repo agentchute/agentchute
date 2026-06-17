@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -27,6 +28,16 @@ type RunnerState struct {
 	LastInjection time.Time `json:"last_injection,omitempty"`
 	PendingWake   bool      `json:"pending_wake"`
 	Status        string    `json:"status"`
+}
+
+// RunnerPingResponse is the runner socket health response. It proves the
+// socket is an agentchute runner, not just any process accepting connections.
+type RunnerPingResponse struct {
+	OK          bool   `json:"ok"`
+	RunnerPID   int    `json:"runner_pid"`
+	ChildPID    int    `json:"child_pid,omitempty"`
+	PendingWake bool   `json:"pending_wake"`
+	Status      string `json:"status,omitempty"`
 }
 
 // RunnerWakeTarget formats a local Unix socket target for registrations.
@@ -89,22 +100,39 @@ func LoadRunnerState(cfg *Config, agentID string) (*RunnerState, error) {
 	return &st, nil
 }
 
-// RunnerSocketReachable reports whether a local runner socket accepts a
-// connection. It does not send a wake.
+// RunnerSocketReachable reports whether a local runner socket answers the
+// ping/ack protocol. It does not enqueue a wake.
 func RunnerSocketReachable(target string, timeout time.Duration) bool {
+	_, err := PingRunner(target, timeout)
+	return err == nil
+}
+
+// PingRunner asks an agentchute-run socket for its health payload.
+func PingRunner(target string, timeout time.Duration) (*RunnerPingResponse, error) {
 	path, err := ParseRunnerWakeTarget(target)
 	if err != nil {
-		return false
+		return nil, err
 	}
 	if timeout <= 0 {
 		timeout = time.Second
 	}
 	conn, err := net.DialTimeout("unix", path, timeout)
 	if err != nil {
-		return false
+		return nil, err
 	}
-	_ = conn.Close()
-	return true
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	if err := json.NewEncoder(conn).Encode(map[string]any{"op": "ping"}); err != nil {
+		return nil, err
+	}
+	var resp RunnerPingResponse
+	if err := json.NewDecoder(io.LimitReader(conn, 4096)).Decode(&resp); err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, fmt.Errorf("runner ping returned ok=false")
+	}
+	return &resp, nil
 }
 
 type runnerWakeAdapter struct{}

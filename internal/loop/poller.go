@@ -21,6 +21,7 @@ type PollerHeartbeat struct {
 	Host            string    `json:"host,omitempty"`
 	PID             int       `json:"pid,omitempty"`
 	IntervalSeconds int       `json:"interval_seconds"`
+	LaunchEnabled   bool      `json:"launch_enabled,omitempty"`
 	LastSeen        time.Time `json:"last_seen"`
 	StartedAt       time.Time `json:"started_at,omitempty"`
 }

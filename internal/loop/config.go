@@ -138,6 +138,13 @@ func (c *Config) PollerHeartbeatPath(agentID string) string {
 	return filepath.Join(c.AgentStateDir(agentID), "poller.json")
 }
 
+// ActiveSessionPath returns the per-agent active wrapper heartbeat path. This
+// is local lifecycle state written by hook-driven boot/self-check commands so
+// gate can distinguish a live visible wrapper from an off-turn poller.
+func (c *Config) ActiveSessionPath(agentID string) string {
+	return filepath.Join(c.AgentStateDir(agentID), "session.json")
+}
+
 // RunnerStatePath returns the per-agent runner state path. This is
 // recipient-owned local state for agentchute's PTY runner; peers may use the
 // registration wake_target to poke the runner socket, but this diagnostic file

@@ -171,7 +171,7 @@ Wake pokes are latency hints; recipient-side polling is the correctness baseline
 ### 8.2 Wake responsibility
 The protocol's discovery mechanism is **recipient-side polling**. Senders are responsible for durable delivery; recipients are responsible for reading. Senders MAY attempt wake; failure is ignored.
 
-No-tmux environments follow the five-tier polling model described in `README.md` (runner shims, poller fallbacks, native loops, preflighted schedulers, and finish hooks). Always schedule the wrapper (which invokes the model), not a bare `agentchute check`.
+No-tmux environments follow the five-tier polling model described in `README.md` (runner shims, poller fallbacks, native loops, preflighted schedulers, and finish hooks). Heartbeat-only pollers prove the inbox medium is visible but MUST NOT consume mail or launch wrappers unless explicitly configured for autonomous launch. Active wrapper sessions prove liveness with `state/<agent>/session.json`. Always schedule the wrapper (which invokes the model), not a bare `agentchute check`.
 
 ## 9. Liveness
 

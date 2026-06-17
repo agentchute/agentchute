@@ -125,7 +125,18 @@ func cmdDoctor(args []string) error {
 		return errBlocked
 	}
 
-	report := runDoctorChecks(cfg, agentID, time.Now().UTC())
+	opts := doctorOptions{
+		Now:     time.Now().UTC(),
+		PathEnv: os.Getenv("PATH"),
+	}
+	if gs, err := readSetupGlobalState(); err == nil {
+		opts.GlobalState = &gs
+	}
+	if ps, err := readSetupPoolState(cfg); err == nil {
+		opts.PoolState = &ps
+	}
+
+	report := runDoctorChecks(cfg, agentID, opts)
 
 	if jsonOut {
 		if err := emitDoctorJSON(report); err != nil {
@@ -160,24 +171,32 @@ type doctorReport struct {
 	Warnings int           `json:"warnings"`
 }
 
+type doctorOptions struct {
+	Now         time.Time
+	PathEnv     string
+	GlobalState *setupGlobalState
+	PoolState   *setupPoolState
+}
+
 // runDoctorChecks executes the canonical check sequence and returns a
-// fully-populated report. Pure function over (cfg, agentID, now) so tests
-// can pin determinism.
-func runDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doctorReport {
+// fully-populated report.
+func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) doctorReport {
 	checks := []doctorCheck{
 		checkLoopDirScaffold(cfg),
 		checkBinaryOnPath(),
 		checkHookFilePresence(cfg, agentID),
 		checkHookContentSanity(cfg),
+		checkWrapperShadowing(cfg, agentID, opts),
 	}
 	if agentID != "" {
 		checks = append(checks,
 			checkSelfRegistration(cfg, agentID),
-			checkRegistrationFreshness(cfg, agentID, now),
+			checkRegistrationFreshness(cfg, agentID, opts.Now),
 			checkInboxState(cfg, agentID),
 			checkLedgerState(cfg, agentID),
 			checkWakeTargetValidity(cfg, agentID),
-			checkRecipientLiveness(cfg, agentID, now),
+			checkRunnerSocketStaleness(cfg, agentID),
+			checkRecipientLiveness(cfg, agentID, opts.Now),
 		)
 	} else {
 		checks = append(checks, doctorCheck{
@@ -280,6 +299,70 @@ func checkBinaryOnPath() doctorCheck {
 		Name:     "binary_on_path",
 		Severity: severityOK,
 		Message:  fmt.Sprintf("agentchute resolves to %s", resolved),
+	}
+}
+
+func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
+	// If wake=tmux, shims aren't required for hookable wrappers, so shadowing
+	// is less of a concern (though still good to diagnose). If wake=runner/both,
+	// shadowing is a BLOCKER because it bypasses the enrollment/wake logic.
+	wake := ""
+	if opts.PoolState != nil && opts.PoolState.Wake != "" {
+		wake = opts.PoolState.Wake
+	} else if opts.GlobalState != nil && opts.GlobalState.Wake != "" {
+		wake = opts.GlobalState.Wake
+	}
+
+	if wake == "" {
+		return doctorCheck{Name: "wrapper_shadowing", Severity: severitySkip, Message: "agentchute setup not run; skipping shadowing check"}
+	}
+
+	shimDir := ""
+	if opts.GlobalState != nil {
+		shimDir = opts.GlobalState.ShimDir
+	}
+	if shimDir == "" {
+		home, _ := os.UserHomeDir()
+		shimDir = filepath.Join(home, ".agentchute", "bin")
+	}
+
+	var candidates []string
+	if agentID != "" {
+		if preset, ok := vendorPresets[agentID]; ok {
+			candidates = preset.Candidates
+		} else {
+			// Fallback to all if unknown
+			candidates = []string{"claude", "claude-code", "codex", "gemini", "gemini-cli", "grok"}
+		}
+	} else {
+		candidates = []string{"claude", "claude-code", "codex", "gemini", "gemini-cli", "grok"}
+	}
+
+	pathEnv := opts.PathEnv
+	if pathEnv == "" {
+		pathEnv = os.Getenv("PATH")
+	}
+
+	if pathIsPrioritized(shimDir, pathEnv, candidates) {
+		return doctorCheck{Name: "wrapper_shadowing", Severity: severityOK, Message: fmt.Sprintf("shims in %s are prioritized on PATH", shimDir)}
+	}
+
+	severity := severityWarn
+	if wake == setupWakeRunner || wake == setupWakeBoth {
+		severity = severityBlocker
+	}
+
+	if pathContains(shimDir, pathEnv) {
+		return doctorCheck{
+			Name:     "wrapper_shadowing",
+			Severity: severity,
+			Message:  fmt.Sprintf("shims in %s are on PATH but shadowed by a real binary; move %s to the front of PATH", shimDir, shimDir),
+		}
+	}
+	return doctorCheck{
+		Name:     "wrapper_shadowing",
+		Severity: severity,
+		Message:  fmt.Sprintf("shims in %s are not on PATH; add %s to the front of PATH", shimDir, shimDir),
 	}
 }
 
@@ -611,6 +694,27 @@ func checkRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) doc
 		return doctorCheck{Name: "recipient_liveness", Severity: severityOK, Message: liveness.Message}
 	}
 	return doctorCheck{Name: "recipient_liveness", Severity: severityBlocker, Message: liveness.Message}
+}
+
+// checkRunnerSocketStaleness is the append-only new check for C lane
+// (runner supervision). Only reports for agents with runner wake_method;
+// does not touch checkWrapperShadowing or other shadowing logic.
+func checkRunnerSocketStaleness(cfg *loop.Config, agentID string) doctorCheck {
+	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
+	if err != nil {
+		return doctorCheck{Name: "runner_socket_staleness", Severity: severitySkip, Message: "registration unreadable (see self_registration)"}
+	}
+	if reg.WakeMethod != loop.RunnerWakeMethod {
+		return doctorCheck{Name: "runner_socket_staleness", Severity: severitySkip, Message: "not using runner wake"}
+	}
+	if loop.RunnerSocketReachable(reg.WakeTarget, time.Second) {
+		return doctorCheck{Name: "runner_socket_staleness", Severity: severityOK, Message: fmt.Sprintf("runner socket %s reachable", reg.WakeTarget)}
+	}
+	return doctorCheck{
+		Name:     "runner_socket_staleness",
+		Severity: severityWarn,
+		Message:  fmt.Sprintf("runner socket target %q not reachable; runner may have exited (self-heals on next shim start)", reg.WakeTarget),
+	}
 }
 
 // ---------- output ----------

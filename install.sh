@@ -263,6 +263,7 @@ default_shell_profile() {
 				printf '%s' "$HOME/.bashrc"
 			fi
 			;;
+		*fish) printf '%s' "$HOME/.config/fish/config.fish" ;;
 		*sh)   printf '%s' "$HOME/.profile" ;;
 		*)     return 1 ;;
 	esac
@@ -330,10 +331,20 @@ ensure_path_available() {
 	fi
 	{
 		printf '\n%s\n' "$begin"
-		printf '%s\n' "case \":\$PATH:\" in"
-		printf '  *":%s:"*) ;;\n' "$expr"
-		printf '  *) export PATH="%s:%s" ;;\n' "$expr" "\$PATH"
-		printf 'esac\n'
+		case "$profile" in
+			*config.fish)
+				# fish: PATH is a list; prepend only if not already first.
+				printf 'if test "$PATH[1]" != %s\n' "$expr"
+				printf '    set -gx PATH %s $PATH\n' "$expr"
+				printf 'end\n'
+				;;
+			*)
+				printf '%s\n' "case \"\$PATH\" in"
+				printf '  "%s:"*) ;;\n' "$expr"
+				printf '  *) export PATH="%s:\$PATH" ;;\n' "$expr"
+				printf 'esac\n'
+				;;
+		esac
 		printf '%s\n' "$end"
 	} >>"$profile" || {
 		warn "could not update $profile; add $dir to PATH manually"

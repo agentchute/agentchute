@@ -30,7 +30,7 @@ var enrollmentMarkerRE = regexp.MustCompile(`<!-- agentchute-enrollment v(\d+) (
 var embeddedSpecContent string
 
 const (
-	enrollmentVersion       = 11
+	enrollmentVersion       = 12
 	gitignoreVersion        = 2
 	gitignoreBeginV1        = "# agentchute-gitignore v2 begin"
 	gitignoreEndV1          = "# agentchute-gitignore v2 end"
@@ -672,9 +672,11 @@ func planLoopDir(dir, rel string) (initAction, error) {
 	}, nil
 }
 
-// renderWrapperBlock substitutes {{AS}} / {{VENDOR}} in the wrapper template.
+// renderWrapperBlock substitutes {{AGENT_ID}} / {{VENDOR}} in the wrapper
+// template. {{AS}} is kept as a legacy alias so older templates still render.
 func renderWrapperBlock(asID, vendor string) string {
-	out := strings.ReplaceAll(enrollmentWrapperTemplate, "{{AS}}", asID)
+	out := strings.ReplaceAll(enrollmentWrapperTemplate, "{{AGENT_ID}}", asID)
+	out = strings.ReplaceAll(out, "{{AS}}", asID)
 	out = strings.ReplaceAll(out, "{{VENDOR}}", vendor)
 	return out
 }

@@ -1,6 +1,6 @@
 # CODEX.md
 
-<!-- agentchute-enrollment v11 begin -->
+<!-- agentchute-enrollment v12 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 Canonical enrollment spec: [`AGENTS.md`](AGENTS.md). This file is a thin pointer.
@@ -21,9 +21,12 @@ export AGENTCHUTE_AGENT_ID="<roster-id>"
 agentchute setup --wake runner --wrappers codex --yes
 ```
 
+> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup ensures your shim directory is prioritized at the front of your PATH.
+
 Use `--wake tmux` if peers live in tmux panes, `--wake both` for mixed pools.
 
 **Wake events** arrive as `[agentchute:tmux] check inbox` or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox`.
+
 
 **If startup enrollment doesn't run** (rare; indicates a setup gap):
 
@@ -35,7 +38,7 @@ agentchute poller ensure --vendor openai
 **STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --vendor openai`) or obligations are deferred (`agentchute defer --vendor openai --message <message-id> --reason "..."`).
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v11 end -->
+<!-- agentchute-enrollment v12 end -->
 
 ---
 

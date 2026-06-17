@@ -26,6 +26,10 @@ func findCheck(t *testing.T, r doctorReport, name string) doctorCheck {
 
 func newDoctorCfg(t *testing.T) *loop.Config {
 	t.Helper()
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
@@ -42,13 +46,17 @@ func newDoctorCfg(t *testing.T) *loop.Config {
 }
 
 func TestDoctorMissingScaffoldBlocks(t *testing.T) {
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
 		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
 		Vendor:      "examplecorp",
 	}
-	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "loop_dir_scaffold")
 	if got.Severity != severityBlocker {
 		t.Errorf("loop_dir_scaffold severity = %q, want BLOCKER", got.Severity)
@@ -69,7 +77,7 @@ func TestDoctorBareAgentchuteCheckInHookBlocks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "hook_content_sanity")
 	if got.Severity != severityBlocker {
 		t.Errorf("hook_content_sanity severity = %q, want BLOCKER (bare `agentchute check` in hook)", got.Severity)
@@ -92,7 +100,7 @@ func TestDoctorTemplatedAgentchuteCheckInHookBlocks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "hook_content_sanity")
 	if got.Severity != severityBlocker {
 		t.Errorf("hook_content_sanity severity = %q, want BLOCKER for templated `${AGENTCHUTE_BIN:-agentchute} check`", got.Severity)
@@ -109,7 +117,7 @@ func TestDoctorEnvOnlyAgentchuteCheckInHookBlocks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "hook_content_sanity")
 	if got.Severity != severityBlocker {
 		t.Errorf("hook_content_sanity severity = %q, want BLOCKER for env-only `$AGENTCHUTE_BIN check`", got.Severity)
@@ -132,7 +140,7 @@ func TestDoctorMixedFormsDoNotMaskCheckOffender(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "hook_content_sanity")
 	if got.Severity != severityBlocker {
 		t.Errorf("hook_content_sanity severity = %q, want BLOCKER (mixed bare-check + templated must still flag the bare-check)", got.Severity)
@@ -143,6 +151,10 @@ func TestDoctorMixedFormsDoNotMaskCheckOffender(t *testing.T) {
 // errBlocked. Previously emitDoctorJSON returned nil before the
 // errBlocked guard ran.
 func TestCmdDoctorJSONDiscoveryFailureBlocks(t *testing.T) {
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		_, err := captureStdout(t, func() error { return cmdDoctor([]string{"--json"}) })
@@ -176,7 +188,7 @@ func TestDoctorTemplatedBinaryReferenceIsOKWhenAGENTCHUTE_BINSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("AGENTCHUTE_BIN", stub)
-	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "hook_content_sanity")
 	if got.Severity != severityOK {
 		t.Errorf("hook_content_sanity severity = %q, want OK (templated form resolves via AGENTCHUTE_BIN)", got.Severity)
@@ -206,7 +218,7 @@ func TestDoctorTemplatedBinaryReferenceBlocksWhenNothingResolves(t *testing.T) {
 	if isAgentchuteOnPath() {
 		t.Skip("agentchute is on PATH in this test environment; cannot test the BLOCKER path")
 	}
-	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "hook_content_sanity")
 	if got.Severity != severityBlocker {
 		t.Errorf("hook_content_sanity severity = %q, want BLOCKER (no AGENTCHUTE_BIN, no PATH)", got.Severity)
@@ -235,9 +247,9 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := runDoctorChecks(cfg, "claude-code", time.Now().UTC())
+	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 
-	for _, name := range []string{"self_registration", "registration_freshness", "inbox_state", "ledger_state", "wake_target_validity"} {
+	for _, name := range []string{"self_registration", "registration_freshness", "inbox_state", "ledger_state", "wake_target_validity", "runner_socket_staleness"} {
 		c := findCheck(t, r, name)
 		if c.Severity == "" {
 			t.Errorf("%s has empty severity", name)
@@ -269,7 +281,7 @@ func TestDoctorAsBlocksWhenActingWrapperHookMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := runDoctorChecks(cfg, "codex", time.Now().UTC())
+	r := runDoctorChecks(cfg, "codex", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "hook_file_presence")
 	if got.Severity != severityBlocker {
 		t.Fatalf("hook_file_presence severity = %q, want BLOCKER when codex hook is missing", got.Severity)
@@ -288,7 +300,7 @@ func TestDoctorAsBlocksWhenActingWrapperHookDiverged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := runDoctorChecks(cfg, "codex", time.Now().UTC())
+	r := runDoctorChecks(cfg, "codex", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "hook_file_presence")
 	if got.Severity != severityBlocker {
 		t.Fatalf("hook_file_presence severity = %q, want BLOCKER when codex hook diverged", got.Severity)
@@ -315,7 +327,7 @@ func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := runDoctorChecks(cfg, "claude-code", time.Now().UTC())
+	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "registration_freshness")
 	if got.Severity != severityWarn {
 		t.Errorf("stale-reg severity = %q, want WARN (not BLOCKER; doctor diagnoses, gate enforces)", got.Severity)
@@ -351,7 +363,7 @@ func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 	}
 	mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 
-	r := runDoctorChecks(cfg, "claude-code", time.Now().UTC())
+	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "inbox_state")
 	if got.Severity != severityWarn {
 		t.Errorf("inbox_state severity = %q, want WARN (doctor diagnoses; gate enforces blocking on unread)", got.Severity)
@@ -382,7 +394,7 @@ func TestDoctorRecipientLivenessBlocksWithoutWakeOrPoller(t *testing.T) {
 	}
 }
 
-func TestDoctorRecipientLivenessAcceptsFreshPoller(t *testing.T) {
+func TestDoctorRecipientLivenessAcceptsFreshLaunchEnabledPoller(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	reg := &loop.Registration{
 		AgentID:     "claude-code",
@@ -411,7 +423,7 @@ func TestDoctorRecipientLivenessAcceptsFreshPoller(t *testing.T) {
 func TestDoctorAGENTCHUTE_BINRejectsDirectory(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	t.Setenv("AGENTCHUTE_BIN", cfg.ControlRepo) // a directory
-	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "binary_on_path")
 	if got.Severity == severityOK {
 		t.Errorf("binary_on_path severity = %q, want WARN/BLOCKER for directory at AGENTCHUTE_BIN", got.Severity)
@@ -427,7 +439,7 @@ func TestDoctorAGENTCHUTE_BINRejectsNonExecutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("AGENTCHUTE_BIN", notExec)
-	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "binary_on_path")
 	if got.Severity == severityOK {
 		t.Errorf("binary_on_path severity = %q, want WARN/BLOCKER for non-executable file at AGENTCHUTE_BIN", got.Severity)
@@ -442,7 +454,7 @@ func TestDoctorAGENTCHUTE_BINAcceptsExecutableFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("AGENTCHUTE_BIN", exec)
-	r := runDoctorChecks(cfg, "", time.Now().UTC())
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "binary_on_path")
 	if got.Severity != severityOK {
 		t.Errorf("binary_on_path severity = %q, want OK for valid executable", got.Severity)
@@ -475,6 +487,10 @@ func TestCmdDoctorJSONShape(t *testing.T) {
 // Discovery failure → BLOCKER on `discover` + exit nonzero. Confirms
 // doctor refuses to falsely declare a broken repo healthy.
 func TestCmdDoctorDiscoveryFailureBlocks(t *testing.T) {
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
 	// No AGENTCHUTE.md, no .examplecorp/loop — discovery will fail.
 	withCwd(t, root, func() {

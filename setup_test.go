@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestSetupRunnerDetectedWrappersInstallsOnlyDetectedShims(t *testing.T) {
+func TestSetupRunnerInstallsAllFourShimsRegardlessOfDetection(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))
 	home := t.TempDir()
@@ -46,11 +46,13 @@ func TestSetupRunnerDetectedWrappersInstallsOnlyDetectedShims(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".codex", "hooks.json")); err != nil {
 		t.Fatalf("codex hooks not installed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "codex")); err != nil {
-		t.Fatalf("codex shim not installed: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "claude")); !os.IsNotExist(err) {
-		t.Fatalf("claude shim should not be installed for detected codex-only setup: %v", err)
+
+	// INVARIANT: In runner mode, all four shims are installed even if only one
+	// wrapper is detected on PATH.
+	for _, name := range []string{"claude", "claude-code", "codex", "gemini", "gemini-cli", "grok"} {
+		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); err != nil {
+			t.Fatalf("%s shim not installed: %v", name, err)
+		}
 	}
 	data, err := os.ReadFile(profile)
 	if err != nil {
@@ -150,8 +152,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v11 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v11 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v12 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v12 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)
@@ -268,8 +270,8 @@ func TestSetupWrapperNarrowingRemovesDroppedHooksAndShims(t *testing.T) {
 		t.Fatalf("codex shim should remain: %v", err)
 	}
 	for _, name := range []string{"gemini", "gemini-cli"} {
-		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); !os.IsNotExist(err) {
-			t.Fatalf("%s shim should be removed: %v", name, err)
+		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); err != nil {
+			t.Fatalf("%s shim should remain (INVARIANT: all four shims in runner mode): %v", name, err)
 		}
 	}
 }

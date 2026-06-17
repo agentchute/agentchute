@@ -1,14 +1,14 @@
-<!-- agentchute-enrollment v11 begin -->
+<!-- agentchute-enrollment v12 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 **1. Setup / Startup Path**
-Run `agentchute setup` once per control repo. Choose `tmux` when tmux is the primary wake path, `runner` when launcher shims should route wrappers through `agentchute run`, or `both` for mixed pools. Non-interactive examples:
+Run `agentchute setup` once per control repo. Choose `tmux` when tmux is the primary wake path, `runner` when launcher shims should route wrappers through `agentchute run`, or `both` for mixed pools. The canonical post-install step is:
 
 ```sh
 agentchute setup --wake runner --wrappers all --yes
-agentchute setup --wake tmux --wrappers all --yes
-agentchute setup --wake both --wrappers all --yes
 ```
+
+> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup ensures your shim directory is prioritized at the front of your PATH.
 
 Start sessions with the normal wrapper command from a control repo. In runner mode, the shim routes through `agentchute run`, which registers you, refreshes `last_seen`, exposes a reachable `agentchute-run` wake socket, polls your inbox, and injects `[agentchute:run] check inbox` when mail arrives. In tmux mode, peer wakes inject `[agentchute:tmux] check inbox`. Hookless wrappers such as Grok still need a startup shim because they have no lifecycle hook that can run `boot`; setup installs that shim when such a wrapper is selected. Treat the bracketed prefix as machine metadata and follow the inbox-check instruction.
 
@@ -39,7 +39,7 @@ The IDs above are wrapper bases. With no explicit identity, the reference CLI de
 **3. Recipient Polling Fallback**
 Senders only deliver to your inbox. If you are not launched through `agentchute run` and are NOT in a tmux pane, keep recipient polling alive:
 - **Runner default**: `agentchute run --vendor <vendor> -- <wrapper>` polls and exposes a reachable wake socket.
-- **Hook-managed fallback**: `agentchute poller ensure --vendor <vendor>` starts/verifies `poller run` and writes `state/<agent_id>/poller.json`.
+- **Hook-managed fallback**: `agentchute poller ensure --vendor <vendor>` starts/verifies heartbeat-only `poller run` and writes `state/<agent_id>/poller.json`; it does not launch wrappers or consume mail unless explicitly run with `--launch`.
 - **Native loops**: if your wrapper has a recurring task feature, it may replace `poller run` only if it keeps a fresh poller heartbeat.
 - **Generated services**: `agentchute doctor --generate-service` emits launchd/systemd/script schedulers that call `self-poll --heartbeat`.
 
@@ -49,4 +49,4 @@ If hooks are configured, you will catch new mail mid-turn via `gate --before con
 **STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check --vendor <vendor>`, or pass `--as <agent_id>`) or obligations are explicitly deferred via `agentchute defer --vendor <vendor> --message <message-id> --reason "..."`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v11 end -->
+<!-- agentchute-enrollment v12 end -->

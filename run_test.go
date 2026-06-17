@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -127,12 +128,11 @@ func TestRunRefusesLiveRunnerCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 	socketPath := cfg.RunnerSocketPath("codex")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	defer os.Remove(socketPath)
+	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{
+		OK:        true,
+		RunnerPID: os.Getpid(),
+		Status:    "active",
+	})
 
 	if err := loop.SaveRunnerState(cfg, loop.RunnerState{
 		AgentID:    "codex",
@@ -150,6 +150,40 @@ func TestRunRefusesLiveRunnerCollision(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already active") {
 		t.Fatalf("collision error = %v", err)
+	}
+}
+
+func TestRunnerSocketReachableRequiresPingAck(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socketPath := cfg.RunnerSocketPath("codex")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	})
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	target := loop.RunnerWakeTarget(socketPath)
+	if loop.RunnerSocketReachable(target, 100*time.Millisecond) {
+		t.Fatal("bare socket accepted as reachable runner; want ping/ack failure")
 	}
 }
 
@@ -217,27 +251,118 @@ func TestRunShutdownSocketCleansUpRunner(t *testing.T) {
 	}
 }
 
+func TestRunnerPingReportsState(t *testing.T) {
+	root := setupShortRunFixture(t)
+	ready := filepath.Join(root, "ready")
+	script := filepath.Join(root, "fake-wrapper.sh")
+	mustWrite(t, script, []byte("#!/bin/sh\ntrap 'exit 0' TERM HUP INT\nprintf 'READY\\n'\necho ready > "+shellQuote(ready)+"\nwhile :; do sleep 1; done\n"))
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	withCwd(t, root, func() {
+		go func() {
+			errCh <- cmdRun([]string{
+				"--as", "codex",
+				"--vendor", "openai",
+				"--control-repo", root,
+				"--loop-dir", filepath.Join(root, ".examplecorp", "loop"),
+				"--interval", "5",
+				"--idle-grace", "100ms",
+				"--", script,
+			})
+		}()
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		socketPath := cfg.RunnerSocketPath("codex")
+		target := loop.RunnerWakeTarget(socketPath)
+		waitForRunnerSocket(t, target, errCh)
+		waitForFile(t, ready)
+		resp, err := loop.PingRunner(target, time.Second)
+		if err != nil {
+			t.Fatalf("ping runner: %v", err)
+		}
+		if !resp.OK {
+			t.Fatal("ping response OK = false")
+		}
+		if resp.RunnerPID != os.Getpid() {
+			t.Fatalf("RunnerPID = %d, want %d", resp.RunnerPID, os.Getpid())
+		}
+		if resp.ChildPID <= 0 {
+			t.Fatalf("ChildPID = %d, want positive pid", resp.ChildPID)
+		}
+		if resp.Status != "active" {
+			t.Fatalf("Status = %q, want active", resp.Status)
+		}
+		if err := runnerSocketOp(socketPath, "shutdown"); err != nil {
+			t.Fatalf("shutdown runner: %v", err)
+		}
+	})
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("cmdRun err = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not exit after shutdown")
+	}
+}
+
+func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
+	root := setupShortRunFixture(t)
+	envPath := filepath.Join(root, "runner-env.txt")
+	script := filepath.Join(root, "fake-wrapper.sh")
+	mustWrite(t, script, []byte("#!/bin/sh\nprintf '%s\\n%s\\n' \"$AGENTCHUTE_RUNNER\" \"$AGENTCHUTE_RUNNER_PID\" > "+shellQuote(envPath)+"\n"))
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	withCwd(t, root, func() {
+		if err := cmdRun([]string{
+			"--as", "codex",
+			"--vendor", "openai",
+			"--control-repo", root,
+			"--loop-dir", filepath.Join(root, ".examplecorp", "loop"),
+			"--interval", "5",
+			"--idle-grace", "100ms",
+			"--", script,
+		}); err != nil {
+			t.Fatalf("cmdRun err = %v", err)
+		}
+	})
+
+	got, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(got)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("runner env lines = %q, want 2 lines", lines)
+	}
+	if lines[0] != "1" {
+		t.Fatalf("AGENTCHUTE_RUNNER = %q, want 1", lines[0])
+	}
+	if lines[1] != strconv.Itoa(os.Getpid()) {
+		t.Fatalf("AGENTCHUTE_RUNNER_PID = %q, want %d", lines[1], os.Getpid())
+	}
+}
+
 func TestRunnerWakeSatisfiesRecipientLiveness(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	if err := loop.EnsurePrivateDir(cfg.AgentStateDir("codex")); err != nil {
 		t.Fatal(err)
 	}
 	socketPath := cfg.RunnerSocketPath("codex")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	defer os.Remove(socketPath)
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
+	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{
+		OK:        true,
+		RunnerPID: os.Getpid(),
+		Status:    "active",
+	})
 
 	reg := &loop.Registration{
 		AgentID:     "codex",
@@ -268,6 +393,49 @@ func runnerSocketOp(path, op string) error {
 	}
 	defer conn.Close()
 	return json.NewEncoder(conn).Encode(map[string]string{"op": op})
+}
+
+func startFakeRunnerPingSocket(t *testing.T, path string, resp loop.RunnerPingResponse) net.Listener {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK {
+		resp.OK = true
+	}
+	if resp.Status == "" {
+		resp.Status = "active"
+	}
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+		_ = os.Remove(path)
+	})
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				var req struct {
+					Op string `json:"op"`
+				}
+				if err := json.NewDecoder(conn).Decode(&req); err != nil {
+					return
+				}
+				switch req.Op {
+				case "ping", "wake", "status", "shutdown":
+					_ = json.NewEncoder(conn).Encode(resp)
+				}
+			}(conn)
+		}
+	}()
+	return listener
 }
 
 func waitForFile(t *testing.T, path string) {

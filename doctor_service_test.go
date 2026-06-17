@@ -25,6 +25,10 @@ func readFileForTest(t *testing.T, path string) string {
 // preflight shell line contains `2>&1` and the `&` was emitted raw.
 // Every plist <string> body must XML-escape its content.
 func TestGenerateServiceLaunchdXMLEscapesAmpersand(t *testing.T) {
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
 	got, err := captureStdout(t, func() error {
 		return generateService(serviceParams{
 			Kind:     serviceKindLaunchd,
@@ -258,6 +262,47 @@ func TestGenerateServicePromptHasConcreteAgentID(t *testing.T) {
 	}
 	if strings.Contains(got, "`agentchute") {
 		t.Errorf("backticks around agentchute commands in prompt — outer scheduler shell will command-substitute them:\n%s", got)
+	}
+}
+
+func TestGenerateServiceExportsAgentIDToWrapper(t *testing.T) {
+	got, err := captureStdout(t, func() error {
+		return generateService(serviceParams{
+			Kind:     serviceKindScript,
+			AgentID:  "codex",
+			Interval: 30,
+			Repo:     t.TempDir(),
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `AGENTCHUTE_AGENT_ID=codex sh -c "codex exec`) {
+		t.Errorf("generated scheduler does not export AGENTCHUTE_AGENT_ID to wrapper launch:\n%s", got)
+	}
+}
+
+func TestGenerateServiceExportsControlAndLoopToWrapper(t *testing.T) {
+	root := setupBootFixture(t)
+	got, err := captureStdout(t, func() error {
+		return generateService(serviceParams{
+			Kind:     serviceKindScript,
+			AgentID:  "codex",
+			Interval: 30,
+			Repo:     root,
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`AGENTCHUTE_AGENT_ID=codex`,
+		`AGENTCHUTE_CONTROL_REPO="` + root + `"`,
+		`AGENTCHUTE_LOOP_DIR="` + filepath.Join(root, ".examplecorp", "loop") + `"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("generated scheduler missing %q:\n%s", want, got)
+		}
 	}
 }
 

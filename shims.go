@@ -100,8 +100,13 @@ func cmdShimsInstall(args []string) error {
 	}
 	if !quiet {
 		fmt.Printf("installed agentchute shims to %s\n", absDir)
-		if !pathContains(absDir) {
-			fmt.Printf("warning: %s is not on PATH; add it before your wrapper binaries\n", absDir)
+		if !pathIsPrioritized(absDir, os.Getenv("PATH"), setupWrapperNames()) {
+			if pathContains(absDir, os.Getenv("PATH")) {
+				fmt.Printf("warning: %s is on PATH but shadowed by a real binary; move it to the front of PATH\n", absDir)
+			} else {
+				fmt.Printf("warning: %s is not on PATH; add it before your wrapper binaries\n", absDir)
+			}
+			fmt.Println("\nRecommended: run `agentchute setup` to wire PATH and lifecycle hooks automatically.")
 		}
 	}
 	return nil
@@ -254,12 +259,12 @@ func samePath(a, b string) bool {
 	return a == b
 }
 
-func pathContains(dir string) bool {
+func pathContains(dir, pathEnv string) bool {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return false
 	}
-	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
+	for _, entry := range filepath.SplitList(pathEnv) {
 		if entry == "" {
 			entry = "."
 		}
@@ -269,6 +274,39 @@ func pathContains(dir string) bool {
 		}
 	}
 	return false
+}
+
+// pathIsPrioritized returns true if absDir is either the first entry in pathEnv
+// or at least appears before any other directory that contains a wrapper
+// executable with any of the names in candidates.
+func pathIsPrioritized(absDir, pathEnv string, candidates []string) bool {
+	absDir, err := filepath.Abs(absDir)
+	if err != nil {
+		return false
+	}
+	foundShimDir := false
+	for _, entry := range filepath.SplitList(pathEnv) {
+		if entry == "" {
+			entry = "."
+		}
+		abs, err := filepath.Abs(entry)
+		if err != nil {
+			continue
+		}
+		if samePath(abs, absDir) {
+			foundShimDir = true
+			continue
+		}
+		// If we haven't found the shim dir yet, check if this dir shadows it.
+		if !foundShimDir {
+			for _, name := range candidates {
+				if executableFileProblem(filepath.Join(abs, name)) == "" {
+					return false // Shadowed by a real binary earlier in pathEnv
+				}
+			}
+		}
+	}
+	return foundShimDir
 }
 
 func shellQuote(s string) string {

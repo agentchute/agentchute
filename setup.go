@@ -427,8 +427,8 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 		}
 		if opts.NoProfile {
 			fmt.Fprintln(w, "  profile:      skipped (--no-profile)")
-		} else if profile := setupProfilePath(opts.Profile); profile != "" {
-			fmt.Fprintf(w, "  profile:      %s\n", profile)
+		} else if profiles := setupPlausibleProfiles(opts.Profile); len(profiles) > 0 {
+			fmt.Fprintf(w, "  profile:      %s\n", strings.Join(profiles, ", "))
 		} else {
 			fmt.Fprintln(w, "  profile:      skipped (no supported shell profile detected)")
 		}
@@ -453,9 +453,13 @@ func setupNeedsShims(wake string) bool {
 
 func setupShimWrappers(wake string, wrappers []string) []string {
 	if setupNeedsShims(wake) {
-		return compactSetupWrappers(wrappers, func(setupWrapper) bool { return true })
+		// INVARIANT: Install all known wrappers in runner/both modes
+		// so that a later install of a real binary works immediately.
+		return setupWrapperNames()
 	}
 	if wake == setupWakeTmux {
+		// INVARIANT: In tmux mode, we must install shims for hookless
+		// wrappers (grok) so they can enroll on startup via the shim.
 		return compactSetupWrappers(wrappers, func(w setupWrapper) bool { return !w.Hookable })
 	}
 	return nil
@@ -565,8 +569,23 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 					return err
 				}
 			}
-			if globalState.PathBlock {
-				if err := setupRemovePathBlock(globalState.Profile); err != nil {
+			// Precedence as INVARIANT: when switching away from runner/both,
+			// we remove the PATH block from all plausible profiles.
+			targets := setupPlausibleProfiles(opts.Profile)
+			if globalState.Profile != "" {
+				found := false
+				for _, t := range targets {
+					if t == globalState.Profile {
+						found = true
+						break
+					}
+				}
+				if !found {
+					targets = append(targets, globalState.Profile)
+				}
+			}
+			for _, p := range targets {
+				if err := setupRemovePathBlock(p); err != nil {
 					return err
 				}
 			}
@@ -575,17 +594,28 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		if err := writeSetupPoolState(cfg, opts.Wake, wrappers); err != nil {
 			return err
 		}
-		profile := setupProfilePath(opts.Profile)
-		pathBlock := currentNeedsShims && !opts.NoProfile && profile != "" &&
-			(setupProfileHasBlock(profile) || !pathContains(opts.ShimDir))
+		profiles := setupPlausibleProfiles(opts.Profile)
+		pathBlock := currentNeedsShims && !opts.NoProfile && len(profiles) > 0
+		if pathBlock {
+			// If any target profile is missing the block, we record that shims
+			// need a path block. This is a bit conservative.
+			anyMissing := false
+			for _, p := range profiles {
+				if !setupProfileHasBlock(p) || !pathContains(opts.ShimDir, os.Getenv("PATH")) {
+					anyMissing = true
+					break
+				}
+			}
+			pathBlock = anyMissing
+		}
+
 		if err := writeSetupGlobalState(setupGlobalState{
 			Version:        1,
 			Wake:           opts.Wake,
 			Wrappers:       wrappers,
 			ShimDir:        opts.ShimDir,
-			Profile:        profile,
-			PathBlock:      pathBlock,
 			ShimsInstalled: currentNeedsShims,
+			PathBlock:      pathBlock,
 			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			return err
@@ -705,43 +735,76 @@ func runInDir(dir string, fn func() error) error {
 }
 
 func setupEnsureShimPath(opts setupOptions) error {
-	if opts.NoProfile || pathContains(opts.ShimDir) {
-		if !pathContains(opts.ShimDir) {
+	allCandidates := setupWrapperNames()
+	pathEnv := os.Getenv("PATH")
+
+	// Precedence as INVARIANT: we always attempt to write the profile block
+	// and we always warn if the current session PATH is shadowed.
+	if !pathIsPrioritized(opts.ShimDir, pathEnv, allCandidates) {
+		if pathContains(opts.ShimDir, pathEnv) {
+			fmt.Printf("warning: %s is on PATH but shadowed by a real binary; move it to the front of PATH\n", opts.ShimDir)
+		} else {
 			fmt.Printf("warning: add %s to PATH before your wrapper binaries\n", opts.ShimDir)
 		}
+	}
+
+	if opts.NoProfile {
 		return nil
 	}
-	profile := setupProfilePath(opts.Profile)
-	if profile == "" {
-		fmt.Printf("warning: add %s to PATH before your wrapper binaries\n", opts.ShimDir)
+
+	profiles := setupPlausibleProfiles(opts.Profile)
+	if len(profiles) == 0 {
 		return nil
 	}
-	return setupWritePathBlock(profile, opts.ShimDir)
+
+	for _, profile := range profiles {
+		if err := setupWritePathBlock(profile, opts.ShimDir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func setupProfilePath(override string) string {
+func setupPlausibleProfiles(override string) []string {
 	if strings.TrimSpace(override) != "" {
-		return override
+		return []string{override}
 	}
 	home := strings.TrimSpace(os.Getenv("HOME"))
 	if home == "" {
-		return ""
+		return nil
 	}
+	shell := os.Getenv("SHELL")
+	var profiles []string
 	switch {
-	case strings.HasSuffix(os.Getenv("SHELL"), "zsh"):
-		return filepath.Join(home, ".zshrc")
-	case strings.HasSuffix(os.Getenv("SHELL"), "bash"):
+	case strings.HasSuffix(shell, "zsh"):
+		profiles = []string{filepath.Join(home, ".zshrc")}
+	case strings.HasSuffix(shell, "bash"):
 		if runtime.GOOS == "darwin" {
-			return filepath.Join(home, ".bash_profile")
+			profiles = []string{filepath.Join(home, ".bash_profile"), filepath.Join(home, ".bashrc")}
+		} else {
+			profiles = []string{filepath.Join(home, ".bashrc")}
 		}
-		return filepath.Join(home, ".bashrc")
-	case strings.HasSuffix(os.Getenv("SHELL"), "fish"):
-		return filepath.Join(home, ".config", "fish", "config.fish")
-	case strings.HasSuffix(os.Getenv("SHELL"), "sh"):
-		return filepath.Join(home, ".profile")
-	default:
-		return ""
+	case strings.HasSuffix(shell, "fish"):
+		profiles = []string{filepath.Join(home, ".config", "fish", "config.fish")}
+	case strings.HasSuffix(shell, "sh"):
+		profiles = []string{filepath.Join(home, ".profile")}
 	}
+	// Always include .profile as a generic fallback for Bourne-family shells
+	// (except fish which is incompatible).
+	if !strings.HasSuffix(shell, "fish") {
+		profile := filepath.Join(home, ".profile")
+		found := false
+		for _, p := range profiles {
+			if p == profile {
+				found = true
+				break
+			}
+		}
+		if !found {
+			profiles = append(profiles, profile)
+		}
+	}
+	return profiles
 }
 
 func setupWritePathBlock(profile, dir string) error {
@@ -810,10 +873,10 @@ func setupProfileHasBlock(profile string) bool {
 func setupRenderPathBlock(profile, dir string) string {
 	expr := setupPathExpr(dir)
 	if strings.HasSuffix(profile, "config.fish") {
-		return fmt.Sprintf("%s\nif not contains %s $PATH\n    set -gx PATH %s $PATH\nend\n%s\n",
+		return fmt.Sprintf("%s\nif test \"$PATH[1]\" != %s\n    set -gx PATH %s $PATH\nend\n%s\n",
 			setupPathBlockBegin, expr, expr, setupPathBlockEnd)
 	}
-	return fmt.Sprintf("%s\ncase \":$PATH:\" in\n  *\":%s:\"*) ;;\n  *) export PATH=\"%s:$PATH\" ;;\nesac\n%s\n",
+	return fmt.Sprintf("%s\ncase \"$PATH\" in\n  \"%s:\"*) ;;\n  *) export PATH=\"%s:$PATH\" ;;\nesac\n%s\n",
 		setupPathBlockBegin, expr, expr, setupPathBlockEnd)
 }
 

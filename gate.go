@@ -428,8 +428,9 @@ Phases:
   continue   same predicate as finish; for in-session decision hooks
              (gemini AfterAgent, codex Stop) that ask "continue the turn?"
 
-All phases also block if this agent is not registered or recipient liveness
-is not proven by a reachable wake target or fresh poller heartbeat.
+All phases also block if this agent is not registered or recipient liveness is
+not proven by a reachable wake target, active session heartbeat, or
+launch-enabled poller heartbeat.
 
 Exit codes:
   0  clear to proceed

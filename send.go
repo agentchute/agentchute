@@ -300,6 +300,9 @@ func emitSendText(r sendResult) {
 	if r.ReplyToCleared != "" {
 		fmt.Printf("  reply_to:       %s\n", r.ReplyToCleared)
 	}
+	if r.WakeMethod == loop.RunnerWakeMethod && r.WakeAttempted && !strings.HasPrefix(r.WakeResult, "ok") {
+		fmt.Printf("  note: runner for %s unreachable; mail delivered to inbox; recipient will see on next start via shim\n", r.To)
+	}
 }
 
 func emitSendJSON(r sendResult) error {

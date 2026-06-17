@@ -130,6 +130,8 @@ func setupTraversalRepo(t *testing.T) string {
 
 func withCwd(t *testing.T, dir string, fn func()) {
 	t.Helper()
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
 	orig, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

@@ -85,38 +85,30 @@ func TestPerformRegisterConcurrentSamePaneReusesBase(t *testing.T) {
 func TestRegisterAutoDetectsTmuxPane(t *testing.T) {
 	withFakeTmuxTargets(t, "%99")
 	root := t.TempDir()
-	origCwd, _ := os.Getwd()
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := os.Chdir(origCwd); err != nil {
-			t.Errorf("failed to restore cwd: %v", err)
+	withCwd(t, root, func() {
+		// Setup a dummy repo
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+
+		// Set TMUX_PANE
+		t.Setenv("TMUX_PANE", "%99")
+
+		// Run register without --wake-target
+		args := []string{"--as", "test-agent", "--vendor", "test-vendor"}
+		if err := cmdRegister(args); err != nil {
+			t.Fatalf("cmdRegister failed: %v", err)
 		}
-	}()
 
-	// Setup a dummy repo
-	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
-
-	// Set TMUX_PANE
-	t.Setenv("TMUX_PANE", "%99")
-
-	// Run register without --wake-target
-	args := []string{"--as", "test-agent", "--vendor", "test-vendor"}
-	if err := cmdRegister(args); err != nil {
-		t.Fatalf("cmdRegister failed: %v", err)
-	}
-
-	// Check registration file
-	regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
-	reg, err := loop.ReadRegistration(regPath)
-	if err != nil {
-		t.Fatalf("failed to read registration: %v", err)
-	}
-	if reg.WakeTarget != "%99" {
-		t.Errorf("expected WakeTarget %%99, got %q", reg.WakeTarget)
-	}
+		// Check registration file
+		regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
+		reg, err := loop.ReadRegistration(regPath)
+		if err != nil {
+			t.Fatalf("failed to read registration: %v", err)
+		}
+		if reg.WakeTarget != "%99" {
+			t.Errorf("expected WakeTarget %%99, got %q", reg.WakeTarget)
+		}
+	})
 }
 
 // Re-running register without --wake-target and without TMUX_PANE set
@@ -446,34 +438,26 @@ func TestRegisterBioFlagSetsAndOverwritesBody(t *testing.T) {
 func TestRegisterExplicitEmptyTmuxPaneOverridesEnv(t *testing.T) {
 	withFakeTmuxTargets(t, "%99")
 	root := t.TempDir()
-	origCwd, _ := os.Getwd()
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := os.Chdir(origCwd); err != nil {
-			t.Errorf("failed to restore cwd: %v", err)
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+
+		t.Setenv("TMUX_PANE", "%99")
+
+		args := []string{"--as", "test-agent", "--vendor", "test-vendor", "--wake-target", ""}
+		if err := cmdRegister(args); err != nil {
+			t.Fatalf("cmdRegister failed: %v", err)
 		}
-	}()
 
-	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
-
-	t.Setenv("TMUX_PANE", "%99")
-
-	args := []string{"--as", "test-agent", "--vendor", "test-vendor", "--wake-target", ""}
-	if err := cmdRegister(args); err != nil {
-		t.Fatalf("cmdRegister failed: %v", err)
-	}
-
-	regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
-	reg, err := loop.ReadRegistration(regPath)
-	if err != nil {
-		t.Fatalf("failed to read registration: %v", err)
-	}
-	if reg.WakeTarget != "" {
-		t.Errorf("expected empty WakeTarget, got %q", reg.WakeTarget)
-	}
+		regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
+		reg, err := loop.ReadRegistration(regPath)
+		if err != nil {
+			t.Fatalf("failed to read registration: %v", err)
+		}
+		if reg.WakeTarget != "" {
+			t.Errorf("expected empty WakeTarget, got %q", reg.WakeTarget)
+		}
+	})
 }
 
 // TMUX_PANE in env MUST NOT be auto-bound as wake_target when the user

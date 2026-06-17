@@ -103,6 +103,9 @@ func cmdBoot(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := saveActiveSessionHeartbeat(cfg, agentID, "boot", now); err != nil {
+		return fmt.Errorf("write active session heartbeat: %w", err)
+	}
 
 	// Inbox peek — strictly side-effect free, same path `pending` uses.
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(result.InboxDir)
