@@ -6,7 +6,12 @@ The repo follows a release-squash convention: each release lands on `main` as a 
 
 ## Unreleased
 
-- **Namespaced launcher shims**: default setup now installs `ac-claude`, `ac-codex`, `ac-gemini`, and `ac-grok` instead of same-name wrapper shims. Same-name compatibility aliases are opt-in with `--aliases`.
+- **Namespaced launcher shims**: default setup now installs `ac-claude`, `ac-codex`, `ac-gemini`, and `ac-grok` instead of same-name wrapper shims. Same-name compatibility aliases are opt-in with `--aliases`. Bare-wrapper auto-launches (poller/scheduler) export `AGENTCHUTE_SHIM_BYPASS=1` and target the real binary, so they never recurse through a legacy shim. `doctor` `wrapper_shadowing` is now WARN/OK around namespaced-launcher reachability instead of a runner BLOCKER.
+- **Fresh-install wake reliability**: `install.sh` now supports fish (`config.fish`) and writes a precedence-correct PATH block; `setup` treats shim-dir precedence as an invariant, writes the PATH block to all plausible profiles per shell family, and always installs all four shims in runner/both mode. New `doctor` `wrapper_shadowing` diagnostic catches a shim dir shadowed by a real wrapper binary on PATH.
+- **Stable active-session liveness**: `agentchute run` exports `AGENTCHUTE_RUNNER_PID`; `boot`/`self-check` capture the stable wrapper PID for `state/<agent>/session.json` instead of a transient hook-shell ppid, fixing false finish-gate blocks for attended hook-managed sessions.
+- **Runner health handshake**: `RunnerSocketReachable` requires a JSON ping/ack (runner pid, child pid, pending-wake state); live-runner collisions verify runner/child PID; stale same-host runner wake targets are cleared on healthy runner start. `watchdog` probes runner sockets (not just tmux); `send` notes an unreachable runner target.
+- **Stop-hook registration refresh**: Claude and Codex Stop hooks now run hook-safe `self-check` before `gate --before finish`, so a long-lived session whose registration was cleared by `setup` re-registers before the read-only finish gate runs.
+- **Fix**: `init` renderWrapperBlock substituted `{{AS}}` while the template used `{{AGENT_ID}}`, leaking literal `{{AGENT_ID}}` placeholders into generated `CLAUDE.md`/`CODEX.md`/`GEMINI.md`/`GROK.md`. Now substitutes `{{AGENT_ID}}` (with `{{AS}}` legacy alias); regression test added.
 
 ## v0.3.9 (2026-06-09)
 

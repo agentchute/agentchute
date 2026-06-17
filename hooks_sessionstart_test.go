@@ -69,6 +69,51 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 	}
 }
 
+func TestHookTemplatesRunSelfCheckBeforeFinishGate(t *testing.T) {
+	cases := []struct {
+		wrapper string
+		path    string
+		event   string
+	}{
+		{"claude-code", "examples/hooks/claude-code/.claude/settings.json", "Stop"},
+		{"codex", "examples/hooks/codex/.codex/hooks.json", "Stop"},
+		{"gemini-cli", "examples/hooks/gemini/.gemini/settings.json", "BeforeAgent"},
+	}
+
+	for _, c := range cases {
+		data, err := hooksFS.ReadFile(c.path)
+		if err != nil {
+			t.Errorf("%s: read embedded template: %v", c.wrapper, err)
+			continue
+		}
+		cmds := hookCommandsForEvent(t, data, c.event)
+		selfCheckAt, gateAt := -1, -1
+		for i, cmd := range cmds {
+			switch {
+			case strings.Contains(cmd, "self-check"):
+				if selfCheckAt == -1 {
+					selfCheckAt = i
+				}
+			case strings.Contains(cmd, " gate "):
+				if gateAt == -1 {
+					gateAt = i
+				}
+			}
+		}
+		if gateAt == -1 {
+			t.Errorf("%s: %s has no finish gate", c.wrapper, c.event)
+			continue
+		}
+		if selfCheckAt == -1 {
+			t.Errorf("%s: %s has no self-check before finish gate", c.wrapper, c.event)
+			continue
+		}
+		if selfCheckAt > gateAt {
+			t.Errorf("%s: %s self-check must run before gate; commands=%v", c.wrapper, c.event, cmds)
+		}
+	}
+}
+
 // hookCommandsForEvent extracts every hook command string for one event key
 // from a wrapper hook config. The claude/codex/gemini configs share the shape
 // {"hooks": {"<event>": [ {"hooks": [ {"command": "..."} ]} ]}}.

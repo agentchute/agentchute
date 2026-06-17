@@ -38,6 +38,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor anthropic --quiet"
+          },
+          {
+            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} gate --vendor anthropic --before finish --json"
           }
         ]

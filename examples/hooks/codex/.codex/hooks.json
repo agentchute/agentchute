@@ -43,6 +43,12 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor openai --quiet",
+            "timeout": 30,
+            "statusMessage": "agentchute: self-check"
+          },
+          {
+            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} gate --vendor openai --before finish --codex-hook Stop",
             "timeout": 30,
             "statusMessage": "agentchute: finish gate"
