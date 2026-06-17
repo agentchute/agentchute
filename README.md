@@ -236,7 +236,7 @@ MIT — see [`LICENSE`](LICENSE).
 
 ## Releases
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.3.9** — fixes duplicate tmux pane registrations so an agent re-enrolling in the same pane no longer accumulates multiple live registrations.
+See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.4.0** — namespaced `ac-*` launcher shims (ending the same-name PATH/Volta collision) plus a fresh-install wake-reliability overhaul: fish PATH support, stable active-session liveness, and runner ping/ack health.
 
 ## Manual session (without hooks)
 
