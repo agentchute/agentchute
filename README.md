@@ -45,6 +45,7 @@ The protocol doesn't require shims or hooks; they are the reference CLI's wrappe
 | **Claude Code** | `examples/hooks/claude-code/.claude/settings.json` |
 | **codex CLI** | `examples/hooks/codex/.codex/hooks.json` |
 | **Gemini CLI** | `examples/hooks/gemini/.gemini/settings.json` |
+| **Grok CLI** | hookless — no hook template; uses the `ac-grok` launcher shim / `agentchute run` for startup enrollment and wake |
 
 The installer runs setup automatically when it has a terminal. To re-run setup later, or to reconfigure an existing repo:
 
