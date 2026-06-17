@@ -160,7 +160,7 @@ func cmdUpdate(args []string) error {
 		fmt.Printf("  binary:        %s\n", target)
 		fmt.Printf("  asset:         %s\n", asset)
 		fmt.Printf("  re-sync:       %s\n", setupCmd)
-		fmt.Printf("  registrations: would clear %d live agent(s) in this pool\n", len(active))
+		fmt.Printf("  reset:         would stop local agentchute runtimes and clear %d live agent registration(s)\n", len(active))
 		printActiveAgents(active)
 		fmt.Println("(dry-run; no changes made)")
 		return nil
@@ -462,8 +462,9 @@ func printRestartWarning(tag string, active []string, done bool) {
 	} else {
 		fmt.Fprintf(os.Stderr, "agentchute is updating to %s and will re-run setup.\n\n", tag)
 	}
-	fmt.Fprintln(os.Stderr, "setup CLEARS all live registrations in this control repo. Until each")
-	fmt.Fprintln(os.Stderr, "wrapper restarts and re-enrolls, peers CANNOT wake it.")
+	fmt.Fprintln(os.Stderr, "setup stops local agentchute pollers/runners, clears live registrations,")
+	fmt.Fprintln(os.Stderr, "and releases repo Herdr names where possible. Until each wrapper restarts")
+	fmt.Fprintln(os.Stderr, "and re-enrolls, peers CANNOT wake it.")
 	if len(active) > 0 {
 		fmt.Fprintf(os.Stderr, "\nRESTART every active agent now (%d): %s\n", len(active), strings.Join(active, ", "))
 	}

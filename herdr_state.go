@@ -65,8 +65,11 @@ func renameCurrentHerdrAgent(agentID string) error {
 
 // herdrAgentInfo is the subset of `herdr agent get` we consume.
 type herdrAgentInfo struct {
-	PaneID string
-	Found  bool
+	Name          string
+	PaneID        string
+	Cwd           string
+	ForegroundCwd string
+	Found         bool
 }
 
 // herdrAgentLookup resolves a herdr agent target (name or pane id) to its
@@ -85,7 +88,10 @@ func herdrAgentLookup(target string) herdrAgentInfo {
 	var resp struct {
 		Result struct {
 			Agent struct {
-				PaneID string `json:"pane_id"`
+				Name          string `json:"name"`
+				PaneID        string `json:"pane_id"`
+				Cwd           string `json:"cwd"`
+				ForegroundCwd string `json:"foreground_cwd"`
 			} `json:"agent"`
 		} `json:"result"`
 		Error *struct {
@@ -96,7 +102,28 @@ func herdrAgentLookup(target string) herdrAgentInfo {
 		return herdrAgentInfo{}
 	}
 	pane := strings.TrimSpace(resp.Result.Agent.PaneID)
-	return herdrAgentInfo{PaneID: pane, Found: pane != ""}
+	return herdrAgentInfo{
+		Name:          strings.TrimSpace(resp.Result.Agent.Name),
+		PaneID:        pane,
+		Cwd:           strings.TrimSpace(resp.Result.Agent.Cwd),
+		ForegroundCwd: strings.TrimSpace(resp.Result.Agent.ForegroundCwd),
+		Found:         pane != "",
+	}
+}
+
+func clearHerdrAgentName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" || !herdrAvailable() {
+		return nil
+	}
+	out, err := exec.Command(herdrProbeBinary, "agent", "rename", name, "--clear").CombinedOutput()
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // herdrAgentReachable reports whether a herdr wake target currently resolves to

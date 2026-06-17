@@ -20,6 +20,7 @@ const (
 // Registration last_seen remains the liveness source of truth.
 type RunnerState struct {
 	AgentID       string    `json:"agent_id"`
+	Host          string    `json:"host,omitempty"`
 	RunnerPID     int       `json:"runner_pid"`
 	ChildPID      int       `json:"child_pid,omitempty"`
 	SocketPath    string    `json:"socket_path"`
@@ -34,6 +35,7 @@ type RunnerState struct {
 // socket is an agentchute runner, not just any process accepting connections.
 type RunnerPingResponse struct {
 	OK          bool   `json:"ok"`
+	AgentID     string `json:"agent_id,omitempty"`
 	RunnerPID   int    `json:"runner_pid"`
 	ChildPID    int    `json:"child_pid,omitempty"`
 	PendingWake bool   `json:"pending_wake"`

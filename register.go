@@ -103,7 +103,9 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		// adopt it — the retry takes the existing-registration merge path and
 		// refreshes it in place. Only suffix when the colliding registration
 		// belongs to a different pane (a genuine distinct lane).
-		if adoptID, ok := agentIDForCurrentTmuxPane(cfg, opts.Vendor); ok {
+		if adoptID, ok := agentIDForCurrentHerdrPane(cfg, opts.Vendor); ok {
+			opts.AgentID = adoptID
+		} else if adoptID, ok := agentIDForCurrentTmuxPane(cfg, opts.Vendor); ok {
 			opts.AgentID = adoptID
 		} else {
 			opts.AgentID = nextContextualAgentIDByFilesystem(cfg, opts.ContextualBaseID, opts.AgentID)

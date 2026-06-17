@@ -82,6 +82,72 @@ func TestPerformRegisterConcurrentSamePaneReusesBase(t *testing.T) {
 	})
 }
 
+func TestPerformRegisterConcurrentSameHerdrPaneReusesBase(t *testing.T) {
+	root := t.TempDir()
+	base := "claude-code-" + getFolderSlug(root)
+	withFakeHerdr(t, base, "w3:p7")
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		setupHerdrEnv(t, "w3:p7")
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		const racers = 12
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make(chan error, racers)
+		now := time.Now().UTC()
+		for i := 0; i < racers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				opts := registerOpts{
+					AgentID:            base,
+					Vendor:             "anthropic",
+					ContextualIdentity: true,
+					ContextualBaseID:   base,
+					PruneStalePeerTmux: true,
+				}
+				if _, err := performRegister(cfg, opts, now); err != nil {
+					errs <- err
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Errorf("performRegister racer failed: %v", err)
+		}
+		if t.Failed() {
+			t.FailNow()
+		}
+
+		entries, err := os.ReadDir(cfg.AgentsDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".md") {
+				ids = append(ids, strings.TrimSuffix(e.Name(), ".md"))
+			}
+		}
+		if len(ids) != 1 || ids[0] != base {
+			t.Fatalf("concurrent same-herdr-pane register produced duplicate identities %v, want exactly [%s]", ids, base)
+		}
+		reg := readExampleReg(t, root, base)
+		if reg.WakeMethod != "herdr" || reg.WakeTarget != base {
+			t.Fatalf("registration wake = %s:%s, want herdr:%s", reg.WakeMethod, reg.WakeTarget, base)
+		}
+	})
+}
+
 func TestRegisterAutoDetectsTmuxPane(t *testing.T) {
 	withFakeTmuxTargets(t, "%99")
 	root := t.TempDir()

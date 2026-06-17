@@ -172,10 +172,10 @@ func setupHelp() string {
 Usage:
   agentchute setup [--wake runner[,tmux][,herdr] | all] [--wrappers all|none|<list>] [--yes] [--dry-run]
 
-Scaffolds the control repo with agentchute init, clears stale live
-registrations so agents re-enroll, installs lifecycle hooks for the selected
-wrappers, and installs launcher shims when runner is among the wake paths plus
-hookless wrappers when only tmux/herdr are selected.
+Scaffolds the control repo with agentchute init, stops local agentchute
+pollers/runners, clears stale live registrations and repo Herdr names so agents
+re-enroll, installs lifecycle hooks for the selected wrappers, and installs launcher
+shims when runner is among the wake paths plus hookless wrappers when only tmux/herdr are selected.
 
 Wake paths combine freely: pick any of runner, tmux, herdr (comma-separated) or
 all. Each agent still wakes by a single method chosen at launch (runner shim,
@@ -497,7 +497,7 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 		fmt.Fprintf(w, "  wrappers:     %s\n", strings.Join(wrappers, ", "))
 	}
 	fmt.Fprintf(w, "  init:         %s\n", filepath.Join(root, "AGENTCHUTE.md"))
-	fmt.Fprintln(w, "  registrations: clear live agents/*.md on apply")
+	fmt.Fprintln(w, "  reset:        stop local agentchute pollers/runners, clear live agents/*.md, release repo Herdr names")
 	if len(hookWrappers) > 0 {
 		fmt.Fprintln(w, "  hooks:        repo scope, force/idempotent")
 	}
@@ -627,6 +627,22 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		})
 		if err != nil {
 			return fmt.Errorf("discover initialized repo: %w", err)
+		}
+		reset := resetSetupRuntimeState(root, cfg, wrappers)
+		if len(reset.Pollers) > 0 {
+			fmt.Printf("stopped %d local poller(s): %s\n", len(reset.Pollers), strings.Join(reset.Pollers, ", "))
+		}
+		if len(reset.Runners) > 0 {
+			fmt.Printf("stopped %d local runner(s): %s\n", len(reset.Runners), strings.Join(reset.Runners, ", "))
+		}
+		if len(reset.RuntimeFiles) > 0 {
+			fmt.Printf("cleared %d runtime state file(s)\n", len(reset.RuntimeFiles))
+		}
+		if len(reset.HerdrNames) > 0 {
+			fmt.Printf("released %d herdr name(s): %s\n", len(reset.HerdrNames), strings.Join(reset.HerdrNames, ", "))
+		}
+		for _, warning := range reset.Warnings {
+			fmt.Printf("warning: setup reset: %s\n", warning)
 		}
 		cleared, err := clearSetupLiveRegistrations(cfg)
 		if err != nil {

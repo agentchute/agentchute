@@ -549,6 +549,7 @@ func (r *runnerRuntime) pingResponse(status string) loop.RunnerPingResponse {
 	r.mu.Unlock()
 	return loop.RunnerPingResponse{
 		OK:          true,
+		AgentID:     r.opts.AgentID,
 		RunnerPID:   os.Getpid(),
 		ChildPID:    r.childPID,
 		PendingWake: pendingWake,
@@ -829,6 +830,7 @@ func (r *runnerRuntime) saveStateWithStatus(status string) error {
 	r.mu.Lock()
 	st := loop.RunnerState{
 		AgentID:       r.opts.AgentID,
+		Host:          localHostname(),
 		RunnerPID:     os.Getpid(),
 		ChildPID:      r.childPID,
 		SocketPath:    r.socket,
@@ -845,6 +847,7 @@ func (r *runnerRuntime) saveStateWithStatus(status string) error {
 func saveRunnerOfflineState(cfg *loop.Config, agentID, socketPath string, childPID int, now time.Time) error {
 	return loop.SaveRunnerState(cfg, loop.RunnerState{
 		AgentID:    agentID,
+		Host:       localHostname(),
 		RunnerPID:  os.Getpid(),
 		ChildPID:   childPID,
 		SocketPath: socketPath,

@@ -132,6 +132,13 @@ func withCwd(t *testing.T, dir string, fn func()) {
 	t.Helper()
 	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
 	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	t.Setenv("AGENTCHUTE_AGENT_ID", "")
+	t.Setenv("AGENTCHUTE_RUNNER", "")
+	t.Setenv("AGENTCHUTE_RUNNER_PID", "")
+	t.Setenv("HERDR_ENV", "")
+	t.Setenv("HERDR_PANE_ID", "")
+	t.Setenv("HERDR_SOCKET_PATH", "")
+	t.Setenv("TMUX_PANE", "")
 	orig, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

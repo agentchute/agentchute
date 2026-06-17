@@ -310,6 +310,160 @@ func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
 	}
 }
 
+func TestSetupResetsRuntimeStateButPreservesPendingReplies(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	loopDir := filepath.Join(root, ".agentchute", "loop")
+	agentsDir := filepath.Join(loopDir, "agents")
+	mustMkdir(t, agentsDir)
+	mustWrite(t, filepath.Join(agentsDir, "codex-agentchute.md"), []byte("---\nagent_id: codex-agentchute\nvendor: openai\ncontrol_repo: "+root+"\nhost: test\nlast_seen: 2026-01-01T00:00:00Z\nstatus: active\n---\n"))
+	stateDir := filepath.Join(loopDir, "state", "codex-agentchute")
+	mustWrite(t, filepath.Join(stateDir, "poller.json"), []byte(`{"agent_id":"codex-agentchute","method":"poller-run","host":"`+localHostname()+`","pid":111,"interval_seconds":30,"last_seen":"2026-01-01T00:00:00Z"}`+"\n"))
+	mustWrite(t, filepath.Join(stateDir, "runner.json"), []byte(`{"agent_id":"codex-agentchute","runner_pid":222,"socket_path":"`+filepath.Join(stateDir, "runner.sock")+`","started_at":"2026-01-01T00:00:00Z","status":"active"}`+"\n"))
+	mustWrite(t, filepath.Join(stateDir, "session.json"), []byte(`{"agent_id":"codex-agentchute","source":"self-check","host":"`+localHostname()+`","pid":333,"last_seen":"2026-01-01T00:00:00Z"}`+"\n"))
+	mustWrite(t, filepath.Join(stateDir, "pending-replies.json"), []byte(`{"pending":[]}`+"\n"))
+	mustWrite(t, filepath.Join(stateDir, "poller.log"), []byte("keep log\n"))
+
+	oldAlive, oldCommandLine, oldSignal := setupProcessAlive, setupProcessCommandLine, setupSignalProcess
+	signaled := map[int]bool{}
+	setupProcessAlive = func(pid int) bool {
+		if signaled[pid] {
+			return false
+		}
+		return pid == 111 || pid == 222
+	}
+	setupProcessCommandLine = func(pid int) string {
+		switch pid {
+		case 111:
+			return filepath.Join(home, "agentchute") + " poller run --as codex-agentchute --control-repo " + root + " --loop-dir " + loopDir
+		case 222:
+			return filepath.Join(home, "agentchute") + " run --as codex-agentchute --control-repo " + root + " --loop-dir " + loopDir + " -- codex"
+		default:
+			return ""
+		}
+	}
+	setupSignalProcess = func(pid int, sig os.Signal) error {
+		signaled[pid] = true
+		return nil
+	}
+	t.Cleanup(func() {
+		setupProcessAlive = oldAlive
+		setupProcessCommandLine = oldCommandLine
+		setupSignalProcess = oldSignal
+	})
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "tmux", "--wrappers", "none", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if !signaled[111] || !signaled[222] {
+		t.Fatalf("setup did not signal poller and runner pids: %#v", signaled)
+	}
+	for _, removed := range []string{"poller.json", "runner.json", "session.json"} {
+		if _, err := os.Stat(filepath.Join(stateDir, removed)); !os.IsNotExist(err) {
+			t.Fatalf("%s should be removed by setup reset: %v", removed, err)
+		}
+	}
+	for _, keep := range []string{"pending-replies.json", "poller.log"} {
+		if _, err := os.Stat(filepath.Join(stateDir, keep)); err != nil {
+			t.Fatalf("%s should be preserved: %v", keep, err)
+		}
+	}
+}
+
+func TestSetupCommandAgentIDMatchIsBounded(t *testing.T) {
+	root := t.TempDir()
+	cfg := &loop.Config{
+		ControlRepo: root,
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+	}
+	cmdline := filepath.Join(root, "bin", "agentchute") + " poller run --as codex-agentchute-2 --control-repo " + root
+	if setupCommandMatches(cmdline, "codex-agentchute", "poller run", cfg) {
+		t.Fatal("setupCommandMatches matched codex-agentchute as a substring of codex-agentchute-2")
+	}
+	if !setupCommandMatches(cmdline, "codex-agentchute-2", "poller run", cfg) {
+		t.Fatal("setupCommandMatches did not match the exact --as agent id")
+	}
+}
+
+func TestSetupClearsHerdrRepoNamesWithoutRegistrationFiles(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	logPath := filepath.Join(t.TempDir(), "herdr.log")
+	withFakeSetupHerdr(t, root, logPath)
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "herdr", "--wrappers", "codex", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "rename codex-agentchute --clear") {
+		t.Fatalf("setup did not clear repo herdr name; log:\n%s", got)
+	}
+	if !strings.Contains(got, "rename claude-code-agentchute --clear") {
+		t.Fatalf("setup did not clear other repo herdr name; log:\n%s", got)
+	}
+	if strings.Contains(got, "rename codex-other --clear") {
+		t.Fatalf("setup cleared unrelated repo herdr name; log:\n%s", got)
+	}
+}
+
+func withFakeSetupHerdr(t *testing.T, root, logPath string) {
+	t.Helper()
+	old := herdrProbeBinary
+	path := filepath.Join(t.TempDir(), "herdr")
+	script := "#!/bin/sh\n" +
+		"cmd=\"$1\"\n" +
+		"sub=\"$2\"\n" +
+		"target=\"$3\"\n" +
+		"arg4=\"$4\"\n" +
+		"if [ \"$cmd\" != agent ]; then exit 1; fi\n" +
+		"case \"$sub\" in\n" +
+		"  list)\n" +
+		"    printf '{\"result\":{\"agents\":[{\"name\":\"codex-agentchute\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"},{\"name\":\"claude-code-agentchute\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"},{\"name\":\"codex-other\",\"cwd\":\"/tmp/other\",\"foreground_cwd\":\"/tmp/other\"}]}}\\n'\n" +
+		"    exit 0 ;;\n" +
+		"  get)\n" +
+		"    case \"$target\" in\n" +
+		"      codex-agentchute) printf '{\"result\":{\"agent\":{\"name\":\"codex-agentchute\",\"pane_id\":\"w3:p1\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"}}}\\n'; exit 0 ;;\n" +
+		"      claude-code-agentchute) printf '{\"result\":{\"agent\":{\"name\":\"claude-code-agentchute\",\"pane_id\":\"w3:p2\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"}}}\\n'; exit 0 ;;\n" +
+		"      *) printf '{\"error\":{\"code\":\"agent_not_found\"}}\\n'; exit 0 ;;\n" +
+		"    esac ;;\n" +
+		"  rename)\n" +
+		"    printf 'rename %s %s\\n' \"$target\" \"$arg4\" >> '" + logPath + "'\n" +
+		"    exit 0 ;;\n" +
+		"  *) exit 1 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	herdrProbeBinary = path
+	t.Cleanup(func() { herdrProbeBinary = old })
+}
+
 func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))
