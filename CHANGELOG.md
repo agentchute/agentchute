@@ -4,6 +4,15 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.6.2 (2026-06-17)
+
+Hotfix release: setup/update now resets local runtime state so restarted agents re-enroll cleanly. Previously `setup` cleared live `agents/*.md` but left poller/runner runtime state and herdr names behind, so restarted agents re-enrolled inconsistently (Claude missing, Codex without herdr, suffix drift).
+
+- **Repo-scoped runtime reset on setup**: before clearing registrations, setup now stops local agentchute pollers/runners for *this* control repo — verified by matching the live process command line against this pool (`agentchute poller run` / `run` plus this control-repo/loop-dir path) — removes runtime-only files (`poller.json`, `session.json`, `runner.json`, `runner.sock`), and releases this repo's herdr names for all known canonical wrapper IDs (path-scoped via `herdr agent list`, skipping unrelated repos). The pending-replies ledger and `poller.log` are preserved.
+- **Stop safety**: poller stop honors the heartbeat host; runner stop records and checks `RunnerState.host`, verifies the runner socket's `agent_id`/`pid` before requesting shutdown, and falls back to an exact command-line agent-id token match (`--as` / `--agent-id` / `AGENTCHUTE_AGENT_ID`, never a substring — so `codex-agentchute` no longer matches `codex-agentchute-2`) before SIGTERM. A bounded post-signal wait runs before runtime files are removed.
+- **Herdr same-pane registration**: registration retry now adopts an existing same-pane registration before suffixing (matching tmux), preventing fake `-2` ids from same-pane startup races; genuinely distinct panes still suffix.
+- **Messaging**: `update` and `install.sh` next-steps text now describe the runtime reset and herdr-name release.
+
 ## v0.6.1 (2026-06-17)
 
 Hotfix release for the herdr wake submit path and `setup --wake` mode selection.
