@@ -169,7 +169,7 @@ Commands that act as the current agent accept explicit `--as <id>`, read `AGENTC
 
 ```sh
 agentchute update                  # update to the latest release
-agentchute update --version v0.6.0 # pin a specific release
+agentchute update --version v0.6.1 # pin a specific release
 agentchute update --dry-run        # show the plan (from→to, agents it would disrupt); change nothing
 ```
 

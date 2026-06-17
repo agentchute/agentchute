@@ -6,11 +6,13 @@ Read this after `AGENTS.md` and before touching anything. This file should stay 
 
 ## Current State
 
-Latest release: `v0.6.0`
+Latest release: `v0.6.1`
 
-Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.6.0
+Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.6.1
 
-Restart note: `v0.6.0` adds **`agentchute update [--version <tag>]`** — a one-command full update. It downloads + checksum-verifies the target release binary (pure-Go: exact-filename sha256, tar member `agentchute` only, atomic same-dir replace), then re-execs the **new** binary's `setup` to re-sync this control repo's saved config (hooks, shims, enrollment templates), and prints a loud restart-all-agents warning (setup clears live registrations). v0.5.1 was the herdr audit hotfix. Standard `install.sh` resolves `v0.6.0`.
+Restart note: `v0.6.1` is the GitHub-available hotfix for the herdr wake submit bug and composable `setup --wake` paths. It also includes the `v0.6.0` **`agentchute update [--version <tag>]`** flow. Standard `install.sh` and `agentchute update` now resolve `v0.6.1`.
+
+Final v0.6.1 release verification (confirmed 2026-06-17): tag `v0.6.1` points at commit `3ce6377` (annotated tag `999dcd0`); GitHub release is published, non-draft, non-prerelease, and has darwin/linux amd64/arm64 archives plus `checksums.txt`; GoReleaser workflow run `27721495339` succeeded after preflight; `install.sh --version v0.6.1` downloaded, checksum-verified, and installed `agentchute 0.6.1`; `/releases/latest` and `install.sh --dry-run` both resolve `v0.6.1`; local `agentchute update --version v0.6.1` upgraded `/Users/alex/.local/bin/agentchute` from `v0.6.0` to `v0.6.1`.
 
 Final v0.6.0 release verification (confirmed 2026-06-17): `main` and tag `v0.6.0` point at commit `02f6e46` (annotated tag `669599d`); `gh release view v0.6.0` shows a published non-draft/non-prerelease GitHub release with darwin/linux amd64/arm64 archives plus `checksums.txt`; the GoReleaser `release` workflow on the tag succeeded. Pre-release: full Go suite (incl. 12 update tests) + `install_test` (25/0) + `shellcheck` + `goreleaser check` green; codex security review (3 blockers + 4 lower fixed → LGTM); grok validated the download→verify→atomic-replace→re-exec flow with real artifacts.
 
@@ -33,12 +35,11 @@ Recent shipped work:
 - v0.5.0 release: native herdr wake adapter (`internal/loop/herdr.go`, `herdr_state.go`) — env detection, `herdr agent rename` identity binding, herdr pane identity adoption, coexist precedence, `setup --wake herdr`, doctor/recipient-liveness probes, and enrollment/README/EXTENSIONS/AGENTCHUTE docs.
 - v0.5.1 hotfix: herdr audit fixes — explicit `--wake-method herdr` outside a herdr pane now warns (no longer silently non-pokable), herdr-before-tmux identity-adoption ordering, `setup`/`install.sh`/usage `--wake` herdr docs alignment, and `herdr agent rename` stderr surfaced.
 - v0.6.0 release: `agentchute update` — one-command full update that downloads + checksum-verifies the new release binary, replaces the current executable atomically, and re-execs the new binary's `setup` to re-sync the pool's saved config (hooks, shims, enrollment templates), with a loud restart-all-agents warning.
+- v0.6.1 hotfix: herdr wake now submits with `herdr pane send-keys <pane> Enter`; `setup --wake` accepts comma-sets of `runner`, `tmux`, and `herdr` or `all`; enrollment templates bumped to v14; installer help documents the wake-set syntax.
 
 ## Restart Context
 
-In progress (2026-06-17): `origin/main` is now at `1feae9a` (pushed; NOT a release — latest release is still `v0.6.0`). It bundles three reviewed changes: **`setup --wake` path combinations** (any comma-set of runner/tmux/herdr, or `all`; `both` → deprecated alias for `all`; set-aware shim/doctor logic; contextual-id resolution; legacy-`both` persisted-state canonicalization), the **enrollment block bump v13 → v14** (completing a partial in-tree bump), and the **herdr wake Enter-bug fix** (`internal/loop/herdr.go`): herdr 0.7.0 `agent send` writes literal text, so the old trailing-CR never submitted the turn — the poke now resolves the agent name to its current pane via `herdr agent get`, `agent send`s the text, waits `pokeSleep`, then fires a real `herdr pane send-keys <pane> Enter`. Three review rounds (codex + claude-code); full suite green.
-
-⚠️ **Testing `1feae9a` requires a from-source binary, NOT `agentchute update`.** `agentchute update` (no `--version`) fetches the latest *release* (v0.6.0), which does NOT contain the herdr fix or `--wake` combinations. To live-test, build from this checkout and replace the installed binary — `go build -o "$(command -v agentchute)" .` — then restart wrappers. (Or cut a release tag first if you want `agentchute update` to deliver it.) Until the new binary is installed everywhere, peer herdr wakes still need a manual `herdr pane send-keys <pane> Enter`, because the running fleet's old binary still has the no-submit bug. For herdr-native wake, launch a wrapper **bare** in a herdr pane (not via `ac-*`, which keeps the runner socket). Inboxes were clear at save time.
+Released (2026-06-17): `v0.6.1` is published and latest. The previously source-only herdr wake fix and `setup --wake` path combinations are now available through `agentchute update` and `install.sh`; no from-source binary is required. After updating, restart wrappers so they re-enroll with the new setup state. For herdr-native wake, launch a wrapper **bare** in a herdr pane (not via `ac-*`, which keeps the runner socket).
 
 If you upgrade agentchute, remember to run `agentchute update` or re-run `agentchute setup` to sync the control repo. After reinstall or update, restart wrappers from this repo with `ac-claude`, `ac-codex`, `ac-gemini`, and `ac-grok`. Do not use custom `AGENTCHUTE_AGENT_ID` unless a named stable lane is required. The expected default identity path is `--as` > `AGENTCHUTE_AGENT_ID` > existing current herdr/tmux pane registration > contextual `<wrapper>-<folder>` with `-2`, `-3`, etc. for live conflicts.
 
