@@ -329,6 +329,11 @@ ensure_path_available() {
 		info "PATH profile entry for $label already present in $profile"
 		return 0
 	fi
+	# Intentional: the printf formats keep $PATH/$HOME/$PATH[1] literal so they
+	# expand in the user's shell at profile-source time, not here (SC2016). The
+	# grep-then-append on $profile is sequential, not a concurrent pipeline
+	# (SC2094).
+	# shellcheck disable=SC2016,SC2094
 	{
 		printf '\n%s\n' "$begin"
 		case "$profile" in
