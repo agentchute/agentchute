@@ -346,7 +346,7 @@ ensure_path_available() {
 			*)
 				printf '%s\n' "case \"\$PATH\" in"
 				printf '  "%s:"*) ;;\n' "$expr"
-				printf '  *) export PATH="%s:\$PATH" ;;\n' "$expr"
+				printf '  *) export PATH="%s:$PATH" ;;\n' "$expr"
 				printf 'esac\n'
 				;;
 		esac
