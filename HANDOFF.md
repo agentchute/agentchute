@@ -42,7 +42,7 @@ Recent shipped work:
 
 ## Restart Context
 
-After reinstall, run `agentchute setup --wake runner --wrappers all --yes` in this repo if hooks/shims need refreshing, open a new shell so PATH changes land, then start wrappers from this repo with `ac-claude`, `ac-codex`, `ac-gemini`, and `ac-grok`. Do not use custom `AGENTCHUTE_AGENT_ID` unless a named stable lane is required. The expected default identity path is `--as` > `AGENTCHUTE_AGENT_ID` > existing current-tmux-pane registration > contextual `<wrapper>-<folder>` with `-2`, `-3`, etc. for live conflicts.
+After reinstall, run `agentchute setup --wake runner --wrappers all --yes` in this repo if hooks/shims need refreshing, open a new shell so PATH changes land, then start wrappers from this repo with `ac-claude`, `ac-codex`, `ac-gemini`, and `ac-grok`. Do not use custom `AGENTCHUTE_AGENT_ID` unless a named stable lane is required. The expected default identity path is `--as` > `AGENTCHUTE_AGENT_ID` > existing current herdr/tmux pane registration > contextual `<wrapper>-<folder>` with `-2`, `-3`, etc. for live conflicts.
 
 If restart behavior looks wrong, first run:
 

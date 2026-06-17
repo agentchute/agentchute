@@ -67,7 +67,7 @@ func cmdSetup(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	var opts setupOptions
-	fs.StringVar(&opts.Wake, "wake", "", "primary wake path: tmux | runner | both")
+	fs.StringVar(&opts.Wake, "wake", "", "primary wake path: tmux | herdr | runner | both")
 	fs.StringVar(&opts.Wrappers, "wrappers", "all", "all (detected on PATH), none, or comma list: claude-code,codex,gemini-cli,grok")
 	fs.StringVar(&opts.ControlRepo, "control-repo", "", "control repo path (default: env or current git/cwd root)")
 	fs.StringVar(&opts.ShimDir, "shim-dir", "", "launcher shim directory (default: $HOME/.agentchute/bin)")
@@ -111,7 +111,7 @@ func cmdSetup(args []string) error {
 	}
 	opts.Wake = strings.TrimSpace(opts.Wake)
 	if !validSetupWake(opts.Wake) {
-		return fmt.Errorf("--wake must be one of tmux, runner, both")
+		return fmt.Errorf("--wake must be one of tmux, herdr, runner, both")
 	}
 	if err := guardSetupInitRoot(root, opts); err != nil {
 		return err
@@ -169,7 +169,8 @@ Usage:
 
 Scaffolds the control repo with agentchute init, clears stale live
 registrations so agents re-enroll, installs lifecycle hooks for the selected
-wrappers, and installs launcher shims only for runner/both modes.
+wrappers, and installs launcher shims for runner/both modes plus hookless
+wrappers in tmux/herdr modes.
 
 Flags:
   --wake <mode>          tmux | herdr | runner | both (prompted when omitted)
@@ -431,7 +432,7 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 		if opts.Aliases {
 			fmt.Fprintln(w, "  aliases:      legacy same-name wrapper aliases")
 		}
-		if opts.Wake == setupWakeTmux {
+		if opts.Wake == setupWakeTmux || opts.Wake == setupWakeHerdr {
 			fmt.Fprintf(w, "  shim wrappers: %s (hookless startup enrollment)\n", strings.Join(shimWrappers, ", "))
 		}
 		if opts.NoProfile {
@@ -592,8 +593,8 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 					return err
 				}
 			}
-			// Precedence as INVARIANT: when switching away from runner/both,
-			// we remove the PATH block from all plausible profiles.
+			// Precedence as INVARIANT: when the selected mode needs no shims,
+			// remove the PATH block from all plausible profiles.
 			targets := setupPlausibleProfiles(opts.Profile)
 			if globalState.Profile != "" {
 				found := false

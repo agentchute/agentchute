@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
@@ -164,6 +165,60 @@ func TestResolveAgentIDAdoptsHerdrPane(t *testing.T) {
 		}
 		if id != "claude-code-foo" {
 			t.Errorf("resolveAgentID = %q, want adopted claude-code-foo", id)
+		}
+	})
+}
+
+// If both herdr and tmux env are present, herdr identity adoption wins to match
+// wake auto-detection precedence for bare herdr launches.
+func TestResolveAgentIDHerdrWinsOverTmuxWhenBothEnvsPresent(t *testing.T) {
+	withFakeHerdr(t, "codex-herdr", "w3:p7")
+	withFakeTmuxTargets(t, "%7")
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		setupHerdrEnv(t, "w3:p7")
+		t.Setenv("TMUX_PANE", "%7")
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		host, _ := os.Hostname()
+		for _, reg := range []*loop.Registration{
+			{
+				AgentID:     "codex-tmux",
+				Vendor:      "openai",
+				ControlRepo: root,
+				Host:        host,
+				WakeMethod:  "tmux",
+				WakeTarget:  "%7",
+				LastSeen:    time.Now().UTC(),
+				Status:      loop.StatusActive,
+			},
+			{
+				AgentID:     "codex-herdr",
+				Vendor:      "openai",
+				ControlRepo: root,
+				Host:        host,
+				WakeMethod:  "herdr",
+				WakeTarget:  "codex-herdr",
+				LastSeen:    time.Now().UTC(),
+				Status:      loop.StatusActive,
+			},
+		} {
+			if err := loop.WriteRegistration(cfg.AgentRegistrationPath(reg.AgentID), reg); err != nil {
+				t.Fatal(err)
+			}
+			mustMkdir(t, cfg.AgentInboxDir(reg.AgentID))
+		}
+
+		id, err := resolveAgentID("", "openai", cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id != "codex-herdr" {
+			t.Errorf("resolveAgentID = %q, want herdr registration", id)
 		}
 	})
 }

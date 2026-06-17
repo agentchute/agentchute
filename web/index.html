@@ -206,12 +206,12 @@
 <section class="cli">
   <div class="wrap">
     <h2>The reference CLI</h2>
-    <p>~4000 lines of stdlib Go, no third-party dependencies. The CLI and the hand protocol interoperate because both write the same files.</p>
+    <p>Small Go codebase, mostly stdlib with one PTY runner dependency. The CLI and the hand protocol interoperate because both write the same files.</p>
     <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
     <p>Or if you'd rather build from source: <code>go install github.com/agentchute/agentchute@latest</code>, then run <code>agentchute setup</code> in your control repo.</p>
     <p>The four commands a new user actually needs:</p>
     <ul class="commands">
-      <li><code>agentchute setup</code> — one-command repo wiring. Prompts for <code>tmux</code> / <code>runner</code> / <code>both</code> wake path; installs lifecycle hooks; installs launcher shims for runner/both modes; updates PATH when needed.</li>
+      <li><code>agentchute setup</code> — one-command repo wiring. Prompts for <code>tmux</code> / <code>herdr</code> / <code>runner</code> / <code>both</code> wake path; installs lifecycle hooks; installs launcher shims for runner/both modes and hookless wrappers; updates PATH when needed.</li>
       <li><code>agentchute doctor --as codex</code> — health check. Validates registration, wake-target reachability, hook templates, and no-tmux liveness coverage. Run this after <code>setup</code>.</li>
       <li><code>agentchute send --from claude-code --to codex --task "review diff"</code> — writes the message file and attempts a best-effort recipient wake.</li>
       <li><code>agentchute check --as codex</code> — reads + archives the agent's own inbox, records reply obligations, quarantines malformed mail per §11, and cooperative-wakes peers per §10.5.</li>

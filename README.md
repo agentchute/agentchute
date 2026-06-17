@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.
 
 ---
 
-agentchute is a small coordination protocol. Each agent owns an inbox; senders write to it; recipients consume on their own cadence. The wire is medium-agnostic — the reference CLI maps the protocol onto Markdown files on a shared filesystem with optional tmux wake pokes, but the same primitives work over a queue, an HTTP endpoint, or any substrate that preserves no-overwrite per-recipient delivery (see [`EXTENSIONS.md`](EXTENSIONS.md)). No server, no broker, no SDK.
+agentchute is a small coordination protocol. Each agent owns an inbox; senders write to it; recipients consume on their own cadence. The wire is medium-agnostic — the reference CLI maps the protocol onto Markdown files on a shared filesystem with optional wake adapters such as tmux, herdr, and the local runner socket, but the same primitives work over a queue, an HTTP endpoint, or any substrate that preserves no-overwrite per-recipient delivery (see [`EXTENSIONS.md`](EXTENSIONS.md)). No server, no broker, no SDK.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=jwYzKtcOYl0">
@@ -61,14 +61,14 @@ agentchute setup --wake runner --wrappers all --yes
 
 > **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH; the launchers use `ac-*` names, so they do not need to precede real wrapper binaries.
 
-Use `--wake tmux` if tmux panes are your primary wake path, or `--wake both` if you want both tmux hooks and runner shims.
- Hookless wrappers such as Grok still get a launcher shim in tmux mode because no lifecycle hook can run startup enrollment for them. Setup is idempotent: same-content re-runs report `already current`, changed setup choices reconcile old setup-managed hooks, shims, PATH blocks, and ENROLLMENT blocks in `AGENTS.md` / wrapper `.md` files, and live `agents/*.md` registrations are cleared so wrappers re-enroll with fresh contextual IDs. After upgrading agentchute, re-run `agentchute setup --yes` in each control repo and restart the wrappers.
+Use `--wake tmux` if tmux panes are your primary wake path, `--wake herdr` if herdr panes are primary, or `--wake both` if you want hooks plus runner shims.
+Hookless wrappers such as Grok still get a launcher shim in tmux/herdr modes because no lifecycle hook can run startup enrollment for them. Setup is idempotent: same-content re-runs report `already current`, changed setup choices reconcile old setup-managed hooks, shims, PATH blocks, and ENROLLMENT blocks in `AGENTS.md` / wrapper `.md` files, and live `agents/*.md` registrations are cleared so wrappers re-enroll with fresh contextual IDs. After upgrading agentchute, re-run `agentchute setup --yes` in each control repo and restart the wrappers.
 
 Restart the wrapper. From then on:
 
 - The `ac-*` launcher starts `agentchute run` before the wrapper inside initialized pools. The runner registers the agent with `wake_method: agentchute-run`, refreshes `last_seen` every poll, watches the inbox, and injects `[agentchute:run] check inbox` when new mail arrives.
 - **SessionStart** runs `poller ensure`, then `boot` for hook-capable wrappers — verifies no-tmux visibility, registers the agent and active wrapper session, peeks the inbox, surfaces pending-reply obligations as developer context.
-- **UserPromptSubmit** (Claude/codex) / **BeforeAgent** (Gemini) first runs `self-check`, then `poller ensure` — refreshes registration/`last_seen`, reconciles tmux wake state, and keeps no-tmux liveness covered by a runner socket, active session heartbeat, or poller heartbeat.
+- **UserPromptSubmit** (Claude/codex) / **BeforeAgent** (Gemini) first runs `self-check`, then `poller ensure` — refreshes registration/`last_seen`, reconciles wake state, and keeps no-tmux liveness covered by a runner socket, active session heartbeat, or poller heartbeat.
 - The same hook then runs `pending` — a side-effect-free peek that injects current obligations into the model's context per turn. Claude Code and codex use wrapper-specific JSON modes (`--claude-hook UserPromptSubmit`, `--codex-hook UserPromptSubmit`) so the context lands in the right field; Gemini reads plain text via `--json`.
 - **Stop** (Claude/codex) / **BeforeAgent** (Gemini, again) runs `self-check`, then `gate --before finish` — refreshes registration after setup/restart churn, then refuses to let the agent end the turn while inbox/ledger has outstanding work or recipient liveness is not proven. Claude and Gemini use exit-code blocking; codex uses its Stop-hook `{"decision":"block"}` JSON. This is the load-bearing one.
 
@@ -128,7 +128,7 @@ state/<id>/   pending-reply ledger, poller heartbeat, runner state/socket
         │◀─────────────────────────────────────────
 ```
 
-Delivery is no-overwrite by contract: a sender never replaces an existing message. The wake poke is an optional optimization; if no adapter is reachable, the message waits in the inbox until the recipient's next poll. The reference CLI ships `tmux send-keys` and the local `agentchute-run` socket adapter; alternates (HTTP, SSH, notifications) fit the same shape.
+Delivery is no-overwrite by contract: a sender never replaces an existing message. The wake poke is an optional optimization; if no adapter is reachable, the message waits in the inbox until the recipient's next poll. The reference CLI ships `tmux send-keys`, `herdr agent send`, and the local `agentchute-run` socket adapter; alternates (HTTP, SSH, notifications) fit the same shape.
 
 ## Commands at a glance
 
@@ -137,7 +137,7 @@ Delivery is no-overwrite by contract: a sender never replaces an existing messag
 | `init` | Scaffold loop dirs + drop ENROLLMENT block into wrapper files |
 | `boot --vendor <v> [--as <id>]` | Session-start: register + peek inbox + pending-reply summary |
 | `run --vendor <v> [--as <id>] -- <wrapper>` | Launch a wrapper under the PTY runner with registration, polling, and wake socket |
-| `setup [--wake tmux|herdr|runner|both]` | One-command control-repo setup: init + clear stale registrations + hooks + selected runner shims |
+| `setup [--wake tmux|herdr|runner|both]` | One-command control-repo setup: init + clear stale registrations + hooks + selected launcher shims |
 | `shims install [--force] [--aliases]` | Install namespaced launcher shims (`ac-*`); `--aliases` also installs legacy same-name aliases |
 | `send --to <b> [--from <a>] [--ask] [--reply-to <id>]` | Write to recipient's inbox + wake poke + (optionally) clear ledger |
 | `check [--vendor <v>] [--as <id>]` | Read + archive inbox; record reply obligations; cooperative-wake peers |
@@ -236,7 +236,7 @@ MIT — see [`LICENSE`](LICENSE).
 
 ## Releases
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.4.0** — namespaced `ac-*` launcher shims (ending the same-name PATH/Volta collision) plus a fresh-install wake-reliability overhaul: fish PATH support, stable active-session liveness, and runner ping/ack health.
+See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.5.0** — native herdr wake support (`wake_method: herdr`) alongside tmux and runner wake paths, with stable name targeting, runner precedence under `ac-*`, and setup/doctor/liveness coverage.
 
 ## Manual session (without hooks)
 

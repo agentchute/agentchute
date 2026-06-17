@@ -68,6 +68,54 @@ func TestSetupRunnerInstallsAllFourShimsRegardlessOfDetection(t *testing.T) {
 	}
 }
 
+func TestSetupHelpAndInvalidWakeMentionHerdr(t *testing.T) {
+	help := setupHelp()
+	for _, want := range []string{
+		"--wake tmux|herdr|runner|both",
+		"tmux | herdr | runner | both",
+		"hookless\nwrappers in tmux/herdr modes",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("setup help missing %q:\n%s", want, help)
+		}
+	}
+
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	withCwd(t, root, func() {
+		err := cmdSetup([]string{"--wake", "bogus", "--wrappers", "none", "--yes"})
+		if err == nil {
+			t.Fatal("expected invalid wake error")
+		}
+		if !strings.Contains(err.Error(), "tmux, herdr, runner, both") {
+			t.Fatalf("invalid wake error should mention herdr, got %v", err)
+		}
+	})
+}
+
+func TestSetupHerdrPlanLabelsHooklessShim(t *testing.T) {
+	var out strings.Builder
+	printSetupPlan(&out, "/repo", setupOptions{
+		Wake:      setupWakeHerdr,
+		Wrappers:  "grok",
+		ShimDir:   "/shim",
+		NoProfile: true,
+	}, []string{"grok"}, map[string]string{"grok": "/usr/bin/grok"})
+
+	text := out.String()
+	if !strings.Contains(text, "shim wrappers: grok (hookless startup enrollment)") {
+		t.Fatalf("herdr plan should label hookless shim wrappers:\n%s", text)
+	}
+}
+
 func TestSetupTmuxDoesNotInstallShims(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentchute spec — AGENTCHUTE.md</title>
-<meta name="description" content="The agentchute protocol spec. Working draft v1; reference CLI v0.3. Inbox-based agent coordination with recipient-side polling and optional wake adapters.">
+<meta name="description" content="The agentchute protocol spec. Working draft v1; reference CLI v0.5. Inbox-based agent coordination with recipient-side polling and optional wake adapters.">
 <meta property="og:title" content="agentchute spec">
 <meta property="og:description" content="The agentchute protocol spec. Inbox-based agent coordination with recipient-side polling and optional wake adapters.">
 <meta property="og:url" content="https://agentchute.dev/spec.html">
@@ -32,7 +32,7 @@
   <div class="wrap">
     <h1>The protocol spec</h1>
     <p class="lede">
-      Working draft v1; reference CLI v0.3. The canonical version is
+      Working draft v1; reference CLI v0.5. The canonical version is
       <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code> in the repo</a>
       — it renders cleanly on GitHub with the right anchor links, table of contents, and code highlighting.
       The summary below is a reading guide for what's in each section.
@@ -49,9 +49,9 @@
       recipient-owned consumption · recipient-side polling · optional wake · self-registration.
     </p>
     <p>
-      <strong>Reference implementation</strong> (v0.3):
+      <strong>Reference implementation</strong> (v0.5):
       markdown files on a shared filesystem · atomic create + rename ·
-      vendor-namespaced dotdir at repo root · tmux <em>or</em> runner-PTY socket as wake adapter ·
+      vendor-namespaced dotdir at repo root · tmux, herdr, or runner-PTY socket as wake adapter ·
       <code>agentchute run -- &lt;wrapper&gt;</code> for no-tmux workflows ·
       <code>self-poll</code> / generated schedulers for headless recipients.
     </p>

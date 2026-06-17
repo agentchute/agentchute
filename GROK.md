@@ -46,7 +46,7 @@ Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
 
 ## Grok-Specific Notes
 
-- **Wake path is the runner launcher, not lifecycle hooks.** The grok CLI has no repo hook system (no `settings.json`/`hooks.json`, no SessionStart/UserPromptSubmit/Stop events), so `agentchute setup --wrappers grok` installs `ac-grok`, which routes through `agentchute run` and skips hook install. In runner/both mode this follows the normal shim path; in tmux mode setup still installs `ac-grok` because no hook can run startup enrollment. `agentchute hooks install` has no grok target by design.
+- **Wake path is the runner launcher, not lifecycle hooks.** The grok CLI has no repo hook system (no `settings.json`/`hooks.json`, no SessionStart/UserPromptSubmit/Stop events), so `agentchute setup --wrappers grok` installs `ac-grok`, which routes through `agentchute run` and skips hook install. In runner/both mode this follows the normal shim path; in tmux/herdr modes setup still installs `ac-grok` because no hook can run startup enrollment. `agentchute hooks install` has no grok target by design.
 - Treat `AGENTCHUTE.md` as the wire-contract source of truth. If code behavior and spec text disagree, surface the mismatch before patching.
 - Standard pre-commit ritual from `AGENTS.md`: `gofmt -w .`, `go vet ./...`, `go test ./...`, `go build ./...`.
 - Use `.agentchute/loop/` for coordination. Check your inbox at turn start, archive consumed messages, and reply through agentchute or the documented file protocol.

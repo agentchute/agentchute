@@ -27,9 +27,6 @@ func resolveAgentID(flagID, vendor string, cfg *loop.Config) (string, error) {
 	// one live registration in this pool, reuse it so bracketed wake prompts
 	// can simply say "check inbox" without an exported identity variable.
 	if cfg != nil {
-		if id, ok := agentIDForCurrentTmuxPane(cfg, vendor); ok {
-			return id, nil
-		}
 		// A herdr wake injects only "check inbox" (no identity env), so a
 		// re-launched / woken pane must map back to ITS registration by
 		// resolving the registered herdr name to the current HERDR_PANE_ID.
@@ -38,12 +35,15 @@ func resolveAgentID(flagID, vendor string, cfg *loop.Config) (string, error) {
 		if id, ok := agentIDForCurrentHerdrPane(cfg, vendor); ok {
 			return id, nil
 		}
+		if id, ok := agentIDForCurrentTmuxPane(cfg, vendor); ok {
+			return id, nil
+		}
 	}
 
 	// 4. Contextual default: <canonical-wrapper-id>-<folder-slug>.
 	canon := canonicalAgentIDForVendor(vendor)
 	if canon == "" {
-		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, run from a registered tmux pane, or provide a recognized --vendor/--wrapper for a contextual default")
+		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, run from a registered tmux/herdr pane, or provide a recognized --vendor/--wrapper for a contextual default")
 	}
 
 	cwd, err := os.Getwd()
@@ -63,7 +63,7 @@ func resolveAgentID(flagID, vendor string, cfg *loop.Config) (string, error) {
 func resolveRegisteredAgentID(flagID string, cfg *loop.Config) (string, error) {
 	id, err := resolveAgentID(flagID, "", cfg)
 	if err != nil {
-		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, or run from a registered tmux pane")
+		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, or run from a registered tmux/herdr pane")
 	}
 	return id, nil
 }
