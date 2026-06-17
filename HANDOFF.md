@@ -36,6 +36,8 @@ Recent shipped work:
 
 ## Restart Context
 
+In progress (2026-06-17): Alex is restarting the whole fleet to live-test the two new features — **`agentchute update`** (v0.6.0) and **herdr native wake** (v0.5.0/v0.5.1). Bootstrapping note: the `update` command itself shipped in v0.6.0, so an older installed binary will NOT have it — bring the binary to v0.6.0 first via `install.sh`, then exercise `agentchute update` / `agentchute update --dry-run` for subsequent syncs. For herdr-native wake, launch a wrapper **bare** in a herdr pane (not via `ac-*`, which keeps the runner socket). Repo is clean at `origin/main` `d4f91d5`; both releases (v0.6.0, v0.5.1) are published; inboxes were clear at save time.
+
 If you upgrade agentchute, remember to run `agentchute update` or re-run `agentchute setup` to sync the control repo. After reinstall or update, restart wrappers from this repo with `ac-claude`, `ac-codex`, `ac-gemini`, and `ac-grok`. Do not use custom `AGENTCHUTE_AGENT_ID` unless a named stable lane is required. The expected default identity path is `--as` > `AGENTCHUTE_AGENT_ID` > existing current herdr/tmux pane registration > contextual `<wrapper>-<folder>` with `-2`, `-3`, etc. for live conflicts.
 
 If restart behavior looks wrong, first run:
