@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +63,46 @@ func readExampleReg(t *testing.T, root, agentID string) *loop.Registration {
 		t.Fatalf("read registration %s: %v", agentID, err)
 	}
 	return reg
+}
+
+func TestResolveWakeExplicitHerdrOutsidePaneWarns(t *testing.T) {
+	t.Setenv("HERDR_PANE_ID", "")
+	t.Setenv("HERDR_ENV", "")
+	t.Setenv("HERDR_SOCKET_PATH", "")
+
+	method, target, warnings := resolveWakeForRegistration(registerOpts{
+		AgentID:            "test-agent",
+		WakeMethod:         "herdr",
+		WakeMethodProvided: true,
+	}, nil)
+	if method != "" || target != "" {
+		t.Fatalf("explicit herdr outside pane = method %q target %q, want non-pokable", method, target)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "HERDR_PANE_ID unset") {
+		t.Fatalf("warnings = %#v, want HERDR_PANE_ID warning", warnings)
+	}
+}
+
+func TestRenameCurrentHerdrAgentIncludesCommandOutput(t *testing.T) {
+	old := herdrProbeBinary
+	path := filepath.Join(t.TempDir(), "herdr")
+	script := "#!/bin/sh\n" +
+		"printf 'rename denied\\n' >&2\n" +
+		"exit 42\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	herdrProbeBinary = path
+	t.Cleanup(func() { herdrProbeBinary = old })
+	t.Setenv("HERDR_PANE_ID", "w3:p7")
+
+	err := renameCurrentHerdrAgent("test-agent")
+	if err == nil {
+		t.Fatal("renameCurrentHerdrAgent succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "rename denied") {
+		t.Fatalf("error = %q, want command output", err)
+	}
 }
 
 // A bare launch inside a herdr pane auto-registers wake_method=herdr with the
@@ -219,6 +260,40 @@ func TestResolveAgentIDHerdrWinsOverTmuxWhenBothEnvsPresent(t *testing.T) {
 		}
 		if id != "codex-herdr" {
 			t.Errorf("resolveAgentID = %q, want herdr registration", id)
+		}
+	})
+}
+
+func TestAgentIDForCurrentHerdrPaneRequiresHerdrEnvMarker(t *testing.T) {
+	withFakeHerdr(t, "codex-herdr", "w3:p7")
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		t.Setenv("HERDR_PANE_ID", "w3:p7")
+		t.Setenv("HERDR_ENV", "")
+		t.Setenv("HERDR_SOCKET_PATH", "")
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		host, _ := os.Hostname()
+		reg := &loop.Registration{
+			AgentID:     "codex-herdr",
+			Vendor:      "openai",
+			ControlRepo: root,
+			Host:        host,
+			WakeMethod:  "herdr",
+			WakeTarget:  "codex-herdr",
+			LastSeen:    time.Now().UTC(),
+			Status:      loop.StatusActive,
+		}
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath(reg.AgentID), reg); err != nil {
+			t.Fatal(err)
+		}
+
+		if id, ok := agentIDForCurrentHerdrPane(cfg, "openai"); ok || id != "" {
+			t.Fatalf("agentIDForCurrentHerdrPane = %q, %v; want no adoption without herdr env marker", id, ok)
 		}
 	})
 }

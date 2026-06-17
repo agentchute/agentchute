@@ -53,7 +53,14 @@ func renameCurrentHerdrAgent(agentID string) error {
 		// the herdr wake instead of registering an unreachable target.
 		return fmt.Errorf("`herdr` binary not on PATH")
 	}
-	return exec.Command(herdrProbeBinary, "agent", "rename", pane, agentID).Run()
+	out, err := exec.Command(herdrProbeBinary, "agent", "rename", pane, agentID).CombinedOutput()
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // herdrAgentInfo is the subset of `herdr agent get` we consume.
@@ -119,8 +126,11 @@ func herdrNameBoundToOtherPane(name, pane string) bool {
 func herdrWakeForRegistration(opts registerOpts) (method, target string, warnings []string, ok bool) {
 	pane := currentHerdrPane()
 	agentID := strings.TrimSpace(opts.AgentID)
-	if pane == "" || agentID == "" {
+	if agentID == "" {
 		return "", "", nil, false
+	}
+	if pane == "" {
+		return "", "", []string{"herdr: not inside a herdr pane (HERDR_PANE_ID unset); herdr wake not registered"}, false
 	}
 	// Refuse to hijack an explicit identity already bound to a different pane:
 	// two panes sharing one herdr name make `herdr agent send <name>`

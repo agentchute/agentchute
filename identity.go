@@ -111,10 +111,10 @@ func agentIDForCurrentTmuxPane(cfg *loop.Config, vendor string) (string, bool) {
 }
 
 func agentIDForCurrentHerdrPane(cfg *loop.Config, vendor string) (string, bool) {
-	pane := currentHerdrPane()
-	if pane == "" || !herdrAvailable() {
+	if !herdrEnvActive() || !herdrAvailable() {
 		return "", false
 	}
+	pane := currentHerdrPane()
 	localHost, _ := os.Hostname()
 	localHost = strings.TrimSpace(localHost)
 	canon := canonicalAgentIDForVendor(vendor)

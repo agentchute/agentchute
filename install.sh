@@ -15,7 +15,7 @@
 #   AGENTCHUTE_PROFILE       shell profile to update when PATH needs entries
 #   AGENTCHUTE_NO_PATH_UPDATE=1  do not update shell profile; print hints only
 #   AGENTCHUTE_SETUP=0       skip setup after install
-#   AGENTCHUTE_WAKE          pass --wake to setup (runner | tmux | both)
+#   AGENTCHUTE_WAKE          pass --wake to setup (runner | tmux | herdr | both)
 #   AGENTCHUTE_WRAPPERS      pass --wrappers to setup (default: all)
 #   AGENTCHUTE_DRY_RUN=1     print the plan and exit; no mutation
 #
@@ -413,7 +413,7 @@ flags:
   --to DIR    install dir (default: ~/.local/bin)
   --setup     run \`agentchute setup\` after install (default when a tty exists)
   --no-setup  skip setup and print the command to run later
-  --wake MODE pass --wake to setup (runner | tmux | both)
+  --wake MODE pass --wake to setup (runner | tmux | herdr | both)
   --wrappers  pass --wrappers to setup (default: all)
   --dry-run   print the plan and exit; no mutation
 
