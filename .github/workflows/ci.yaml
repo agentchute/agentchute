@@ -10,8 +10,8 @@ jobs:
     name: go test + vet + build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.21'
       - name: gofmt
@@ -33,7 +33,7 @@ jobs:
     name: install.sh shellcheck + tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: shellcheck install.sh

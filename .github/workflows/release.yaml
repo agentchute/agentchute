@@ -5,20 +5,69 @@ on:
     tags:
       - 'v*'
 
+# Least-privilege default: only the publishing job below is granted
+# contents: write. preflight inherits read, so a verification-only job can
+# never use a write-capable token.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  goreleaser:
+  preflight:
+    name: preflight (verification ritual)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.21'
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "files needing gofmt:"
+            echo "$out"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+      - name: go build
+        run: go build ./...
+      - name: install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: shellcheck install.sh
+        run: shellcheck -s sh install.sh
+      - name: shellcheck tests/install_test.sh
+        run: shellcheck -s sh tests/install_test.sh
+      - name: run install_test.sh
+        run: sh tests/install_test.sh
+      - name: install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          install-only: true
+      - name: goreleaser check
+        run: goreleaser check
+
+  goreleaser:
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.21'
 
@@ -32,7 +81,7 @@ jobs:
           fi
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: '~> v2'
