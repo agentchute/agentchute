@@ -277,7 +277,7 @@ func TestGenerateServiceExportsAgentIDToWrapper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, `AGENTCHUTE_AGENT_ID=codex sh -c "codex exec`) {
+	if !strings.Contains(got, `AGENTCHUTE_AGENT_ID=codex AGENTCHUTE_SHIM_BYPASS=1 sh -c "codex exec`) {
 		t.Errorf("generated scheduler does not export AGENTCHUTE_AGENT_ID to wrapper launch:\n%s", got)
 	}
 }
@@ -297,6 +297,7 @@ func TestGenerateServiceExportsControlAndLoopToWrapper(t *testing.T) {
 	}
 	for _, want := range []string{
 		`AGENTCHUTE_AGENT_ID=codex`,
+		`AGENTCHUTE_SHIM_BYPASS=1`,
 		`AGENTCHUTE_CONTROL_REPO="` + root + `"`,
 		`AGENTCHUTE_LOOP_DIR="` + filepath.Join(root, ".examplecorp", "loop") + `"`,
 	} {

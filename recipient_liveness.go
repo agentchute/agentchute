@@ -108,7 +108,7 @@ func stalePollerLiveness(agentID, vendor, detail, wakeMethod string) recipientLi
 	}
 	var start string
 	if wakeMethod == loop.RunnerWakeMethod {
-		start = "start/restart the wrapper via its shim (the claude/codex/gemini/grok command for the wrapper) or `agentchute run --vendor <vendor> -- <wrapper>` to re-establish the runner wake"
+		start = "start/restart the wrapper via its namespaced shim (ac-claude/ac-codex/ac-gemini/ac-grok) or `agentchute run --vendor <vendor> -- <wrapper>` to re-establish the runner wake"
 	} else {
 		start = fmt.Sprintf("agentchute poller ensure --as %s --vendor %s --launch (or `doctor --generate-service --as %s` for a scheduler)", agentID, vendor, agentID)
 	}

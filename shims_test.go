@@ -12,7 +12,7 @@ func TestShimsInstallWritesKnownWrapperLaunchers(t *testing.T) {
 	if err := cmdShims([]string{"install", "--dir", dir, "--quiet"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"claude", "claude-code", "codex", "gemini", "gemini-cli"} {
+	for _, name := range []string{"ac-claude", "ac-codex", "ac-gemini", "ac-grok"} {
 		path := filepath.Join(dir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -40,18 +40,18 @@ func TestResolveRealWrapperSkipsShimDirectory(t *testing.T) {
 	if err := os.MkdirAll(realDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(shimDir, "codex"), []byte("#!/bin/sh\nexit 99\n"))
+	mustWrite(t, filepath.Join(shimDir, "ac-codex"), []byte("#!/bin/sh\nexit 99\n"))
 	mustWrite(t, filepath.Join(realDir, "codex"), []byte("#!/bin/sh\nexit 0\n"))
-	if err := os.Chmod(filepath.Join(shimDir, "codex"), 0o755); err != nil {
+	if err := os.Chmod(filepath.Join(shimDir, "ac-codex"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(filepath.Join(realDir, "codex"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+realDir)
-	spec, ok := shimSpecForName("codex")
+	spec, ok := shimSpecForName("ac-codex")
 	if !ok {
-		t.Fatal("missing codex shim spec")
+		t.Fatal("missing ac-codex shim spec")
 	}
 	got, err := resolveRealWrapper(spec, shimDir)
 	if err != nil {
@@ -82,20 +82,38 @@ func TestShimsInstallCanLimitWrappers(t *testing.T) {
 	if err := cmdShims([]string{"install", "--dir", dir, "--wrapper", "codex", "--quiet"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "codex")); err != nil {
-		t.Fatalf("codex shim missing: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "ac-codex")); err != nil {
+		t.Fatalf("ac-codex shim missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "claude")); !os.IsNotExist(err) {
-		t.Fatalf("claude shim should not be installed: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "codex")); !os.IsNotExist(err) {
+		t.Fatalf("same-name codex alias should not be installed by default: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ac-claude")); !os.IsNotExist(err) {
+		t.Fatalf("ac-claude shim should not be installed: %v", err)
 	}
 }
 
-func TestShimsInstallWrapperAgentIDInstallsAliases(t *testing.T) {
+func TestShimsInstallWrapperAgentIDInstallsNamespacedOnly(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bin")
 	if err := cmdShims([]string{"install", "--dir", dir, "--wrapper", "gemini-cli", "--quiet"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(dir, "ac-gemini")); err != nil {
+		t.Fatalf("ac-gemini shim missing: %v", err)
+	}
 	for _, name := range []string{"gemini", "gemini-cli"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s alias should not be installed by default: %v", name, err)
+		}
+	}
+}
+
+func TestShimsInstallAliasesOptIn(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := cmdShims([]string{"install", "--dir", dir, "--wrapper", "gemini-cli", "--aliases", "--quiet"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ac-gemini", "gemini", "gemini-cli"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("%s shim missing: %v", name, err)
 		}
@@ -121,7 +139,7 @@ func TestShimsExecRefusesHardDiscoveryError(t *testing.T) {
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+realDir)
 
 	withCwd(t, root, func() {
-		err := cmdShims([]string{"exec", "--name", "codex", "--shim-dir", shimDir})
+		err := cmdShims([]string{"exec", "--name", "ac-codex", "--shim-dir", shimDir})
 		if err == nil {
 			t.Fatal("expected hard discovery error")
 		}

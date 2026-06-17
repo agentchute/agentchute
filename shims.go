@@ -13,18 +13,17 @@ import (
 
 type shimSpec struct {
 	Name       string
+	Aliases    []string
 	AgentID    string
 	Vendor     string
 	Candidates []string
 }
 
 var shimSpecs = []shimSpec{
-	{Name: "claude", AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}},
-	{Name: "claude-code", AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude-code", "claude"}},
-	{Name: "codex", AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}},
-	{Name: "gemini", AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli"}},
-	{Name: "gemini-cli", AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini-cli", "gemini"}},
-	{Name: "grok", AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
+	{Name: "ac-claude", Aliases: []string{"claude", "claude-code"}, AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}},
+	{Name: "ac-codex", Aliases: []string{"codex"}, AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}},
+	{Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli"}},
+	{Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
 }
 
 func cmdShims(args []string) error {
@@ -48,9 +47,10 @@ func cmdShimsInstall(args []string) error {
 	fs := flag.NewFlagSet("shims install", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var dir, wrapper string
-	var force, quiet bool
+	var aliases, force, quiet bool
 	fs.StringVar(&dir, "dir", "", "shim directory (default: $HOME/.agentchute/bin)")
 	fs.StringVar(&wrapper, "wrapper", "all", "wrapper key(s): claude-code,codex,gemini-cli,grok or all")
+	fs.BoolVar(&aliases, "aliases", false, "also install legacy same-name wrapper aliases")
 	fs.BoolVar(&force, "force", false, "overwrite existing shim files")
 	fs.BoolVar(&quiet, "quiet", false, "suppress status text")
 	if err := fs.Parse(args); err != nil {
@@ -86,30 +86,44 @@ func cmdShimsInstall(args []string) error {
 		return err
 	}
 	for _, spec := range selected {
-		path := filepath.Join(absDir, spec.Name)
-		if !force {
-			if _, err := os.Lstat(path); err == nil {
-				return fmt.Errorf("%s already exists; pass --force to overwrite", path)
-			} else if !os.IsNotExist(err) {
+		for _, name := range shimInstallNames(spec, aliases) {
+			path := filepath.Join(absDir, name)
+			if !force {
+				if _, err := os.Lstat(path); err == nil {
+					return fmt.Errorf("%s already exists; pass --force to overwrite", path)
+				} else if !os.IsNotExist(err) {
+					return err
+				}
+			}
+			if err := os.WriteFile(path, []byte(renderShimScript(exe, absDir, name)), 0o700); err != nil {
 				return err
 			}
-		}
-		if err := os.WriteFile(path, []byte(renderShimScript(exe, absDir, spec.Name)), 0o700); err != nil {
-			return err
 		}
 	}
 	if !quiet {
 		fmt.Printf("installed agentchute shims to %s\n", absDir)
-		if !pathIsPrioritized(absDir, os.Getenv("PATH"), setupWrapperNames()) {
-			if pathContains(absDir, os.Getenv("PATH")) {
-				fmt.Printf("warning: %s is on PATH but shadowed by a real binary; move it to the front of PATH\n", absDir)
-			} else {
-				fmt.Printf("warning: %s is not on PATH; add it before your wrapper binaries\n", absDir)
-			}
+		if !pathContains(absDir, os.Getenv("PATH")) {
+			fmt.Printf("warning: %s is not on PATH; add it to PATH\n", absDir)
 			fmt.Println("\nRecommended: run `agentchute setup` to wire PATH and lifecycle hooks automatically.")
 		}
 	}
 	return nil
+}
+
+func shimInstallNames(spec shimSpec, aliases bool) []string {
+	names := []string{spec.Name}
+	if aliases {
+		names = append(names, spec.Aliases...)
+	}
+	return names
+}
+
+func allShimCommandNames(aliases bool) []string {
+	var names []string
+	for _, spec := range shimSpecs {
+		names = append(names, shimInstallNames(spec, aliases)...)
+	}
+	return names
 }
 
 func selectShimSpecs(wrapper string) ([]shimSpec, error) {
@@ -131,13 +145,18 @@ func selectShimSpecs(wrapper string) ([]shimSpec, error) {
 	var selected []shimSpec
 	matched := map[string]bool{}
 	for _, spec := range shimSpecs {
-		if wanted[spec.Name] || wanted[spec.AgentID] {
+		if wanted[spec.Name] || wanted[spec.AgentID] || wantedAny(wanted, spec.Aliases) {
 			selected = append(selected, spec)
 			if wanted[spec.Name] {
 				matched[spec.Name] = true
 			}
 			if wanted[spec.AgentID] {
 				matched[spec.AgentID] = true
+			}
+			for _, alias := range spec.Aliases {
+				if wanted[alias] {
+					matched[alias] = true
+				}
 			}
 		}
 	}
@@ -149,8 +168,18 @@ func selectShimSpecs(wrapper string) ([]shimSpec, error) {
 	return selected, nil
 }
 
+func wantedAny(wanted map[string]bool, values []string) bool {
+	for _, v := range values {
+		if wanted[v] {
+			return true
+		}
+	}
+	return false
+}
+
 func renderShimScript(agentchuteBin, shimDir, name string) string {
 	return fmt.Sprintf(`#!/bin/sh
+# agentchute shim v1
 AGENTCHUTE_BIN=${AGENTCHUTE_BIN:-%s}
 exec "$AGENTCHUTE_BIN" shims exec --name %s --shim-dir %s -- "$@"
 `, shellQuote(agentchuteBin), shellQuote(name), shellQuote(shimDir))
@@ -215,6 +244,11 @@ func shimSpecForName(name string) (shimSpec, bool) {
 		if spec.Name == name {
 			return spec, true
 		}
+		for _, alias := range spec.Aliases {
+			if alias == name {
+				return spec, true
+			}
+		}
 	}
 	return shimSpec{}, false
 }
@@ -276,6 +310,38 @@ func pathContains(dir, pathEnv string) bool {
 	return false
 }
 
+func pathResolvesToDir(dir, pathEnv string, names []string) bool {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	for _, name := range names {
+		found := false
+		for _, entry := range filepath.SplitList(pathEnv) {
+			if entry == "" {
+				entry = "."
+			}
+			abs, err := filepath.Abs(entry)
+			if err != nil {
+				continue
+			}
+			path := filepath.Join(abs, name)
+			if executableFileProblem(path) != "" {
+				continue
+			}
+			if !samePath(abs, absDir) {
+				return false
+			}
+			found = true
+			break
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 // pathIsPrioritized returns true if absDir is either the first entry in pathEnv
 // or at least appears before any other directory that contains a wrapper
 // executable with any of the names in candidates.
@@ -330,12 +396,13 @@ func shimsHelpErr() error {
 func shimsHelp() string {
 	return strings.TrimSpace(`
 Usage:
-  agentchute shims install [--dir <path>] [--wrapper <name[,name...]>] [--force] [--quiet]
+  agentchute shims install [--dir <path>] [--wrapper <name[,name...]>] [--aliases] [--force] [--quiet]
   agentchute shims exec --name <wrapper> --shim-dir <dir> -- [args...]
 
 Wrapper keys: claude-code, codex, gemini-cli, grok (or all).
 
-Launcher shims make normal wrapper commands route through agentchute run
-inside initialized pools and pass through to the real wrapper elsewhere.
+Launcher shims install namespaced commands such as ac-codex. They route through
+agentchute run inside initialized pools and pass through to the real wrapper
+elsewhere. Pass --aliases to also install legacy same-name wrapper aliases.
 `)
 }

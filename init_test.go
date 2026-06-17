@@ -18,11 +18,11 @@ func TestInitFreshEmpty(t *testing.T) {
 	}
 
 	expectAction(t, plan, "AGENTCHUTE.md", "write")
-	expectAction(t, plan, "CLAUDE.md", "create v12")
-	expectAction(t, plan, "CODEX.md", "create v12")
-	expectAction(t, plan, "GEMINI.md", "create v12")
-	expectAction(t, plan, "GROK.md", "create v12")
-	expectAction(t, plan, "AGENTS.md", "create v12")
+	expectAction(t, plan, "CLAUDE.md", "create v13")
+	expectAction(t, plan, "CODEX.md", "create v13")
+	expectAction(t, plan, "GEMINI.md", "create v13")
+	expectAction(t, plan, "GROK.md", "create v13")
+	expectAction(t, plan, "AGENTS.md", "create v13")
 	expectAction(t, plan, ".gitignore", "skip") // not in git
 	expectAction(t, plan, ".agentchute/loop/agents", "mkdir 0700")
 	expectAction(t, plan, ".agentchute/loop/inbox", "mkdir 0700")
@@ -81,14 +81,14 @@ func TestInitPrependsBlockWhenNoMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "prepend v12")
+	expectAction(t, plan, "CLAUDE.md", "prepend v13")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "agentchute-enrollment v12 begin") {
+	if !strings.Contains(string(got), "agentchute-enrollment v13 begin") {
 		t.Errorf("CLAUDE.md missing marker after prepend:\n%s", got)
 	}
 	if !strings.HasSuffix(string(got), originalContent) {
@@ -143,7 +143,7 @@ func TestInitReplacesDriftedV1Content(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "replace v1→v12")
+	expectAction(t, plan, "CLAUDE.md", "replace v1→v13")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
@@ -158,7 +158,7 @@ func TestInitReplacesDriftedV1Content(t *testing.T) {
 	}
 }
 
-func TestInitUpgradesV11EnrollmentBlockToV12(t *testing.T) {
+func TestInitUpgradesV11EnrollmentBlockToV13(t *testing.T) {
 	root := t.TempDir()
 	stale := "<!-- agentchute-enrollment v11 begin -->\nstale env guidance\n<!-- agentchute-enrollment v11 end -->\n\nMy notes.\n"
 	mustWrite(t, filepath.Join(root, "CODEX.md"), []byte(stale))
@@ -167,7 +167,7 @@ func TestInitUpgradesV11EnrollmentBlockToV12(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CODEX.md", "replace v11→v12")
+	expectAction(t, plan, "CODEX.md", "replace v11→v13")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CODEX.md"))
@@ -189,7 +189,7 @@ func TestInitUpgradesV11EnrollmentBlockToV12(t *testing.T) {
 // Existing file with a future version marker → leave alone with warning.
 func TestInitLeavesNewerVersionAlone(t *testing.T) {
 	root := t.TempDir()
-	future := "<!-- agentchute-enrollment v13 begin -->\nfuture\n<!-- agentchute-enrollment v13 end -->\n"
+	future := "<!-- agentchute-enrollment v14 begin -->\nfuture\n<!-- agentchute-enrollment v14 end -->\n"
 	mustWrite(t, filepath.Join(root, "CLAUDE.md"), []byte(future))
 
 	plan, err := computeInitPlan(root, "agentchute", false)

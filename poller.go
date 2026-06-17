@@ -232,11 +232,12 @@ func pollerTick(cfg *loop.Config, p serviceParams, rt *pollerRuntime, startedAt 
 }
 
 func pollerWrapperEnv(env []string, cfg *loop.Config, agentID string) []string {
-	env = withoutEnv(env, "AGENTCHUTE_AGENT_ID", "AGENTCHUTE_CONTROL_REPO", "AGENTCHUTE_LOOP_DIR")
+	env = withoutEnv(env, "AGENTCHUTE_AGENT_ID", "AGENTCHUTE_CONTROL_REPO", "AGENTCHUTE_LOOP_DIR", "AGENTCHUTE_SHIM_BYPASS")
 	return append(env,
 		"AGENTCHUTE_AGENT_ID="+agentID,
 		"AGENTCHUTE_CONTROL_REPO="+cfg.ControlRepo,
 		"AGENTCHUTE_LOOP_DIR="+cfg.LoopDir,
+		"AGENTCHUTE_SHIM_BYPASS=1",
 	)
 }
 

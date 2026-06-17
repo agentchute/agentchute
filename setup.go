@@ -35,6 +35,7 @@ type setupOptions struct {
 	Yes         bool
 	DryRun      bool
 	NoProfile   bool
+	Aliases     bool
 	InitNew     bool
 }
 
@@ -46,6 +47,7 @@ type setupGlobalState struct {
 	Profile        string   `json:"profile,omitempty"`
 	PathBlock      bool     `json:"path_block"`
 	ShimsInstalled bool     `json:"shims_installed"`
+	Aliases        bool     `json:"aliases,omitempty"`
 	UpdatedAt      string   `json:"updated_at"`
 }
 
@@ -55,6 +57,7 @@ type setupPoolState struct {
 	Wrappers    []string `json:"wrappers"`
 	ControlRepo string   `json:"control_repo"`
 	LoopDir     string   `json:"loop_dir"`
+	Aliases     bool     `json:"aliases,omitempty"`
 	UpdatedAt   string   `json:"updated_at"`
 }
 
@@ -71,6 +74,7 @@ func cmdSetup(args []string) error {
 	fs.BoolVar(&opts.Yes, "yes", false, "skip confirmation prompts")
 	fs.BoolVar(&opts.DryRun, "dry-run", false, "print plan without writing files")
 	fs.BoolVar(&opts.NoProfile, "no-profile", false, "do not edit shell profile; print PATH hint instead")
+	fs.BoolVar(&opts.Aliases, "aliases", false, "also install legacy same-name wrapper aliases")
 	fs.BoolVar(&opts.InitNew, "init", false, "allow setup to initialize a non-project directory")
 	if err := fs.Parse(args); err != nil {
 		return setupUsage(err)
@@ -174,6 +178,7 @@ Flags:
   --shim-dir <path>      launcher shim directory (default $HOME/.agentchute/bin)
   --profile <path>       shell profile to update for launcher shims
   --no-profile           do not edit shell profile; print PATH hint instead
+  --aliases              also install legacy same-name wrapper aliases
   --init                 allow initializing a non-project directory
   --dry-run              print plan without writing files
   --yes                  skip confirmation prompts
@@ -422,6 +427,9 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 	}
 	if len(shimWrappers) > 0 {
 		fmt.Fprintf(w, "  shims:        %s\n", opts.ShimDir)
+		if opts.Aliases {
+			fmt.Fprintln(w, "  aliases:      legacy same-name wrapper aliases")
+		}
 		if opts.Wake == setupWakeTmux {
 			fmt.Fprintf(w, "  shim wrappers: %s (hookless startup enrollment)\n", strings.Join(shimWrappers, ", "))
 		}
@@ -551,13 +559,24 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			}
 		}
 		if currentNeedsShims {
-			if err := cmdShims([]string{
+			shimArgs := []string{
 				"install",
 				"--dir", opts.ShimDir,
 				"--wrapper", strings.Join(currentShimWrappers, ","),
 				"--force",
-			}); err != nil {
+			}
+			if opts.Aliases {
+				shimArgs = append(shimArgs, "--aliases")
+			}
+			if err := cmdShims(shimArgs); err != nil {
 				return fmt.Errorf("shims install: %w", err)
+			}
+			if !opts.Aliases {
+				for _, wrapper := range currentShimWrappers {
+					if err := removeSetupAliasShimsForWrapper(opts.ShimDir, wrapper); err != nil {
+						return err
+					}
+				}
 			}
 			if err := setupEnsureShimPath(opts); err != nil {
 				return err
@@ -591,7 +610,7 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			}
 		}
 
-		if err := writeSetupPoolState(cfg, opts.Wake, wrappers); err != nil {
+		if err := writeSetupPoolState(cfg, opts.Wake, wrappers, currentNeedsShims && opts.Aliases); err != nil {
 			return err
 		}
 		profiles := setupPlausibleProfiles(opts.Profile)
@@ -615,6 +634,7 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			Wrappers:       wrappers,
 			ShimDir:        opts.ShimDir,
 			ShimsInstalled: currentNeedsShims,
+			Aliases:        currentNeedsShims && opts.Aliases,
 			PathBlock:      pathBlock,
 			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
@@ -735,17 +755,10 @@ func runInDir(dir string, fn func() error) error {
 }
 
 func setupEnsureShimPath(opts setupOptions) error {
-	allCandidates := setupWrapperNames()
 	pathEnv := os.Getenv("PATH")
 
-	// Precedence as INVARIANT: we always attempt to write the profile block
-	// and we always warn if the current session PATH is shadowed.
-	if !pathIsPrioritized(opts.ShimDir, pathEnv, allCandidates) {
-		if pathContains(opts.ShimDir, pathEnv) {
-			fmt.Printf("warning: %s is on PATH but shadowed by a real binary; move it to the front of PATH\n", opts.ShimDir)
-		} else {
-			fmt.Printf("warning: add %s to PATH before your wrapper binaries\n", opts.ShimDir)
-		}
+	if !pathContains(opts.ShimDir, pathEnv) {
+		fmt.Printf("warning: add %s to PATH\n", opts.ShimDir)
 	}
 
 	if opts.NoProfile {
@@ -931,10 +944,10 @@ func removeSetupShims(dir string) error {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
-	for _, spec := range shimSpecs {
-		path := filepath.Join(dir, spec.Name)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove shim %s: %w", path, err)
+	for _, name := range allShimCommandNames(true) {
+		path := filepath.Join(dir, name)
+		if err := removeAgentchuteShim(path); err != nil {
+			return err
 		}
 	}
 	fmt.Printf("removed agentchute shims from %s\n", dir)
@@ -950,13 +963,58 @@ func removeSetupShimsForWrapper(dir, wrapper string) error {
 		return nil
 	}
 	for _, spec := range specs {
-		path := filepath.Join(dir, spec.Name)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove shim %s: %w", path, err)
+		for _, name := range shimInstallNames(spec, true) {
+			if err := removeAgentchuteShim(filepath.Join(dir, name)); err != nil {
+				return err
+			}
 		}
 	}
 	fmt.Printf("removed setup-managed %s shims from %s\n", wrapper, dir)
 	return nil
+}
+
+func removeSetupAliasShimsForWrapper(dir, wrapper string) error {
+	if strings.TrimSpace(dir) == "" {
+		return nil
+	}
+	specs, err := selectShimSpecs(wrapper)
+	if err != nil {
+		return nil
+	}
+	for _, spec := range specs {
+		for _, alias := range spec.Aliases {
+			if err := removeAgentchuteShim(filepath.Join(dir, alias)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func removeAgentchuteShim(path string) error {
+	owned, err := isAgentchuteShim(path)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove shim %s: %w", path, err)
+	}
+	return nil
+}
+
+func isAgentchuteShim(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read shim %s: %w", path, err)
+	}
+	text := string(data)
+	return strings.Contains(text, "shims exec --name") && strings.Contains(text, "AGENTCHUTE_BIN="), nil
 }
 
 func setupGlobalStatePath() (string, error) {
@@ -1021,7 +1079,7 @@ func writeSetupGlobalState(state setupGlobalState) error {
 	return nil
 }
 
-func writeSetupPoolState(cfg *loop.Config, wake string, wrappers []string) error {
+func writeSetupPoolState(cfg *loop.Config, wake string, wrappers []string, aliases bool) error {
 	stateDir := filepath.Join(cfg.LoopDir, "state")
 	if err := loop.EnsurePrivateDir(stateDir); err != nil {
 		return err
@@ -1032,6 +1090,7 @@ func writeSetupPoolState(cfg *loop.Config, wake string, wrappers []string) error
 		Wrappers:    wrappers,
 		ControlRepo: cfg.ControlRepo,
 		LoopDir:     cfg.LoopDir,
+		Aliases:     aliases,
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.MarshalIndent(state, "", "  ")

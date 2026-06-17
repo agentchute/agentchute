@@ -21,8 +21,8 @@ func TestShimsInstallGrok(t *testing.T) {
 			t.Fatalf("shims install grok: %v", err)
 		}
 	})
-	if _, err := os.Stat(filepath.Join(root, "bin", "grok")); err != nil {
-		t.Fatalf("grok shim not installed: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "bin", "ac-grok")); err != nil {
+		t.Fatalf("ac-grok shim not installed: %v", err)
 	}
 }
 
@@ -33,7 +33,7 @@ func TestShimsAllIncludesGrok(t *testing.T) {
 	}
 	var found bool
 	for _, s := range specs {
-		if s.Name == "grok" {
+		if s.Name == "ac-grok" {
 			found = true
 			if s.AgentID != "grok" || s.Vendor != "xai" {
 				t.Errorf("grok shim spec = %+v, want AgentID=grok Vendor=xai", s)
@@ -142,8 +142,8 @@ func TestSetupRunnerInstallsGrokShimNoHook(t *testing.T) {
 		}
 	})
 
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "grok")); err != nil {
-		t.Errorf("grok shim not installed by setup: %v", err)
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-grok")); err != nil {
+		t.Errorf("ac-grok shim not installed by setup: %v", err)
 	}
 	// No grok hook file should exist anywhere — grok has no hook template.
 	for _, p := range []string{".grok/settings.json", ".grok/hooks.json"} {
@@ -179,8 +179,8 @@ func TestSetupTmuxInstallsGrokShimBecauseHookless(t *testing.T) {
 		}
 	})
 
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "grok")); err != nil {
-		t.Errorf("grok shim not installed by tmux setup: %v", err)
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-grok")); err != nil {
+		t.Errorf("ac-grok shim not installed by tmux setup: %v", err)
 	}
 	for _, p := range []string{".grok/settings.json", ".grok/hooks.json"} {
 		if _, err := os.Stat(filepath.Join(root, p)); err == nil {
@@ -218,11 +218,11 @@ func TestSetupTmuxMixedWrappersOnlyShimsHookless(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".codex", "hooks.json")); err != nil {
 		t.Fatalf("codex hooks not installed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "grok")); err != nil {
-		t.Errorf("grok shim not installed by mixed tmux setup: %v", err)
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-grok")); err != nil {
+		t.Errorf("ac-grok shim not installed by mixed tmux setup: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "codex")); !os.IsNotExist(err) {
-		t.Errorf("codex shim should not be installed by tmux setup: %v", err)
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-codex")); !os.IsNotExist(err) {
+		t.Errorf("ac-codex shim should not be installed by tmux setup: %v", err)
 	}
 }
 
@@ -264,10 +264,10 @@ func TestSetupModeSwitchToTmuxKeepsOnlyHooklessShims(t *testing.T) {
 		}
 	})
 
-	if _, err := os.Stat(filepath.Join(shimDir, "grok")); err != nil {
-		t.Errorf("grok shim should remain after tmux switch: %v", err)
+	if _, err := os.Stat(filepath.Join(shimDir, "ac-grok")); err != nil {
+		t.Errorf("ac-grok shim should remain after tmux switch: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(shimDir, "codex")); !os.IsNotExist(err) {
-		t.Errorf("codex shim should be removed after tmux switch: %v", err)
+	if _, err := os.Stat(filepath.Join(shimDir, "ac-codex")); !os.IsNotExist(err) {
+		t.Errorf("ac-codex shim should be removed after tmux switch: %v", err)
 	}
 }

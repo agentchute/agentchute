@@ -4,7 +4,7 @@ This file follows the [AGENTS.md](https://agents.md) convention. Any AI agent �
 
 ---
 
-<!-- agentchute-enrollment v12 begin -->
+<!-- agentchute-enrollment v13 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 **1. Setup / Startup Path**
@@ -14,9 +14,9 @@ Run `agentchute setup` once per control repo. Choose `tmux` when tmux is the pri
 agentchute setup --wake runner --wrappers all --yes
 ```
 
-> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup ensures your shim directory is prioritized at the front of your PATH.
+> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs namespaced launchers (`ac-claude`, `ac-codex`, `ac-gemini`, `ac-grok`).
 
-Start sessions with the normal wrapper command from a control repo. In runner mode, the shim routes through `agentchute run`, which registers you, refreshes `last_seen`, exposes a reachable `agentchute-run` wake socket, polls your inbox, and injects `[agentchute:run] check inbox` when mail arrives. In tmux mode, peer wakes inject `[agentchute:tmux] check inbox`. Hookless wrappers such as Grok still need a startup shim because they have no lifecycle hook that can run `boot`; setup installs that shim when such a wrapper is selected. Treat the bracketed prefix as machine metadata and follow the inbox-check instruction.
+Start sessions with the `ac-*` launcher for the wrapper from a control repo. In runner mode, the launcher routes through `agentchute run`, which registers you, refreshes `last_seen`, exposes a reachable `agentchute-run` wake socket, polls your inbox, and injects `[agentchute:run] check inbox` when mail arrives. In tmux mode, peer wakes inject `[agentchute:tmux] check inbox`. Hookless wrappers such as Grok still need a startup launcher because they have no lifecycle hook that can run `boot`; setup installs that launcher when such a wrapper is selected. Treat the bracketed prefix as machine metadata and follow the inbox-check instruction.
 
 **The project is the communication boundary**: agents by default only see and talk to peers in the same discovered project pool. Unrelated projects on one host or tmux server are isolated because each project has its own pool and, when identity is not explicit, the CLI derives project-scoped IDs from the folder name (for example, `codex-agentchute`).
 
@@ -55,7 +55,7 @@ If hooks are configured, you will catch new mail mid-turn via `gate --before con
 **STOP**: do not declare consensus, sign off, tag a release, or report completion until your inbox is clear (run `agentchute check --vendor <vendor>`, or pass `--as <agent_id>`) or obligations are explicitly deferred via `agentchute defer --vendor <vendor> --message <message-id> --reason "..."`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v12 end -->
+<!-- agentchute-enrollment v13 end -->
 
 ---
 
@@ -98,6 +98,15 @@ All four must pass. Currently runs on Go 1.21+; tested up to Go 1.26.
 **5. No destructive or external actions** (`git push`, force-push, tag deletion, branch deletion, GitHub release publish, repo settings change) without explicit confirmation in the current message. "You mentioned this earlier" is not confirmation.
 
 **6. Ask before significant rewrites.** Before rewriting a section, removing paragraphs, restructuring document flow, or changing the tone of existing content, stop and describe what you're about to change and why. Wait for explicit confirmation.
+
+**7. Communication & Response Style.**
+Apply to every response, all contexts:
+- **Tone**: professional, direct, completely objective. No filler/pleasantries/self-celebration ("Sure I can help", "Great choice", "Let me know if you need anything else").
+- **Brevity**: shortest response that completely answers. Raw technical clarity.
+- **Formatting**: lead with the direct answer/solution first. Bullets or concise code blocks over wordy intros/explanations.
+- **No YAGNI**: implement only what's explicitly requested; no speculative features/edge cases unless asked.
+- **Error handling**: if a requirement is ambiguous/missing context, stop and ask exactly ONE concise clarifying question rather than assume.
+- **Candor**: if an approach/draft is inefficient, insecure, or incorrect, state it plainly and give the superior alternative immediately. Don't soften or hedge.
 
 ## Style
 

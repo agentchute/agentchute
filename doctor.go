@@ -303,9 +303,6 @@ func checkBinaryOnPath() doctorCheck {
 }
 
 func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
-	// If wake=tmux, shims aren't required for hookable wrappers, so shadowing
-	// is less of a concern (though still good to diagnose). If wake=runner/both,
-	// shadowing is a BLOCKER because it bypasses the enrollment/wake logic.
 	wake := ""
 	if opts.PoolState != nil && opts.PoolState.Wake != "" {
 		wake = opts.PoolState.Wake
@@ -326,44 +323,49 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 		shimDir = filepath.Join(home, ".agentchute", "bin")
 	}
 
-	var candidates []string
-	if agentID != "" {
-		if preset, ok := vendorPresets[agentID]; ok {
-			candidates = preset.Candidates
-		} else {
-			// Fallback to all if unknown
-			candidates = []string{"claude", "claude-code", "codex", "gemini", "gemini-cli", "grok"}
+	if wake == setupWakeTmux {
+		if _, hookable := hookWrapperForAgent(agentID); hookable {
+			return doctorCheck{Name: "wrapper_shadowing", Severity: severitySkip, Message: "tmux wake uses lifecycle hooks for this wrapper; launcher shim is optional"}
 		}
-	} else {
-		candidates = []string{"claude", "claude-code", "codex", "gemini", "gemini-cli", "grok"}
 	}
 
 	pathEnv := opts.PathEnv
 	if pathEnv == "" {
 		pathEnv = os.Getenv("PATH")
 	}
+	names := shimNamesForAgent(agentID)
 
-	if pathIsPrioritized(shimDir, pathEnv, candidates) {
-		return doctorCheck{Name: "wrapper_shadowing", Severity: severityOK, Message: fmt.Sprintf("shims in %s are prioritized on PATH", shimDir)}
-	}
-
-	severity := severityWarn
-	if wake == setupWakeRunner || wake == setupWakeBoth {
-		severity = severityBlocker
+	if pathResolvesToDir(shimDir, pathEnv, names) {
+		return doctorCheck{Name: "wrapper_shadowing", Severity: severityOK, Message: fmt.Sprintf("namespaced launcher %s resolves from %s", strings.Join(names, ", "), shimDir)}
 	}
 
 	if pathContains(shimDir, pathEnv) {
 		return doctorCheck{
 			Name:     "wrapper_shadowing",
-			Severity: severity,
-			Message:  fmt.Sprintf("shims in %s are on PATH but shadowed by a real binary; move %s to the front of PATH", shimDir, shimDir),
+			Severity: severityWarn,
+			Message:  fmt.Sprintf("namespaced launcher %s is not resolving from %s; rerun setup or check PATH", strings.Join(names, ", "), shimDir),
 		}
 	}
 	return doctorCheck{
 		Name:     "wrapper_shadowing",
-		Severity: severity,
-		Message:  fmt.Sprintf("shims in %s are not on PATH; add %s to the front of PATH", shimDir, shimDir),
+		Severity: severityWarn,
+		Message:  fmt.Sprintf("shim dir %s is not on PATH; add it or rerun setup", shimDir),
 	}
+}
+
+func shimNamesForAgent(agentID string) []string {
+	if agentID != "" {
+		for _, spec := range shimSpecs {
+			if spec.AgentID == agentID {
+				return []string{spec.Name}
+			}
+		}
+	}
+	names := make([]string, 0, len(shimSpecs))
+	for _, spec := range shimSpecs {
+		names = append(names, spec.Name)
+	}
+	return names
 }
 
 // hookFile maps a wrapper to the conventional template location relative

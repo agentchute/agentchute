@@ -289,7 +289,7 @@ func preflightTick(p serviceParams) string {
 }
 
 func preflightWrapperEnvPrefix(p serviceParams) string {
-	parts := []string{"AGENTCHUTE_AGENT_ID=" + p.AgentID}
+	parts := []string{"AGENTCHUTE_AGENT_ID=" + p.AgentID, "AGENTCHUTE_SHIM_BYPASS=1"}
 	if strings.TrimSpace(p.ControlRepo) != "" {
 		parts = append(parts, fmt.Sprintf("AGENTCHUTE_CONTROL_REPO=%q", p.ControlRepo))
 	}

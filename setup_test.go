@@ -47,11 +47,16 @@ func TestSetupRunnerInstallsAllFourShimsRegardlessOfDetection(t *testing.T) {
 		t.Fatalf("codex hooks not installed: %v", err)
 	}
 
-	// INVARIANT: In runner mode, all four shims are installed even if only one
+	// INVARIANT: In runner mode, all four namespaced shims are installed even if only one
 	// wrapper is detected on PATH.
-	for _, name := range []string{"claude", "claude-code", "codex", "gemini", "gemini-cli", "grok"} {
+	for _, name := range []string{"ac-claude", "ac-codex", "ac-gemini", "ac-grok"} {
 		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); err != nil {
 			t.Fatalf("%s shim not installed: %v", name, err)
+		}
+	}
+	for _, name := range []string{"claude", "claude-code", "codex", "gemini", "gemini-cli", "grok"} {
+		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); !os.IsNotExist(err) {
+			t.Fatalf("%s same-name alias should not be installed by default: %v", name, err)
 		}
 	}
 	data, err := os.ReadFile(profile)
@@ -152,8 +157,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v12 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v12 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v13 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v13 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)
@@ -193,8 +198,8 @@ func TestSetupModeSwitchToTmuxRemovesPriorSetupShimsAndProfileBlock(t *testing.T
 		}
 	})
 
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "codex")); !os.IsNotExist(err) {
-		t.Fatalf("codex shim should be removed on tmux switch: %v", err)
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-codex")); !os.IsNotExist(err) {
+		t.Fatalf("ac-codex shim should be removed on tmux switch: %v", err)
 	}
 	data, err := os.ReadFile(profile)
 	if err != nil {
@@ -202,6 +207,53 @@ func TestSetupModeSwitchToTmuxRemovesPriorSetupShimsAndProfileBlock(t *testing.T
 	}
 	if strings.Contains(string(data), setupPathBlockBegin) {
 		t.Fatalf("profile block should be removed on tmux switch:\n%s", data)
+	}
+}
+
+func TestSetupRemovesOwnedSameNameAliasesOnly(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	realDir := filepath.Join(t.TempDir(), "real")
+	mustMkdir(t, realDir)
+	realCodex := filepath.Join(realDir, "codex")
+	mustWrite(t, realCodex, []byte("#!/bin/sh\nexit 0\n"))
+	if err := os.Chmod(realCodex, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	shimDir := filepath.Join(home, ".agentchute", "bin")
+	mustMkdir(t, shimDir)
+	mustWrite(t, filepath.Join(shimDir, "codex"), []byte(renderShimScript("/usr/local/bin/agentchute", shimDir, "codex")))
+	mustWrite(t, filepath.Join(shimDir, "claude"), []byte("#!/bin/sh\nexit 0\n"))
+	if err := os.Chmod(filepath.Join(shimDir, "codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(shimDir, "claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", realDir)
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "all", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Join(shimDir, "ac-codex")); err != nil {
+		t.Fatalf("ac-codex shim should be installed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(shimDir, "codex")); !os.IsNotExist(err) {
+		t.Fatalf("owned same-name codex alias should be removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(shimDir, "claude")); err != nil {
+		t.Fatalf("non-agentchute claude file should be preserved: %v", err)
 	}
 }
 
@@ -266,10 +318,10 @@ func TestSetupWrapperNarrowingRemovesDroppedHooksAndShims(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".gemini", "settings.json")); !os.IsNotExist(err) {
 		t.Fatalf("gemini hook should be removed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "codex")); err != nil {
-		t.Fatalf("codex shim should remain: %v", err)
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-codex")); err != nil {
+		t.Fatalf("ac-codex shim should remain: %v", err)
 	}
-	for _, name := range []string{"gemini", "gemini-cli"} {
+	for _, name := range []string{"ac-gemini", "ac-grok", "ac-claude"} {
 		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); err != nil {
 			t.Fatalf("%s shim should remain (INVARIANT: all four shims in runner mode): %v", name, err)
 		}
