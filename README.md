@@ -260,7 +260,7 @@ MIT — see [`LICENSE`](LICENSE).
 
 ## Releases
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full release history. Current release: **v0.5.0** — native herdr wake support (`wake_method: herdr`) alongside tmux and runner wake paths, with stable name targeting, runner precedence under `ac-*`, and setup/doctor/liveness coverage.
+See [`CHANGELOG.md`](CHANGELOG.md) and the [releases page](https://github.com/agentchute/agentchute/releases) for the current version and full history. Recent highlights: one-command [`agentchute update`](#updating); the native herdr wake adapter (`wake_method: herdr`) alongside tmux and runner wake paths, with stable name targeting and runner precedence under `ac-*`. Already installed? Run `agentchute update` to upgrade and re-sync.
 
 ## Manual session (without hooks)
 

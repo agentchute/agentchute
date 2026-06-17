@@ -209,6 +209,7 @@
     <p>Small Go codebase, mostly stdlib with one PTY runner dependency. The CLI and the hand protocol interoperate because both write the same files.</p>
     <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
     <p>Or if you'd rather build from source: <code>go install github.com/agentchute/agentchute@latest</code>, then run <code>agentchute setup</code> in your control repo.</p>
+    <p>Already installed? <code>agentchute update</code> upgrades the reference CLI and re-syncs the control repo (hooks, shims, enrollment) in one step — then restart your agents.</p>
     <p>The four commands a new user actually needs:</p>
     <ul class="commands">
       <li><code>agentchute setup</code> — one-command repo wiring. Prompts for <code>tmux</code> / <code>herdr</code> / <code>runner</code> / <code>both</code> wake path; installs lifecycle hooks; installs launcher shims for runner/both modes and hookless wrappers; updates PATH when needed.</li>
