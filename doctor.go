@@ -323,9 +323,9 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 		shimDir = filepath.Join(home, ".agentchute", "bin")
 	}
 
-	if wake == setupWakeTmux {
+	if wake == setupWakeTmux || wake == setupWakeHerdr {
 		if _, hookable := hookWrapperForAgent(agentID); hookable {
-			return doctorCheck{Name: "wrapper_shadowing", Severity: severitySkip, Message: "tmux wake uses lifecycle hooks for this wrapper; launcher shim is optional"}
+			return doctorCheck{Name: "wrapper_shadowing", Severity: severitySkip, Message: fmt.Sprintf("%s wake uses lifecycle hooks for this wrapper; launcher shim is optional", wake)}
 		}
 	}
 
@@ -675,6 +675,16 @@ func checkWakeTargetValidity(cfg *loop.Config, agentID string) doctorCheck {
 			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=tmux but target %q not currently addressable (`tmux list-panes -t %s` failed); pane may have closed", target, target)}
 		}
 		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=tmux, target=%s reachable", target)}
+	case "herdr":
+		if _, err := exec.LookPath("herdr"); err != nil {
+			return doctorCheck{Name: "wake_target_validity", Severity: severityBlocker, Message: "wake_method=herdr but `herdr` not on PATH; senders will fail to wake this agent"}
+		}
+		// Read-only: resolve the stable agent name to a live pane without
+		// sending keys.
+		if !herdrAgentReachable(target) {
+			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=herdr but agent %q not currently addressable (`herdr agent get %s` failed); pane may have closed or the rename was lost", target, target)}
+		}
+		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=herdr, target=%s reachable", target)}
 	case loop.RunnerWakeMethod:
 		if !loop.RunnerSocketReachable(target, time.Second) {
 			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=%s but socket target %q is not reachable; runner may have exited", method, target)}

@@ -91,6 +91,8 @@ func registrationHasReachableWake(reg *loop.Registration) bool {
 	switch method {
 	case "tmux":
 		return tmuxTargetReachable(target)
+	case "herdr":
+		return herdrAgentReachable(target)
 	case loop.RunnerWakeMethod:
 		return loop.RunnerSocketReachable(target, time.Second)
 	default:

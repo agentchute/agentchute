@@ -23,11 +23,11 @@ agentchute setup --wake runner --wrappers grok --yes
 
 > **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the namespaced launcher for this wrapper.
 
-Use `--wake tmux` if peers live in tmux panes, `--wake both` for mixed pools.
+Use `--wake tmux` if peers live in tmux panes, `--wake herdr` if in herdr panes, `--wake both` for mixed pools.
 
 Start runner-mode sessions with the installed `ac-*` launcher for this wrapper.
 
-**Wake events** arrive as `[agentchute:tmux] check inbox` or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox`.
+**Wake events** arrive as `[agentchute:tmux] check inbox`, `[agentchute:herdr] check inbox`, or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox`.
 
 
 **If startup enrollment doesn't run** (rare; indicates a setup gap):

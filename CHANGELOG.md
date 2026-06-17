@@ -4,6 +4,16 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.5.0 (2026-06-17)
+
+Native herdr wake adapter — the herdr analog of the tmux adapter, for pools that run inside herdr (github.com/ogulcancelik/herdr) panes.
+
+- **herdr wake adapter**: new `wake_method: herdr`. A bare wrapper launched inside a herdr pane auto-registers herdr wake; peers poke it with a single argv call — `herdr agent send <agent_id> "[agentchute:herdr] check inbox\r"` — whose trailing carriage return (0x0d) submits the turn in one shot (no second keypress and no inter-key delay, unlike tmux's send-keys + Enter; a line feed would only insert a newline and never fire a turn). No Go dependency on herdr: the adapter fork/execs the installed `herdr` binary, argv-only, and never shell-evaluates its target.
+- **Stable name target**: at registration and on every `self-check`, the agent binds its pane to its agentchute `agent_id` via `herdr agent rename <HERDR_PANE_ID> <agent_id>` and records `wake_target: <agent_id>`. The wake target is the stable name (herdr resolves it to the current pane), never an ephemeral pane id — so it survives pane re-layout, tab moves, and pane-id reuse across herdr restarts.
+- **Coexistence / precedence**: auto-detection prefers herdr for bare launches but preserves the runner-socket wake for agents launched through `agentchute run` (`ac-*`) even inside herdr — the runner owns the PTY and is never overridden by HERDR_ENV. Precedence: explicit `--wake-method` → runner (under the runner) → herdr → tmux → non-pokable. Hookless wrappers such as Grok stay on the runner path.
+- **Identity-collision safety**: a contextual identity is already suffix-disambiguated, so its herdr name is unique. An explicit `--as`/`AGENTCHUTE_AGENT_ID` whose herdr name is already bound to a different live pane skips the herdr wake (with a warning) rather than registering an ambiguous `herdr agent send` target.
+- **Setup / doctor / liveness**: `agentchute setup --wake herdr` (installs lifecycle hooks plus a runner shim for hookless wrappers); `doctor` validates `wake_method=herdr` read-only via `herdr agent get <agent_id>`; recipient-liveness treats a resolvable herdr name as reachable. Enrollment templates, README, AGENTCHUTE.md §8, and EXTENSIONS.md document the herdr path.
+
 ## v0.4.0 (2026-06-16)
 
 Namespaced `ac-*` launcher shims end the same-name PATH/Volta collision, plus a fresh-install wake-reliability overhaul.

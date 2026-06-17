@@ -137,7 +137,7 @@ Delivery is no-overwrite by contract: a sender never replaces an existing messag
 | `init` | Scaffold loop dirs + drop ENROLLMENT block into wrapper files |
 | `boot --vendor <v> [--as <id>]` | Session-start: register + peek inbox + pending-reply summary |
 | `run --vendor <v> [--as <id>] -- <wrapper>` | Launch a wrapper under the PTY runner with registration, polling, and wake socket |
-| `setup [--wake tmux|runner|both]` | One-command control-repo setup: init + clear stale registrations + hooks + selected runner shims |
+| `setup [--wake tmux|herdr|runner|both]` | One-command control-repo setup: init + clear stale registrations + hooks + selected runner shims |
 | `shims install [--force] [--aliases]` | Install namespaced launcher shims (`ac-*`); `--aliases` also installs legacy same-name aliases |
 | `send --to <b> [--from <a>] [--ask] [--reply-to <id>]` | Write to recipient's inbox + wake poke + (optionally) clear ledger |
 | `check [--vendor <v>] [--as <id>]` | Read + archive inbox; record reply obligations; cooperative-wake peers |

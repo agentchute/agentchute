@@ -19,6 +19,7 @@ import (
 
 const (
 	setupWakeTmux   = "tmux"
+	setupWakeHerdr  = "herdr"
 	setupWakeRunner = "runner"
 	setupWakeBoth   = "both"
 
@@ -164,14 +165,14 @@ func setupHelpErr() error {
 func setupHelp() string {
 	return strings.TrimSpace(`
 Usage:
-  agentchute setup [--wake tmux|runner|both] [--wrappers all|none|<list>] [--yes] [--dry-run]
+  agentchute setup [--wake tmux|herdr|runner|both] [--wrappers all|none|<list>] [--yes] [--dry-run]
 
 Scaffolds the control repo with agentchute init, clears stale live
 registrations so agents re-enroll, installs lifecycle hooks for the selected
 wrappers, and installs launcher shims only for runner/both modes.
 
 Flags:
-  --wake <mode>          tmux | runner | both (prompted when omitted)
+  --wake <mode>          tmux | herdr | runner | both (prompted when omitted)
   --wrappers <set>       all (detected on PATH), none, or comma list
                          (claude-code,codex,gemini-cli,grok; default all)
   --control-repo <path>  repo to initialize (default env or current git/cwd root)
@@ -212,7 +213,7 @@ func defaultSetupShimDir() (string, error) {
 
 func validSetupWake(wake string) bool {
 	switch wake {
-	case setupWakeTmux, setupWakeRunner, setupWakeBoth:
+	case setupWakeTmux, setupWakeHerdr, setupWakeRunner, setupWakeBoth:
 		return true
 	default:
 		return false
@@ -275,7 +276,7 @@ func promptSetupWake(yes bool) (string, error) {
 		return "", fmt.Errorf("--wake is required when no terminal is available")
 	}
 	defer closeIn()
-	fmt.Fprint(os.Stdout, "Primary wake path [runner/tmux/both] (runner): ")
+	fmt.Fprint(os.Stdout, "Primary wake path [runner/tmux/herdr/both] (runner): ")
 	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
@@ -453,6 +454,9 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 	if opts.Wake == setupWakeTmux && os.Getenv("TMUX") == "" {
 		fmt.Fprintln(w, "  warning:      TMUX is not set; start wrappers inside tmux for tmux wake")
 	}
+	if opts.Wake == setupWakeHerdr && os.Getenv("HERDR_ENV") == "" {
+		fmt.Fprintln(w, "  warning:      HERDR_ENV is not set; start wrappers inside herdr for herdr wake")
+	}
 }
 
 func setupNeedsShims(wake string) bool {
@@ -465,8 +469,8 @@ func setupShimWrappers(wake string, wrappers []string) []string {
 		// so that a later install of a real binary works immediately.
 		return setupWrapperNames()
 	}
-	if wake == setupWakeTmux {
-		// INVARIANT: In tmux mode, we must install shims for hookless
+	if wake == setupWakeTmux || wake == setupWakeHerdr {
+		// INVARIANT: In tmux/herdr mode, we must install shims for hookless
 		// wrappers (grok) so they can enroll on startup via the shim.
 		return compactSetupWrappers(wrappers, func(w setupWrapper) bool { return !w.Hookable })
 	}
@@ -645,6 +649,8 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		switch opts.Wake {
 		case setupWakeTmux:
 			fmt.Println("Restart selected wrappers from this repo inside tmux, then run `agentchute doctor --as <id>`.")
+		case setupWakeHerdr:
+			fmt.Println("Restart selected wrappers from this repo inside herdr, then run `agentchute doctor --as <id>`.")
 		case setupWakeRunner, setupWakeBoth:
 			fmt.Println("Open one new shell, restart selected wrappers from this repo, then run `agentchute doctor --as <id>`.")
 		}

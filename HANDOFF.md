@@ -1,16 +1,20 @@
 # agentchute — current handoff
 
-Last updated: 2026-06-16.
+Last updated: 2026-06-17.
 
 Read this after `AGENTS.md` and before touching anything. This file should stay short and current; release history belongs in `CHANGELOG.md`, and protocol history belongs in `AGENTCHUTE.md`.
 
 ## Current State
 
-Latest release: `v0.3.9`
+Latest release: `v0.5.0`
 
-Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.3.9
+Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.5.0
 
-Restart note: `v0.3.9` is the latest release — a hotfix for duplicate tmux pane registrations. An agent re-enrolling in the same pane no longer accumulates multiple live registrations (which previously could split peer wakes or defeat the finish-gate). Standard `install.sh` resolves `v0.3.9`.
+Restart note: `v0.5.0` adds the native **herdr** wake adapter (`wake_method: herdr`) — the herdr analog of the tmux adapter. A bare wrapper in a herdr pane auto-registers herdr wake (pane bound to its `agent_id` via `herdr agent rename`); peers poke with one argv call `herdr agent send <agent_id> "[agentchute:herdr] check inbox\r"` (the trailing CR submits the turn). Agents launched through `ac-*` / `agentchute run` keep the runner-socket wake even inside herdr. Standard `install.sh` resolves `v0.5.0`.
+
+Pre-release verification (2026-06-17): `gofmt`, `go vet ./...`, `go test ./... -count=1` (incl. templates drift + the 6 herdr/identity tests), `go build ./...`, `sh tests/install_test.sh` (25/0), `shellcheck -s sh install.sh tests/install_test.sh`, and `goreleaser check` all passed. herdr poke confirmed live: an isolated raw-mode probe proved `herdr agent send <name> "...\r"` submits the wake (CR 0x0d; an LF 0x0a does not), and the herdr poke woke the live codex lane end-to-end. codex (co-senior) reviewed; all four findings (herdr identity adoption, missing-binary skip, explicit-bind-failure fields, `register` warning surfacing) are fixed and covered by tests.
+
+Final v0.4.0 release verification (confirmed 2026-06-17): `main`, `origin/main`, and tag `v0.4.0` point at commit `28ee9ac`; `git describe` reports `v0.4.0`; `gh release view v0.4.0` shows a published non-draft/non-prerelease GitHub release at https://github.com/agentchute/agentchute/releases/tag/v0.4.0 with darwin/linux amd64/arm64 assets plus `checksums.txt`; the final GoReleaser release workflow run succeeded on head SHA `28ee9ac49b7b272afbbe891b15ce6e1921f023e4`.
 
 Final v0.3.9 release verification (confirmed 2026-06-16): tag `v0.3.9` points at commit `64a696a`, `git describe` reports `v0.3.9` at `HEAD`, and `gh release view v0.3.9` shows the published GitHub release with darwin/linux amd64/arm64 assets plus `checksums.txt`; the GoReleaser release workflow run succeeded on 2026-06-09.
 
@@ -31,10 +35,12 @@ Recent shipped work:
 - v0.3.7 hotfix: same-pane contextual registration adoption, atomic exclusive registration publish, SessionStart self-check dedup, and first-class Grok runner/shim setup support.
 - v0.3.8 hotfix: tmux-mode setup now keeps launcher shims for hookless selected wrappers, especially Grok, so startup enrollment is automatic even without lifecycle hooks.
 - v0.3.9 hotfix: duplicate tmux pane registrations reconciled — same-pane re-enrollment no longer accumulates multiple live registrations (`identity.go`, `register.go`, `tmux_state.go`).
+- v0.4.0 release: namespaced `ac-*` launchers, fish/profile PATH fixes, full runner-mode shim install, stable active-session liveness via `AGENTCHUTE_RUNNER_PID`, runner socket ping/ack health checks, Stop-hook `self-check` before finish gates, and the `{{AGENT_ID}}` enrollment-template fix.
+- v0.5.0 release: native herdr wake adapter (`internal/loop/herdr.go`, `herdr_state.go`) — env detection, `herdr agent rename` identity binding, herdr pane identity adoption (`identity.go`), coexist precedence (runner under `agentchute run` is never overridden by herdr), explicit/collision/missing-binary guards, `setup --wake herdr`, `doctor`/recipient-liveness herdr probes, and enrollment-template/README/EXTENSIONS/AGENTCHUTE docs.
 
 ## Restart Context
 
-After reinstall, start wrappers from this repo without custom `AGENTCHUTE_AGENT_ID` unless a named stable lane is required. The expected default identity path is `--as` > `AGENTCHUTE_AGENT_ID` > existing current-tmux-pane registration > contextual `<wrapper>-<folder>` with `-2`, `-3`, etc. for live conflicts.
+After reinstall, run `agentchute setup --wake runner --wrappers all --yes` in this repo if hooks/shims need refreshing, open a new shell so PATH changes land, then start wrappers from this repo with `ac-claude`, `ac-codex`, `ac-gemini`, and `ac-grok`. Do not use custom `AGENTCHUTE_AGENT_ID` unless a named stable lane is required. The expected default identity path is `--as` > `AGENTCHUTE_AGENT_ID` > existing current-tmux-pane registration > contextual `<wrapper>-<folder>` with `-2`, `-3`, etc. for live conflicts.
 
 If restart behavior looks wrong, first run:
 
@@ -54,9 +60,9 @@ Tracked files under `.agentchute/loop/` are examples and README files only. Live
 
 Root `.claude/`, `.codex/`, and `.gemini/` hook dirs are local setup output for this working copy. The tracked canonical templates live under `examples/hooks/`.
 
-As of 2026-06-16, local uncommitted state includes the team-review findings fixes: capped frontmatter peek in `pending.go` + `pending_test.go`; a release-preflight job (gofmt/vet/test/build + shellcheck + install_test + `goreleaser check`) that the `goreleaser` job now `needs:`, plus a least-privilege `permissions:` split in `release.yaml` (default `contents: read`, only the publish job `write`); Node-24 action major bumps (`checkout@v6`, `setup-go@v6`, `goreleaser-action@v7`) in `ci.yaml` and `release.yaml`; and the v0.3.9 doc/CHANGELOG sync (README, CHANGELOG, this file). Plus the pre-existing unstaged `GEMINI.md` identity-note hunk and untracked `.claude/`, `.codex/`, and `.gemini/` setup-output dirs. The full ritual is green and codex re-reviewed + signed off; **none of this is committed yet** — awaiting Alex's go-ahead to commit on a branch.
+The v0.5.0 squash carries the herdr adapter (new `internal/loop/herdr.go`, `herdr_state.go` + tests) plus the touched Go/docs/templates. Local untracked state that stays uncommitted: `.claude/`, `.codex/`, `.gemini/` setup-output hook directories (and `.bak` files), and anything under `.agentchute/loop/` that is runtime data (registrations, inboxes, archives, state, scratch).
 
-Open decision (2026-06-16): **herdr support** (github.com/ogulcancelik/herdr). Team converged on L1 (document running a pool inside herdr panes via the runner path, in EXTENSIONS.md) now, L2 (a `herdr` wake adapter sibling to `internal/loop/tmux.go`) deferred until real demand, L3 (socket/state import into core) rejected. No doc written yet; awaiting Alex. Full rationale + codex's L2 guardrails are in the auto-memory file `herdr_support_decision`.
+**herdr support** (github.com/ogulcancelik/herdr): SHIPPED in v0.5.0 as the L2 native wake adapter (sibling to `internal/loop/tmux.go`). L3 (socket/state import into core) remains rejected. `wake_method=herdr` targets the stable agent name; the poke is one argv call `herdr agent send <agent_id> "[agentchute:herdr] check inbox\r"`. Grok stays on the runner path (hookless; its multiline always-approve TUI does not reliably submit on an injected CR). Decided via 4-way (claude+codex senior, grok+gemini junior): name=agent_id (no workspace/tab encoding — panes move between tabs), runner precedence preserved under `agentchute run`. No outstanding herdr follow-ups.
 
 ## Verification
 
@@ -77,7 +83,7 @@ shellcheck -s sh install.sh tests/install_test.sh
 goreleaser check
 ```
 
-GitHub Actions currently emits Node.js 20 deprecation warnings for `actions/checkout@v4`, `actions/setup-go@v5`, and `goreleaser/goreleaser-action@v6`. This is non-blocking today but should be reviewed before GitHub's Node 24 migration deadlines.
+GitHub Actions workflow files now use `actions/checkout@v6`, `actions/setup-go@v6`, and `goreleaser/goreleaser-action@v7`; the v0.4.0 final release workflow succeeded after earlier failed release-tag attempts were fixed.
 
 ## Gating Rules
 
@@ -85,17 +91,4 @@ Do not run destructive or external actions without explicit current-message appr
 
 Do not declare completion, consensus, or release readiness until your agentchute inbox is clear or obligations are explicitly deferred.
 
-## Reboot Context Save (2026-06-16T19:54 from claude)
-
-Fleet reboot in progress (Alex). 
-
-Key durable state to survive restart:
-- v0.3.9 team-review fixes (frontmatter read-cap in pending.go; release preflight + least-privilege permissions + Node-24 action bumps in .github/workflows/; v0.3.9 doc/CHANGELOG sync) are DONE, ritual-green (gofmt/vet/test/build), codex-signed-off, but UNCOMMITTED on disk. Awaiting Alex commit go-ahead. Survives reboot.
-- herdr support decision converged: L1 (document in EXTENSIONS.md: run pools inside herdr panes via existing runner) now; L2 (herdr wake adapter) deferred; L3 (core import) no.
-- Uncommitted changes (as of this save): pending.go, pending_test.go, .github/workflows/{ci,release}.yaml, CHANGELOG.md, README.md, GEMINI.md, HANDOFF.md.
-- All main lanes (claude/codex/gemini/grok) active in tmux pool at reboot time; registrations fresh.
-- No pending obligations or inbox for grok at time of save.
-
-Restart with normal wrapper; use `agentchute check --as grok-agentchute --vendor xai` (or status/doctor) on re-enroll. This note + git working tree (uncommitted) + .agentchute/loop/ provide the durable handoff. 
-
-(Added per "save context" info message; no reply sent.)
+Restart with normal `ac-*` launchers from this repo; run `agentchute status` and `agentchute doctor --as <actual-agent-id>` after re-enroll. This note plus the clean git state and local `.agentchute/loop/` runtime files are the durable handoff.

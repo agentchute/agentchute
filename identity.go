@@ -30,6 +30,14 @@ func resolveAgentID(flagID, vendor string, cfg *loop.Config) (string, error) {
 		if id, ok := agentIDForCurrentTmuxPane(cfg, vendor); ok {
 			return id, nil
 		}
+		// A herdr wake injects only "check inbox" (no identity env), so a
+		// re-launched / woken pane must map back to ITS registration by
+		// resolving the registered herdr name to the current HERDR_PANE_ID.
+		// Without this, a second same-wrapper pane (codex-agentchute-2) would
+		// fall through to the contextual default and split its inbox.
+		if id, ok := agentIDForCurrentHerdrPane(cfg, vendor); ok {
+			return id, nil
+		}
 	}
 
 	// 4. Contextual default: <canonical-wrapper-id>-<folder-slug>.
@@ -98,6 +106,37 @@ func agentIDForCurrentTmuxPane(cfg *loop.Config, vendor string) (string, bool) {
 			continue
 		}
 		return reg.AgentID, true
+	}
+	return "", false
+}
+
+func agentIDForCurrentHerdrPane(cfg *loop.Config, vendor string) (string, bool) {
+	pane := currentHerdrPane()
+	if pane == "" || !herdrAvailable() {
+		return "", false
+	}
+	localHost, _ := os.Hostname()
+	localHost = strings.TrimSpace(localHost)
+	canon := canonicalAgentIDForVendor(vendor)
+	regs, _ := loop.ReadRegistrationsLenient(cfg.AgentsDir())
+	for _, reg := range regs {
+		if strings.TrimSpace(reg.WakeMethod) != "herdr" {
+			continue
+		}
+		if localHost != "" && strings.TrimSpace(reg.Host) != "" && reg.Host != localHost {
+			continue
+		}
+		if reg.Status == loop.StatusOffline || reg.Status == loop.StatusExhausted {
+			continue
+		}
+		if canon != "" && !registrationMatchesCanonical(reg.AgentID, canon) {
+			continue
+		}
+		// The wake_target is the stable herdr name; adopt this registration
+		// only if that name currently resolves to OUR pane.
+		if herdrAgentLookup(strings.TrimSpace(reg.WakeTarget)).PaneID == pane {
+			return reg.AgentID, true
+		}
 	}
 	return "", false
 }

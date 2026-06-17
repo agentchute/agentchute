@@ -243,7 +243,35 @@ func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) 
 				warnings = append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; explicit wake_method=tmux still needs --wake-target", pane))
 			}
 		}
+		// Explicit wake_method=herdr without a target: bind this pane to the
+		// agent id and use that stable name as the target.
+		if !opts.WakeTargetProvided && strings.TrimSpace(wakeMethod) == "herdr" {
+			method, target, herdrWarnings, ok := herdrWakeForRegistration(opts)
+			warnings = append(warnings, herdrWarnings...)
+			if ok {
+				return method, target, warnings
+			}
+			// Could not bind (collision / rename failure / no herdr binary):
+			// clear method+target so the agent enrolls non-pokable rather than
+			// with an invalid wake_method=herdr and an empty target (which
+			// registration validation would reject).
+			return "", "", warnings
+		}
 		return wakeMethod, wakeTarget, warnings
+	}
+
+	// Native herdr wake for bare launches inside a herdr pane. Skipped when
+	// running under `agentchute run` (the runner socket owns the wake — never
+	// switch to herdr just because HERDR_ENV is also set) and takes precedence
+	// over tmux when both terminal envs are present.
+	if !underAgentchuteRunner() && herdrEnvActive() {
+		method, target, herdrWarnings, ok := herdrWakeForRegistration(opts)
+		warnings = append(warnings, herdrWarnings...)
+		if ok {
+			return method, target, warnings
+		}
+		// Binding failed (collision or rename error): fall through to tmux /
+		// existing-target preservation below.
 	}
 
 	if pane := currentTmuxPane(); pane != "" {
@@ -278,8 +306,8 @@ func cmdRegister(args []string) error {
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, local, human)")
 	fs.StringVar(&host, "host", "", "host this agent runs on (defaults to OS hostname)")
-	fs.StringVar(&wakeMethod, "wake-method", "", "wake adapter (e.g., tmux); leave empty for non-pokable agents")
-	fs.StringVar(&wakeTarget, "wake-target", "", "wake target opaque to agentchute; for wake_method=tmux, accepts %pane or session:window.pane")
+	fs.StringVar(&wakeMethod, "wake-method", "", "wake adapter (e.g., tmux, herdr); leave empty for non-pokable agents")
+	fs.StringVar(&wakeTarget, "wake-target", "", "wake target opaque to agentchute; tmux accepts %pane or session:window.pane; herdr defaults to the agent id (stable name)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.StringVar(&bio, "bio", "", "short self-description for the registration body (markdown allowed)")
@@ -367,6 +395,9 @@ func cmdRegister(args []string) error {
 	}
 	if !reg.IsPokable() {
 		fmt.Println("  (non-pokable: senders skip the wake poke; you must poll your own inbox)")
+	}
+	for _, w := range result.Warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
 
 	if announce {

@@ -8,7 +8,7 @@ This file follows the [AGENTS.md](https://agents.md) convention. Any AI agent â€
 ## ENROLLMENT â€” agentchute coordination loop
 
 **1. Setup / Startup Path**
-Run `agentchute setup` once per control repo. Choose `tmux` when tmux is the primary wake path, `runner` when launcher shims should route wrappers through `agentchute run`, or `both` for mixed pools. The canonical post-install step is:
+Run `agentchute setup` once per control repo. Choose `tmux` when tmux is the primary wake path, `herdr` when herdr is the primary wake path, `runner` when launcher shims should route wrappers through `agentchute run`, or `both` for mixed pools. The canonical post-install step is:
 
 ```sh
 agentchute setup --wake runner --wrappers all --yes
@@ -16,7 +16,7 @@ agentchute setup --wake runner --wrappers all --yes
 
 > **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs namespaced launchers (`ac-claude`, `ac-codex`, `ac-gemini`, `ac-grok`).
 
-Start sessions with the `ac-*` launcher for the wrapper from a control repo. In runner mode, the launcher routes through `agentchute run`, which registers you, refreshes `last_seen`, exposes a reachable `agentchute-run` wake socket, polls your inbox, and injects `[agentchute:run] check inbox` when mail arrives. In tmux mode, peer wakes inject `[agentchute:tmux] check inbox`. Hookless wrappers such as Grok still need a startup launcher because they have no lifecycle hook that can run `boot`; setup installs that launcher when such a wrapper is selected. Treat the bracketed prefix as machine metadata and follow the inbox-check instruction.
+Start sessions with the `ac-*` launcher for the wrapper from a control repo. In runner mode, the launcher routes through `agentchute run`, which registers you, refreshes `last_seen`, exposes a reachable `agentchute-run` wake socket, polls your inbox, and injects `[agentchute:run] check inbox` when mail arrives. In tmux mode, peer wakes inject `[agentchute:tmux] check inbox`; in herdr mode, `[agentchute:herdr] check inbox`. Hookless wrappers such as Grok still need a startup launcher because they have no lifecycle hook that can run `boot`; setup installs that launcher when such a wrapper is selected. Treat the bracketed prefix as machine metadata and follow the inbox-check instruction.
 
 **The project is the communication boundary**: agents by default only see and talk to peers in the same discovered project pool. Unrelated projects on one host or tmux server are isolated because each project has its own pool and, when identity is not explicit, the CLI derives project-scoped IDs from the folder name (for example, `codex-agentchute`).
 

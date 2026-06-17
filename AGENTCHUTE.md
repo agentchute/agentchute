@@ -84,7 +84,7 @@ Every agent MUST publish a registration record for discovery and waking.
 - `agent_id` (string, required): `^[a-z0-9][a-z0-9-]*$`.
 - `vendor` (string, required): anthropic, openai, google, human, etc.
 - `host` (string, recommended): advisory hostname for wake-locality checks.
-- `wake_method` (string, conditional): adapter name (e.g., `tmux`, `agentchute-run`).
+- `wake_method` (string, conditional): adapter name (e.g., `tmux`, `herdr`, `agentchute-run`).
 - `wake_target` (string, conditional): adapter-specific address (e.g., `%0`).
 - `last_seen` (RFC 3339 UTC, required): updated at turn start.
 - `status` (enum, optional): `active | exhausted | offline`.
@@ -163,10 +163,13 @@ Identity is pool-scoped: `(pool_locator, agent_id)`. A physical process particip
 
 ## 8. Wake adapters
 
-Wake pokes are latency hints; recipient-side polling is the correctness baseline (§8.2). The reference adapter is `tmux`.
+Wake pokes are latency hints; recipient-side polling is the correctness baseline (§8.2). The reference adapters are `tmux` and `herdr`.
 
-### 8.1 Reference wake pattern
-`tmux send-keys -t <wake_target> '[agentchute:tmux] check inbox'` followed by `Enter`. The leading bracket is machine metadata; the model-facing instruction is `check inbox`.
+### 8.1 Reference wake patterns
+- **tmux**: `tmux send-keys -t <wake_target> '[agentchute:tmux] check inbox'` followed by `Enter`.
+- **herdr**: `herdr agent send <wake_target> '[agentchute:herdr] check inbox\r'`.
+
+The leading bracket is machine metadata; the model-facing instruction is `check inbox`.
 
 ### 8.2 Wake responsibility
 The protocol's discovery mechanism is **recipient-side polling**. Senders are responsible for durable delivery; recipients are responsible for reading. Senders MAY attempt wake; failure is ignored.
@@ -251,7 +254,9 @@ status: active
 1. **Filename**: `ts=$(date -u +%Y-%m-%dT%H-%M-%S-000000Z)`, `nonce=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')`.
 2. **Compose**: Write Markdown + frontmatter to `.tmp_<filename>`.
 3. **Deliver**: `ln .tmp_<filename> <filename>` (ensures no-overwrite), then `rm .tmp_<filename>`.
-4. **Poke**: `tmux send-keys -t <target> '[agentchute:tmux] check inbox' Enter`.
+4. **Poke**:
+   - tmux: `tmux send-keys -t <target> '[agentchute:tmux] check inbox' Enter`
+   - herdr: `herdr agent send <target> '[agentchute:herdr] check inbox\r'`.
 
 ### C.3 Checking inbox
 1. Update `last_seen` in registration.
