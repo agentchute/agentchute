@@ -4,6 +4,15 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.6.1 (2026-06-17)
+
+Hotfix release for the herdr wake submit path and `setup --wake` mode selection.
+
+- **Herdr wake submit fix**: herdr `agent send` writes literal text and does not submit turns on a trailing carriage return. The herdr adapter now resolves the stable agent name to the current pane with `herdr agent get`, sends the wake prompt as text, waits the same inter-key delay used by tmux, then submits with `herdr pane send-keys <pane> Enter`.
+- **Composable setup wake paths**: `agentchute setup --wake` now accepts any comma-separated combination of `runner`, `tmux`, and `herdr`, or `all`. The old `both` value remains as a deprecated alias for `all`. Setup planning, shim cleanup, doctor diagnostics, update re-sync, persisted legacy `both` state, and enrollment guidance are set-aware.
+- **Enrollment v14**: generated `AGENTS.md` / wrapper enrollment blocks now describe the composable wake-path model and refresh older v13 blocks.
+- **Installer help**: `install.sh --wake` and `AGENTCHUTE_WAKE` help now document the new wake-set syntax.
+
 ## v0.6.0 (2026-06-17)
 
 - **One-command full update (`agentchute update [--version <tag>]`)**: self-updates the binary and re-syncs the control repo in one step. Pure Go (no `curl | sh`): resolves the target release (latest by default), downloads the release archive + `checksums.txt`, verifies the exact-filename SHA-256 before extracting only the `agentchute` member, and atomically replaces the running binary (same-dir temp → fsync → rename; any download/verify failure leaves the binary untouched). It then re-execs the **new** binary's `setup` — replaying the pool's saved wake mode, wrappers (including `--wrappers none`), shim dir, and profile — so hooks, shims, and enrollment templates re-sync to the new version. Refuses to run from a launcher shim or without saved setup state; `--dry-run` prints the plan (and active agents it would disrupt) without mutating anything. Because `setup` clears live registrations, it prints a loud warning that every active agent must be restarted.
