@@ -62,11 +62,7 @@ agentchute setup --wake runner --wrappers all --yes
 > **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH; the launchers use `ac-*` names, so they do not need to precede real wrapper binaries.
 
 Use `--wake tmux` if tmux panes are your primary wake path, `--wake herdr` if herdr panes are primary, or `--wake both` if you want hooks plus runner shims.
-Hookless wrappers such as Grok still get a launcher shim in tmux/herdr modes because no lifecycle hook can run startup enrollment for them. Setup is idempotent: same-content re-runs report `already current`, changed setup choices reconcile old setup-managed hooks, shims, PATH blocks, and ENROLLMENT blocks in `AGENTS.md` / wrapper `.md` files, and live `agents/*.md` registrations are cleared so wrappers re-enroll with fresh contextual IDs. After upgrading agentchute manually, re-run `agentchute setup` (it prompts for the wake mode, or pass `--wake <mode> --yes`) in each control repo. Or, to upgrade and re-sync in one step, run:
-
-```sh
-agentchute update
-```
+Hookless wrappers such as Grok still get a launcher shim in tmux/herdr modes because no lifecycle hook can run startup enrollment for them. Setup is idempotent: same-content re-runs report `already current`, changed setup choices reconcile old setup-managed hooks, shims, PATH blocks, and ENROLLMENT blocks in `AGENTS.md` / wrapper `.md` files, and live `agents/*.md` registrations are cleared so wrappers re-enroll with fresh contextual IDs. To upgrade an existing install and re-sync this folder in one step, run `agentchute update` (see [Updating](#updating)).
 
 Restart the wrapper. From then on:
 
@@ -166,6 +162,29 @@ Delivery is no-overwrite by contract: a sender never replaces an existing messag
 Run `agentchute <command> --help` for flags. All commands accept `--control-repo`, `--loop-dir`, and `--json` where applicable.
 
 Commands that act as the current agent accept explicit `--as <id>`, read `AGENTCHUTE_AGENT_ID`, reuse a live registration for the current tmux pane, or derive `<wrapper>-<folder>` when a vendor/wrapper is known. Set `AGENTCHUTE_AGENT_ID` only for a custom stable lane name.
+
+## Updating
+
+`agentchute update` upgrades the **reference CLI** in one step. It is a convenience of this implementation — the [protocol](AGENTCHUTE.md) versions itself independently (Working Draft v1) and is unaffected by a CLI update. One command replaces the old three-step dance (re-install, re-`setup`, restart):
+
+```sh
+agentchute update                  # update to the latest release
+agentchute update --version v0.6.0 # pin a specific release
+agentchute update --dry-run        # show the plan (from→to, agents it would disrupt); change nothing
+```
+
+It runs in two phases:
+
+1. **Self-update the binary.** Resolves the target release, downloads the release archive plus `checksums.txt`, verifies the exact-filename SHA-256 *before* extracting, and atomically replaces the running binary. Any download or verification failure leaves the installed binary untouched. (Pure Go — it never pipes a remote script to a shell.)
+2. **Re-sync the control repo.** Re-execs the *new* binary's `setup`, replaying this pool's saved wake mode, wrappers, shim directory, and profile, so hooks, launcher shims, and `ENROLLMENT` blocks re-sync to the new version's layout. A version bump can change that layout (enrollment-block version, shim names, state schema), which is why updating the binary alone is not enough.
+
+> ⚠ **Restart your agents.** Re-running `setup` clears this pool's live registrations. Until each wrapper restarts and re-enrolls, peers cannot wake it. `update` prints the active agents you need to restart.
+
+`update` must run from the real installed binary (not a launcher shim) and requires a prior `agentchute setup` in the repo — it refuses rather than guess your wake mode. For a first install, or to fetch only the binary, use `install.sh` instead:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
+```
 
 ## No binary required
 
