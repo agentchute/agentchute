@@ -154,7 +154,15 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 
 	var reg *loop.Registration
 	var existingFound bool
-	var samePane []peerWakeStale
+	// samePaneCandidates is the write-time snapshot of same-pane peers FOUND
+	// under the self-agent + pane lock, keyed on the FINAL written target. The
+	// REMOVE is NOT done here: it would require taking each PEER's agent lock
+	// while we still hold our own agent lock + the pane lock, which creates a
+	// self-agent -> pane -> peer-agent chain that can deadlock against a peer's
+	// own agent -> pane ordering. Instead we collect candidates in-lock and
+	// revalidate-remove them AFTER the critical section is released (below).
+	var samePaneCandidates []peerWakeStale
+	var samePaneHost, samePaneTarget string
 
 	// Lock order is agent -> pane. The per-agent lock is OUTERMOST so the read of
 	// `existing`, the FINAL-wake decision, the merge, the inbox dir creation, the
@@ -233,9 +241,13 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 			return fmt.Errorf("create inbox dir: %w", err)
 		}
 
-		// commit writes the registration and runs the same-pane prune, both keyed
-		// on the FINAL target. When the FINAL wake is tmux, both run under the pane
-		// lock (taken just below); otherwise both run under the agent lock only.
+		// commit writes the registration and FINDS (does NOT remove) the same-pane
+		// peers, both keyed on the FINAL target. When the FINAL wake is tmux, both
+		// run under the pane lock (taken just below); otherwise both run under the
+		// agent lock only. The same-pane REMOVE is deliberately deferred to AFTER
+		// the critical section (see samePaneCandidates above): removing requires the
+		// PEER's agent lock, which must not be taken while we hold our own agent
+		// lock + the pane lock.
 		commit := func() error {
 			if !existingFound && opts.ContextualIdentity {
 				// Atomic create-if-not-exists, preserved for the fresh-contextual
@@ -254,16 +266,20 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 				return fmt.Errorf("write registration: %w", werr)
 			}
 
-			// Same-pane prune keyed on the FINAL written target — consistent with
-			// the pane lock that wraps this when the wake is tmux. It touches only
-			// PEER registration files (never our own agentID) and takes no agent
-			// lock, so running it inside our agent lock introduces no self-nesting.
+			// Same-pane FIND keyed on the FINAL written target — a write-time
+			// snapshot taken under the pane lock (when tmux) so it is consistent with
+			// the target we just wrote. This is a pure scan: it takes no agent lock
+			// and removes nothing, so running it inside our agent lock introduces no
+			// self-nesting. The actual revalidated REMOVE runs after WithAgentLock
+			// returns, with the self-agent + pane locks already released.
 			if strings.TrimSpace(reg.WakeMethod) == "tmux" && strings.TrimSpace(reg.WakeTarget) != "" {
-				peers, perr := pruneSamePanePeerTmuxRegistrations(cfg, opts.AgentID, host, reg.WakeTarget)
+				peers, perr := findSamePanePeerTmuxRegistrations(cfg, opts.AgentID, host, reg.WakeTarget)
 				if perr != nil {
-					return fmt.Errorf("prune same-pane tmux registrations: %w", perr)
+					return fmt.Errorf("find same-pane tmux registrations: %w", perr)
 				}
-				samePane = peers
+				samePaneCandidates = peers
+				samePaneHost = host
+				samePaneTarget = reg.WakeTarget
 			}
 			return nil
 		}
@@ -290,11 +306,28 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 	// in-lock value). The result's Resolved* fields report what was published.
 	writtenWakeMethod, writtenWakeTarget := reg.WakeMethod, reg.WakeTarget
 
-	peerWakeStale := append([]peerWakeStale(nil), samePane...)
+	// Same-pane REMOVE runs HERE, AFTER WithAgentLock has returned, so the
+	// self-agent lock and the tmux pane lock are both released. Each removal takes
+	// the PEER's own agent lock, re-reads the peer reg, and deletes ONLY if the
+	// fresh reg still maps to our FINAL pane (a peer that moved pane / went
+	// non-tmux between the in-lock FIND and this REMOVE keeps its valid reg). With
+	// our own locks released, at most one peer lock is held at a time, so there is
+	// no self-agent -> pane -> peer-agent chain and no AB-BA deadlock with a peer's
+	// own agent -> pane ordering. The reported set reflects what was ACTUALLY
+	// removed post-revalidation, not the raw find candidates.
+	var peerWakeStale []peerWakeStale
+	if len(samePaneCandidates) > 0 {
+		removed, perr := revalidateAndRemoveSamePanePeers(cfg, samePaneCandidates, opts.AgentID, samePaneHost, samePaneTarget)
+		if perr != nil {
+			return nil, fmt.Errorf("prune same-pane tmux registrations: %w", perr)
+		}
+		peerWakeStale = append(peerWakeStale, removed...)
+	}
 	// Stale different-pane peer pruning runs OUTSIDE both locks: it scans all peer
-	// registrations for unreachable tmux targets, touches only PEER files, and
-	// takes no agent lock. It is independent of our FINAL target (and of the pane
-	// lock), so keeping it out of the locked region keeps that region minimal.
+	// registrations for unreachable tmux targets, then revalidates+removes each
+	// under that PEER's own agent lock (no self-agent or pane lock held here). It
+	// is independent of our FINAL target (and of the pane lock), so keeping it out
+	// of the locked region keeps that region minimal.
 	if opts.PruneStalePeerTmux {
 		stale, err := pruneStalePeerTmuxRegistrations(cfg, opts.AgentID)
 		if err != nil {

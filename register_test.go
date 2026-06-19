@@ -832,10 +832,17 @@ func TestRegister_FreshResolvedWakeNotOverwritten(t *testing.T) {
 // and pruned — the in-lock existing's target (%20). The fix flips to agent->pane
 // so the pane lock is taken INSIDE the agent lock keyed on the written target.
 //
+// rev4 split: the same-pane FIND (write-time candidate snapshot) still runs
+// UNDER the pane lock keyed on the FINAL target; the revalidated REMOVE now runs
+// AFTER the critical section releases (per-peer lock, deadlock-safe). FINAL-
+// target keying is still proven end-to-end: the pane lock fires for %20 only,
+// the %20 same-pane peer is the one removed, and that removed peer surfaces in
+// res.PeerWakeStale — i.e. the removed SET is driven by the FINAL target.
+//
 // Setup: drive publishRegistrationOnce with the preserve-from-existing path
 // (deferToExisting=true) carrying a STALE pre-lock target %10, while the on-disk
-// (in-lock authoritative) existing has %20. The pane lock and the same-pane prune
-// must both target %20.
+// (in-lock authoritative) existing has %20. The pane lock, the same-pane FIND,
+// and the resulting REMOVE must all target %20.
 func TestRegister_PaneLockKeyedOnAuthoritativeTarget(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
@@ -908,14 +915,25 @@ func TestRegister_PaneLockKeyedOnAuthoritativeTarget(t *testing.T) {
 		if _, err := os.Stat(cfg.AgentRegistrationPath("peer-on-10")); err != nil {
 			t.Fatalf("peer on stale pre-lock %%10 must NOT be pruned: %v", err)
 		}
+		// rev4: the REMOVED SET (post-revalidation) must reflect the FINAL target's
+		// same-pane peer — proves the find-in-lock candidate keyed on %20 is what
+		// drove the revalidated remove, not the stale %10 snapshot.
+		if len(res.PeerWakeStale) != 1 || res.PeerWakeStale[0].AgentID != "peer-on-20" {
+			t.Fatalf("removed same-pane set = %+v, want exactly [peer-on-20] (FINAL target %%20)", res.PeerWakeStale)
+		}
 	})
 }
 
 // TestRegister_NonTmuxPreLockToTmuxInLock_HoldsPaneLock: when the pre-lock
 // resolution was non-tmux (no pane lock would be taken under the old pane->agent
 // order) but the in-lock authoritative existing IS tmux, the write + same-pane
-// prune must run UNDER a pane lock for the tmux target — not lock-free. Defect #1
+// FIND must run UNDER a pane lock for the tmux target — not lock-free. Defect #1
 // second face: the old order pruned a tmux pane with NO pane lock at all.
+//
+// rev4 split: the same-pane FIND (write-time candidate snapshot) runs under the
+// pane lock for %33; the revalidated REMOVE runs after the critical section. The
+// pane lock must still fire for %33, and the %33 peer must end up removed and in
+// res.PeerWakeStale — binding the removed set to the FINAL target.
 func TestRegister_NonTmuxPreLockToTmuxInLock_HoldsPaneLock(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
@@ -970,10 +988,14 @@ func TestRegister_NonTmuxPreLockToTmuxInLock_HoldsPaneLock(t *testing.T) {
 			t.Fatalf("resolved wake = %q:%q, want tmux:%%33", res.ResolvedWakeMethod, res.ResolvedWakeTarget)
 		}
 		if len(locked) != 1 || locked[0] != "%33" {
-			t.Fatalf("pane lock targets = %v, want exactly [%%33] (tmux write/prune must hold the pane lock)", locked)
+			t.Fatalf("pane lock targets = %v, want exactly [%%33] (tmux write/find must hold the pane lock)", locked)
 		}
 		if _, err := os.Stat(cfg.AgentRegistrationPath("peer-on-33")); !os.IsNotExist(err) {
-			t.Fatalf("same-pane peer on %%33 should be pruned under the pane lock, stat err=%v", err)
+			t.Fatalf("same-pane peer on %%33 should be pruned (found under the pane lock for the FINAL target), stat err=%v", err)
+		}
+		// rev4: the removed SET reflects the FINAL target's same-pane peer.
+		if len(res.PeerWakeStale) != 1 || res.PeerWakeStale[0].AgentID != "peer-on-33" {
+			t.Fatalf("removed same-pane set = %+v, want exactly [peer-on-33] (FINAL target %%33)", res.PeerWakeStale)
 		}
 	})
 }
