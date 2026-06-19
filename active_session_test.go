@@ -78,8 +78,8 @@ func TestActiveSessionAliveAllowsRecentHeartbeatOnlyTemporarily(t *testing.T) {
 func TestActiveSession_FutureTimestampNotDead(t *testing.T) {
 	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
 	session := &loop.ActiveSession{
-		AgentID:  "codex-agentchute",
-		Host:     localHostname(),
+		AgentID: "codex-agentchute",
+		Host:    localHostname(),
 		// last_seen 30s in the future relative to `now`.
 		LastSeen: now.Add(30 * time.Second),
 	}
