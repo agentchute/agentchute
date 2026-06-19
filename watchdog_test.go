@@ -463,7 +463,7 @@ func writeRegistrationWithHost(t *testing.T, path, agentID, vendor, root, host, 
 
 // Cross-host peers MUST be skipped silently during the liveness sweep:
 // the wake adapter is machine-local, so a poke from this host can't reach
-// them anyway. AGENTCHUTE.md §10.5 / §12.
+// them anyway. AGENTCHUTE.md §10.2 / §12.
 func TestRunLivenessSweepSkipsCrossHostPeers(t *testing.T) {
 	root, cfg := setupWatchdogFixture(t)
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)

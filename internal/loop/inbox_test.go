@@ -323,7 +323,7 @@ func TestListInboxMessagesWithSkippedReportsMalformedNames(t *testing.T) {
 
 // InferSenderFromFilename should recover the sender when the filename retains
 // §6.1 structural shape (`_from-<slug>_msg-...` + `.md`) but the timestamp or
-// nonce is malformed (§11.4). Filenames missing the structural markers are
+// nonce is malformed (§11.1). Filenames missing the structural markers are
 // too broken to reliably attribute and must be dropped without inference,
 // even if the bare slug is recoverable from somewhere in the name.
 func TestInferSenderFromFilenameRecoversFromMalformedNames(t *testing.T) {
@@ -339,7 +339,7 @@ func TestInferSenderFromFilenameRecoversFromMalformedNames(t *testing.T) {
 		{"no from segment", "2026-05-09T16-32-00-123456Z_msg-abcd.md", "", false},
 		{"invalid slug (uppercase)", "_from-CODEX_msg-abcd.md", "", false},
 		{"empty filename", "", "", false},
-		// §11.4 narrowing: structural markers missing → no inference.
+		// §11.1 narrowing: structural markers missing → no inference.
 		{"missing _msg- segment", "2026-05-09T16-32-00-123456Z_from-codex_abcd.md", "", false},
 		{"missing .md suffix", "2026-05-09T16-32-00-123456Z_from-codex_msg-abcd", "", false},
 		{"only _from- segment", "junk_from-codex_junk", "", false},

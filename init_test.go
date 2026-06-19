@@ -238,7 +238,7 @@ func TestInitFailsOnMalformedMarker(t *testing.T) {
 }
 
 // AGENTCHUTE.md exists with non-agentchute content → hard fail (mismatched spec
-// breaks the §7.2 reference in the enrollment block).
+// breaks the §5 reference in the enrollment block).
 func TestInitFailsOnUnrecognizableAgentchuteMd(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Something Else\n\nNot the agentchute spec.\n"))

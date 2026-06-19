@@ -25,6 +25,14 @@ const (
 
 	setupPathBlockBegin = "# >>> agentchute setup PATH >>>"
 	setupPathBlockEnd   = "# <<< agentchute setup PATH <<<"
+
+	// install.sh writes its own PATH-managed region with a variable label/expr in
+	// the marker: "# agentchute PATH entry for <label> (<expr>) begin" ... " end".
+	// setup supersedes that region so the two installers never leave duplicate
+	// PATH-prepend blocks (one from install.sh, one from setup) in a profile.
+	installShPathMarkerPrefix = "# agentchute PATH entry for "
+	installShPathMarkerBegin  = " begin"
+	installShPathMarkerEnd    = " end"
 )
 
 type setupOptions struct {
@@ -98,6 +106,9 @@ func cmdSetup(args []string) error {
 	opts.ShimDir, err = filepath.Abs(opts.ShimDir)
 	if err != nil {
 		return err
+	}
+	if strings.ContainsAny(opts.ShimDir, "\"`$\\") {
+		return fmt.Errorf("invalid --shim-dir %q: must not contain quotes, dollar signs, backticks, or backslashes", opts.ShimDir)
 	}
 	if opts.Profile == "" {
 		opts.Profile = strings.TrimSpace(os.Getenv("AGENTCHUTE_PROFILE"))
@@ -1066,24 +1077,91 @@ func replaceSetupBlock(existing, block string) string {
 }
 
 func removeSetupBlock(existing string) (string, bool) {
-	start := strings.Index(existing, setupPathBlockBegin)
+	// First retire any install.sh-managed PATH region(s) so setup supersedes them
+	// instead of stacking a second managed block in the same profile.
+	out, legacyRemoved := removeInstallShPathBlocks(existing)
+
+	start := strings.Index(out, setupPathBlockBegin)
 	if start < 0 {
-		return existing, false
+		return out, legacyRemoved
 	}
-	end := strings.Index(existing[start:], setupPathBlockEnd)
+	end := strings.Index(out[start:], setupPathBlockEnd)
 	if end < 0 {
-		return existing, false
+		return out, legacyRemoved
 	}
 	end += start + len(setupPathBlockEnd)
-	if end < len(existing) && existing[end] == '\n' {
+	if end < len(out) && out[end] == '\n' {
 		end++
 	}
-	next := strings.TrimRight(existing[:start], "\n")
-	if next != "" && strings.TrimSpace(existing[end:]) != "" {
+	next := strings.TrimRight(out[:start], "\n")
+	if next != "" && strings.TrimSpace(out[end:]) != "" {
 		next += "\n\n"
 	}
-	next += strings.TrimLeft(existing[end:], "\n")
+	next += strings.TrimLeft(out[end:], "\n")
 	return next, true
+}
+
+// removeInstallShPathBlocks strips every install.sh-managed PATH region from the
+// profile text. install.sh delimits its region with marker lines of the form
+// "# agentchute PATH entry for <label> (<expr>) begin" ... " end" where the
+// label/expr vary, so we match on the stable prefix and begin/end suffixes.
+func removeInstallShPathBlocks(existing string) (string, bool) {
+	changed := false
+	out := existing
+	for {
+		bStart, bEnd := installShMarkerLine(out, installShPathMarkerBegin)
+		if bStart < 0 {
+			break
+		}
+		// Find the matching end marker after the begin marker.
+		eStart, eEnd := installShMarkerLine(out[bEnd:], installShPathMarkerEnd)
+		if eStart < 0 {
+			break
+		}
+		eStart += bEnd
+		eEnd += bEnd
+		if eEnd < len(out) && out[eEnd] == '\n' {
+			eEnd++
+		}
+		prefix := strings.TrimRight(out[:bStart], "\n")
+		suffix := strings.TrimLeft(out[eEnd:], "\n")
+		next := prefix
+		if next != "" && strings.TrimSpace(suffix) != "" {
+			next += "\n\n"
+		}
+		next += suffix
+		out = next
+		changed = true
+	}
+	return out, changed
+}
+
+// installShMarkerLine returns the start and end byte offsets of the first whole
+// line in s that begins with the install.sh marker prefix and ends with the
+// given marker suffix (begin/end). Returns (-1, -1) when no such line exists.
+func installShMarkerLine(s, suffix string) (int, int) {
+	idx := 0
+	for idx < len(s) {
+		lineEnd := strings.IndexByte(s[idx:], '\n')
+		var line string
+		var absEnd int
+		if lineEnd < 0 {
+			line = s[idx:]
+			absEnd = len(s)
+		} else {
+			line = s[idx : idx+lineEnd]
+			absEnd = idx + lineEnd
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, installShPathMarkerPrefix) && strings.HasSuffix(trimmed, suffix) {
+			return idx, absEnd
+		}
+		if lineEnd < 0 {
+			break
+		}
+		idx = absEnd + 1
+	}
+	return -1, -1
 }
 
 func setupBackupPath(path string) string {

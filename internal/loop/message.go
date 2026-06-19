@@ -126,7 +126,7 @@ func ValidateMessageFrontmatter(content []byte) error {
 // ExtractMessageBody returns the body portion of a message (everything
 // after the closing frontmatter `---` line). Honors the same lenient
 // delimiter semantics as ParseMessageFrontmatter (trimmed `---` opens
-// and closes the block — surrounding whitespace tolerated per §6.4.2).
+// and closes the block — surrounding whitespace tolerated per §6.4).
 // Returns the full content unchanged when there's no frontmatter block
 // (body-only is valid per §6.4) or when the open delimiter has no
 // matching close.
@@ -151,7 +151,7 @@ func ExtractMessageBody(content []byte) string {
 // message's bytes into a flat key/value map, honoring the same lenient
 // delimiter semantics as ValidateMessageFrontmatter (a trimmed `---` line
 // opens the block, a later trimmed `---` line closes it — surrounding
-// whitespace tolerated per §6.4.2). Body-only messages return an empty
+// whitespace tolerated per §6.4). Body-only messages return an empty
 // map. Malformed blocks (opening `---` with no close) also return an empty
 // map; callers that need malformed-vs-absent distinction should call
 // ValidateMessageFrontmatter first.
@@ -183,7 +183,7 @@ func ParseMessageFrontmatter(content []byte) map[string]string {
 	return out
 }
 
-// CorrectiveBody renders the §11.3 protocol-correction body for a quarantined
+// CorrectiveBody renders the §11.1 protocol-correction body for a quarantined
 // item with a specific reason and section reference. Three lines, compiler-
 // error shape, no conversational framing.
 func CorrectiveBody(malformedItem, reason, sectionRef string) string {
@@ -195,7 +195,7 @@ func CorrectiveBody(malformedItem, reason, sectionRef string) string {
 // message and writes it to the offender's inbox, then pokes their tmux pane if
 // they have one. Returns the resulting Message on success.
 //
-// Per §11.4: best-effort. If the offender's registration is unreadable or has
+// Per §11.1: best-effort. If the offender's registration is unreadable or has
 // no reachable wake method, the message still lands in the inbox; the poke is
 // skipped. If the offender's inbox dir doesn't exist, the corrective send
 // fails — the caller leaves the file quarantined and logs locally without
@@ -209,7 +209,7 @@ func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionR
 		return Message{}, err
 	}
 
-	// Best-effort poke (per §11.4 / §6.2). PokeRegistration refuses an unowned
+	// Best-effort poke (per §11.1 / §6.2). PokeRegistration refuses an unowned
 	// runner socket (recipient-binding) without dialing it.
 	reg, err := ReadRegistration(cfg.AgentRegistrationPath(offender))
 	if err == nil && reg.IsPokable() {

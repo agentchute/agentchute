@@ -117,7 +117,7 @@ func cmdSend(args []string) error {
 	// is plumbed via ComposeMessage below.
 	if ask {
 		body = applyAskHeading(body)
-		// Self-send + --ask is a loop hazard per AGENTCHUTE.md §6.4.3: the
+		// Self-send + --ask is a loop hazard per AGENTCHUTE.md §6.4: the
 		// sender immediately owes itself a reply. The combination is
 		// legitimate (e.g., a deliberate scratch obligation) so we deliver
 		// the message, but emit a stderr warning so the operator pauses on
@@ -125,7 +125,7 @@ func cmdSend(args []string) error {
 		// --ask — that's the protocol invariant that keeps automated
 		// agents from looping. Real-bake-driven, codex review aligned.
 		if fromID == toID {
-			fmt.Fprintf(os.Stderr, "warning: self-send with --ask creates a self-reply obligation; per AGENTCHUTE.md §6.4.3 your reply MUST NOT propagate --ask\n")
+			fmt.Fprintf(os.Stderr, "warning: self-send with --ask creates a self-reply obligation; per AGENTCHUTE.md §6.4 your reply MUST NOT propagate --ask\n")
 		}
 	}
 
@@ -146,7 +146,7 @@ func cmdSend(args []string) error {
 
 	now := time.Now().UTC()
 
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): refuse to send
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse to send
 	// from an unregistered agent. The outbound message would carry a
 	// `from:` field naming an agent that peers can't discover, wake, or
 	// reply to.
@@ -156,7 +156,7 @@ func cmdSend(args []string) error {
 			return fmt.Errorf("update last_seen for %s: %w", fromID, err)
 		}
 	} else if os.IsNotExist(err) {
-		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.7)", fromID, fromID)
+		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", fromID, fromID)
 	} else {
 		return fmt.Errorf("stat own registration: %w", err)
 	}

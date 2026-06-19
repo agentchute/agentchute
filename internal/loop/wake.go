@@ -79,7 +79,7 @@ func PokeWakeTarget(method, target string) error {
 func PokeWakeTargetContext(ctx context.Context, method, target string) error {
 	method = strings.TrimSpace(method)
 	if method == "" {
-		return nil // non-pokable per AGENTCHUTE.md §10.6; caller treats as no-op
+		return nil // non-pokable per AGENTCHUTE.md §8.2; caller treats as no-op
 	}
 	adapter := wakeAdapterFor(method)
 	if adapter == nil {

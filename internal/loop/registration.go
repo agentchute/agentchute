@@ -541,7 +541,7 @@ func (e RegistrationReadError) Error() string {
 // the existing layout convention).
 //
 // Use this when one bad registration must NOT abort a multi-peer scan —
-// notably the watchdog (§10.4) and cooperative waking (§10.5), where the
+// notably the watchdog (§10.1) and cooperative waking (§10.2), where the
 // spec requires per-peer errors to log/warn and continue. Strict callers
 // (single-registration ops, the `status` command) should keep using
 // ReadRegistration directly.

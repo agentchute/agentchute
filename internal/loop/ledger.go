@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// pending-reply ledger (AGENTCHUTE.md §6.4 / v0.1.1 spec rev3 A.9).
+// pending-reply ledger (AGENTCHUTE.md §6.4).
 //
 // Each recipient keeps a small JSON file at <loop>/state/<agent>/pending-replies.json
 // listing every inbound message with frontmatter `reply_required: true` that
@@ -170,7 +170,7 @@ func SavePendingLedger(cfg *Config, agentID string, ledger *PendingLedger) error
 // The obligation's PRIMARY KEY is the canonical OriginalFilename — the inbox
 // filename, which the recipient's own filesystem assigned and therefore trusts.
 // message_id is sender-controlled and is NOT delivery-unique (AGENTCHUTE.md
-// §6.4.1), so it is kept only as informational metadata on the entry, never as
+// §6.4), so it is kept only as informational metadata on the entry, never as
 // the dedup key. Keying on it would let a peer wedge `check`: two reply_required
 // messages reusing a message_id would either collide-and-error (the old fatal
 // ErrLedgerEntryCollision) or silently drop the second obligation. Keying on the

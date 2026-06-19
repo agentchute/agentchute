@@ -8,7 +8,7 @@ import (
 )
 
 // PointerFileName is the canonical filename used for cross-folder pointer
-// files (AGENTCHUTE.md §4 / §7.6). The pointer file's single non-comment line
+// files (AGENTCHUTE.md §4 / §4.2). The pointer file's single non-comment line
 // is a path to the agentchute control repo this folder should coordinate
 // through.
 const PointerFileName = ".agentchute-control-repo"

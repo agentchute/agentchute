@@ -39,8 +39,8 @@ var removeFile = os.Remove
 // Mirrors AGENTCHUTE.md §5: "Lowercase, hyphen-separated, no spaces."
 var agentIDPattern = `[a-z0-9][a-z0-9-]*`
 
-// inboxFilenameRE parses inbox filenames per AGENTCHUTE.md §6.1.2 (the
-// filesystem reference encoding of the §6.1.1 identity tuple).
+// inboxFilenameRE parses inbox filenames per AGENTCHUTE.md §6.1 (the
+// filesystem reference encoding of the §6.1 identity tuple).
 //
 // Format: `<utc-microsecond-timestamp>_from-<sender>_msg-<nonce>.md`
 // Timestamp: `YYYY-MM-DDTHH-MM-SS-uuuuuuZ` (`-` instead of `:` for fs portability;
@@ -51,9 +51,9 @@ var inboxFilenameRE = regexp.MustCompile(
 )
 
 // inboxFilenameShapeRE matches filenames that have the structural shape of a
-// §6.1.2 inbox filename (timestamp segment + `_from-<slug>_msg-` nonce segment +
+// §6.1 inbox filename (timestamp segment + `_from-<slug>_msg-` nonce segment +
 // `.md` suffix) but is permissive on the timestamp and nonce *content*. Per
-// AGENTCHUTE.md §11.4, sender inference is allowed when the timestamp or nonce
+// AGENTCHUTE.md §11.1, sender inference is allowed when the timestamp or nonce
 // is malformed — but NOT when the structural markers themselves are missing.
 // A name without the `_from-`, `_msg-`, or `.md` markers is too broken to
 // reliably attribute to any sender and would risk routing corrective notices
@@ -62,10 +62,10 @@ var inboxFilenameShapeRE = regexp.MustCompile(
 	`^[^/]+_from-(` + agentIDPattern + `)_msg-[^/]+\.md$`,
 )
 
-// InferSenderFromFilename returns the sender slug captured from a §6.1.2-shaped
+// InferSenderFromFilename returns the sender slug captured from a §6.1-shaped
 // name, OR from a filename whose structural markers (`_from-<slug>_msg-`,
 // `.md`) are intact but whose timestamp or nonce is malformed. Per
-// AGENTCHUTE.md §11.4, inference is intentionally limited to the
+// AGENTCHUTE.md §11.1, inference is intentionally limited to the
 // timestamp/nonce-malformed shape: names missing the `_from-`, `_msg-`, or
 // `.md` markers are dropped without inference. The returned slug MUST pass
 // ValidateAgentID; otherwise ok=false (inferred ids must be valid).
@@ -130,7 +130,7 @@ func firstFrontmatterBlock(content []byte) (string, bool) {
 	return "", false
 }
 
-// QuarantineInboxFile moves srcPath into malformedDir per AGENTCHUTE.md §11.2,
+// QuarantineInboxFile moves srcPath into malformedDir per AGENTCHUTE.md §11.1,
 // with a collision-resistant name `<quarantine-ts>_to-<recipient>_<original>`.
 // The destination is created atomically; an existing quarantined file with
 // the same name is NOT overwritten (returns os.ErrExist).
@@ -161,7 +161,7 @@ func QuarantineInboxFile(srcPath, malformedDir, recipient string, now time.Time)
 }
 
 // ParseInboxFilename extracts (timestamp, sender, nonce) from an inbox filename.
-// Returns an error if the basename does not match the §6.1.2 reference encoding.
+// Returns an error if the basename does not match the §6.1 reference encoding.
 func ParseInboxFilename(filename string) (time.Time, string, string, error) {
 	m := inboxFilenameRE.FindStringSubmatch(filename)
 	if m == nil {

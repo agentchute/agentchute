@@ -27,8 +27,8 @@ const defaultWatchInterval = 10 * time.Second
 //
 // Design notes (codex brainstorm + claude-code's read):
 //   - Polling only, stdlib only. No fsnotify dependency.
-//   - Dedupe by filename (the §6.1.1 delivery-identity tuple). Frontmatter
-//     `message_id` is for reply chains, not delivery uniqueness (§6.4.1),
+//   - Dedupe by filename (the §6.1 delivery-identity tuple). Frontmatter
+//     `message_id` is for reply chains, not delivery uniqueness (§6.4),
 //     so two files with the same message_id fire independently.
 //   - Startup sweep captures current inbox as "already seen" so the watcher
 //     fires only on arrivals AFTER it started.
@@ -92,13 +92,13 @@ func cmdWatch(args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: --exec is enabled; commands will run as %q with AGENTCHUTE_MSG_ID / _FROM / _TASK env vars on every new message\n", execCmd)
 	}
 
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): watch is an
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): watch is an
 	// active agent surface — it polls THIS agent's inbox and fires
 	// notifications/exec on its behalf. Refuse for an unregistered
 	// agent rather than silently polling a non-existent directory.
 	if _, err := os.Stat(cfg.AgentRegistrationPath(agentID)); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.7)", agentID, agentID)
+			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
 		}
 		return fmt.Errorf("stat own registration: %w", err)
 	}
@@ -204,9 +204,9 @@ func runWatchLoop(ctx context.Context, opts watchOptions, interval time.Duration
 }
 
 // watchEntry is the unit of new-mail dedup in the watch loop. Key is
-// always the filename (the §6.1.1 identity tuple) — two distinct
+// always the filename (the §6.1 identity tuple) — two distinct
 // deliveries must dedupe independently even when they happen to share a
-// frontmatter message_id, per AGENTCHUTE.md §6.4.1 (message_id is for
+// frontmatter message_id, per AGENTCHUTE.md §6.4 (message_id is for
 // reply chains, not delivery uniqueness). MessageID is surfaced
 // separately to the --exec env var AGENTCHUTE_MSG_ID when present.
 // (codex review on d73d4dd; same class as the v0.1.1 ledger bug.)
@@ -244,7 +244,7 @@ func scanInbox(inboxDir string) ([]watchEntry, error) {
 	out := make([]watchEntry, 0, len(msgs))
 	for _, msg := range msgs {
 		entry := watchEntry{
-			Key:       msg.Filename, // delivery identity per §6.1.1
+			Key:       msg.Filename, // delivery identity per §6.1
 			From:      msg.Sender,
 			Filename:  msg.Filename,
 			Timestamp: msg.Timestamp.UTC(),

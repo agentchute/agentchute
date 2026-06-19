@@ -9,7 +9,7 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// AGENTCHUTE.md §6.3 step 8 + §10.5: the reference CLI's `check` runs
+// AGENTCHUTE.md §6.3 step 5 + §10.2: the reference CLI's `check` runs
 // cooperative waking after own-inbox processing. With a stale-unread
 // peer reachable from this host, the cycle attempts a poke and the
 // outcome lands in the watchdog log (poke-attempted or poke-failed —

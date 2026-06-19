@@ -18,7 +18,7 @@ import (
 
 type watchdogOptions struct {
 	AgentID             string
-	LocalHost           string // for cross-host proactive skip (§10.5); empty = no filter
+	LocalHost           string // for cross-host proactive skip (§10.2); empty = no filter
 	Interval            time.Duration
 	StaleThreshold      time.Duration
 	MessageAgeThreshold time.Duration
@@ -136,15 +136,15 @@ func runWatchdogCycle(ctx context.Context, cfg *loop.Config, opts watchdogOption
 }
 
 // runLivenessSweep walks every peer registration in the agents dir and
-// applies the §10.4 watchdog algorithm. Shared between `agentchute watchdog`
+// applies the §10.1 watchdog algorithm. Shared between `agentchute watchdog`
 // (the dedicated daemon, §10.1) and `agentchute check` (cooperative waking
-// per §10.5). Per-peer errors are logged and skipped — one malformed
+// per §10.2). Per-peer errors are logged and skipped — one malformed
 // registration MUST NOT abort the sweep.
 //
 // Cross-host proactive skip: if opts.LocalHost is non-empty and the peer
 // declares a different host, the poke is skipped silently — wake adapters
 // are machine-local, the message is already on the shared FS, and the
-// peer's local environment handles wake (§10.5, §12).
+// peer's local environment handles wake (§10.2, §12).
 func runLivenessSweep(ctx context.Context, cfg *loop.Config, opts watchdogOptions, now time.Time) error {
 	localHost := strings.TrimSpace(opts.LocalHost)
 
@@ -293,7 +293,7 @@ func oldestInboxArrivalAge(inboxDir string, msgs []loop.Message, skipped []strin
 
 // logWatchdogEvent writes one line to .<vendor>/loop/watchdog.log. The leading
 // verbs are operator-facing surface (operators grep these): poked, deferring,
-// skipping, error. AGENTCHUTE.md §10.7 documents the format. Renames need a
+// skipping, error. This is the reference CLI watchdog log format. Renames need a
 // release note; new verbs are additive.
 func logWatchdogEvent(cfg *loop.Config, t time.Time, format string, args ...interface{}) {
 	if err := appendWatchdogLog(cfg, t, format, args...); err != nil {

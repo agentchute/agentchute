@@ -14,8 +14,8 @@ import (
 )
 
 // Default thresholds for cooperative waking, matching the watchdog
-// defaults (AGENTCHUTE.md §10.4). These are NOT configurable via `check`
-// flags in v0.1 — operators who need tuning run the dedicated watchdog.
+// defaults (AGENTCHUTE.md §10.1). These are NOT configurable via `check`
+// flags — operators who need tuning run the dedicated watchdog.
 const (
 	cooperativeStaleThreshold      = 5 * time.Minute
 	cooperativeMessageAgeThreshold = 90 * time.Second
@@ -72,7 +72,7 @@ func cmdCheck(args []string) error {
 
 	now := time.Now().UTC()
 
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): refuse to operate
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse to operate
 	// for an unregistered agent. check is an active agent command — it
 	// archives, quarantines, sends corrective notify, and runs cooperative
 	// waking; all of those imply the agent IS enrolled in the pool.
@@ -84,7 +84,7 @@ func cmdCheck(args []string) error {
 			return fmt.Errorf("update last_seen for %s: %w", agentID, err)
 		}
 	} else if os.IsNotExist(err) {
-		return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.7)", agentID, agentID)
+		return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
 	} else {
 		return fmt.Errorf("stat own registration: %w", err)
 	}
@@ -95,7 +95,7 @@ func cmdCheck(args []string) error {
 		return fmt.Errorf("list inbox: %w", err)
 	}
 	// §11 protocol enforcement: for each file that looks like a message
-	// attempt but fails the §6.1.2 reference filename encoding, quarantine
+	// attempt but fails the §6.1 reference filename encoding, quarantine
 	// it and (best-effort) notify the inferred offender. Expected noise
 	// (.DS_Store, .tmp_*, dirs, symlinks) stays silent as before.
 	// Enforcement is a state mutation (file moves + outgoing message), so
@@ -108,10 +108,10 @@ func cmdCheck(args []string) error {
 				fmt.Fprintf(os.Stderr, "warning: failed to quarantine %s: %v\n", name, err)
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "warning: quarantined %s (malformed §6.1.2 filename) -> %s\n",
+			fmt.Fprintf(os.Stderr, "warning: quarantined %s (malformed §6.1 filename) -> %s\n",
 				name, quarantined)
 
-			// Sender inference order per §11.4: filename capture → frontmatter
+			// Sender inference order per §11.1: filename capture → frontmatter
 			// from: → no notify.
 			offender, ok := loop.InferSenderFromFilename(name)
 			if !ok {
@@ -133,7 +133,7 @@ func cmdCheck(args []string) error {
 			fmt.Fprintf(os.Stderr, "  notified %s\n", offender)
 		}
 	} else if len(skipped) > 0 {
-		fmt.Fprintf(os.Stderr, "warning: %d non-§6.1.2 file(s) in inbox; --no-archive suppressed §11 enforcement:\n", len(skipped))
+		fmt.Fprintf(os.Stderr, "warning: %d non-§6.1 file(s) in inbox; --no-archive suppressed §11 enforcement:\n", len(skipped))
 		for _, name := range skipped {
 			fmt.Fprintf(os.Stderr, "  %s\n", name)
 		}
@@ -141,7 +141,7 @@ func cmdCheck(args []string) error {
 	if len(msgs) == 0 {
 		fmt.Println("(inbox empty)")
 		// Cooperation still runs even when our inbox is empty —
-		// see AGENTCHUTE.md §10.5 and codex's chunk-2 review.
+		// see AGENTCHUTE.md §10.2 and codex's chunk-2 review.
 		if !noArchive {
 			runCooperativeWaking(cfg, agentID, time.Now().UTC())
 		}
@@ -175,9 +175,9 @@ func cmdCheck(args []string) error {
 				processed++
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "warning: quarantined %s (malformed §6.4.2 frontmatter: %v) -> %s\n",
+			fmt.Fprintf(os.Stderr, "warning: quarantined %s (malformed §6.4 frontmatter: %v) -> %s\n",
 				msg.Filename, err, quarantined)
-			// Filename matched §6.1.2 so msg.Sender is authoritative.
+			// Filename matched §6.1 so msg.Sender is authoritative.
 			if msg.Sender == agentID {
 				fmt.Fprintf(os.Stderr, "  inferred offender is self; corrective notify skipped\n")
 				processed++
@@ -224,7 +224,7 @@ func cmdCheck(args []string) error {
 		processed++
 	}
 
-	// Update last_active per AGENTCHUTE.md §6.3 step 5 if we actually consumed.
+	// Update last_active per AGENTCHUTE.md §6.3 step 4 if we actually consumed.
 	if !noArchive && processed > 0 && selfExists {
 		if err := loop.UpdateLastActive(cfg, agentID, now); err != nil {
 			// Non-fatal: messages are archived; only the timestamp update lost.
@@ -232,7 +232,7 @@ func cmdCheck(args []string) error {
 		}
 	}
 
-	// §6.3 step 8 / §10.5: cooperative waking. After own-inbox work and
+	// §6.3 step 5 / §10.2: cooperative waking. After own-inbox work and
 	// timestamp updates, contribute best-effort liveness for peers that are
 	// stale with unread mail and reachable from this host. --no-archive
 	// suppresses inbox/cooperation side effects so dry-runs do not move,
@@ -246,8 +246,8 @@ func cmdCheck(args []string) error {
 	return nil
 }
 
-// runCooperativeWaking performs AGENTCHUTE.md §10.5: every recipient flow
-// MAY run the §10.4 watchdog algorithm opportunistically during its
+// runCooperativeWaking performs AGENTCHUTE.md §10.2: every recipient flow
+// MAY run the §10.1 watchdog algorithm opportunistically during its
 // `check` cycle. The reference CLI always does. Per-peer errors warn or
 // log; cooperation MUST NOT make check exit nonzero. The message has
 // already been delivered to the recipient's inbox before this call (in
@@ -266,7 +266,7 @@ func runCooperativeWaking(cfg *loop.Config, agentID string, now time.Time) {
 	// watchdog log; the outer return is informational and only fires on a
 	// catastrophic agents-dir read failure (which the lenient iterator
 	// already surfaces as a per-file error line). Swallow to keep check
-	// non-fatal per §10.5 contract.
+	// non-fatal per §10.2 contract.
 	_ = runLivenessSweep(context.Background(), cfg, opts, now)
 }
 
@@ -283,7 +283,7 @@ func checkUsage(err error) error {
 //
 // Uses loop.ParseMessageFrontmatter so the recorder honors the same
 // lenient delimiter semantics (whitespace-tolerant `---` lines per
-// §6.4.2) as loop.ValidateMessageFrontmatter — fixes the codex-flagged
+// §6.4) as loop.ValidateMessageFrontmatter — fixes the codex-flagged
 // gap where the validator accepted a message but the recorder dropped
 // it on a stricter parse (codex final review on 5320c08).
 func recordReplyObligation(cfg *loop.Config, agentID string, msg loop.Message, archivePath string, content []byte, now time.Time) error {

@@ -104,7 +104,7 @@ func cmdGate(args []string) error {
 
 	// Inbox peek — same path boot/pending use, no side effects. `skipped`
 	// is the §11 protocol-violation surface: files that look like inbox
-	// messages but fail the §6.1.2 reference filename encoding. They block
+	// messages but fail the §6.1 reference filename encoding. They block
 	// consensus/finish because the agent owes a quarantine + corrective
 	// notify, which `check` runs.
 	//
@@ -141,7 +141,7 @@ func cmdGate(args []string) error {
 	}
 
 	// Registration check — v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md
-	// §5.7): every phase blocks on missing registration; only commit/release
+	// §5.3): every phase blocks on missing registration; only commit/release
 	// additionally blocks on age-stale registration. An inbox dir that
 	// doesn't exist implies a missing registration too — the boot/register
 	// path creates both atomically.
@@ -295,11 +295,11 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 			s.Agent))
 	}
 
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): every phase blocks
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): every phase blocks
 	// on missing self-registration. An unenrolled agent has not declared
 	// itself to the pool; it can neither commit, finish, nor continue.
 	if s.MissingReg {
-		reasons = append(reasons, "not registered (run `agentchute boot --as <id> --vendor <vendor>` first; §5.7)")
+		reasons = append(reasons, "not registered (run `agentchute boot --as <id> --vendor <vendor>` first; §5.3)")
 	}
 	// WI-4 Fix 1: liveness blocks only when the agent OWES work. An agent
 	// owes work if it has unread direct mail, malformed inbox files (a §11

@@ -644,7 +644,7 @@ func TestSendWarnsOnUnclearedLedgerForRecipient(t *testing.T) {
 // Real-bake follow-up: self-send with --ask is a loop hazard (claude-code
 // owes claude-code a reply). Today the delivery succeeds but stderr must
 // warn so the operator pauses on the unusual shape. Per AGENTCHUTE.md
-// §6.4.3, replies should default reply_required: false — a warning here
+// §6.4, replies should default reply_required: false — a warning here
 // reinforces that convention at the CLI surface.
 func TestSendWarnsOnSelfSendWithAsk(t *testing.T) {
 	root, _ := setupSendFixture(t)
@@ -689,7 +689,7 @@ func TestSendWarnsOnSelfSendWithAsk(t *testing.T) {
 }
 
 // Codex pre-merge ask: assert --reply-to does NOT implicitly set
-// reply_required. The two flags are orthogonal per AGENTCHUTE.md §6.4.3:
+// reply_required. The two flags are orthogonal per AGENTCHUTE.md §6.4:
 // reply_required MUST NOT be inferred or propagated from in_reply_to.
 func TestSendReplyToWithoutAskDoesNotSetReplyRequired(t *testing.T) {
 	root, cfg := setupSendFixture(t)

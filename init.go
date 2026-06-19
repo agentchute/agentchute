@@ -385,7 +385,7 @@ func rejectSymlinkAncestor(path string) error {
 
 // planSpecFile decides what to do with AGENTCHUTE.md. Missing -> write
 // embedded. Recognizable spec (sentinel header found) -> skip. Anything
-// else -> fail: the enrollment block references §7.2 in the spec, so a
+// else -> fail: the enrollment block references §5 in the spec, so a
 // non-agentchute AGENTCHUTE.md would silently break the contract.
 func planSpecFile(root string) (initAction, error) {
 	path := filepath.Join(root, "AGENTCHUTE.md")

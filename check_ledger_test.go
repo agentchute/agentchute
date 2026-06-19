@@ -11,7 +11,7 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// writeReplyRequiredInbox drops a valid §6.1.2-named, reply_required message
+// writeReplyRequiredInbox drops a valid §6.1-named, reply_required message
 // into recipient's inbox and returns its filename + path.
 func writeReplyRequiredInbox(t *testing.T, cfg *loop.Config, recipient, messageID string) (string, string) {
 	t.Helper()
@@ -284,7 +284,7 @@ func TestCheckRecordsPendingReplyOnArchiveOfReplyRequiredMessage(t *testing.T) {
 }
 
 // Codex final-pass review (5320c08): hand-protocol messages with
-// whitespace-tolerant frontmatter delimiters (per §6.4.2) must still
+// whitespace-tolerant frontmatter delimiters (per §6.4) must still
 // land a ledger entry on archive. The validator accepts trimmed `---`
 // lines; the ledger parser must use the same lenient semantics or a
 // legal-but-whitespacey reply_required message becomes a silent
@@ -293,7 +293,7 @@ func TestCheckRecordsLedgerForWhitespaceTolerantFrontmatter(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 
 	// Drop a hand-protocol-shaped message into claude-code's inbox: valid
-	// §6.4.2 frontmatter with trailing whitespace on both delimiter lines.
+	// §6.4 frontmatter with trailing whitespace on both delimiter lines.
 	inbox := cfg.AgentInboxDir("claude-code")
 	filename := "2026-05-19T22-02-00-000000Z_from-codex_msg-abcd.md"
 	body := "---   \n" +

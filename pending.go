@@ -68,7 +68,7 @@ func cmdPending(args []string) error {
 		return err
 	}
 
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): pending stays
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): pending stays
 	// read-only, so it does NOT hard-refuse on missing registration like
 	// the active commands. Instead it surfaces a `needs_boot` reason in
 	// every output mode (text, --json, --claude-hook, --codex-hook). The
@@ -172,7 +172,7 @@ func cmdPending(args []string) error {
 // special chars) so it can pass through the hook-envelope additionalContext
 // layers without further escaping.
 func needsBootMessage(agentID string) string {
-	return fmt.Sprintf("agentchute: agent %q is not registered yet. Run agentchute boot --as %s --vendor <vendor> before processing mail (AGENTCHUTE.md §5.7).", agentID, agentID)
+	return fmt.Sprintf("agentchute: agent %q is not registered yet. Run agentchute boot --as %s --vendor <vendor> before processing mail (AGENTCHUTE.md §5.3).", agentID, agentID)
 }
 
 // pendingEntry is the structured record for a single unread message.

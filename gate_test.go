@@ -336,7 +336,7 @@ func TestGateBlocksOnMalformedInbox(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Drop a malformed file directly in the inbox (won't parse as a
-		// §6.1.2 reference filename — too few segments).
+		// §6.1 reference filename — too few segments).
 		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
 		malformed := filepath.Join(inboxDir, "not-a-valid-message-name.md")
 		if err := os.WriteFile(malformed, []byte("---\nfrom: ??\n---\nbody\n"), 0o600); err != nil {

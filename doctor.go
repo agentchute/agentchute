@@ -616,7 +616,7 @@ func checkInboxState(cfg *loop.Config, agentID string) doctorCheck {
 			return doctorCheck{
 				Name:     "inbox_state",
 				Severity: severityBlocker,
-				Message:  fmt.Sprintf("inbox directory missing for %s — run `agentchute boot --as %s --vendor <vendor>` (AGENTCHUTE.md §5.7)", agentID, agentID),
+				Message:  fmt.Sprintf("inbox directory missing for %s — run `agentchute boot --as %s --vendor <vendor>` (AGENTCHUTE.md §5.3)", agentID, agentID),
 			}
 		}
 		return doctorCheck{Name: "inbox_state", Severity: severityWarn, Message: fmt.Sprintf("inbox list error: %v", err)}

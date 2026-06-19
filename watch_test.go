@@ -156,7 +156,7 @@ func TestRunWatchLoopFiresOnlyOnNewArrivals(t *testing.T) {
 
 // v0.1.3 hotfix (codex review on d73d4dd): two distinct deliveries
 // carrying the same frontmatter message_id must BOTH fire. message_id
-// is not delivery-unique per AGENTCHUTE.md §6.4.1; the identity tuple
+// is not delivery-unique per AGENTCHUTE.md §6.4; the identity tuple
 // in the filename is authoritative. Same class as the v0.1.1 ledger bug.
 func TestRunWatchLoopFiresOnBothFilesWithSharedMessageID(t *testing.T) {
 	cfg := newWatchTestCfg(t)
@@ -200,7 +200,7 @@ func TestRunWatchLoopFiresOnBothFilesWithSharedMessageID(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if fires != 2 {
-		t.Errorf("fires = %d, want 2 (both files must fire; message_id is not delivery-unique per §6.4.1)", fires)
+		t.Errorf("fires = %d, want 2 (both files must fire; message_id is not delivery-unique per §6.4)", fires)
 	}
 }
 

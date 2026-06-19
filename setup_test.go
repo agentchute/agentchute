@@ -118,6 +118,76 @@ func TestNormalizeSetupWakeCombinations(t *testing.T) {
 	}
 }
 
+func TestRemoveInstallShPathBlocks(t *testing.T) {
+	legacyZsh := `export FOO=bar
+
+# agentchute PATH entry for binary ($HOME/.local/bin) begin
+case "$PATH" in
+  "$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+# agentchute PATH entry for binary ($HOME/.local/bin) end
+
+alias ll='ls -la'
+`
+	out, changed := removeInstallShPathBlocks(legacyZsh)
+	if !changed {
+		t.Fatalf("expected legacy block to be removed")
+	}
+	if strings.Contains(out, installShPathMarkerPrefix) {
+		t.Fatalf("install.sh marker survived removal:\n%s", out)
+	}
+	if !strings.Contains(out, "export FOO=bar") || !strings.Contains(out, "alias ll='ls -la'") {
+		t.Fatalf("surrounding content lost:\n%s", out)
+	}
+
+	// fish-style legacy region plus a second region (binary + launcher shims).
+	legacyFish := `# agentchute PATH entry for binary ($HOME/.local/bin) begin
+if test "$PATH[1]" != $HOME/.local/bin
+    set -gx PATH $HOME/.local/bin $PATH
+end
+# agentchute PATH entry for binary ($HOME/.local/bin) end
+# agentchute PATH entry for launcher shims ($HOME/.agentchute/bin) begin
+if test "$PATH[1]" != $HOME/.agentchute/bin
+    set -gx PATH $HOME/.agentchute/bin $PATH
+end
+# agentchute PATH entry for launcher shims ($HOME/.agentchute/bin) end
+`
+	out, changed = removeInstallShPathBlocks(legacyFish)
+	if !changed {
+		t.Fatalf("expected fish legacy blocks removed")
+	}
+	if strings.Contains(out, installShPathMarkerPrefix) {
+		t.Fatalf("install.sh markers survived removal:\n%q", out)
+	}
+
+	// No legacy region → no change.
+	clean := "export PATH=\"/usr/bin:$PATH\"\n"
+	if out, changed = removeInstallShPathBlocks(clean); changed || out != clean {
+		t.Fatalf("clean profile mutated: changed=%v out=%q", changed, out)
+	}
+}
+
+// replaceSetupBlock must collapse a pre-existing install.sh region into the
+// single setup-managed region (one managed PATH block, not two).
+func TestReplaceSetupBlockSupersedesInstallShRegion(t *testing.T) {
+	existing := `# agentchute PATH entry for binary ($HOME/.local/bin) begin
+case "$PATH" in
+  "$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+# agentchute PATH entry for binary ($HOME/.local/bin) end
+`
+	block := setupRenderPathBlock("/home/u/.zshrc", "/home/u/.agentchute/bin")
+	out := replaceSetupBlock(existing, block)
+	if strings.Contains(out, installShPathMarkerPrefix) {
+		t.Fatalf("install.sh region not superseded:\n%s", out)
+	}
+	if n := strings.Count(out, setupPathBlockBegin); n != 1 {
+		t.Fatalf("setup block count = %d, want 1:\n%s", n, out)
+	}
+}
+
 func TestSetupShimWrappersForWakeCombinations(t *testing.T) {
 	wrappers := []string{"claude-code", "codex", "gemini-cli", "grok"}
 	// runner anywhere in the set installs all four shims.

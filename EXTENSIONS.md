@@ -1,24 +1,24 @@
 # EXTENSIONS.md
 
-*The protocol is agnostic by design. This document is the home for everything that's pluggable but not shipped in the v0.1 reference CLI.*
+*The protocol is agnostic by design. This document is the home for everything that's pluggable but not shipped in the reference CLI.*
 
-[`AGENTCHUTE.md`](AGENTCHUTE.md) defines the semantics — ordered messages, named inboxes, atomic delivery, sender-recipient pokes — and stays silent on *how* you implement them. The reference CLI picks the simplest concrete substrate (shared filesystem + tmux). Anything that preserves the protocol semantics is a valid agentchute extension.
+[`AGENTCHUTE.md`](AGENTCHUTE.md) defines the semantics — ordered messages, named inboxes, atomic delivery, sender-recipient pokes — and stays silent on *how* you implement them. The reference CLI picks the simplest concrete substrate (shared filesystem + tmux/herdr/runner). Anything that preserves the protocol semantics is a valid agentchute extension.
 
 ---
 
-## What the reference CLI ships in v0.1
+## What the reference CLI ships
 
 - **Transport.** Shared local filesystem with atomic create/rename semantics (POSIX `rename(2)` or equivalent). Works on local disks, NFS, SSHFS, and other mounted filesystems as long as atomicity holds across writers — see the cross-host caveats below.
-- **Wake adapter.** `wake_method: tmux`, using `tmux send-keys` to deliver `check` + `Enter` to a target pane. This is a **convenience accelerator** over the §8.2 polling model; it allows immediate wake when both agents share a tmux server.
-- **Watchdog / cooperative waking.** Filesystem-walk over `.<vendor>/loop/agents/`, per-peer poke via the tmux adapter when stale + has-unread. These are **latency accelerators** for the pool; durable discovery remains the recipient's responsibility.
+- **Wake adapters.** `wake_method: tmux`, `herdr` (L2 native), and `runner` (local Unix domain socket). These are **convenience accelerators** over the §8.2 polling model; they allow immediate wake when the agents share a host or tmux/herdr daemon.
+- **Watchdog / cooperative waking.** Filesystem-walk over `.<vendor>/loop/agents/`, per-peer poke via the wake adapters when stale + has-unread. These are **latency accelerators** for the pool; durable discovery remains the recipient's responsibility.
 
-If your setup matches that — single filesystem, agents in tmux panes on one server, polling via `agentchute check` or the watchdog — you don't need anything in this document.
+If your setup matches that — single filesystem, agents in tmux/herdr/runner contexts on one server, polling via `agentchute check` or the watchdog — you don't need anything in this document.
 
 ---
 
 ## Extension dimensions
 
-These exist in the protocol's design space but are out of v0.1 reference scope. Implementers MAY add them in their own forks/distributions; the protocol welcomes it.
+These exist in the protocol's design space but are out of reference scope. Implementers MAY add them in their own forks/distributions; the protocol welcomes it.
 
 ### Alternate transports
 
@@ -35,7 +35,7 @@ None of these ship in the reference CLI. They are conceptually compatible.
 
 Pedagogical sketch. No implementation ships under this name; the point is to show concretely how the protocol's primitives map onto a non-filesystem substrate.
 
-- **Inbox medium.** Each agent has a branch (e.g., `agentchute/inbox/claude-code`) tracked in a shared bare repo. Messages are files under that branch; you preserve the §6.1.1 identity tuple semantics, and the §6.1.2 filename encoding is a natural choice for a file-based substrate (reuse it directly, or roll a substrate-native equivalent).
+- **Inbox medium.** Each agent has a branch (e.g., `agentchute/inbox/claude-code`) tracked in a shared bare repo. Messages are files under that branch; you preserve the §6.1 identity tuple semantics, and the §6.1 filename encoding is a natural choice for a file-based substrate (reuse it directly, or roll a substrate-native equivalent).
 - **Sender→inbox transport.** Sender creates the file in its local checkout, commits, and pushes with a compare-and-swap on the inbox ref (`--force-with-lease` is the portable approximation; modern git supports `--push-option=cas=<oid>=<ref>` on some hosts). If the push is rejected because someone else's message landed first, the sender regenerates the nonce and retries — exactly the same retry shape the filesystem implementation uses for `rename(2)` collisions.
 - **Ordering.** Filename timestamp remains authoritative; commit time is advisory metadata.
 - **Recipient flow.** Recipient pulls its inbox branch, processes messages oldest-first by filename, then moves consumed files under `agentchute/archive/` (or a parallel archive branch), commits, pushes. Quarantine works the same way under `agentchute/malformed/`.
@@ -54,14 +54,14 @@ The same shape applies to HTTP-, object-store-, and queue-backed implementations
 
 If you ship a non-filesystem transport (git, S3, queue, HTTP, etc.) under the agentchute name, the implementation MUST preserve:
 
-- **Identity tuple semantics** (AGENTCHUTE.md §6.1.1). The `(timestamp, sender, nonce)` tuple is the protocol-level identity; uniqueness within a recipient inbox and oldest-first ordering with deterministic tie-breaking are required regardless of how the tuple is encoded. If your substrate uses files, you MAY reuse the §6.1.2 filename encoding directly; otherwise, encode the tuple however your substrate prefers as long as the invariants hold.
+- **Identity tuple semantics** (AGENTCHUTE.md §6.1). The `(timestamp, sender, nonce)` tuple is the protocol-level identity; uniqueness within a recipient inbox and oldest-first ordering with deterministic tie-breaking are required regardless of how the tuple is encoded. If your substrate uses files, you MAY reuse the §6.1 filename encoding directly; otherwise, encode the tuple however your substrate prefers as long as the invariants hold.
 - **Per-recipient ownership.** Only the recipient consumes its own inbox. Senders write only.
 - **Ordering.** Oldest-first delivery by identity tuple; no reordering.
 - **No-overwrite delivery.** If two messages arrive with the same identity tuple, the second MUST NOT overwrite the first. The substrate's atomicity model decides the mechanism (atomic rename on filesystems, ref compare-and-swap on git, `If-None-Match` on HTTP, queue dedupe on Kafka/SQS).
-- **Logical envelope fields** (AGENTCHUTE.md §6.4.1). Preserve `message_id`, `from`, `to`, `in_reply_to`, `task`, `status` with their stated semantics. The YAML-in-Markdown encoding (§6.4.2) is one realization; you may encode the same logical fields in JSON, queue attributes, or whatever your substrate offers.
+- **Logical envelope fields** (AGENTCHUTE.md §6.4). Preserve `message_id`, `from`, `to`, `in_reply_to`, `task`, `status` with their stated semantics. The YAML-in-Markdown encoding (§6.4) is one realization; you may encode the same logical fields in JSON, queue attributes, or whatever your substrate offers.
 - **Best-effort wake semantics.** Wake delivery may fail; message delivery must not.
 
-Transport extensions MUST identify themselves as "agentchute with X transport adapter" — not as "v0.1 reference agentchute." The reference v0.1 means the filesystem transport described in [`AGENTCHUTE.md`](AGENTCHUTE.md). Any other transport is a compatible extension, not the reference.
+Transport extensions MUST identify themselves as "agentchute with X transport adapter" — not as "reference agentchute." The reference means the filesystem transport described in [`AGENTCHUTE.md`](AGENTCHUTE.md). Any other transport is a compatible extension, not the reference.
 
 ### Alternate wake adapters
 
@@ -109,7 +109,7 @@ The reference CLI does NOT parse this richer form. Community-extended tmux adapt
 
 When the shared filesystem spans multiple machines (NFS, SSHFS, etc.), agentchute's message delivery semantics still hold. Wake delivery becomes machine-local: a `tmux send-keys` from Machine A cannot reach Machine B's tmux server. Each machine in such a pool must supply its own wake mechanism — a local watchdog, peer cooperation among same-host agents, or recipient self-polling.
 
-This is **in scope for the reference protocol**, not an extension. The §10.5 cooperative waking algorithm skips cross-host peers proactively when the peer's registration declares a `host` that differs from the local host.
+This is **in scope for the reference protocol**, not an extension. The §10.2 cooperative waking algorithm skips cross-host peers proactively when the peer's registration declares a `host` that differs from the local host.
 
 Caveat: not every distributed filesystem preserves `rename(2)` atomicity across clients. NFSv3 in particular has well-known rename races. agentchute's correctness depends on the underlying filesystem honoring atomic create/rename — deploy on a substrate that does.
 
@@ -117,9 +117,9 @@ Caveat: not every distributed filesystem preserves `rename(2)` atomicity across 
 
 A single physical agent process MAY participate in multiple agentchute pools simultaneously. This is the pattern for agents that have resource access, credentials, or knowledge other peers don't have, and that act as a firewall / proxy / router *in the application-policy sense* — protocol-level routing remains a v2 deferred item (§13).
 
-The protocol already supports this pattern via existing primitives (pool-scoped identity per §7.5; per-pool registrations). It needs no new fields, commands, or config. The reference CLI exposes pool selection via the `--control-repo` flag, the `AGENTCHUTE_CONTROL_REPO` env var, and the `.agentchute-control-repo` pointer file (see §4.1).
+The protocol already supports this pattern via existing primitives (pool-scoped identity per §7.3; per-pool registrations). It needs no new fields, commands, or config. The reference CLI exposes pool selection via the `--control-repo` flag, the `AGENTCHUTE_CONTROL_REPO` env var, and the `.agentchute-control-repo` pointer file (see §4.1).
 
-**Identity in multiple pools.** Because identity is pool-scoped (§7.5), the same physical process can be `review-gateway` in a low-trust pool and `release-assistant` in a high-trust pool. Per-pool aliases are RECOMMENDED for bridge roles — they model the different trust contexts honestly and let the bridge apply different policies per role. Same `agent_id` across pools is allowed, but MUST NOT be assumed to imply the same physical process. The bridge agent maintains its own internal alias-to-process mapping.
+**Identity in multiple pools.** Because identity is pool-scoped (§7.3), the same physical process can be `review-gateway` in a low-trust pool and `release-assistant` in a high-trust pool. Per-pool aliases are RECOMMENDED for bridge roles — they model the different trust contexts honestly and let the bridge apply different policies per role. Same `agent_id` across pools is allowed, but MUST NOT be assumed to imply the same physical process. The bridge agent maintains its own internal alias-to-process mapping.
 
 **Wake delivery across pools.** A bridge MAY register the same physical `wake_target` in multiple pools (e.g., one tmux pane registered under different aliases in each pool), but only if the agent's local `check` routine polls every relevant pool when it wakes. Otherwise the poke is lossy — a peer in pool A pokes the pane, the agent runs `check` against pool A only, pool B's queued message sits stale. Alternatives: per-pool wake methods/targets, or rely on polling cadence and the watchdog.
 
@@ -129,7 +129,7 @@ The protocol already supports this pattern via existing primitives (pool-scoped 
 
 **Authorization laundering — the inverse-firewall hazard.** This is the most important risk in the bridge pattern, and it is exactly the inverse of the firewall intent: a peer in low-trust pool A asks the bridge to perform an action in high-trust pool B that B's peers would NOT have accepted directly. By naively translating A's request into a B-side message, the bridge accidentally lends pool A's caller the capabilities granted by pool B's trust context. Bridges MUST treat cross-pool forwarding as an explicit policy decision. They SHOULD reject or transform requests rather than translate them blindly.
 
-**Information leakage.** Bridges SHOULD avoid disclosing source-pool content, metadata, peer identities, message timing, file paths, or pool topology to other pools unless their policy explicitly allows. The same "MUST NOT open peer message bodies" rule from §10.5 applies; the bridge has full access to its OWN inboxes in each pool but does not have license to redistribute that content across pool boundaries.
+**Information leakage.** Bridges SHOULD avoid disclosing source-pool content, metadata, peer identities, message timing, file paths, or pool topology to other pools unless their policy explicitly allows. The same "MUST NOT open peer message bodies" rule from §10.2 applies; the bridge has full access to its OWN inboxes in each pool but does not have license to redistribute that content across pool boundaries.
 
 **Loop amplification.** A → bridge-AB → B → bridge-BA → A risks recirculating requests indefinitely. Bridges SHOULD use `in_reply_to` references or correlation IDs in message bodies to recognize their own forwarded requests and stop the cycle.
 
@@ -145,7 +145,7 @@ Caveat for portability: tracked pointer files SHOULD use relative paths so they 
 
 ## Adding your own wake adapter
 
-The v0.1 extension model is **fork the binary, add your adapter source, rebuild**. The registry lives under Go's `internal/` visibility (so external packages can't import it directly); a plugin design that crosses module boundaries is out of v0.1 scope.
+The reference extension model is **fork the binary, add your adapter source, rebuild**. The registry lives under Go's `internal/` visibility (so external packages can't import it directly); a plugin design that crosses module boundaries is out of scope.
 
 Shape of a community adapter inside a fork:
 
@@ -177,24 +177,24 @@ Constraints any wake adapter MUST honor:
 
 1. **No shell-eval on the target.** Use argv APIs and pass the target as a separate argument. Targets are external input.
 2. **Idempotent skip on absent state.** If the underlying tool (`wezterm`, `kitty`, `osascript`) isn't installed or the target session is gone, return a clear error and let the caller log/warn-and-continue. Do NOT fail the whole sweep.
-3. **Best-effort only.** The wake adapter delivers a notification; durable delivery is the message in the recipient's inbox (in the v0.1 reference CLI, that's a file on the shared filesystem).
+3. **Best-effort only.** The wake adapter delivers a notification; durable delivery is the message in the recipient's inbox (in the reference CLI, that's a file on the shared filesystem).
 4. **Inspect nothing else.** Adapters MUST NOT read recipient inbox bodies, archive files, or any other registration's data. The wake adapter's authority is one `Poke(ctx, target)` call.
 
 ---
 
-## What is not extension space in v0.1
+## What is not extension space
 
-These are either excluded by the protocol's design, or reserved for a future protocol version. Either way, they're not v0.1 extension space — don't ship an adapter or fork that claims to add them under the agentchute name.
+These are either excluded by the protocol's design, or reserved for a future protocol version. Either way, they're not reference extension space — don't ship an adapter or fork that claims to add them under the agentchute name.
 
 - **Routing / role-assignment / wildcard inboxes.** §7 / §12. Agents are peers; senders pick recipients explicitly.
 - **Protocol-level signing or auth.** §12. agentchute is cooperative-trust. Layer a signed-envelope protocol above if you need it.
 - **Durable / authenticated audit trail.** Archive is gitignored. Use a layered protocol for durable transcripts.
 - **Structured request/response state machine.** Fire-and-forget. References via `in_reply_to` are non-normative.
-- **Coordinator agents.** Reserved for v2 (see AGENTCHUTE.md §13). v1 watchdog is liveness-only — anything beyond that waits for the v2 spec, not a v0.1 extension.
+- **Coordinator agents.** Reserved for v2 (see AGENTCHUTE.md §13). v1 watchdog is liveness-only — anything beyond that waits for the v2 spec, not a reference extension.
 
 ---
 
-## Why these aren't in v0.1
+## Why these aren't in the reference CLI
 
 Shipping the smallest thing that works is the value prop. Extensions are an invitation, not a roadmap promise. Every adapter we don't ship is one less dependency, one less validation matrix, and one less interpretation of "what agentchute is." The protocol is the product; the binary is convenience.
 

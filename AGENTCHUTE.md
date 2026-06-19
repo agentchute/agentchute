@@ -13,7 +13,7 @@ A small convention for two or more agents (humans, AI assistants, or both) to co
 The protocol is a small set of implementation-agnostic primitives. Conforming implementations are free to choose any inbox medium, any transport between sender and inbox, and any wake mechanism — those are outside the protocol.
 
 - **Per-recipient inbox.** Each agent has its own ordered message stream. Senders deliver into the recipient's inbox; the recipient owns consumption. **The inbox medium is implementation-specific** (filesystem, queue, HTTP, git branch, etc.).
-- **Ordered, identified messages.** Each carries a unique `(timestamp, sender, nonce)` identity tuple (§6.1.1). Receivers MUST process entries oldest-first by timestamp with deterministic tie-breaking.
+- **Ordered, identified messages.** Each carries a unique `(timestamp, sender, nonce)` identity tuple (§6.1). Receivers MUST process entries oldest-first by timestamp with deterministic tie-breaking.
 - **No-overwrite delivery.** Delivery never silently clobbers an existing entry. If identities collide, the sender retries with a fresh nonce. **Transport is implementation-specific** (atomic rename, HTTP POST, git push, etc.).
 - **Recipient-owned consumption.** Only the recipient reads its own message bodies. Liveness checks use inbox metadata only.
 - **Optional wake.** Senders MAY signal the recipient via a pluggable wake adapter. Wake is a latency hint; recipient-side polling is the correctness mechanism (§8.2). **The wake mechanism is implementation-specific.**
@@ -31,11 +31,11 @@ These are reference choices, not protocol requirements. Conforming implementatio
 ## 2. Scope
 
 ### In scope (v1)
-- **Inbox-based coordination** through per-recipient inboxes (§6.1.1).
+- **Inbox-based coordination** through per-recipient inboxes (§6.1).
 - **Pluggable wake adapters.** Senders look up `wake_method` and dispatch the poke. Non-pokable agents participate via polling.
 - **Small pools.** 2 to ~10 agents. Beyond that, routing/role-election is required (v2).
 - **Substrate-defined pool locator.** _Reference CLI: a repo containing `AGENTCHUTE.md` and a loop directory._
-- **Free-form messages with optional structured envelope** (§6.4.1).
+- **Free-form messages with optional structured envelope** (§6.4).
 - **Liveness-only watchdog** (§10).
 
 ### Out of scope (v1)
@@ -101,7 +101,7 @@ Encoded as YAML frontmatter in `.<vendor>/loop/agents/<agent_id>.md`.
 See **Appendix C** for a hand-registration walkthrough.
 
 ### 5.3 Enforced enrollment
-Implementations MUST refuse active operations (consume/send/gate) if the agent's registration is absent or unreadable. Mandatory on every session start (§7.2).
+Implementations MUST refuse active operations (consume/send/gate) if the agent's registration is absent or unreadable. Mandatory on every session start (§5.3).
 
 ## 6. Messaging
 
@@ -127,14 +127,14 @@ Inbox messages MUST be presented oldest-first by timestamp. The reference encodi
    b. Consistently archive or consume to remove from the live stream.
    c. Act on message.
 4. Update `last_active`.
-5. Perform cooperative waking for peers (§10.5).
+5. Perform cooperative waking for peers (§10.2).
 
 ### 6.4 Message envelope
-Encoded as optional YAML frontmatter (§6.4.2):
+Encoded as optional YAML frontmatter (§6.4):
 - `message_id`: Sender-provided reference handle (recommended RFC 3339 UTC).
 - `from` / `to`: agent_id.
 - `in_reply_to`: parent `message_id`.
-- `reply_required` (boolean): when true, places a **reply obligation** (§6.4.3).
+- `reply_required` (boolean): when true, places a **reply obligation** (§6.4).
 - `task`: short descriptor.
 - `status`: `request | findings | signoff | request-changes | info`.
 
@@ -154,7 +154,7 @@ An agent's authority to mutate project state starts when an inbox message arrive
 - **Self-state updates**: `last_seen` (turn start), `last_active` (post-consumption), `status` and `restart_at` (budget visibility).
 - **Same-host tmux cleanup**: The reference CLI MAY remove peer registrations if: peer is not self, host matches, `wake_method: tmux`, and the pane is unreachable.
 - **Own scaffold & inbox operations**: Creating `inbox/<self>/`, `archive/`, `malformed/`. Consuming own mail.
-- **Cooperative waking (§10.5)** and protocol correction (§11).
+- **Cooperative waking (§10.2)** and protocol correction (§11).
 
 Everything else (project edits, unsolicited peer messages, side-effecting commands) is gated by the authority rule.
 
@@ -163,7 +163,7 @@ Identity is pool-scoped: `(pool_locator, agent_id)`. A physical process particip
 
 ## 8. Wake adapters
 
-Wake pokes are latency hints; recipient-side polling is the correctness baseline (§8.2). The reference adapters are `tmux` and `herdr`.
+Wake pokes are latency hints; recipient-side polling is the correctness baseline (§8.2). The reference adapters are `tmux`, `herdr`, and `runner` (the `agentchute-run` socket).
 
 ### 8.1 Reference wake patterns
 - **tmux**: `tmux send-keys -t <wake_target> '[agentchute:tmux] check inbox'` followed by `Enter`.
@@ -203,7 +203,7 @@ Every agent participates in keeping the pool healthy.
 ### 11.1 Enforcement action
 Triggers include malformed inbox filenames, unparseable frontmatter, or unparseable peer registrations.
 1. **Quarantine**: Atomic rename to `<loop>/malformed/`.
-2. **Notify offender**: Send a corrective message (Task: `protocol correction`, Status: `findings`) to the inferred sender (§11.4).
+2. **Notify offender**: Send a corrective message (Task: `protocol correction`, Status: `findings`) to the inferred sender (§11.1).
 3. **Continue**: Do NOT block the sender or the turn.
 
 ## 12. Non-goals (v1)

@@ -108,7 +108,7 @@ func (c *Config) ArchiveDir() string {
 }
 
 // MalformedDir returns the quarantine directory for files that violate the
-// AGENTCHUTE.md §6.1.2 reference filename encoding or §6.4.2 reference
+// AGENTCHUTE.md §6.1 reference filename encoding or §6.4 reference
 // frontmatter shape — used by §11 protocol enforcement.
 func (c *Config) MalformedDir() string {
 	return filepath.Join(c.LoopDir, "malformed")
@@ -124,7 +124,7 @@ func (c *Config) AgentStateDir(agentID string) string {
 }
 
 // PendingRepliesPath returns the per-agent pending-replies ledger path
-// (§6.4 / spec rev3 A.9). Recipient-owned; updated by `check` (on archive
+// (§6.4). Recipient-owned; updated by `check` (on archive
 // of a reply_required message), `send --reply-to`, and `defer`.
 func (c *Config) PendingRepliesPath(agentID string) string {
 	return filepath.Join(c.AgentStateDir(agentID), "pending-replies.json")
