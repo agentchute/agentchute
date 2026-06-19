@@ -49,6 +49,19 @@ func writePeerRegAt(t *testing.T, cfg *loop.Config, agentID, host, method, targe
 	}
 }
 
+// setPeerMtime forces a peer registration FILE's mtime, which is the same-pane
+// publish-order signal the prune now uses (NOT reg.LastSeen). The same-pane
+// tie-breaker reads the actual OS write time via os.Stat, so tests must drive it
+// by os.Chtimes rather than by the last_seen field. Returns the mtime set.
+func setPeerMtime(t *testing.T, cfg *loop.Config, agentID string, mtime time.Time) time.Time {
+	t.Helper()
+	path := cfg.AgentRegistrationPath(agentID)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	return mtime
+}
+
 // TestPruneSamePane_SkipsPeerThatMovedPane: a same-pane candidate is found on
 // %1, but BEFORE the revalidated remove the peer rewrites its registration to a
 // DIFFERENT pane (%2). The fresh, valid registration must NOT be removed and the
@@ -73,10 +86,10 @@ func TestPruneSamePane_SkipsPeerThatMovedPane(t *testing.T) {
 
 	// Between FIND and REMOVE the peer moved to a different pane (%2) — its reg is
 	// now FRESH and VALID and must survive. The moved peer fails the host/target
-	// predicate regardless of the tie-breaker, so ourLastSeen is immaterial here.
+	// predicate regardless of the tie-breaker, so ourMtime is immaterial here.
 	writePeerReg(t, cfg, peerID, host, "tmux", "%2")
 
-	removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", time.Now().UTC()))
+	removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,13 +109,13 @@ func TestPruneSamePane_RemovesStillMatchingPeer(t *testing.T) {
 	const selfID = "self-agent"
 	const peerID = "peer-still"
 
-	// The same-pane prune now carries a last-writer-wins tie-breaker: a peer is
-	// removed only if it is OLDER than us. Write the peer with a LastSeen strictly
-	// before our publish LastSeen so the happy-path removal still holds under the
-	// tie-breaker (this asserts the genuine-older-duplicate case, not the
-	// reciprocal case which is covered by its own test).
-	ourLastSeen := time.Now().UTC().Truncate(time.Second)
-	writePeerRegAt(t, cfg, peerID, host, "tmux", "%1", ourLastSeen.Add(-time.Minute))
+	// The same-pane prune carries a last-writer-wins tie-breaker keyed on the
+	// registration FILE mtime (actual publish order), NOT reg.LastSeen. Force the
+	// peer's file mtime strictly BEFORE our ourMtime so the happy-path removal
+	// holds under the tie-breaker (genuine-older-duplicate by write order).
+	writePeerReg(t, cfg, peerID, host, "tmux", "%1")
+	peerMtime := setPeerMtime(t, cfg, peerID, time.Now().Add(-time.Minute))
+	ourMtime := peerMtime.Add(time.Minute) // we wrote AFTER the peer
 
 	candidates, err := findSamePanePeerTmuxRegistrations(cfg, selfID, host, "%1")
 	if err != nil {
@@ -112,7 +125,7 @@ func TestPruneSamePane_RemovesStillMatchingPeer(t *testing.T) {
 		t.Fatalf("find candidates = %v, want exactly one", candidates)
 	}
 
-	removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", ourLastSeen))
+	removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", ourMtime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,21 +181,22 @@ func TestPruneStalePeer_SkipsPeerThatBecameValid(t *testing.T) {
 // each runs its revalidated remove. Without the tie-breaker BOTH removes fire
 // (the host/method/target predicate is still true for both fresh regs) and the
 // pane loses BOTH registrations. With the tie-breaker the remove only fires
-// against a peer that is OLDER than us; so only the older side gets deleted and
-// the later writer survives.
+// against a peer that is OLDER than us by FILE mtime (actual publish order); so
+// only the older writer gets deleted and the later writer survives.
 func TestPruneSamePane_ReciprocalDeleteAvoided(t *testing.T) {
 	host, _ := os.Hostname()
 	const selfID = "self-agent"
 	const peerID = "peer-agent"
-	T := time.Now().UTC().Truncate(time.Second)
+	T := time.Now()
 
-	// Direction 1: the peer is NEWER than us (it re-registered after we wrote).
-	// We must YIELD — the peer's fresh reg wins the pane and is NOT removed.
+	// Direction 1: the peer wrote AFTER us (newer file mtime). We must YIELD —
+	// the peer's fresh reg wins the pane and is NOT removed. Order is by mtime, so
+	// the fixture forces the peer's file mtime later than our ourMtime.
 	t.Run("yield_to_newer_peer", func(t *testing.T) {
 		cfg := newTmuxStateTestConfig(t)
-		ourLastSeen := T
-		// Peer's fresh reg is T+Δ (newer than our publish LastSeen).
-		writePeerRegAt(t, cfg, peerID, host, "tmux", "%1", T.Add(time.Second))
+		ourMtime := T
+		writePeerReg(t, cfg, peerID, host, "tmux", "%1")
+		setPeerMtime(t, cfg, peerID, T.Add(time.Second)) // peer wrote after us
 
 		candidates, err := findSamePanePeerTmuxRegistrations(cfg, selfID, host, "%1")
 		if err != nil {
@@ -192,7 +206,7 @@ func TestPruneSamePane_ReciprocalDeleteAvoided(t *testing.T) {
 			t.Fatalf("find candidates = %v, want exactly [%s]", candidates, peerID)
 		}
 
-		removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", ourLastSeen))
+		removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", ourMtime))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,14 +218,14 @@ func TestPruneSamePane_ReciprocalDeleteAvoided(t *testing.T) {
 		}
 	})
 
-	// Direction 2: the peer is OLDER than us. We are the later writer, so we DO
-	// prune the older same-pane peer. Together with direction 1 this proves only
-	// the older side is ever deleted — a single survivor, never a mutual delete.
+	// Direction 2: the peer wrote BEFORE us (older file mtime). We are the later
+	// writer, so we DO prune the older same-pane peer. Together with direction 1
+	// this proves only the older side is ever deleted — a single survivor.
 	t.Run("prune_older_peer", func(t *testing.T) {
 		cfg := newTmuxStateTestConfig(t)
-		ourLastSeen := T
-		// Peer's fresh reg is T-Δ (older than our publish LastSeen).
-		writePeerRegAt(t, cfg, peerID, host, "tmux", "%1", T.Add(-time.Second))
+		ourMtime := T
+		writePeerReg(t, cfg, peerID, host, "tmux", "%1")
+		setPeerMtime(t, cfg, peerID, T.Add(-time.Second)) // peer wrote before us
 
 		candidates, err := findSamePanePeerTmuxRegistrations(cfg, selfID, host, "%1")
 		if err != nil {
@@ -221,7 +235,7 @@ func TestPruneSamePane_ReciprocalDeleteAvoided(t *testing.T) {
 			t.Fatalf("find candidates = %v, want exactly [%s]", candidates, peerID)
 		}
 
-		removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", ourLastSeen))
+		removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", ourMtime))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -234,23 +248,25 @@ func TestPruneSamePane_ReciprocalDeleteAvoided(t *testing.T) {
 	})
 }
 
-// TestPruneSamePane_EqualLastSeenDeterministicTieBreak proves equal-LastSeen is
-// broken deterministically by AgentID string order so exactly one side deletes.
-// less(x) = (x.LastSeen, x.AgentID); we delete the peer only if less(peer) <
-// less(us). With equal LastSeen this reduces to peer.AgentID < our.AgentID:
-// the higher-AgentID side prunes the lower-AgentID peer, and the lower-AgentID
-// side does NOT prune the higher-AgentID peer.
-func TestPruneSamePane_EqualLastSeenDeterministicTieBreak(t *testing.T) {
+// TestPruneSamePane_EqualMtimeAgentIDTieBreak proves equal-mtime is broken
+// deterministically by AgentID string order so exactly one side deletes — this
+// matters on coarse-granularity filesystems where two near-simultaneous writes
+// can land on the SAME mtime. less(x) = (mtime, x.AgentID); we delete the peer
+// only if less(peer) < less(us). With equal mtime this reduces to
+// peer.AgentID < our.AgentID: the higher-AgentID side prunes the lower-AgentID
+// peer, and the lower-AgentID side does NOT prune the higher-AgentID peer.
+func TestPruneSamePane_EqualMtimeAgentIDTieBreak(t *testing.T) {
 	host, _ := os.Hostname()
-	T := time.Now().UTC().Truncate(time.Second)
+	T := time.Now()
 	const lowID = "agent-aaa"
 	const highID = "agent-zzz"
 
-	// Us = high AgentID, peer = low AgentID, equal LastSeen → peer is "older" by
+	// Us = high AgentID, peer = low AgentID, EQUAL file mtime → peer is "older" by
 	// the AgentID tie-break (low < high) → WE delete the peer.
 	t.Run("higher_id_us_deletes_lower_id_peer", func(t *testing.T) {
 		cfg := newTmuxStateTestConfig(t)
-		writePeerRegAt(t, cfg, lowID, host, "tmux", "%1", T)
+		writePeerReg(t, cfg, lowID, host, "tmux", "%1")
+		setPeerMtime(t, cfg, lowID, T) // identical mtime to our ourMtime
 
 		candidates, err := findSamePanePeerTmuxRegistrations(cfg, highID, host, "%1")
 		if err != nil {
@@ -265,18 +281,19 @@ func TestPruneSamePane_EqualLastSeenDeterministicTieBreak(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !removed {
-			t.Fatalf("equal-LastSeen: higher-AgentID self must delete lower-AgentID peer")
+			t.Fatalf("equal-mtime: higher-AgentID self must delete lower-AgentID peer")
 		}
 		if _, statErr := os.Stat(cfg.AgentRegistrationPath(lowID)); !os.IsNotExist(statErr) {
 			t.Fatalf("lower-AgentID peer reg should be gone, stat err=%v", statErr)
 		}
 	})
 
-	// Us = low AgentID, peer = high AgentID, equal LastSeen → peer is "newer" by
+	// Us = low AgentID, peer = high AgentID, EQUAL file mtime → peer is "newer" by
 	// the AgentID tie-break (high > low) → we do NOT delete; we yield.
 	t.Run("lower_id_us_does_not_delete_higher_id_peer", func(t *testing.T) {
 		cfg := newTmuxStateTestConfig(t)
-		writePeerRegAt(t, cfg, highID, host, "tmux", "%1", T)
+		writePeerReg(t, cfg, highID, host, "tmux", "%1")
+		setPeerMtime(t, cfg, highID, T) // identical mtime to our ourMtime
 
 		candidates, err := findSamePanePeerTmuxRegistrations(cfg, lowID, host, "%1")
 		if err != nil {
@@ -291,7 +308,7 @@ func TestPruneSamePane_EqualLastSeenDeterministicTieBreak(t *testing.T) {
 			t.Fatal(err)
 		}
 		if removed {
-			t.Fatalf("equal-LastSeen: lower-AgentID self must NOT delete higher-AgentID peer")
+			t.Fatalf("equal-mtime: lower-AgentID self must NOT delete higher-AgentID peer")
 		}
 		if _, statErr := os.Stat(cfg.AgentRegistrationPath(highID)); statErr != nil {
 			t.Fatalf("higher-AgentID peer reg must survive: %v", statErr)
@@ -300,17 +317,19 @@ func TestPruneSamePane_EqualLastSeenDeterministicTieBreak(t *testing.T) {
 }
 
 // TestPruneSamePane_DeletesGenuineOlderDuplicate guards the real dedup path: a
-// peer strictly older than us on the same pane is a genuine stale duplicate and
-// must still be pruned by the new registrant (no regression from the tie-break).
+// peer whose FILE was written strictly before us on the same pane is a genuine
+// stale duplicate and must still be pruned by the new registrant (no regression
+// from the tie-break, driven by file mtime ordering).
 func TestPruneSamePane_DeletesGenuineOlderDuplicate(t *testing.T) {
 	cfg := newTmuxStateTestConfig(t)
 	host, _ := os.Hostname()
 	const selfID = "self-agent"
 	const peerID = "peer-stale-dup"
 
-	ourLastSeen := time.Now().UTC().Truncate(time.Second)
-	// Peer is a much older duplicate on the same pane.
-	writePeerRegAt(t, cfg, peerID, host, "tmux", "%1", ourLastSeen.Add(-time.Hour))
+	// Peer is a much older duplicate on the same pane (file written an hour ago).
+	writePeerReg(t, cfg, peerID, host, "tmux", "%1")
+	peerMtime := setPeerMtime(t, cfg, peerID, time.Now().Add(-time.Hour))
+	ourMtime := peerMtime.Add(time.Hour)
 
 	candidates, err := findSamePanePeerTmuxRegistrations(cfg, selfID, host, "%1")
 	if err != nil {
@@ -320,7 +339,7 @@ func TestPruneSamePane_DeletesGenuineOlderDuplicate(t *testing.T) {
 		t.Fatalf("find candidates = %v, want exactly [%s]", candidates, peerID)
 	}
 
-	removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", ourLastSeen))
+	removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", ourMtime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,4 +349,139 @@ func TestPruneSamePane_DeletesGenuineOlderDuplicate(t *testing.T) {
 	if _, statErr := os.Stat(cfg.AgentRegistrationPath(peerID)); !os.IsNotExist(statErr) {
 		t.Fatalf("older duplicate peer reg should be gone, stat err=%v", statErr)
 	}
+}
+
+// TestPruneSamePane_OrdersByFileMtimeNotLastSeen is the core defect guard. It
+// constructs the exact misorder the rev#5 (reg.LastSeen-based) tie-breaker got
+// wrong: the publish ORDER (file mtime) is INVERTED relative to the captured
+// LastSeen.
+//
+//   - Peer B's FILE mtime = T_early  → B actually wrote FIRST.
+//   - OUR ourMtime        = T_late   → WE actually wrote LAST.
+//   - But B's reg.LastSeen = T_late  and our reg.LastSeen = T_early (the stall:
+//     each side captured `now` BEFORE the write, and our captured-now is older
+//     even though our write landed later).
+//
+// Correct behavior (mtime-driven): we are the later writer, so we PRUNE B.
+// The OLD LastSeen-driven code would see B.LastSeen newer than ours → YIELD and
+// NOT remove B → both survive. Asserting B is removed proves the decision is
+// driven by file mtime, not by reg.LastSeen.
+func TestPruneSamePane_OrdersByFileMtimeNotLastSeen(t *testing.T) {
+	cfg := newTmuxStateTestConfig(t)
+	host, _ := os.Hostname()
+	const selfID = "self-agent"
+	const peerID = "peer-b"
+
+	T := time.Now().UTC().Truncate(time.Second)
+	tEarly := T.Add(-time.Minute)
+	tLate := T
+
+	// Peer B: file written FIRST (mtime tEarly) but reg.LastSeen = tLate+1m (its
+	// captured now is STRICTLY LATER than our ourMtime — the LastSeen order is
+	// INVERTED vs the file-mtime order). The strict inequality is deliberate: it
+	// removes any AgentID-tie-break confound so the OLD reg.LastSeen-based code
+	// would unambiguously see B as newer and YIELD (keep B), while the new
+	// mtime-based code sees B's file as older and REMOVES it.
+	writePeerRegAt(t, cfg, peerID, host, "tmux", "%1", tLate.Add(time.Minute))
+	setPeerMtime(t, cfg, peerID, tEarly)
+
+	// We wrote LAST: ourMtime = tLate (later file write than B's tEarly). Under
+	// the OLD code this same value is read as our reg.LastSeen, which is strictly
+	// EARLIER than B's reg.LastSeen (tLate+1m) → OLD code yields to B and keeps it.
+	ourMtime := tLate
+
+	candidates, err := findSamePanePeerTmuxRegistrations(cfg, selfID, host, "%1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].AgentID != peerID {
+		t.Fatalf("find candidates = %v, want exactly [%s]", candidates, peerID)
+	}
+
+	removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(selfID, host, "%1", ourMtime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removed {
+		t.Fatalf("decision must be driven by FILE mtime (B wrote first → removed), not reg.LastSeen")
+	}
+	if _, statErr := os.Stat(cfg.AgentRegistrationPath(peerID)); !os.IsNotExist(statErr) {
+		t.Fatalf("earlier-written peer B should be pruned, stat err=%v", statErr)
+	}
+}
+
+// TestPruneSamePane_StalledWriterSingleSurvivor exercises the full stall scenario
+// from BOTH sides and asserts exactly ONE survivor, ordered by actual write time
+// (file mtime), not by the stale captured LastSeen.
+//
+// Scenario: A captures now=t0 then STALLS; B captures now=t1>t0 and writes FIRST
+// (file mtime t1_file_early); A then writes LATE (file mtime t0_file_late, the
+// later wall-clock write) carrying stale reg.LastSeen=t0. By mtime A wrote last.
+//   - B's prune of A: A's file mtime is LATER → A is "newer" → B YIELDS (keeps A).
+//   - A's prune of B: B's file mtime is EARLIER → B is "older" → A REMOVES B.
+//
+// Result: single survivor A (the actual later writer). This is the property the
+// rev#5 LastSeen tie-breaker violated (both survived).
+func TestPruneSamePane_StalledWriterSingleSurvivor(t *testing.T) {
+	host, _ := os.Hostname()
+	const aID = "agent-a-stalled"
+	const bID = "agent-b-first"
+
+	// Wall-clock write order: B's file first, A's file later (A wrote last).
+	bFileMtime := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	aFileMtime := bFileMtime.Add(time.Minute)
+
+	// B's prune of A: B sees A; A's file is NEWER → B must YIELD (A survives).
+	t.Run("B_yields_to_later_writer_A", func(t *testing.T) {
+		cfg := newTmuxStateTestConfig(t)
+		// A is on the pane, file written LATE.
+		writePeerReg(t, cfg, aID, host, "tmux", "%1")
+		setPeerMtime(t, cfg, aID, aFileMtime)
+
+		candidates, err := findSamePanePeerTmuxRegistrations(cfg, bID, host, "%1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(candidates) != 1 || candidates[0].AgentID != aID {
+			t.Fatalf("B find candidates = %v, want [%s]", candidates, aID)
+		}
+		// B's ourMtime is B's own (earlier) file write time.
+		removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(bID, host, "%1", bFileMtime))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if removed {
+			t.Fatalf("B must YIELD to later writer A; A wrote last (newer mtime)")
+		}
+		if _, statErr := os.Stat(cfg.AgentRegistrationPath(aID)); statErr != nil {
+			t.Fatalf("later writer A must survive: %v", statErr)
+		}
+	})
+
+	// A's prune of B: A sees B; B's file is OLDER → A REMOVES B.
+	t.Run("A_removes_earlier_writer_B", func(t *testing.T) {
+		cfg := newTmuxStateTestConfig(t)
+		// B is on the pane, file written FIRST (earlier).
+		writePeerReg(t, cfg, bID, host, "tmux", "%1")
+		setPeerMtime(t, cfg, bID, bFileMtime)
+
+		candidates, err := findSamePanePeerTmuxRegistrations(cfg, aID, host, "%1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(candidates) != 1 || candidates[0].AgentID != bID {
+			t.Fatalf("A find candidates = %v, want [%s]", candidates, bID)
+		}
+		// A's ourMtime is A's own (later) file write time.
+		removed, err := revalidateAndRemovePeer(cfg, candidates[0], samePaneStillMatches(aID, host, "%1", aFileMtime))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !removed {
+			t.Fatalf("A (later writer) must REMOVE earlier writer B")
+		}
+		if _, statErr := os.Stat(cfg.AgentRegistrationPath(bID)); !os.IsNotExist(statErr) {
+			t.Fatalf("earlier writer B should be pruned, stat err=%v", statErr)
+		}
+	})
 }
