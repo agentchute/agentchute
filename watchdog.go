@@ -114,15 +114,22 @@ func watchdogUsage(err error) error {
 func runWatchdogCycle(ctx context.Context, cfg *loop.Config, opts watchdogOptions) error {
 	now := opts.Now().UTC()
 
+	// Self-registration upkeep is best-effort: a setup/update reset race can
+	// delete the watchdog's OWN registration (or make UpdateLastSeen fail)
+	// between cycles. Returning a hard error here would permanently kill the
+	// daemon loop and stop ALL peer waking — the opposite of what the watchdog
+	// is for. Log-and-continue (mirroring the per-peer error handling in
+	// runLivenessSweep) so a transient self-reg gap heals on the next cycle
+	// while peers keep getting swept.
 	selfPath := cfg.AgentRegistrationPath(opts.AgentID)
 	if _, err := os.Stat(selfPath); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("watchdog registration %q does not exist; run agentchute register first", selfPath)
+			logWatchdogEvent(cfg, now, "self-registration %q missing (reset race?); skipping last_seen update, continuing sweep", filepath.Base(selfPath))
+		} else {
+			logWatchdogEvent(cfg, now, "stat self-registration failed: %v; continuing sweep", err)
 		}
-		return fmt.Errorf("stat watchdog registration: %w", err)
-	}
-	if err := loop.UpdateLastSeen(cfg, opts.AgentID, now); err != nil {
-		return fmt.Errorf("update watchdog last_seen: %w", err)
+	} else if err := loop.UpdateLastSeen(cfg, opts.AgentID, now); err != nil {
+		logWatchdogEvent(cfg, now, "update self last_seen failed: %v; continuing sweep", err)
 	}
 
 	return runLivenessSweep(ctx, cfg, opts, now)
@@ -173,7 +180,12 @@ func runLivenessSweep(ctx context.Context, cfg *loop.Config, opts watchdogOption
 }
 
 func watchdogAgentCycle(ctx context.Context, cfg *loop.Config, reg *loop.Registration, now time.Time, opts watchdogOptions) error {
-	msgs, err := loop.ListInboxMessages(cfg.AgentInboxDir(reg.AgentID))
+	inboxDir := cfg.AgentInboxDir(reg.AgentID)
+	// Include SKIPPED (malformed/unparseable) files: gate blocks a peer until
+	// `check` quarantines such a file, so an inbox holding ONLY malformed mail
+	// is still wake-worthy work. ListInboxMessages alone treats it as empty and
+	// silently declines to poke the blocked peer.
+	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
 	if err != nil {
 		// Peer's inbox dir is missing: registered but never booted on this
 		// host, or partially-installed setup. Skip this peer for this cycle
@@ -184,15 +196,17 @@ func watchdogAgentCycle(ctx context.Context, cfg *loop.Config, reg *loop.Registr
 		}
 		return err
 	}
-	if len(msgs) == 0 {
+	if len(msgs) == 0 && len(skipped) == 0 {
 		return nil
 	}
 
-	oldest := msgs[0]
-	msgAge := now.Sub(oldest.Timestamp)
-	if msgAge < 0 {
-		msgAge = 0
-	}
+	// Wake-age is derived from filesystem ARRIVAL time (mtime), NOT the
+	// sender-encoded filename timestamp. A future/skewed filename timestamp
+	// would make now.Sub(timestamp) negative, clamp to zero, and suppress the
+	// poke indefinitely; and a malformed file has no parseable timestamp at
+	// all. mtime reflects when the file actually landed on this host, so
+	// back-dated mail still ages past the threshold and pokes.
+	msgAge := oldestInboxArrivalAge(inboxDir, msgs, skipped, now)
 
 	if reg.RestartAt != nil && reg.RestartAt.After(now) {
 		logWatchdogEvent(cfg, now, "deferring %s until %s", reg.AgentID, reg.RestartAt.UTC().Format(time.RFC3339))
@@ -238,6 +252,43 @@ func watchdogAgentCycle(ctx context.Context, cfg *loop.Config, reg *loop.Registr
 	}
 	logWatchdogEvent(cfg, now, "poked %s (oldest msg age %s)", reg.AgentID, msgAge.Round(time.Second))
 	return nil
+}
+
+// oldestInboxArrivalAge returns now minus the OLDEST filesystem mtime among the
+// peer's observable inbox files (parsed messages and skipped/malformed files
+// alike). mtime is the file's arrival observation on this host, so it is immune
+// to a back-dated (future/skewed) sender-encoded filename timestamp that would
+// otherwise clamp a sender-timestamp-based age to zero and silence the poke.
+// A file whose mtime cannot be stat'd (raced away, permission) is ignored; if
+// none can be stat'd the age is zero (nothing observably aged).
+func oldestInboxArrivalAge(inboxDir string, msgs []loop.Message, skipped []string, now time.Time) time.Duration {
+	var oldest time.Time
+	consider := func(name string) {
+		info, err := os.Stat(filepath.Join(inboxDir, name))
+		if err != nil {
+			return
+		}
+		mt := info.ModTime()
+		if oldest.IsZero() || mt.Before(oldest) {
+			oldest = mt
+		}
+	}
+	for _, m := range msgs {
+		consider(m.Filename)
+	}
+	for _, name := range skipped {
+		consider(name)
+	}
+	if oldest.IsZero() {
+		return 0
+	}
+	age := now.Sub(oldest)
+	if age < 0 {
+		// Future mtime (clock skew on disk): treat as just-arrived rather than
+		// negative — never let a skewed timestamp suppress the poke.
+		age = 0
+	}
+	return age
 }
 
 // logWatchdogEvent writes one line to .<vendor>/loop/watchdog.log. The leading

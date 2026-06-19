@@ -169,7 +169,7 @@ func TestWatchdogPoke_RefusesUnownedRunnerSocket(t *testing.T) {
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), evil); err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
+	mustWriteAgedInbox(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), now.Add(-8*time.Minute))
 
 	err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
 		AgentID:             "watchdog",
@@ -211,7 +211,7 @@ func TestWatchdogPoke_OwnedRunnerSocketAttemptsDial(t *testing.T) {
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), reg); err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
+	mustWriteAgedInbox(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), now.Add(-8*time.Minute))
 
 	if err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
 		AgentID:             "watchdog",
@@ -264,7 +264,7 @@ func TestWatchdogReachability_DoesNotDialUnownedSocket(t *testing.T) {
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), peer); err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
+	mustWriteAgedInbox(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), now.Add(-8*time.Minute))
 
 	if err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
 		AgentID:             "watchdog",
@@ -279,6 +279,120 @@ func TestWatchdogReachability_DoesNotDialUnownedSocket(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if c := evil.count(); c != 0 {
 		t.Fatalf("watchdog sweep dialed the unowned runner socket %d time(s); owned-check must short-circuit before dial", c)
+	}
+}
+
+// A peer whose inbox contains ONLY a malformed (unparseable) file must still
+// be poked: gate blocks the peer until `check` quarantines it, so the watchdog
+// must treat skipped files as wake-worthy work. The old ListInboxMessages-only
+// scan saw an "empty" inbox and skipped the poke.
+func TestWatchdog_WakesPeerWithOnlyMalformedInbox(t *testing.T) {
+	root, cfg := setupWatchdogFixture(t)
+	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
+
+	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
+	writeRegistration(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "%1", now.Add(-10*time.Minute), loop.StatusActive, nil)
+	// Only a malformed file (invalid nonce) — parses as skipped, not a Message.
+	malformed := filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-30-00-123456Z_from-claude-code_msg-zz.md")
+	mustWrite(t, malformed, []byte("hi"))
+	// Back-date the file's mtime well past the message-age threshold so the
+	// only reason a poke could be skipped is the malformed-invisibility bug.
+	old := now.Add(-30 * time.Minute)
+	if err := os.Chtimes(malformed, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
+		AgentID:             "watchdog",
+		StaleThreshold:      5 * time.Minute,
+		MessageAgeThreshold: time.Minute,
+		Now:                 func() time.Time { return now },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	logText := mustReadString(t, cfg.WatchdogLogPath())
+	// tmux send-keys fails in the test env (no fake binary) — but the watchdog
+	// must have ATTEMPTED the poke, which logs "poke codex failed". If the
+	// malformed file were invisible, codex would not be processed at all.
+	if !strings.Contains(logText, "codex") {
+		t.Fatalf("watchdog ignored peer with only a malformed inbox file:\n%s", logText)
+	}
+	if strings.Contains(logText, "below threshold") {
+		t.Fatalf("watchdog treated malformed-only inbox as empty/no-age:\n%s", logText)
+	}
+}
+
+// A future/skewed filename timestamp must NOT suppress the poke. The age is
+// derived from filesystem arrival time, so a back-dated (future) sender-encoded
+// filename can't clamp the age to zero and silence the watchdog indefinitely.
+func TestWatchdog_BackdatedFilenameStillPokes(t *testing.T) {
+	root, cfg := setupWatchdogFixture(t)
+	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
+
+	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
+	writeRegistration(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "%1", now.Add(-10*time.Minute), loop.StatusActive, nil)
+	// Filename timestamp is in the FUTURE relative to now (2027). With the old
+	// sender-timestamp basis, now.Sub(future) is negative → clamped to 0 →
+	// always below threshold → poke suppressed forever.
+	future := filepath.Join(cfg.AgentInboxDir("codex"), "2027-01-01T00-00-00-000000Z_from-claude-code_msg-abcd.md")
+	mustWrite(t, future, []byte("hi"))
+	// The file actually ARRIVED long ago; arrival time must drive the age.
+	old := now.Add(-30 * time.Minute)
+	if err := os.Chtimes(future, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
+		AgentID:             "watchdog",
+		StaleThreshold:      5 * time.Minute,
+		MessageAgeThreshold: time.Minute,
+		Now:                 func() time.Time { return now },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	logText := mustReadString(t, cfg.WatchdogLogPath())
+	if strings.Contains(logText, "below threshold") {
+		t.Fatalf("future-dated filename suppressed the poke via clamped age:\n%s", logText)
+	}
+	if !strings.Contains(logText, "codex") {
+		t.Fatalf("watchdog did not process codex with a future-dated filename:\n%s", logText)
+	}
+}
+
+// A reset/update race can delete the watchdog's OWN registration mid-flight.
+// runWatchdogCycle must log-and-continue on a missing self-registration (or a
+// self UpdateLastSeen failure) rather than returning a hard error that kills
+// the daemon loop.
+func TestWatchdog_SelfRegDeletedDoesNotKillDaemon(t *testing.T) {
+	root, cfg := setupWatchdogFixture(t)
+	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
+
+	// No self-registration for "watchdog" (simulating a setup/update reset
+	// that cleared regs). A peer still has stale unread mail to be swept.
+	writeRegistration(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "%1", now.Add(-10*time.Minute), loop.StatusActive, nil)
+	msg := filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-30-00-123456Z_from-claude-code_msg-abcd.md")
+	mustWrite(t, msg, []byte("hi"))
+	oldT := now.Add(-30 * time.Minute)
+	if err := os.Chtimes(msg, oldT, oldT); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
+		AgentID:             "watchdog",
+		StaleThreshold:      5 * time.Minute,
+		MessageAgeThreshold: time.Minute,
+		Now:                 func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("missing self-registration killed the cycle: %v", err)
+	}
+
+	// The sweep must still have run despite the missing self-reg.
+	logText := mustReadString(t, cfg.WatchdogLogPath())
+	if !strings.Contains(logText, "codex") {
+		t.Fatalf("watchdog aborted the sweep after a missing self-registration:\n%s", logText)
 	}
 }
 
@@ -357,7 +471,7 @@ func TestRunLivenessSweepSkipsCrossHostPeers(t *testing.T) {
 	// Watchdog on M5.local; peer on remote-machine.local with stale inbox.
 	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "M5.local", "", now.Add(-time.Minute), loop.StatusActive, nil)
 	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "remote-machine.local", "%1", now.Add(-10*time.Minute), loop.StatusActive, nil)
-	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
+	mustWriteAgedInbox(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), now.Add(-8*time.Minute))
 
 	err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
 		AgentID:             "watchdog",
@@ -385,7 +499,7 @@ func TestRunLivenessSweepDoesNotSkipSameHostPeers(t *testing.T) {
 
 	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "M5.local", "", now.Add(-time.Minute), loop.StatusActive, nil)
 	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "M5.local", "%1", now.Add(-10*time.Minute), loop.StatusActive, nil)
-	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
+	mustWriteAgedInbox(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), now.Add(-8*time.Minute))
 
 	// tmux send-keys will fail in the test env (no tmux server / no fake
 	// binary stubbed); the sweep should log "poke codex failed" — which is
@@ -418,7 +532,7 @@ func TestRunLivenessSweepTreatsEmptyPeerHostAsSameHost(t *testing.T) {
 	writeRegistrationWithHost(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "M5.local", "", now.Add(-time.Minute), loop.StatusActive, nil)
 	// Peer with NO host field (empty).
 	writeRegistration(t, cfg.AgentRegistrationPath("codex"), "codex", "openai", root, "%1", now.Add(-10*time.Minute), loop.StatusActive, nil)
-	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
+	mustWriteAgedInbox(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), now.Add(-8*time.Minute))
 
 	if err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
 		AgentID:             "watchdog",

@@ -211,17 +211,17 @@ type runnerRuntime struct {
 	listener net.Listener
 	done     <-chan error
 
-	mu                  sync.Mutex
-	ptmxMu              sync.Mutex
-	stopOnce            sync.Once
-	pollWG              sync.WaitGroup
-	shutdownRequested   atomic.Bool
-	pendingWake         bool
-	lastInjection       time.Time
-	lastPoll            time.Time
-	lastObservedMessage string
-	lastOutputUnixNano  atomic.Int64
-	lastInputUnixNano   atomic.Int64
+	mu                 sync.Mutex
+	ptmxMu             sync.Mutex
+	stopOnce           sync.Once
+	pollWG             sync.WaitGroup
+	shutdownRequested  atomic.Bool
+	pendingWake        bool
+	lastInjection      time.Time
+	lastPoll           time.Time
+	seenInboxFiles     map[string]struct{}
+	lastOutputUnixNano atomic.Int64
+	lastInputUnixNano  atomic.Int64
 
 	wakeCh chan struct{}
 	stopCh chan struct{}
@@ -297,9 +297,10 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		cmd:      cmd,
 		ptmx:     ptmx,
 		listener: listener,
-		done:     done,
-		wakeCh:   make(chan struct{}, 1),
-		stopCh:   make(chan struct{}),
+		done:           done,
+		wakeCh:         make(chan struct{}, 1),
+		stopCh:         make(chan struct{}),
+		seenInboxFiles: make(map[string]struct{}),
 	}
 	nowUnix := time.Now().UnixNano()
 	rt.lastOutputUnixNano.Store(nowUnix)
@@ -632,21 +633,37 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	if err := loop.UpdateLastSeen(r.cfg, r.opts.AgentID, now); err != nil {
 		fmt.Fprintf(os.Stderr, "agentchute run: update last_seen: %v\n", err)
 	}
-	msgs, _, err := loop.ListInboxMessagesWithSkipped(r.cfg.AgentInboxDir(r.opts.AgentID))
+	// Track a SEEN-filename snapshot across BOTH parsed messages and skipped
+	// (malformed/unparseable) files. Lexicographic-newest tracking misses two
+	// real cases: (1) malformed files never matched a Message at all yet gate
+	// blocks until `check` quarantines them, and (2) a valid message whose
+	// sender-encoded filename timestamp sorts BEFORE the last observed name
+	// (clock skew, back-dated send) would never become the "newest". Any
+	// filename not already in the set is unseen mail and must enqueue a wake.
+	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(r.cfg.AgentInboxDir(r.opts.AgentID))
 	if err != nil && !errors.Is(err, loop.ErrInboxMissing) {
 		fmt.Fprintf(os.Stderr, "agentchute run: list inbox: %v\n", err)
 	}
-	if len(msgs) > 0 {
-		newest := msgs[len(msgs)-1].Filename
-		r.mu.Lock()
-		seen := newest == r.lastObservedMessage
-		if !seen {
-			r.lastObservedMessage = newest
+	r.mu.Lock()
+	if r.seenInboxFiles == nil {
+		r.seenInboxFiles = make(map[string]struct{})
+	}
+	hasUnseen := false
+	for _, m := range msgs {
+		if _, ok := r.seenInboxFiles[m.Filename]; !ok {
+			r.seenInboxFiles[m.Filename] = struct{}{}
+			hasUnseen = true
 		}
-		r.mu.Unlock()
-		if !seen && enqueueNew {
-			r.enqueueWake()
+	}
+	for _, name := range skipped {
+		if _, ok := r.seenInboxFiles[name]; !ok {
+			r.seenInboxFiles[name] = struct{}{}
+			hasUnseen = true
 		}
+	}
+	r.mu.Unlock()
+	if hasUnseen && enqueueNew {
+		r.enqueueWake()
 	}
 	r.mu.Lock()
 	r.lastPoll = now

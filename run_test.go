@@ -386,6 +386,103 @@ func TestRunnerWakeSatisfiesRecipientLiveness(t *testing.T) {
 	}
 }
 
+// newPollTestRuntime builds a minimal runnerRuntime sufficient to exercise
+// pollOnce in isolation (no PTY, no socket). It registers the agent so the
+// pollOnce UpdateLastSeen call has a registration to read, and seeds the
+// runner state dir so saveState can write.
+func newPollTestRuntime(t *testing.T, cfg *loop.Config, agentID string) *runnerRuntime {
+	t.Helper()
+	if err := loop.EnsurePrivateDir(cfg.AgentInboxDir(agentID)); err != nil {
+		t.Fatal(err)
+	}
+	reg := &loop.Registration{
+		AgentID:     agentID,
+		Vendor:      "test",
+		ControlRepo: cfg.ControlRepo,
+		LastSeen:    time.Now().UTC(),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
+		t.Fatal(err)
+	}
+	rt := &runnerRuntime{
+		cfg:     cfg,
+		opts:    runnerOptions{AgentID: agentID, Vendor: "test", IntervalSeconds: 5},
+		started: time.Now().UTC(),
+		wakeCh:  make(chan struct{}, 1),
+		stopCh:  make(chan struct{}),
+	}
+	return rt
+}
+
+func (r *runnerRuntime) drainWake() bool {
+	r.mu.Lock()
+	pending := r.pendingWake
+	r.pendingWake = false
+	r.mu.Unlock()
+	select {
+	case <-r.wakeCh:
+	default:
+	}
+	return pending
+}
+
+// A malformed/skipped inbox file (parse failure) must still wake the runner:
+// gate blocks until `check` quarantines it, so the repair turn needs a poke.
+func TestRunnerPoll_WakesOnMalformedFile(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+
+	// First poll seeds the seen-set with an empty inbox (no wake).
+	rt.pollOnce(false)
+	if rt.drainWake() {
+		t.Fatal("unexpected wake on seeding poll of empty inbox")
+	}
+
+	// A hand-written file with an invalid nonce — parses as skipped, not a Message.
+	malformed := filepath.Join(cfg.AgentInboxDir("runner-test"), "2026-05-09T16-32-00-123456Z_from-codex_msg-zz.md")
+	mustWrite(t, malformed, []byte("body"))
+
+	rt.pollOnce(true)
+	if !rt.drainWake() {
+		t.Fatal("runner did not wake on a malformed (skipped) inbox file")
+	}
+}
+
+// A valid new file whose sender-encoded filename timestamp sorts BEFORE the
+// last-observed filename must still wake the runner. The old lexicographic-
+// newest tracking would miss back-dated mail.
+func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	inbox := cfg.AgentInboxDir("runner-test")
+
+	// A "newer" message is already present and observed on the seeding poll.
+	newer := filepath.Join(inbox, "2026-05-09T16-32-00-123456Z_from-codex_msg-abcd.md")
+	mustWrite(t, newer, []byte("newer"))
+	rt.pollOnce(false)
+	if rt.drainWake() {
+		t.Fatal("unexpected wake on seeding poll")
+	}
+
+	// A valid message whose filename timestamp sorts BEFORE the observed newest.
+	backdated := filepath.Join(inbox, "2026-05-09T16-30-00-000000Z_from-codex_msg-bcde.md")
+	mustWrite(t, backdated, []byte("back-dated"))
+
+	rt.pollOnce(true)
+	if !rt.drainWake() {
+		t.Fatal("runner did not wake on a valid back-dated inbox file")
+	}
+}
+
 func runnerSocketOp(path, op string) error {
 	conn, err := net.DialTimeout("unix", path, time.Second)
 	if err != nil {
