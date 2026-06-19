@@ -146,6 +146,101 @@ func TestRunWatchdogCycleSkipsPeerWithUnreadableInbox(t *testing.T) {
 	}
 }
 
+// TestWatchdogPoke_RefusesUnownedRunnerSocket: a stale peer that advertises a
+// runner wake_target it does not own must be REFUSED (never dialed) — the
+// watchdog routes through loop.PokeRegistration, whose owned-check fails before
+// any adapter dial. The "refused:" prefix in the log proves the refusal short-
+// circuited ahead of the dial (a real dial would log a connect error instead).
+func TestWatchdogPoke_RefusesUnownedRunnerSocket(t *testing.T) {
+	root, cfg := setupWatchdogFixture(t)
+	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
+
+	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
+	// Stale peer with an unowned runner socket.
+	evil := &loop.Registration{
+		AgentID:     "codex",
+		Vendor:      "openai",
+		ControlRepo: root,
+		WakeMethod:  loop.RunnerWakeMethod,
+		WakeTarget:  "unix:/tmp/evil.sock",
+		LastSeen:    now.Add(-10 * time.Minute),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), evil); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
+
+	err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
+		AgentID:             "watchdog",
+		StaleThreshold:      5 * time.Minute,
+		MessageAgeThreshold: time.Minute,
+		Now:                 func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logBytes, err := os.ReadFile(cfg.WatchdogLogPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, "poke codex failed") || !strings.Contains(logText, "refused") {
+		t.Fatalf("watchdog log missing runner-socket refusal for codex:\n%s", logText)
+	}
+}
+
+// TestWatchdogPoke_OwnedRunnerSocketAttemptsDial: the complement — an owned
+// runner socket is NOT refused; it proceeds to the dial (which fails because no
+// real runner listens, logging a connect error, NOT a "refused" error).
+func TestWatchdogPoke_OwnedRunnerSocketAttemptsDial(t *testing.T) {
+	root, cfg := setupWatchdogFixture(t)
+	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
+
+	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
+	owned := loop.RunnerWakeTarget(cfg.RunnerSocketPath("codex"))
+	reg := &loop.Registration{
+		AgentID:     "codex",
+		Vendor:      "openai",
+		ControlRepo: root,
+		WakeMethod:  loop.RunnerWakeMethod,
+		WakeTarget:  owned,
+		LastSeen:    now.Add(-10 * time.Minute),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), reg); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
+
+	if err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
+		AgentID:             "watchdog",
+		StaleThreshold:      5 * time.Minute,
+		MessageAgeThreshold: time.Minute,
+		Now:                 func() time.Time { return now },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logText := mustReadString(t, cfg.WatchdogLogPath())
+	if strings.Contains(logText, "refused") {
+		t.Fatalf("owned runner socket must NOT be refused:\n%s", logText)
+	}
+	// The dial fails (no listener) but it was ATTEMPTED — the failure is a
+	// connect error, distinct from a recipient-binding refusal.
+	if !strings.Contains(logText, "poke codex failed") {
+		t.Fatalf("expected a dial attempt+failure for the owned socket:\n%s", logText)
+	}
+}
+
+func mustReadString(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 func setupWatchdogFixture(t *testing.T) (string, *loop.Config) {
 	t.Helper()
 	root := t.TempDir()

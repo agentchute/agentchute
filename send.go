@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -286,13 +287,17 @@ func computeWakeReceipt(cfg *loop.Config, toID string, noWake bool) wakeReceipt 
 	// Recipient-binding for runner sockets: refuse to dial a unix: socket whose
 	// path the recipient does not legitimately own (e.g. a hand-written
 	// registration naming unix:/tmp/evil.sock). The pure shape validator can't
-	// see the recipient id; this check can.
+	// see the recipient id; this check can. We keep the explicit owned-check
+	// here (rather than relying solely on PokeRegistration's refusal) so the
+	// operator receipt can distinguish "refused" (attempted=false) from a
+	// dial "failed" (attempted=true); the poke itself still flows through the
+	// centralized recipient-bound helper.
 	if reg.WakeMethod == loop.RunnerWakeMethod {
 		if err := cfg.RunnerWakeTargetOwnedBy(toID, reg.WakeTarget); err != nil {
 			return wakeReceipt{method: reg.WakeMethod, attempted: false, result: fmt.Sprintf("refused (%v)", err)}
 		}
 	}
-	if err := loop.PokeWakeTarget(reg.WakeMethod, reg.WakeTarget); err != nil {
+	if err := loop.PokeRegistration(context.Background(), cfg, reg); err != nil {
 		return wakeReceipt{method: reg.WakeMethod, attempted: true, result: fmt.Sprintf("failed (%v)", err)}
 	}
 	return wakeReceipt{method: reg.WakeMethod, attempted: true, result: "ok"}

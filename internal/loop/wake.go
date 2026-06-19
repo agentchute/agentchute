@@ -77,6 +77,40 @@ func PokeWakeTargetContext(ctx context.Context, method, target string) error {
 	return adapter.Poke(ctx, target)
 }
 
+// PokeRegistration is the single recipient-bound entry point for every
+// registration-driven wake poke. It dispatches the poke declared by reg, but
+// for the runner method (agentchute-run) it FIRST proves the unix: socket path
+// is one the recipient legitimately owns (cfg.RunnerWakeTargetOwnedBy) and
+// REFUSES — never dialing — if it does not.
+//
+// This closes the recipient-binding gap: a hand-written peer registration that
+// names, e.g., unix:/tmp/evil.sock for an innocent peer id would otherwise be
+// dialed by the announce/corrective/watchdog/defer poke sites. recipientID is
+// always reg.AgentID — the socket must be owned by the agent the registration
+// is for; there is no scenario where a registration's runner socket should be
+// owned by anyone else.
+//
+// For non-runner methods (tmux/herdr/unknown) there is no socket-ownership
+// concept, so PokeRegistration simply pokes via PokeWakeTargetContext,
+// preserving prior behavior exactly. cfg is unused for those methods (and may
+// be nil for them, though callers always have one).
+//
+// A nil reg returns nil (treated as a no-op, consistent with IsPokable).
+func PokeRegistration(ctx context.Context, cfg *Config, reg *Registration) error {
+	if reg == nil {
+		return nil
+	}
+	if strings.TrimSpace(reg.WakeMethod) == RunnerWakeMethod {
+		if cfg == nil {
+			return fmt.Errorf("refused: cannot verify runner socket ownership without config")
+		}
+		if err := cfg.RunnerWakeTargetOwnedBy(reg.AgentID, reg.WakeTarget); err != nil {
+			return fmt.Errorf("refused: unowned runner socket: %w", err)
+		}
+	}
+	return PokeWakeTargetContext(ctx, reg.WakeMethod, reg.WakeTarget)
+}
+
 // tmuxAdapter wires the tmux wake convention (AGENTCHUTE.md §8) into the
 // registry. Backed by the existing PokeTargetContext implementation in
 // tmux.go.

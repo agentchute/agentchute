@@ -44,7 +44,8 @@ var (
 //   - tmux: ^%[0-9]+$ OR ^[A-Za-z0-9_-]+:[0-9]+\.[0-9]+$
 //   - herdr: an agent-id slug (same rule as ValidateAgentID / agentIDRE).
 //   - agentchute-run: must start with "unix:" and the remainder must be a
-//     clean absolute path (no NUL, no newline, filepath.IsAbs).
+//     clean absolute path (no NUL, no newline, filepath.IsAbs, and
+//     filepath.Clean(path) == path so traversal/dot segments are rejected).
 //
 // Unknown method: returns nil after the universal guard. This is a deliberate
 // permissive-with-comment choice so a forked binary adding e.g. a wezterm or
@@ -90,6 +91,14 @@ func ValidateWakeTarget(method, target string) error {
 		}
 		if !filepath.IsAbs(path) {
 			return fmt.Errorf("agentchute-run wake_target socket path %q must be absolute", path)
+		}
+		// Reject a non-clean path up front so unix:/tmp/../evil.sock,
+		// unix:/a/./b, double slashes, and trailing slashes can't slip a
+		// traversal past the recipient-binding owned-check (which compares
+		// against cleaned, canonical paths). filepath.Clean is a pure string
+		// op — no filesystem access — so this stays a shape check.
+		if filepath.Clean(path) != path {
+			return fmt.Errorf("agentchute-run wake_target socket path %q is not clean (want %q)", path, filepath.Clean(path))
 		}
 		return nil
 	default:

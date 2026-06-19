@@ -48,6 +48,10 @@ func TestValidateWakeTarget(t *testing.T) {
 		{"runner empty path after prefix", RunnerWakeMethod, "unix:", true},
 		{"runner newline in path", RunnerWakeMethod, "unix:/tmp/evil\n.sock", true},
 		{"runner NUL in path", RunnerWakeMethod, "unix:/tmp/evil\x00.sock", true},
+		{"runner non-clean dotdot path", RunnerWakeMethod, "unix:/tmp/../evil.sock", true},
+		{"runner non-clean dot path", RunnerWakeMethod, "unix:/a/./b", true},
+		{"runner non-clean trailing slash", RunnerWakeMethod, "unix:/tmp/x/", true},
+		{"runner non-clean double slash", RunnerWakeMethod, "unix://tmp/x.sock", true},
 	}
 
 	for _, tc := range cases {

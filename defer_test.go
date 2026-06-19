@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -132,6 +133,88 @@ func TestDeferTransitionsLedgerAndAcksSender(t *testing.T) {
 			t.Errorf("gate finish after defer err = %v, want nil", err)
 		}
 	})
+}
+
+// captureStderr mirrors captureStdout for the deferral-ack poke warning, which
+// is written to stderr (best-effort poke failures are non-fatal warnings).
+func captureStderr(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	done := make(chan struct{})
+	var buf bytes.Buffer
+	go func() {
+		_, _ = buf.ReadFrom(r)
+		close(done)
+	}()
+	cmdErr := fn()
+	_ = w.Close()
+	<-done
+	os.Stderr = orig
+	return buf.String(), cmdErr
+}
+
+// TestDeferAck_RefusesUnownedRunnerSocket: when the deferral-ack's recipient
+// (the original sender) advertises a runner wake_target it does not own, the
+// poke is REFUSED (recipient-binding) without dialing. The defer still succeeds
+// and the ack still lands; only the poke is skipped, with a stderr warning
+// whose "refused" wording proves the refusal short-circuited ahead of any dial.
+func TestDeferAck_RefusesUnownedRunnerSocket(t *testing.T) {
+	msgID, cfg := setupDeferFixture(t)
+	root := os.Getenv("TEST_DEFER_ROOT")
+
+	// Rewrite codex (the ack recipient) to advertise an unowned runner socket.
+	evil := &loop.Registration{
+		AgentID:     "codex",
+		Vendor:      "openai",
+		ControlRepo: cfg.ControlRepo,
+		WakeMethod:  loop.RunnerWakeMethod,
+		WakeTarget:  "unix:/tmp/evil.sock",
+		LastSeen:    time.Now().UTC(),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), evil); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr string
+	withCwd(t, root, func() {
+		var err error
+		stderr, err = captureStderr(t, func() error {
+			_, e := captureStdout(t, func() error {
+				return cmdDefer([]string{"--as", "claude-code", "--message", msgID, "--reason", "needs research"})
+			})
+			return e
+		})
+		if err != nil {
+			t.Fatalf("defer should succeed despite refused poke: %v", err)
+		}
+	})
+
+	if !strings.Contains(stderr, "refused") {
+		t.Fatalf("stderr should warn that the unowned runner poke was refused, got: %q", stderr)
+	}
+
+	// Ledger still transitioned and ack still delivered.
+	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := ledger.FindByMessageID(msgID)
+	if !ok || got.Status != loop.PendingReplyStatusDeferred {
+		t.Fatalf("ledger entry not deferred despite refused poke: ok=%v status=%v", ok, got.Status)
+	}
+	entries, err := os.ReadDir(cfg.AgentInboxDir("codex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("deferral-ack should still land in codex inbox even when poke is refused")
+	}
 }
 
 func TestDeferRejectsMissingMessageID(t *testing.T) {

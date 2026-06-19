@@ -227,7 +227,9 @@ func watchdogAgentCycle(ctx context.Context, cfg *loop.Config, reg *loop.Registr
 		return nil
 	}
 
-	if err := loop.PokeWakeTargetContext(ctx, reg.WakeMethod, reg.WakeTarget); err != nil {
+	// PokeRegistration refuses an unowned runner socket (recipient-binding)
+	// without dialing it; non-runner methods poke as before.
+	if err := loop.PokeRegistration(ctx, cfg, reg); err != nil {
 		logWatchdogEvent(cfg, now, "poke %s failed: %v", reg.AgentID, err)
 		return nil
 	}

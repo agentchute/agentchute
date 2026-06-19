@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -137,7 +138,7 @@ func cmdDefer(args []string) error {
 		// Poke the sender if pokable; failures are non-fatal.
 		regPath := cfg.AgentRegistrationPath(entry.From)
 		if reg, regErr := loop.ReadRegistration(regPath); regErr == nil && reg.IsPokable() {
-			if pokeErr := loop.PokeWakeTarget(reg.WakeMethod, reg.WakeTarget); pokeErr != nil {
+			if pokeErr := loop.PokeRegistration(context.Background(), cfg, reg); pokeErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: wake poke to %s failed (%v); ack still delivered\n", entry.From, pokeErr)
 			}
 		}
