@@ -825,6 +825,226 @@ func TestRegister_FreshResolvedWakeNotOverwritten(t *testing.T) {
 	})
 }
 
+// TestRegister_PaneLockKeyedOnAuthoritativeTarget asserts the tmux pane lock is
+// keyed on the FINAL (in-lock authoritative) wake target, not the stale pre-lock
+// snapshot. Defect #1: with the old pane->agent order, the lock wrapped publish
+// keyed on the PRE-LOCK target (%10) while the in-lock preserve re-derive wrote —
+// and pruned — the in-lock existing's target (%20). The fix flips to agent->pane
+// so the pane lock is taken INSIDE the agent lock keyed on the written target.
+//
+// Setup: drive publishRegistrationOnce with the preserve-from-existing path
+// (deferToExisting=true) carrying a STALE pre-lock target %10, while the on-disk
+// (in-lock authoritative) existing has %20. The pane lock and the same-pane prune
+// must both target %20.
+func TestRegister_PaneLockKeyedOnAuthoritativeTarget(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "test-agent"
+		host, _ := os.Hostname()
+		now := time.Now().UTC().Truncate(time.Second)
+		regPath := cfg.AgentRegistrationPath(agentID)
+
+		// In-lock authoritative existing: tmux %20 (NOT the stale pre-lock %10).
+		existing := &loop.Registration{
+			AgentID:     agentID,
+			Vendor:      "anthropic",
+			ControlRepo: root,
+			Host:        host,
+			WakeMethod:  "tmux",
+			WakeTarget:  "%20",
+			LastSeen:    now,
+			Status:      loop.StatusActive,
+		}
+		if err := loop.WriteRegistration(regPath, existing); err != nil {
+			t.Fatal(err)
+		}
+
+		// A same-pane peer on %20 (the authoritative target) that MUST be pruned,
+		// and a decoy peer on %10 (the stale pre-lock target) that must NOT be.
+		peer20 := *existing
+		peer20.AgentID = "peer-on-20"
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("peer-on-20"), &peer20); err != nil {
+			t.Fatal(err)
+		}
+		peer10 := *existing
+		peer10.AgentID = "peer-on-10"
+		peer10.WakeTarget = "%10"
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("peer-on-10"), &peer10); err != nil {
+			t.Fatal(err)
+		}
+
+		// Observe every pane-lock acquisition.
+		var locked []string
+		restore := setTmuxPaneLockObserver(func(target string) {
+			locked = append(locked, target)
+		})
+		defer restore()
+
+		// Pre-lock snapshot is the STALE %10; deferToExisting=true. The publish must
+		// re-derive the wake from the in-lock authoritative %20, key the pane lock on
+		// %20, and prune the %20 same-pane peer.
+		opts := registerOpts{AgentID: agentID, Vendor: "anthropic", PruneStalePeerTmux: false}
+		res, err := publishRegistrationOnce(cfg, opts, host, now, regPath, "tmux", "%10", nil, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if res.ResolvedWakeTarget != "%20" {
+			t.Fatalf("resolved wake target = %q, want %%20 (in-lock authoritative)", res.ResolvedWakeTarget)
+		}
+		if len(locked) != 1 || locked[0] != "%20" {
+			t.Fatalf("pane lock targets = %v, want exactly [%%20] (keyed on authoritative target, not stale pre-lock %%10)", locked)
+		}
+		// Same-pane prune must have removed the %20 peer, not the %10 decoy.
+		if _, err := os.Stat(cfg.AgentRegistrationPath("peer-on-20")); !os.IsNotExist(err) {
+			t.Fatalf("same-pane peer on %%20 should be pruned (authoritative target), stat err=%v", err)
+		}
+		if _, err := os.Stat(cfg.AgentRegistrationPath("peer-on-10")); err != nil {
+			t.Fatalf("peer on stale pre-lock %%10 must NOT be pruned: %v", err)
+		}
+	})
+}
+
+// TestRegister_NonTmuxPreLockToTmuxInLock_HoldsPaneLock: when the pre-lock
+// resolution was non-tmux (no pane lock would be taken under the old pane->agent
+// order) but the in-lock authoritative existing IS tmux, the write + same-pane
+// prune must run UNDER a pane lock for the tmux target — not lock-free. Defect #1
+// second face: the old order pruned a tmux pane with NO pane lock at all.
+func TestRegister_NonTmuxPreLockToTmuxInLock_HoldsPaneLock(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "test-agent"
+		host, _ := os.Hostname()
+		now := time.Now().UTC().Truncate(time.Second)
+		regPath := cfg.AgentRegistrationPath(agentID)
+
+		// In-lock authoritative existing is tmux %33.
+		existing := &loop.Registration{
+			AgentID:     agentID,
+			Vendor:      "anthropic",
+			ControlRepo: root,
+			Host:        host,
+			WakeMethod:  "tmux",
+			WakeTarget:  "%33",
+			LastSeen:    now,
+			Status:      loop.StatusActive,
+		}
+		if err := loop.WriteRegistration(regPath, existing); err != nil {
+			t.Fatal(err)
+		}
+		// Same-pane peer on %33 that must be pruned under the pane lock.
+		peer := *existing
+		peer.AgentID = "peer-on-33"
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("peer-on-33"), &peer); err != nil {
+			t.Fatal(err)
+		}
+
+		var locked []string
+		restore := setTmuxPaneLockObserver(func(target string) {
+			locked = append(locked, target)
+		})
+		defer restore()
+
+		// Pre-lock NON-tmux (empty method/target) but deferToExisting=true, so the
+		// FINAL wake is derived from the in-lock tmux existing. The pane lock MUST
+		// be acquired for %33 before the write + prune.
+		opts := registerOpts{AgentID: agentID, Vendor: "anthropic", PruneStalePeerTmux: false}
+		res, err := publishRegistrationOnce(cfg, opts, host, now, regPath, "", "", nil, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if res.ResolvedWakeMethod != "tmux" || res.ResolvedWakeTarget != "%33" {
+			t.Fatalf("resolved wake = %q:%q, want tmux:%%33", res.ResolvedWakeMethod, res.ResolvedWakeTarget)
+		}
+		if len(locked) != 1 || locked[0] != "%33" {
+			t.Fatalf("pane lock targets = %v, want exactly [%%33] (tmux write/prune must hold the pane lock)", locked)
+		}
+		if _, err := os.Stat(cfg.AgentRegistrationPath("peer-on-33")); !os.IsNotExist(err) {
+			t.Fatalf("same-pane peer on %%33 should be pruned under the pane lock, stat err=%v", err)
+		}
+	})
+}
+
+// TestRegister_NilToExistingRaceDoesNotClobberWake closes defect #2: a pre-lock
+// resolution that saw NO existing (fresh, empty wake) must NOT clobber a wake
+// written by a concurrent registrar that created the registration before the
+// in-lock authoritative re-read. The fix: the no-live-wake/no-pre-lock-existing
+// case defers the wake decision to the in-lock existing, so a nil->existing
+// create is honored, not overwritten with empty.
+func TestRegister_NilToExistingRaceDoesNotClobberWake(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "test-agent"
+		host, _ := os.Hostname()
+		now := time.Now().UTC().Truncate(time.Second)
+		regPath := cfg.AgentRegistrationPath(agentID)
+
+		// Concurrent registrar created the registration with a real wake AFTER the
+		// pre-lock read saw nothing, but BEFORE the in-lock authoritative re-read.
+		concurrent := &loop.Registration{
+			AgentID:     agentID,
+			Vendor:      "anthropic",
+			ControlRepo: root,
+			Host:        host,
+			WakeMethod:  "tmux",
+			WakeTarget:  "%55",
+			LastSeen:    now,
+			Status:      loop.StatusActive,
+		}
+		if err := loop.WriteRegistration(regPath, concurrent); err != nil {
+			t.Fatal(err)
+		}
+
+		// Defect #2 root: with NO pre-lock existing and no live wake context (no
+		// pane, no explicit flags, no ClearStaleTmuxWake), the resolver must signal
+		// DEFER-to-existing — NOT a deliberate empty clear. Otherwise the in-lock
+		// publish writes empty over a concurrent nil->existing create.
+		os.Unsetenv("TMUX_PANE")
+		opts := registerOpts{AgentID: agentID, Vendor: "anthropic"}
+		_, _, deferToExisting, _ := resolveWakeForRegistration(opts, nil)
+		if !deferToExisting {
+			t.Fatalf("resolveWakeForRegistration(nil existing, no live context) deferToExisting=false, want true (else empty wake clobbers a concurrent nil->existing create)")
+		}
+
+		// And the publish, given that defer signal, must honor the in-lock
+		// existing's %55, NOT clobber it with empty.
+		res, err := publishRegistrationOnce(cfg, opts, host, now, regPath, "", "", nil, deferToExisting)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if res.ResolvedWakeMethod != "tmux" || res.ResolvedWakeTarget != "%55" {
+			t.Fatalf("resolved wake = %q:%q, want tmux:%%55 (in-lock existing honored, not clobbered)", res.ResolvedWakeMethod, res.ResolvedWakeTarget)
+		}
+		reg, err := loop.ReadRegistration(regPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reg.WakeMethod != "tmux" || reg.WakeTarget != "%55" {
+			t.Fatalf("written wake = %q:%q, want tmux:%%55 (nil->existing race clobbered the concurrent create)", reg.WakeMethod, reg.WakeTarget)
+		}
+	})
+}
+
 func TestRegisterExplicitEmptyTmuxPaneOverridesEnv(t *testing.T) {
 	withFakeTmuxTargets(t, "%99")
 	root := t.TempDir()

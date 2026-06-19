@@ -70,7 +70,7 @@ func TestResolveWakeExplicitHerdrOutsidePaneWarns(t *testing.T) {
 	t.Setenv("HERDR_ENV", "")
 	t.Setenv("HERDR_SOCKET_PATH", "")
 
-	method, target, preserved, warnings := resolveWakeForRegistration(registerOpts{
+	method, target, deferToExisting, warnings := resolveWakeForRegistration(registerOpts{
 		AgentID:            "test-agent",
 		WakeMethod:         "herdr",
 		WakeMethodProvided: true,
@@ -78,8 +78,8 @@ func TestResolveWakeExplicitHerdrOutsidePaneWarns(t *testing.T) {
 	if method != "" || target != "" {
 		t.Fatalf("explicit herdr outside pane = method %q target %q, want non-pokable", method, target)
 	}
-	if preserved {
-		t.Fatalf("explicit herdr clear path = preservedFromExisting true, want false (deliberate clear)")
+	if deferToExisting {
+		t.Fatalf("explicit herdr clear path = deferToExisting true, want false (deliberate clear written verbatim)")
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "HERDR_PANE_ID unset") {
 		t.Fatalf("warnings = %#v, want HERDR_PANE_ID warning", warnings)

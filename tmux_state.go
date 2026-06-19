@@ -142,6 +142,12 @@ func pruneSamePanePeerTmuxRegistrations(cfg *loop.Config, selfID, host, target s
 	return peers, nil
 }
 
+// tmuxPaneLockObserver, when non-nil, is invoked with the target each time
+// withTmuxPaneRegistrationLock actually acquires a pane lock (i.e. the real
+// host+target path, not the empty-target passthrough). Test-only observation
+// seam; nil in production. It fires while the lock is held, before fn runs.
+var tmuxPaneLockObserver func(target string)
+
 func withTmuxPaneRegistrationLock(cfg *loop.Config, host, target string, fn func() (*registerResult, error)) (*registerResult, error) {
 	host = strings.TrimSpace(host)
 	target = strings.TrimSpace(target)
@@ -161,6 +167,9 @@ func withTmuxPaneRegistrationLock(cfg *loop.Config, host, target string, fn func
 		err := os.Mkdir(lockPath, 0o700)
 		if err == nil {
 			defer os.Remove(lockPath)
+			if tmuxPaneLockObserver != nil {
+				tmuxPaneLockObserver(target)
+			}
 			return fn()
 		}
 		if !os.IsExist(err) {

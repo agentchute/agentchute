@@ -56,6 +56,15 @@ func withFakeTmuxTargets(t *testing.T, targets ...string) {
 	})
 }
 
+// setTmuxPaneLockObserver installs a pane-lock acquisition observer and returns
+// a restore func. Tests use it to assert which target the tmux pane lock was
+// keyed on (the authoritative in-lock target, not the stale pre-lock snapshot).
+func setTmuxPaneLockObserver(fn func(target string)) func() {
+	old := tmuxPaneLockObserver
+	tmuxPaneLockObserver = fn
+	return func() { tmuxPaneLockObserver = old }
+}
+
 func mustWriteCanonicalHook(t *testing.T, root, wrapper string) {
 	t.Helper()
 	for _, h := range hookWrappers {
