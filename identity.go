@@ -13,6 +13,22 @@ import (
 )
 
 func resolveAgentID(flagID, vendor string, cfg *loop.Config) (string, error) {
+	id, err := resolveAgentIDRaw(flagID, vendor, cfg)
+	if err != nil {
+		return "", err
+	}
+	// Structural traversal-safety: every path that produces an agent id flows
+	// through this single validation, so a hostile --as / AGENTCHUTE_AGENT_ID
+	// (e.g. "../../etc/x") can never escape to filesystem resolution. The
+	// contextual-default derivation already yields valid ids; this re-check is
+	// defense in depth and the sole gate for the explicit-input paths.
+	if err := loop.ValidateAgentID(id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func resolveAgentIDRaw(flagID, vendor string, cfg *loop.Config) (string, error) {
 	// 1. Explicit --as flag wins.
 	if strings.TrimSpace(flagID) != "" {
 		return strings.TrimSpace(flagID), nil

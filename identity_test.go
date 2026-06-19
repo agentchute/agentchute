@@ -31,6 +31,50 @@ func TestSlugify(t *testing.T) {
 	}
 }
 
+func TestResolveAgentID_RejectsTraversal(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(root, "proj")
+	_ = os.MkdirAll(cwd, 0o700)
+	origCwd, _ := os.Getwd()
+	_ = os.Chdir(cwd)
+	defer os.Chdir(origCwd)
+	t.Setenv("AGENTCHUTE_AGENT_ID", "")
+
+	// Hostile explicit --as values must be rejected structurally — never
+	// returned for downstream filesystem resolution.
+	flagAttacks := []string{
+		"../../etc/x",
+		"../sibling",
+		"a/b",
+		"foo/../bar",
+		"UPPER",
+		".hidden",
+		"-leading-dash",
+	}
+	for _, bad := range flagAttacks {
+		if got, err := resolveAgentID(bad, "anthropic", nil); err == nil {
+			t.Errorf("resolveAgentID(--as=%q) = %q, want error", bad, got)
+		}
+	}
+
+	// A hostile AGENTCHUTE_AGENT_ID must be rejected too.
+	t.Setenv("AGENTCHUTE_AGENT_ID", "../../etc/passwd")
+	if got, err := resolveAgentID("", "anthropic", nil); err == nil {
+		t.Errorf("resolveAgentID(env=../../etc/passwd) = %q, want error", got)
+	}
+	t.Setenv("AGENTCHUTE_AGENT_ID", "")
+
+	// The empty-input → contextual-default path must still succeed and yield a
+	// valid id.
+	got, err := resolveAgentID("", "anthropic", nil)
+	if err != nil {
+		t.Fatalf("contextual default errored: %v", err)
+	}
+	if err := loop.ValidateAgentID(got); err != nil {
+		t.Fatalf("contextual default %q is not a valid agent id: %v", got, err)
+	}
+}
+
 func TestResolveAgentID(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(root, "my-Project")
