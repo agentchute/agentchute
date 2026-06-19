@@ -92,6 +92,67 @@ func TestWithAgentLock_SerializesConcurrentLedgerAppends(t *testing.T) {
 	}
 }
 
+// TestWithAgentLock_MutualExclusionNoOverlap asserts the lock is real mutual
+// exclusion: across many concurrent holders, no two critical sections ever
+// overlap. This is the correctness property the Windows implementation must
+// satisfy — the prior O_CREATE|O_EXCL + age-based stale-reclaim could be stolen
+// from a live holder whose section ran long, double-holding the lock. The test
+// is portable (runs against whichever build-tagged impl is compiled) and uses
+// short critical sections well under any stale window.
+func TestWithAgentLock_MutualExclusionNoOverlap(t *testing.T) {
+	cfg := newLockTestConfig(t)
+	const agentID = "claude-code"
+	const goroutines = 16
+	const itersEach = 8
+
+	var (
+		mu       sync.Mutex
+		inside   int
+		maxObs   int
+		overlaps int
+	)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines*itersEach)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < itersEach; i++ {
+				if err := withAgentLock(cfg, agentID, func() error {
+					mu.Lock()
+					inside++
+					if inside > maxObs {
+						maxObs = inside
+					}
+					if inside > 1 {
+						overlaps++
+					}
+					mu.Unlock()
+
+					// Tiny critical section to widen the overlap window.
+					time.Sleep(time.Millisecond)
+
+					mu.Lock()
+					inside--
+					mu.Unlock()
+					return nil
+				}); err != nil {
+					errs <- err
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("withAgentLock: %v", err)
+	}
+	if overlaps != 0 || maxObs != 1 {
+		t.Fatalf("lock did NOT provide mutual exclusion: max concurrent holders=%d overlaps=%d (want 1, 0)", maxObs, overlaps)
+	}
+}
+
 // TestWithAgentLock_BoundedWaitDoesNotDeadlock holds the lock past the bounded
 // wait window in one goroutine and verifies a competing acquisition returns a
 // timeout error instead of blocking forever.

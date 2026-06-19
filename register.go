@@ -120,72 +120,121 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 
 func performRegisterOnce(cfg *loop.Config, opts registerOpts, host string, now time.Time) (*registerResult, error) {
 	regPath := cfg.AgentRegistrationPath(opts.AgentID)
+	// Initial (lock-free) read of `existing` is advisory only: it resolves the
+	// wake_method/target, which keys the tmux pane lock and the result fields.
+	// The AUTHORITATIVE read that feeds the registration merge is re-taken under
+	// the per-agent lock in publishRegistrationOnce (Fix A) so a concurrent
+	// locked UpdateLastSeen / markRunnerOffline cannot be clobbered by a stale
+	// merge.
 	existing, err := loop.ReadRegistration(regPath)
-	existingFound := false
-	if err == nil {
-		existingFound = true
-	} else if !os.IsNotExist(err) {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read existing registration: %w", err)
 	}
 
 	wakeMethod, wakeTarget, warnings := resolveWakeForRegistration(opts, existing)
 
 	publish := func() (*registerResult, error) {
-		return publishRegistrationOnce(cfg, opts, host, now, regPath, existing, existingFound, wakeMethod, wakeTarget, warnings)
+		return publishRegistrationOnce(cfg, opts, host, now, regPath, wakeMethod, wakeTarget, warnings)
 	}
+	// Lock order is pane -> agent: the tmux pane lock (taken here) wraps the
+	// publish closure, and publishRegistrationOnce takes the per-agent lock
+	// INSIDE it. No code path takes agent-then-pane (UpdateLastSeen,
+	// markRunnerOffline, and clearStaleRunnerWakeTargets take only the agent
+	// lock; the peer prunes here are lock-free), so this nesting cannot deadlock.
 	if strings.TrimSpace(wakeMethod) == "tmux" && strings.TrimSpace(wakeTarget) != "" {
 		return withTmuxPaneRegistrationLock(cfg, host, wakeTarget, publish)
 	}
 	return publish()
 }
 
-func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, now time.Time, regPath string, existing *loop.Registration, existingFound bool, wakeMethod, wakeTarget string, warnings []string) (*registerResult, error) {
-	reg := &loop.Registration{
-		AgentID:      opts.AgentID,
-		Vendor:       opts.Vendor,
-		ControlRepo:  cfg.ControlRepo,
-		WorkingRepos: opts.WorkingRepos,
-		Host:         host,
-		WakeMethod:   wakeMethod,
-		WakeTarget:   wakeTarget,
-		LastSeen:     now,
-		Status:       loop.StatusActive,
-	}
-
-	if existingFound {
-		if len(opts.WorkingRepos) == 0 {
-			reg.WorkingRepos = existing.WorkingRepos
-		}
-		if existing.LastActive != nil {
-			reg.LastActive = existing.LastActive
-		}
-		reg.Body = existing.Body
-		// Status and RestartAt are NOT preserved. `register` / `boot` mean
-		// "this agent is active now": an agent previously marked exhausted/
-		// offline with a future RestartAt would otherwise stay invisible to
-		// watchdog pokes even after re-enrolling.
-	}
-
-	if opts.BioProvided {
-		reg.Body = opts.Bio
-	}
-
-	if !existingFound && opts.ContextualIdentity {
-		if err := loop.WriteRegistrationExclusive(regPath, reg); err != nil {
-			if os.IsExist(err) {
-				return nil, err
-			}
-			return nil, fmt.Errorf("write registration: %w", err)
-		}
-	} else if err := loop.WriteRegistration(regPath, reg); err != nil {
-		return nil, fmt.Errorf("write registration: %w", err)
-	}
-
+func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, now time.Time, regPath string, wakeMethod, wakeTarget string, warnings []string) (*registerResult, error) {
 	inboxDir := cfg.AgentInboxDir(opts.AgentID)
-	if err := loop.EnsurePrivateDir(inboxDir); err != nil {
-		return nil, fmt.Errorf("create inbox dir: %w", err)
+
+	var reg *loop.Registration
+	var existingFound bool
+
+	// Fix A: the read of `existing`, the merge, the inbox/state dir creation, and
+	// the write all run inside ONE per-agent lock so the read-modify-write is
+	// atomic against concurrent locked writers (UpdateLastSeen / markRunnerOffline
+	// / ledger). This is the agent lock; it nests inside the pane lock (pane ->
+	// agent) and must never be re-acquired for the same agentID on this stack —
+	// ReadRegistration / WriteRegistration / WriteRegistrationExclusive /
+	// EnsurePrivateDir are all lock-free inner helpers, so there is no nesting.
+	err := loop.WithAgentLock(cfg, opts.AgentID, func() error {
+		// Authoritative re-read under the lock — this is the view the merge writes.
+		existing, rerr := loop.ReadRegistration(regPath)
+		if rerr == nil {
+			existingFound = true
+		} else if !os.IsNotExist(rerr) {
+			return fmt.Errorf("read existing registration: %w", rerr)
+		}
+
+		reg = &loop.Registration{
+			AgentID:      opts.AgentID,
+			Vendor:       opts.Vendor,
+			ControlRepo:  cfg.ControlRepo,
+			WorkingRepos: opts.WorkingRepos,
+			Host:         host,
+			WakeMethod:   wakeMethod,
+			WakeTarget:   wakeTarget,
+			LastSeen:     now,
+			Status:       loop.StatusActive,
+		}
+
+		if existingFound {
+			if len(opts.WorkingRepos) == 0 {
+				reg.WorkingRepos = existing.WorkingRepos
+			}
+			if existing.LastActive != nil {
+				reg.LastActive = existing.LastActive
+			}
+			reg.Body = existing.Body
+			// Status and RestartAt are NOT preserved. `register` / `boot` mean
+			// "this agent is active now": an agent previously marked exhausted/
+			// offline with a future RestartAt would otherwise stay invisible to
+			// watchdog pokes even after re-enrolling.
+		}
+
+		if opts.BioProvided {
+			reg.Body = opts.Bio
+		}
+
+		// Fix A2: create the inbox (and the agent-state dir) BEFORE publishing the
+		// registration so a peer can never observe a live registration with no
+		// inbox. (WithAgentLock already created the state dir for the lockfile; we
+		// ensure the inbox here, still pre-write.) A leftover empty inbox dir for an
+		// id whose exclusive create then loses the race is harmless.
+		if err := loop.EnsurePrivateDir(inboxDir); err != nil {
+			return fmt.Errorf("create inbox dir: %w", err)
+		}
+
+		if !existingFound && opts.ContextualIdentity {
+			// Atomic create-if-not-exists, preserved for the fresh-contextual
+			// collision path. EEXIST propagates (via os.IsExist) so performRegister's
+			// retry loop can adopt or suffix. Running inside the agent lock keeps it
+			// atomic w.r.t. our own concurrent writers; the exclusive link still
+			// guards against a different process that never took our lock.
+			if werr := loop.WriteRegistrationExclusive(regPath, reg); werr != nil {
+				if os.IsExist(werr) {
+					return werr
+				}
+				return fmt.Errorf("write registration: %w", werr)
+			}
+		} else if werr := loop.WriteRegistration(regPath, reg); werr != nil {
+			return fmt.Errorf("write registration: %w", werr)
+		}
+		return nil
+	})
+	if err != nil {
+		// err is returned verbatim so the contextual-collision retry loop in
+		// performRegister can detect the exclusive-create race via os.IsExist
+		// (WriteRegistrationExclusive returns the raw os.ErrExist).
+		return nil, err
 	}
 
+	// Peer pruning runs OUTSIDE the agent lock: it touches only PEER registration
+	// files (never our own) and takes no agent lock, so keeping it out of the
+	// locked region keeps that region minimal without changing behavior.
 	var peerWakeStale []peerWakeStale
 	if opts.PruneStalePeerTmux {
 		stale, err := pruneStalePeerTmuxRegistrations(cfg, opts.AgentID)

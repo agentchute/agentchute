@@ -82,6 +82,188 @@ func TestPerformRegisterConcurrentSamePaneReusesBase(t *testing.T) {
 	})
 }
 
+// TestRegister_RMWUnderAgentLock drives a concurrent performRegister
+// (existing-merge path) against many UpdateLastSeen calls and asserts the
+// registration file is never torn (always parses) — the lost-update / file-tear
+// surface Fix A closes by running performRegisterOnce's read of `existing` and
+// the write inside one WithAgentLock.
+func TestRegister_RMWUnderAgentLock(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "claude-code"
+		now := time.Now().UTC()
+
+		// Seed an existing registration so performRegister takes the merge path.
+		seed := registerOpts{AgentID: agentID, Vendor: "anthropic"}
+		if _, err := performRegister(cfg, seed, now); err != nil {
+			t.Fatal(err)
+		}
+
+		var wg sync.WaitGroup
+		errs := make(chan error, 128)
+		// Many performRegister merges (read existing → write) concurrently...
+		for i := 0; i < 30; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				opts := registerOpts{AgentID: agentID, Vendor: "anthropic"}
+				if _, err := performRegister(cfg, opts, now.Add(time.Duration(i)*time.Second)); err != nil {
+					errs <- err
+				}
+			}(i)
+		}
+		// ...racing UpdateLastSeen on the same registration.
+		for i := 0; i < 30; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				if err := loop.UpdateLastSeen(cfg, agentID, now.Add(time.Duration(i)*time.Minute)); err != nil {
+					errs <- err
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatalf("concurrent register/update: %v", err)
+		}
+
+		// The file must always be readable (never half-written / torn).
+		reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
+		if err != nil {
+			t.Fatalf("registration torn / unreadable after concurrency: %v", err)
+		}
+		if reg.AgentID != agentID {
+			t.Fatalf("agent_id = %q, want %q", reg.AgentID, agentID)
+		}
+	})
+}
+
+// TestRegister_NoLostUpdateVsConcurrentUpdateLastSeen asserts that a
+// performRegister merge cannot silently clobber a concurrently-recorded
+// last_active. performRegister preserves existing.LastActive across the
+// read-merge-write; without the lock its stale read could overwrite a
+// last_active written by an interleaved UpdateLastActive (lost update). With
+// Fix A the read and write are atomic under WithAgentLock, so the recorded
+// last_active survives.
+func TestRegister_NoLostUpdateVsConcurrentUpdateLastSeen(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "claude-code"
+		base := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+
+		// Seed.
+		if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, base); err != nil {
+			t.Fatal(err)
+		}
+
+		lastActive := base.Add(48 * time.Hour)
+		var wg sync.WaitGroup
+		errs := make(chan error, 64)
+
+		// Writer that records a definite last_active, racing many re-registers.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := loop.UpdateLastActive(cfg, agentID, lastActive); err != nil {
+				errs <- err
+			}
+		}()
+		for i := 0; i < 40; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, base.Add(time.Duration(i)*time.Second)); err != nil {
+					errs <- err
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatalf("concurrent mutation: %v", err)
+		}
+
+		// After UpdateLastActive committed, a re-register merge must preserve it,
+		// not roll it back to nil. Run one final register to settle ordering, then
+		// assert last_active is present.
+		if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, base.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reg.LastActive == nil {
+			t.Fatal("last_active was clobbered to nil by a stale register merge (lost update)")
+		}
+		if !reg.LastActive.Equal(lastActive) {
+			t.Fatalf("last_active = %v, want %v (preserved across merge)", reg.LastActive, lastActive)
+		}
+	})
+}
+
+// TestRegister_InboxExistsBeforeRegistrationVisible: after register returns the
+// inbox dir exists; Fix A2 additionally guarantees the inbox/state dirs are
+// created BEFORE the registration file is published, so a peer can never observe
+// a live registration with no inbox. We assert the post-condition (inbox exists)
+// and, as an ordering probe, that the inbox dir's creation does not lag behind a
+// readable registration.
+func TestRegister_InboxExistsBeforeRegistrationVisible(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "claude-code"
+
+		res, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Post-condition: inbox exists once register returns.
+		inbox := cfg.AgentInboxDir(agentID)
+		info, err := os.Stat(inbox)
+		if err != nil {
+			t.Fatalf("inbox dir missing after register: %v", err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("inbox path %s is not a directory", inbox)
+		}
+		if res.InboxDir != inbox {
+			t.Fatalf("result InboxDir = %q, want %q", res.InboxDir, inbox)
+		}
+
+		// Ordering invariant (Fix A2): whenever the registration file is visible,
+		// the inbox dir is too. Since both exist now, the weaker observable check
+		// is that a reader of the registration also finds the inbox. We assert the
+		// registration parses AND the inbox exists — the code guarantees inbox is
+		// created strictly before the registration write under the lock.
+		if _, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID)); err != nil {
+			t.Fatalf("registration unreadable: %v", err)
+		}
+		if _, err := os.Stat(inbox); err != nil {
+			t.Fatalf("registration visible but inbox missing: %v", err)
+		}
+	})
+}
+
 func TestPerformRegisterConcurrentSameHerdrPaneReusesBase(t *testing.T) {
 	root := t.TempDir()
 	base := "claude-code-" + getFolderSlug(root)

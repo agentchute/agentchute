@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,177 @@ import (
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
+
+// writeReplyRequiredInbox drops a valid §6.1.2-named, reply_required message
+// into recipient's inbox and returns its filename + path.
+func writeReplyRequiredInbox(t *testing.T, cfg *loop.Config, recipient, messageID string) (string, string) {
+	t.Helper()
+	inbox := cfg.AgentInboxDir(recipient)
+	filename := "2026-05-19T22-02-00-000000Z_from-codex_msg-abcd.md"
+	body := "---\n" +
+		"message_id: " + messageID + "\n" +
+		"from: codex\n" +
+		"to: " + recipient + "\n" +
+		"reply_required: true\n" +
+		"task: please reply\n" +
+		"---\n" +
+		"\nplease reply\n"
+	path := filepath.Join(inbox, filename)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filename, path
+}
+
+// TestCheck_RecordFailureLeavesMessageInInbox: when recording the reply
+// obligation fails (ledger error or lock timeout), check must NOT archive the
+// message — it stays in the inbox so the next check re-processes it. Fix C
+// (gemini finding): archiving before a failed record silently drops the
+// obligation.
+func TestCheck_RecordFailureLeavesMessageInInbox(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	filename, inboxPath := writeReplyRequiredInbox(t, cfg, "claude-code", "rec-fail-1")
+
+	// Inject a record failure (simulating a ledger write error or lock timeout).
+	injected := errors.New("injected record/lock failure")
+	orig := recordReplyObligationFn
+	recordReplyObligationFn = func(_ *loop.Config, _ string, _ loop.Message, _ string, _ []byte, _ time.Time) error {
+		return injected
+	}
+	t.Cleanup(func() { recordReplyObligationFn = orig })
+
+	var cmdErr error
+	withCwd(t, root, func() {
+		_, cmdErr = captureStdout(t, func() error {
+			return cmdCheck([]string{"--as", "claude-code"})
+		})
+	})
+	if cmdErr == nil {
+		t.Fatal("cmdCheck returned nil; want the injected record failure surfaced")
+	}
+
+	// The message must STILL be in the inbox (not archived).
+	if _, err := os.Stat(inboxPath); err != nil {
+		t.Fatalf("message was removed from inbox despite record failure: %v", err)
+	}
+
+	// And it must NOT be in the archive dir.
+	archiveEntries, _ := os.ReadDir(cfg.ArchiveDir())
+	for _, e := range archiveEntries {
+		if strings.Contains(e.Name(), filename) {
+			t.Fatalf("message archived %q despite record failure (obligation would be silently dropped)", e.Name())
+		}
+	}
+
+	// No ledger entry either (record failed).
+	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Pending) != 0 {
+		t.Fatalf("ledger has %d entries; want 0 after a failed record", len(ledger.Pending))
+	}
+
+	// Re-processable: clear the injected failure and re-check; now it archives
+	// and records exactly once.
+	recordReplyObligationFn = orig
+	withCwd(t, root, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdCheck([]string{"--as", "claude-code"})
+		}); err != nil {
+			t.Fatalf("re-check after clearing failure: %v", err)
+		}
+	})
+	if _, err := os.Stat(inboxPath); !os.IsNotExist(err) {
+		t.Fatalf("message still in inbox after successful re-check (stat err=%v)", err)
+	}
+	ledger, err = loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Pending) != 1 {
+		t.Fatalf("ledger has %d entries after re-check; want exactly 1", len(ledger.Pending))
+	}
+}
+
+// TestCheck_RecordThenArchive_IdempotentOnReRecord: record succeeds, but then
+// archiving the file is simulated to fail; the message stays in the inbox and
+// is re-checked next cycle. The second check re-records the SAME message_id +
+// original_filename — which must be idempotent (single ledger entry, no error)
+// — and then archives. Confirms record-before-archive plus filename-keyed
+// idempotency (Fix C).
+func TestCheck_RecordThenArchive_IdempotentOnReRecord(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	filename, inboxPath := writeReplyRequiredInbox(t, cfg, "claude-code", "idem-1")
+
+	// First check: record succeeds (real recorder) but archiving "fails" — we
+	// simulate the archive-fail-after-record-success window by recording the
+	// obligation in the seam and then returning an error so check does NOT
+	// archive (the real flow records first, then archives; an archive error
+	// would also leave the message in the inbox, but the ledger entry persists).
+	recorded := false
+	orig := recordReplyObligationFn
+	recordReplyObligationFn = func(c *loop.Config, agentID string, msg loop.Message, archivePath string, content []byte, now time.Time) error {
+		if err := orig(c, agentID, msg, archivePath, content, now); err != nil {
+			return err
+		}
+		recorded = true
+		// Simulate an archive failure happening AFTER the record succeeded by
+		// returning an error from the record seam on the first pass only.
+		return errors.New("simulated archive-fail after record-success")
+	}
+
+	var cmdErr error
+	withCwd(t, root, func() {
+		_, cmdErr = captureStdout(t, func() error {
+			return cmdCheck([]string{"--as", "claude-code"})
+		})
+	})
+	if cmdErr == nil {
+		t.Fatal("first check: want surfaced error from the simulated archive-fail")
+	}
+	if !recorded {
+		t.Fatal("first check: obligation was not recorded before the failure")
+	}
+	// Message stays in inbox (not archived because the step errored).
+	if _, err := os.Stat(inboxPath); err != nil {
+		t.Fatalf("message removed from inbox after record-success/archive-fail: %v", err)
+	}
+	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Pending) != 1 {
+		t.Fatalf("after first check: ledger has %d entries; want 1", len(ledger.Pending))
+	}
+
+	// Second check: restore the real recorder; it re-records the SAME
+	// message_id + original_filename, which must be idempotent (no duplicate,
+	// no error), then archives.
+	recordReplyObligationFn = orig
+	t.Cleanup(func() { recordReplyObligationFn = orig })
+	withCwd(t, root, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdCheck([]string{"--as", "claude-code"})
+		}); err != nil {
+			t.Fatalf("second check (re-record same filename) errored: %v", err)
+		}
+	})
+
+	ledger, err = loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Pending) != 1 {
+		t.Fatalf("after re-record: ledger has %d entries; want exactly 1 (idempotent on filename)", len(ledger.Pending))
+	}
+	if ledger.Pending[0].OriginalFilename != filename {
+		t.Fatalf("ledger OriginalFilename = %q, want %q", ledger.Pending[0].OriginalFilename, filename)
+	}
+	if _, err := os.Stat(inboxPath); !os.IsNotExist(err) {
+		t.Fatalf("message still in inbox after second check (stat err=%v)", err)
+	}
+}
 
 // Spec rev3 §A.9 lifecycle: `check` archives a message with frontmatter
 // `reply_required: true` AND records a pending entry in the recipient's

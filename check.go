@@ -21,6 +21,11 @@ const (
 	cooperativeMessageAgeThreshold = 90 * time.Second
 )
 
+// recordReplyObligationFn is the seam check uses to record a pending-reply
+// obligation. It is a package var (not a direct call) only so tests can inject
+// a record/lock failure and assert the message is left in the inbox un-archived.
+var recordReplyObligationFn = recordReplyObligation
+
 func cmdCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -197,18 +202,23 @@ func cmdCheck(args []string) error {
 		fmt.Println()
 
 		if !noArchive {
-			archivePath, err := loop.ArchiveMessage(msg, cfg.ArchiveDir(), agentID, now)
-			if err != nil {
-				return fmt.Errorf("archive message %s: %w", msg.Path, err)
-			}
-			// v0.1.1 ledger integration: if the archived message carries
-			// frontmatter `reply_required: true`, record a pending entry so
-			// `gate --before finish` blocks until the agent replies or defers.
-			// Errors here are loud: per codex's ledger integration note, an
-			// archived obligation without a ledger entry is a silent
-			// protocol leak.
-			if err := recordReplyObligation(cfg, agentID, msg, archivePath, content, now); err != nil {
+			// Record-before-archive (Fix C / gemini finding): the message must
+			// not leave the inbox until its reply obligation is durably recorded.
+			// If recording fails (ledger error OR the per-agent lock timeout),
+			// archiving first would move the message out of the inbox with no
+			// ledger entry — a silently dropped obligation. We compute the archive
+			// path the move WILL produce (deterministic in `now`+filename) so the
+			// ledger entry's archive_path is correct, record the obligation, and
+			// only then archive. On record failure we return WITHOUT archiving so
+			// the message stays in the inbox and the next `check` re-processes it;
+			// the re-record is idempotent on (message_id, original_filename), so a
+			// record-success-then-archive-fail next cycle does not double-record.
+			archivePath := loop.ArchiveMessageDest(msg, cfg.ArchiveDir(), agentID, now)
+			if err := recordReplyObligationFn(cfg, agentID, msg, archivePath, content, now); err != nil {
 				return fmt.Errorf("record reply obligation for %s: %w", msg.Filename, err)
+			}
+			if _, err := loop.ArchiveMessage(msg, cfg.ArchiveDir(), agentID, now); err != nil {
+				return fmt.Errorf("archive message %s: %w", msg.Path, err)
 			}
 		}
 		processed++

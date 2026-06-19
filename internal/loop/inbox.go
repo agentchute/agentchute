@@ -339,6 +339,18 @@ func isRegularDirEntry(entry os.DirEntry) (bool, error) {
 //
 // The move is atomic via os.Rename when source and destination share a
 // filesystem (the normal case for in-repo state).
+// ArchiveMessageDest returns the absolute archive path ArchiveMessage will
+// write for the given message and consumedAt time, WITHOUT touching the
+// filesystem. It is deterministic in (consumedAt, recipient, msg.Filename), so
+// `check` can record the pending-reply obligation with the correct archive_path
+// BEFORE the message is moved out of the inbox (record-before-archive). The
+// returned path stays valid as long as ArchiveMessage is called with the same
+// arguments.
+func ArchiveMessageDest(msg Message, archiveDir, recipient string, consumedAt time.Time) string {
+	archivedName := fmt.Sprintf("%s_to-%s_%s", formatArchiveTimestamp(consumedAt), recipient, msg.Filename)
+	return filepath.Join(archiveDir, archivedName)
+}
+
 func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.Time) (string, error) {
 	if err := ValidateAgentID(recipient); err != nil {
 		return "", fmt.Errorf("recipient: %w", err)
@@ -349,8 +361,7 @@ func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.T
 	if err := ensurePrivateDir(archiveDir); err != nil {
 		return "", err
 	}
-	archivedName := fmt.Sprintf("%s_to-%s_%s", formatArchiveTimestamp(consumedAt), recipient, msg.Filename)
-	dest := filepath.Join(archiveDir, archivedName)
+	dest := ArchiveMessageDest(msg, archiveDir, recipient, consumedAt)
 	if err := linkNoClobber(msg.Path, dest); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return "", fmt.Errorf("archive destination %s already exists", dest)
