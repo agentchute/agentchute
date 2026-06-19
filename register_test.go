@@ -1176,3 +1176,41 @@ func TestNextContextualAgentIDByFilesystem_ErrorsPastCap(t *testing.T) {
 		}
 	})
 }
+
+// Regression (codex WI-8 review): the cap must error even when the past-cap
+// candidate is FREE. Occupy base-2..base-100 but leave base-101 ABSENT; the
+// allocator must NOT hand out base-101 (a suffix beyond the 100 cap) — it must
+// return the cap error. The original fix checked os.IsNotExist BEFORE the cap,
+// so a free base-101 was returned; this exercises that path.
+func TestNextContextualAgentIDByFilesystem_ErrorsPastCapWhenCandidateFree(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := "claude-code-" + getFolderSlug(root)
+
+		agentsDir := cfg.AgentsDir()
+		_ = os.MkdirAll(agentsDir, 0700)
+
+		// base-2..base-100 occupied; base-101 deliberately left FREE.
+		for i := 2; i <= 100; i++ {
+			id := fmt.Sprintf("%s-%d", base, i)
+			path := cfg.AgentRegistrationPath(id)
+			_ = os.MkdirAll(filepath.Dir(path), 0700)
+			_ = os.WriteFile(path, []byte("{}"), 0644)
+		}
+
+		got, err := nextContextualAgentIDByFilesystem(cfg, base, base)
+		if err == nil {
+			t.Fatalf("past cap with free base-101 returned id %q, want cap error", got)
+		}
+		if !strings.Contains(err.Error(), "could not allocate a free agent id") {
+			t.Errorf("err=%v, want cap error", err)
+		}
+	})
+}

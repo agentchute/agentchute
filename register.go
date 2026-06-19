@@ -399,11 +399,15 @@ func nextContextualAgentIDByFilesystem(cfg *loop.Config, baseID, current string)
 		if candidate == current {
 			continue
 		}
-		if _, err := os.Stat(cfg.AgentRegistrationPath(candidate)); os.IsNotExist(err) {
-			return candidate, nil
-		}
+		// Enforce the cap BEFORE checking whether the candidate is free —
+		// otherwise a free past-cap candidate (e.g. base-101 absent while
+		// base-2..base-100 are taken) would be handed out, defeating the cap
+		// (codex WI-8 review). Mirrors availableContextualAgentID's ordering.
 		if i > 100 {
 			return "", fmt.Errorf("could not allocate a free agent id for base %q after %d attempts", baseID, 100)
+		}
+		if _, err := os.Stat(cfg.AgentRegistrationPath(candidate)); os.IsNotExist(err) {
+			return candidate, nil
 		}
 	}
 }
