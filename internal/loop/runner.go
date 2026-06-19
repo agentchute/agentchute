@@ -47,16 +47,17 @@ func RunnerWakeTarget(socketPath string) string {
 	return runnerTargetUnix + socketPath
 }
 
-// ParseRunnerWakeTarget parses an agentchute-run wake target.
+// ParseRunnerWakeTarget parses an agentchute-run wake target. It also enforces
+// the wake_target shape (unix: prefix, non-empty clean absolute path) so every
+// caller that dials the socket — the poke adapter AND the liveness pings — is
+// protected from a hand-written registration smuggling a relative path or a
+// path with embedded control characters.
 func ParseRunnerWakeTarget(target string) (string, error) {
+	if err := ValidateWakeTarget(RunnerWakeMethod, target); err != nil {
+		return "", err
+	}
 	target = strings.TrimSpace(target)
-	if !strings.HasPrefix(target, runnerTargetUnix) {
-		return "", fmt.Errorf("agentchute-run wake target must start with %q", runnerTargetUnix)
-	}
 	path := strings.TrimSpace(strings.TrimPrefix(target, runnerTargetUnix))
-	if path == "" {
-		return "", fmt.Errorf("agentchute-run wake target has empty socket path")
-	}
 	return path, nil
 }
 
@@ -138,6 +139,28 @@ func PingRunner(target string, timeout time.Duration) (*RunnerPingResponse, erro
 }
 
 type runnerWakeAdapter struct{}
+
+// Reachable reports whether reg's runner socket answers the ping/ack protocol,
+// WITHOUT ever dialing a socket the recipient does not legitimately own. This is
+// the WI-3 recipient-binding invariant, now living behind the WakeAdapter
+// interface: the owned-check (cfg.RunnerWakeTargetOwnedBy) runs FIRST and an
+// unowned target is reported unreachable WITHOUT a dial; only an owned target is
+// dialed (RunnerSocketReachable). The root-package runnerReachableForRecipient
+// delegates here, so this is the one place the owned-check-before-dial rule
+// lives.
+func (runnerWakeAdapter) Reachable(cfg *Config, reg *Registration, timeout time.Duration) bool {
+	if reg == nil || reg.WakeMethod != RunnerWakeMethod {
+		return false
+	}
+	if cfg == nil {
+		return false
+	}
+	if err := cfg.RunnerWakeTargetOwnedBy(reg.AgentID, reg.WakeTarget); err != nil {
+		// Not a socket this recipient owns: never dial it.
+		return false
+	}
+	return RunnerSocketReachable(reg.WakeTarget, timeout)
+}
 
 func (runnerWakeAdapter) Poke(ctx context.Context, target string) error {
 	path, err := ParseRunnerWakeTarget(target)

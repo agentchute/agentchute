@@ -104,7 +104,7 @@ func cmdGate(args []string) error {
 
 	// Inbox peek — same path boot/pending use, no side effects. `skipped`
 	// is the §11 protocol-violation surface: files that look like inbox
-	// messages but fail the §6.1.2 reference filename encoding. They block
+	// messages but fail the §6.1 reference filename encoding. They block
 	// consensus/finish because the agent owes a quarantine + corrective
 	// notify, which `check` runs.
 	//
@@ -123,15 +123,25 @@ func cmdGate(args []string) error {
 		}
 	}
 
-	// Pending-reply ledger — entries owed a reply.
+	// Pending-reply ledger — entries owed a reply. A corrupt / oversized /
+	// unparseable ledger must NOT be fatal: returning the parse error here would
+	// brick EVERY gate phase until a human edits pending-replies.json. It must
+	// also NOT be silently treated as "no obligations" — that would false-clear
+	// finish past a ledger we can no longer trust. Instead we BLOCK with an
+	// actionable, quarantine-style remediation (mirrors the malformed-inbox
+	// surface below) so the agent can't falsely finish but other diagnostics
+	// (unread mail, registration, liveness) still run.
+	var pendingReplies []loop.PendingReplyEntry
+	ledgerCorrupt := false
 	ledger, err := loop.LoadPendingLedger(cfg, agentID)
 	if err != nil {
-		return fmt.Errorf("load pending-reply ledger: %w", err)
+		ledgerCorrupt = true
+	} else {
+		pendingReplies = ledger.PendingEntries()
 	}
-	pendingReplies := ledger.PendingEntries()
 
 	// Registration check — v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md
-	// §5.7): every phase blocks on missing registration; only commit/release
+	// §5.3): every phase blocks on missing registration; only commit/release
 	// additionally blocks on age-stale registration. An inbox dir that
 	// doesn't exist implies a missing registration too — the boot/register
 	// path creates both atomically.
@@ -180,6 +190,7 @@ func cmdGate(args []string) error {
 		UnreadCount:     len(msgs),
 		MalformedCount:  len(skipped),
 		RepliesPending:  len(pendingReplies),
+		LedgerCorrupt:   ledgerCorrupt,
 		StaleReg:        staleReg,
 		MissingReg:      missingReg,
 		StaleRegAge:     regAge.String(),
@@ -227,6 +238,7 @@ type gateStatus struct {
 	UnreadCount     int      `json:"unread_count"`
 	MalformedCount  int      `json:"malformed_count"`
 	RepliesPending  int      `json:"replies_pending"`
+	LedgerCorrupt   bool     `json:"ledger_corrupt,omitempty"` // pending-reply ledger unparseable/oversized (blocks; quarantine remediation)
 	StaleReg        bool     `json:"stale_reg"`
 	MissingReg      bool     `json:"missing_reg,omitempty"` // own registration absent (subset of StaleReg)
 	StaleRegAge     string   `json:"stale_reg_age,omitempty"`
@@ -273,15 +285,42 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 	if s.RepliesPending > 0 {
 		reasons = append(reasons, fmt.Sprintf("%d pending reply obligation(s) in ledger", s.RepliesPending))
 	}
+	// A corrupt/unparseable pending-reply ledger blocks every phase: we cannot
+	// trust it to be empty, so we refuse to clear past it rather than crash
+	// (fatal) or false-clear (treat as 0 obligations). Quarantine-style
+	// remediation: the operator inspects/repairs/moves the file, then re-runs.
+	if s.LedgerCorrupt {
+		reasons = append(reasons, fmt.Sprintf(
+			"pending-reply ledger is corrupt or unreadable; inspect or quarantine the file and re-run (`agentchute pending --as %s`)",
+			s.Agent))
+	}
 
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): every phase blocks
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): every phase blocks
 	// on missing self-registration. An unenrolled agent has not declared
 	// itself to the pool; it can neither commit, finish, nor continue.
 	if s.MissingReg {
-		reasons = append(reasons, "not registered (run `agentchute boot --as <id> --vendor <vendor>` first; §5.7)")
+		reasons = append(reasons, "not registered (run `agentchute boot --as <id> --vendor <vendor>` first; §5.3)")
 	}
+	// WI-4 Fix 1: liveness blocks only when the agent OWES work. An agent
+	// owes work if it has unread direct mail, malformed inbox files (a §11
+	// quarantine obligation), or pending-reply ledger entries — in those
+	// cases it must stay reachable, so dead liveness is a hard block. When
+	// nothing is owed (clean inbox + no obligations + registered), a dead
+	// wake target/poller must NOT block finish/continue: it downgrades to a
+	// non-blocking warning (still surfaced in message/JSON). This closes the
+	// documented dead-poller finish-gate deadlock.
+	//
+	// commit/release/consensus keep the original always-block semantics so a
+	// publishing agent still proves reachability before it acts on the bus.
+	owedWork := s.UnreadCount > 0 || s.MalformedCount > 0 || s.RepliesPending > 0 || s.LedgerCorrupt
 	if !s.MissingReg && !s.LivenessOK {
-		reasons = append(reasons, fmt.Sprintf("recipient liveness not proven (%s)", s.LivenessMessage))
+		livenessOwedOptional := (phase == gatePhaseFinish || phase == gatePhaseContinue) && !owedWork
+		msg := fmt.Sprintf("recipient liveness not proven (%s)", s.LivenessMessage)
+		if livenessOwedOptional {
+			warnings = append(warnings, msg)
+		} else {
+			reasons = append(reasons, msg)
+		}
 	}
 
 	// commit + release additionally block on age-stale registration unless

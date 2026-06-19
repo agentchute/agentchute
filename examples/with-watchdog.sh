@@ -56,7 +56,7 @@ agentchute register --as watchdog --vendor local --wake-method "" --wake-target 
 # 3. Run the standalone watchdog daemon.
 # ---------------------------------------------------------------------------
 # In most pools you don't need this — `agentchute check` runs cooperative
-# waking on every cycle (AGENTCHUTE.md §10.5). The standalone daemon below
+# waking on every cycle (AGENTCHUTE.md §10.2). The standalone daemon below
 # is the unattended-liveness fallback for pools without an actively polling
 # peer (e.g., overnight or 24/7 setups where all the human-facing wrappers
 # might be paused).

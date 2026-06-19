@@ -418,6 +418,6 @@ Flags:
 Designed for the v0.2 'no-tmux' release: schedulers (launchd / systemd
 / cron / while-loops) preflight with --json's exit code and --heartbeat;
 wrapper launch prompts paste --prompt-text into '-p "..."' invocations. See
-AGENTCHUTE.md §8.x for the protocol contract.
+AGENTCHUTE.md §8 for the protocol contract.
 `)
 }

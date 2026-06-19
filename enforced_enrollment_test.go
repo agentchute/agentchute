@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): active agent commands
+// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): active agent commands
 // must refuse to operate without a self-registration record. Each test
 // asserts the refusal happens, the error message names the agent, and the
 // pointer to `agentchute boot` is present so an LLM agent (or a human
@@ -32,8 +32,8 @@ func TestCheckRefusesMissingSelfRegistration(t *testing.T) {
 		if !strings.Contains(err.Error(), "agentchute boot --as claude-code") {
 			t.Errorf("error missing boot pointer: %v", err)
 		}
-		if !strings.Contains(err.Error(), "§5.7") {
-			t.Errorf("error missing §5.7 anchor: %v", err)
+		if !strings.Contains(err.Error(), "§5.3") {
+			t.Errorf("error missing §5.3 anchor: %v", err)
 		}
 	})
 }

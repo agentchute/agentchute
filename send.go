@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -116,7 +117,7 @@ func cmdSend(args []string) error {
 	// is plumbed via ComposeMessage below.
 	if ask {
 		body = applyAskHeading(body)
-		// Self-send + --ask is a loop hazard per AGENTCHUTE.md §6.4.3: the
+		// Self-send + --ask is a loop hazard per AGENTCHUTE.md §6.4: the
 		// sender immediately owes itself a reply. The combination is
 		// legitimate (e.g., a deliberate scratch obligation) so we deliver
 		// the message, but emit a stderr warning so the operator pauses on
@@ -124,7 +125,7 @@ func cmdSend(args []string) error {
 		// --ask — that's the protocol invariant that keeps automated
 		// agents from looping. Real-bake-driven, codex review aligned.
 		if fromID == toID {
-			fmt.Fprintf(os.Stderr, "warning: self-send with --ask creates a self-reply obligation; per AGENTCHUTE.md §6.4.3 your reply MUST NOT propagate --ask\n")
+			fmt.Fprintf(os.Stderr, "warning: self-send with --ask creates a self-reply obligation; per AGENTCHUTE.md §6.4 your reply MUST NOT propagate --ask\n")
 		}
 	}
 
@@ -145,17 +146,17 @@ func cmdSend(args []string) error {
 
 	now := time.Now().UTC()
 
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): refuse to send
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse to send
 	// from an unregistered agent. The outbound message would carry a
 	// `from:` field naming an agent that peers can't discover, wake, or
 	// reply to.
 	selfPath := cfg.AgentRegistrationPath(fromID)
 	if _, err := os.Stat(selfPath); err == nil {
-		if err := loop.UpdateLastSeen(selfPath, now); err != nil {
+		if err := loop.UpdateLastSeen(cfg, fromID, now); err != nil {
 			return fmt.Errorf("update last_seen for %s: %w", fromID, err)
 		}
 	} else if os.IsNotExist(err) {
-		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.7)", fromID, fromID)
+		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", fromID, fromID)
 	} else {
 		return fmt.Errorf("stat own registration: %w", err)
 	}
@@ -193,29 +194,54 @@ func cmdSend(args []string) error {
 		ledger, lerr := loop.LoadPendingLedger(cfg, fromID)
 		if lerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to read pending-reply ledger: %v\n", lerr)
-		} else if entry, ok := ledger.FindByMessageID(replyTo); ok {
+		} else {
+			// The obligation we may discharge is the one owed to the recipient
+			// we are actually replying TO (toID — KNOWN, not inferred from the
+			// ledger). Scope every decision by toID: message_id is
+			// sender-controlled and reusable, so a reply to one peer must NEVER
+			// clear an obligation owed to a DIFFERENT peer (WI-2 follow-up).
+			//
+			// CRITICAL (rev2): NOTHING here keys on FindByMessageID's first bare
+			// row. EntriesByMessageIDFrom(replyTo, toID) returns exactly the rows
+			// owed to us BY toID (any status), so inverse ordering — toID's row
+			// not being the first bare match — can no longer short-circuit the
+			// discharge. FindByMessageID is consulted ONLY to distinguish
+			// "threading via another peer's id" from "no such message_id at all"
+			// when toID owns nothing under this id.
+			scoped := ledger.EntriesByMessageIDFrom(replyTo, toID)
 			switch {
-			case entry.Status != loop.PendingReplyStatusPending:
-				ledgerTransition = fmt.Sprintf("note: pending-reply ledger entry %s was already in status %q; not re-transitioned", replyTo, entry.Status)
-			case entry.From != toID:
-				fmt.Fprintf(os.Stderr, "warning: --reply-to %s names a message from %q, but this send is to %q; obligation left pending\n", replyTo, entry.From, toID)
-			case entry.To != fromID:
-				// Mirror cmdDefer's recipient-owned-ledger invariant. The
-				// ledger is OURS; if a corrupted state file has entry.To
-				// pointing at someone else, refuse to act on it (codex
-				// review on aa5f0d9 / check.go integration).
-				fmt.Fprintf(os.Stderr, "warning: --reply-to %s has ledger entry to=%q, but --from is %q; refusing to clear a mismatched obligation\n", replyTo, entry.To, fromID)
+			case len(scoped) == 0:
+				if other, exists := ledger.FindByMessageID(replyTo); exists {
+					// A message_id entry exists but NOT from toID → threading via
+					// another peer's id while delivering to toID. Do NOT clear the
+					// other peer's obligation.
+					fmt.Fprintf(os.Stderr, "warning: --reply-to %s names a message from %q, but this send is to %q; obligation left pending\n", replyTo, other.From, toID)
+				}
+				// else: no such message_id at all → silent OK. --reply-to is a
+				// freeform threading hint; the agent may be threading to a
+				// message that never carried reply_required: true.
+			case mismatchedTo(scoped, fromID):
+				// Mirror cmdDefer's recipient-owned-ledger invariant. The ledger
+				// is OURS; if a corrupted state file has any scoped entry.To
+				// pointing at someone other than fromID, refuse to act on it
+				// (codex review on aa5f0d9 / check.go integration).
+				fmt.Fprintf(os.Stderr, "warning: --reply-to %s has a ledger entry whose to does not match --from %q; refusing to clear a mismatched obligation\n", replyTo, fromID)
+			case len(ledger.PendingByMessageIDFrom(replyTo, toID)) == 0:
+				// toID owns ≥1 row under this message_id, but every one is
+				// already terminal. Idempotent no-op note rather than a
+				// re-transition.
+				ledgerTransition = fmt.Sprintf("note: pending-reply ledger entry %s was already in a terminal status; not re-transitioned", replyTo)
 			default:
-				if merr := loop.MarkPendingReplied(cfg, fromID, replyTo, messageID, now); merr != nil {
+				// toID owns ≥1 PENDING row. Discharge every pending obligation
+				// scoped to (replyTo, toID); a terminal duplicate cannot strand
+				// a still-pending one (MarkPendingReplied skips terminals).
+				if merr := loop.MarkPendingReplied(cfg, fromID, replyTo, toID, messageID, now); merr != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to update pending-reply ledger for %s: %v\n", replyTo, merr)
 				} else {
 					ledgerTransition = fmt.Sprintf("cleared pending-reply ledger entry %s", replyTo)
 				}
 			}
 		}
-		// No matching entry: silent OK. --reply-to is a freeform threading
-		// hint; the agent may be threading to a message that never carried
-		// reply_required: true.
 	}
 
 	result := sendResult{
@@ -283,7 +309,20 @@ func computeWakeReceipt(cfg *loop.Config, toID string, noWake bool) wakeReceipt 
 	if !reg.IsPokable() {
 		return wakeReceipt{method: reg.WakeMethod, attempted: false, result: "skipped (no method declared)"}
 	}
-	if err := loop.PokeWakeTarget(reg.WakeMethod, reg.WakeTarget); err != nil {
+	// Recipient-binding for runner sockets: refuse to dial a unix: socket whose
+	// path the recipient does not legitimately own (e.g. a hand-written
+	// registration naming unix:/tmp/evil.sock). The pure shape validator can't
+	// see the recipient id; this check can. We keep the explicit owned-check
+	// here (rather than relying solely on PokeRegistration's refusal) so the
+	// operator receipt can distinguish "refused" (attempted=false) from a
+	// dial "failed" (attempted=true); the poke itself still flows through the
+	// centralized recipient-bound helper.
+	if reg.WakeMethod == loop.RunnerWakeMethod {
+		if err := cfg.RunnerWakeTargetOwnedBy(toID, reg.WakeTarget); err != nil {
+			return wakeReceipt{method: reg.WakeMethod, attempted: false, result: fmt.Sprintf("refused (%v)", err)}
+		}
+	}
+	if err := loop.PokeRegistration(context.Background(), cfg, reg); err != nil {
 		return wakeReceipt{method: reg.WakeMethod, attempted: true, result: fmt.Sprintf("failed (%v)", err)}
 	}
 	return wakeReceipt{method: reg.WakeMethod, attempted: true, result: "ok"}
@@ -329,6 +368,20 @@ func countFrom(entries []loop.PendingReplyEntry, from string) int {
 		}
 	}
 	return n
+}
+
+// mismatchedTo reports whether ANY scoped ledger entry has a `to` that is not
+// fromID. The ledger is recipient-owned, so every legitimate entry's To must
+// name us (fromID); a single mismatch means a corrupted state file and the
+// whole sender-scoped discharge must be refused (rev2 recipient-owned invariant,
+// keyed on the scoped set rather than the first bare row).
+func mismatchedTo(entries []loop.PendingReplyEntry, fromID string) bool {
+	for _, e := range entries {
+		if e.To != fromID {
+			return true
+		}
+	}
+	return false
 }
 
 // applyAskHeading prepends a `## ASK` heading if the body doesn't already

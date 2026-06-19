@@ -155,7 +155,6 @@ Delivery is no-overwrite by contract: a sender never replaces an existing messag
 | `watchdog --as <id>` | Optional liveness sidecar; pokes peers with stale inboxes |
 | `prepare-pool --target <dir>` | Connect sibling folders via pointer files |
 | `self-poll [--vendor <v>] [--as <id>] [--heartbeat]` | "Should I wake?" helper for schedulers; `--heartbeat` proves polling is alive |
-| `gate --before continue --gemini-hook AfterAgent` | In-session catchup decision JSON (v0.2) |
 | `doctor --generate-service <kind>` | Emit launchd / systemd / shell unit files for the preflighted scheduler (v0.2) |
 | `hooks install --wrapper <name>` | Write the canonical hook template into `.claude/` / `.codex/` / `.gemini/` (v0.2.1) |
 

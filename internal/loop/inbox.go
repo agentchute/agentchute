@@ -39,8 +39,8 @@ var removeFile = os.Remove
 // Mirrors AGENTCHUTE.md §5: "Lowercase, hyphen-separated, no spaces."
 var agentIDPattern = `[a-z0-9][a-z0-9-]*`
 
-// inboxFilenameRE parses inbox filenames per AGENTCHUTE.md §6.1.2 (the
-// filesystem reference encoding of the §6.1.1 identity tuple).
+// inboxFilenameRE parses inbox filenames per AGENTCHUTE.md §6.1 (the
+// filesystem reference encoding of the §6.1 identity tuple).
 //
 // Format: `<utc-microsecond-timestamp>_from-<sender>_msg-<nonce>.md`
 // Timestamp: `YYYY-MM-DDTHH-MM-SS-uuuuuuZ` (`-` instead of `:` for fs portability;
@@ -51,9 +51,9 @@ var inboxFilenameRE = regexp.MustCompile(
 )
 
 // inboxFilenameShapeRE matches filenames that have the structural shape of a
-// §6.1.2 inbox filename (timestamp segment + `_from-<slug>_msg-` nonce segment +
+// §6.1 inbox filename (timestamp segment + `_from-<slug>_msg-` nonce segment +
 // `.md` suffix) but is permissive on the timestamp and nonce *content*. Per
-// AGENTCHUTE.md §11.4, sender inference is allowed when the timestamp or nonce
+// AGENTCHUTE.md §11.1, sender inference is allowed when the timestamp or nonce
 // is malformed — but NOT when the structural markers themselves are missing.
 // A name without the `_from-`, `_msg-`, or `.md` markers is too broken to
 // reliably attribute to any sender and would risk routing corrective notices
@@ -62,10 +62,10 @@ var inboxFilenameShapeRE = regexp.MustCompile(
 	`^[^/]+_from-(` + agentIDPattern + `)_msg-[^/]+\.md$`,
 )
 
-// InferSenderFromFilename returns the sender slug captured from a §6.1.2-shaped
+// InferSenderFromFilename returns the sender slug captured from a §6.1-shaped
 // name, OR from a filename whose structural markers (`_from-<slug>_msg-`,
 // `.md`) are intact but whose timestamp or nonce is malformed. Per
-// AGENTCHUTE.md §11.4, inference is intentionally limited to the
+// AGENTCHUTE.md §11.1, inference is intentionally limited to the
 // timestamp/nonce-malformed shape: names missing the `_from-`, `_msg-`, or
 // `.md` markers are dropped without inference. The returned slug MUST pass
 // ValidateAgentID; otherwise ok=false (inferred ids must be valid).
@@ -130,7 +130,7 @@ func firstFrontmatterBlock(content []byte) (string, bool) {
 	return "", false
 }
 
-// QuarantineInboxFile moves srcPath into malformedDir per AGENTCHUTE.md §11.2,
+// QuarantineInboxFile moves srcPath into malformedDir per AGENTCHUTE.md §11.1,
 // with a collision-resistant name `<quarantine-ts>_to-<recipient>_<original>`.
 // The destination is created atomically; an existing quarantined file with
 // the same name is NOT overwritten (returns os.ErrExist).
@@ -161,7 +161,7 @@ func QuarantineInboxFile(srcPath, malformedDir, recipient string, now time.Time)
 }
 
 // ParseInboxFilename extracts (timestamp, sender, nonce) from an inbox filename.
-// Returns an error if the basename does not match the §6.1.2 reference encoding.
+// Returns an error if the basename does not match the §6.1 reference encoding.
 func ParseInboxFilename(filename string) (time.Time, string, string, error) {
 	m := inboxFilenameRE.FindStringSubmatch(filename)
 	if m == nil {
@@ -197,11 +197,25 @@ func WriteInboxMessage(inboxDir string, now time.Time, sender string, content []
 		}
 		filename := formatInboxFilename(now, sender, nonce)
 		finalPath := filepath.Join(inboxDir, filename)
-		tempPath := filepath.Join(inboxDir, tempFilePrefix+filename)
 
-		if err := atomicWriteFile(tempPath, content); err != nil {
+		// A UNIQUE temp per attempt (os.CreateTemp picks an unused name) — not
+		// the deterministic .tmp_<final>. Two concurrent same-sender writes that
+		// collide on (timestamp, nonce) would otherwise share one temp path: a
+		// late writer could clobber an earlier writer's body before it
+		// hard-linked the inode, so the link winner would deliver the WRONG
+		// body. A unique inode per attempt makes each body independent; the
+		// link-no-clobber to finalPath still resolves the final-filename race
+		// (loser retries with a fresh nonce AND a fresh temp).
+		tempFile, err := os.CreateTemp(inboxDir, tempFilePrefix+"*")
+		if err != nil {
 			return Message{}, err
 		}
+		tempPath := tempFile.Name()
+		if err := writeAndSyncOpenFile(tempFile, content); err != nil {
+			_ = os.Remove(tempPath)
+			return Message{}, err
+		}
+
 		if err := linkNoClobber(tempPath, finalPath); err != nil {
 			_ = os.Remove(tempPath)
 			if errors.Is(err, os.ErrExist) {
@@ -339,6 +353,18 @@ func isRegularDirEntry(entry os.DirEntry) (bool, error) {
 //
 // The move is atomic via os.Rename when source and destination share a
 // filesystem (the normal case for in-repo state).
+// ArchiveMessageDest returns the absolute archive path ArchiveMessage will
+// write for the given message and consumedAt time, WITHOUT touching the
+// filesystem. It is deterministic in (consumedAt, recipient, msg.Filename), so
+// `check` can record the pending-reply obligation with the correct archive_path
+// BEFORE the message is moved out of the inbox (record-before-archive). The
+// returned path stays valid as long as ArchiveMessage is called with the same
+// arguments.
+func ArchiveMessageDest(msg Message, archiveDir, recipient string, consumedAt time.Time) string {
+	archivedName := fmt.Sprintf("%s_to-%s_%s", formatArchiveTimestamp(consumedAt), recipient, msg.Filename)
+	return filepath.Join(archiveDir, archivedName)
+}
+
 func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.Time) (string, error) {
 	if err := ValidateAgentID(recipient); err != nil {
 		return "", fmt.Errorf("recipient: %w", err)
@@ -349,8 +375,7 @@ func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.T
 	if err := ensurePrivateDir(archiveDir); err != nil {
 		return "", err
 	}
-	archivedName := fmt.Sprintf("%s_to-%s_%s", formatArchiveTimestamp(consumedAt), recipient, msg.Filename)
-	dest := filepath.Join(archiveDir, archivedName)
+	dest := ArchiveMessageDest(msg, archiveDir, recipient, consumedAt)
 	if err := linkNoClobber(msg.Path, dest); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return "", fmt.Errorf("archive destination %s already exists", dest)
@@ -367,6 +392,28 @@ func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.T
 		return "", err
 	}
 	return dest, nil
+}
+
+// writeAndSyncOpenFile writes content into an already-open temp file, fixes its
+// mode to 0600, fsyncs the data, and closes it. Mirrors atomicWriteFile's
+// durability sequence for the case where the caller created the temp via
+// os.CreateTemp (to get a unique inode) and will hard-link it into place itself.
+// The caller is responsible for removing the temp on any error AND on the
+// normal post-link cleanup path.
+func writeAndSyncOpenFile(f *os.File, content []byte) error {
+	if _, err := f.Write(content); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func linkNoClobber(oldPath, newPath string) error {
@@ -449,7 +496,9 @@ func formatArchiveTimestamp(t time.Time) string {
 		t.Hour(), t.Minute(), t.Second())
 }
 
-func generateNonce() (string, error) {
+// generateNonce is a package var (not a plain func) only so tests can pin it to
+// force the filename/temp-path collision retry path deterministically.
+var generateNonce = func() (string, error) {
 	var b [2]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err

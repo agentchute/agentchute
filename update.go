@@ -51,7 +51,7 @@ func updateUsage(err error) error {
 func updateHelp() string {
 	return strings.TrimSpace(`
 Usage:
-  agentchute update [--version <tag>] [--dry-run]
+  agentchute update [--version <tag>] [--dry-run] [--no-resync]
 
 Updates an existing install in one step: self-updates the binary to the target
 release, then re-runs ` + "`setup`" + ` with this control repo's saved wake mode and
@@ -59,9 +59,15 @@ wrappers so hooks, enrollment blocks, and shims re-sync to the new version.
 
 This clears live registrations; you MUST restart every active agent afterward.
 
+Pass --no-resync to swap ONLY the binary and skip the setup re-sync: live
+registrations are preserved and no bus reset happens. Use it for a pure binary
+refresh, or for a pool created by an older binary / via ` + "`init`" + ` that has no
+saved setup state to replay.
+
 Flags:
   --version <tag>   release tag to install (default: latest release)
   --dry-run         print the plan and exit; no mutation
+  --no-resync       swap the binary only; skip the setup re-sync / bus reset
   --control-repo    control repo to re-sync (default: env or current pool)`)
 }
 
@@ -69,9 +75,10 @@ func cmdUpdate(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var targetTag, controlRepo, loopDir string
-	var dryRun bool
+	var dryRun, noResync bool
 	fs.StringVar(&targetTag, "version", "", "release tag to install (default: latest)")
 	fs.BoolVar(&dryRun, "dry-run", false, "print the plan and exit; no mutation")
+	fs.BoolVar(&noResync, "no-resync", false, "swap the binary only; skip the setup re-sync / bus reset")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	if err := fs.Parse(args); err != nil {
@@ -81,8 +88,10 @@ func cmdUpdate(args []string) error {
 		return updateUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	// 1. Discover the control repo and REQUIRE saved pool setup state — update
-	// replays setup with the saved wake/wrappers and must not guess them.
+	// 1. Discover the control repo. The setup re-sync replays the saved
+	// wake/wrappers, so it REQUIRES saved pool state — but --no-resync skips the
+	// re-sync entirely (binary-only update), so it neither needs nor reads that
+	// state and never resets the bus.
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -97,22 +106,41 @@ func cmdUpdate(args []string) error {
 	if err != nil {
 		return fmt.Errorf("discover control repo: %w", err)
 	}
-	pool, err := readSetupPoolState(cfg)
-	if err != nil {
-		return fmt.Errorf("no saved setup state at %s — run `agentchute setup` in this repo before updating", filepath.Join(cfg.LoopDir, "state", "setup.json"))
+
+	var setupArgs []string
+	var storedWake, wrappersArg string
+	if !noResync {
+		pool, err := readSetupPoolState(cfg)
+		if err != nil {
+			return fmt.Errorf("no saved setup state at %s — run `agentchute setup` in this repo before updating, or pass --no-resync to swap only the binary", filepath.Join(cfg.LoopDir, "state", "setup.json"))
+		}
+		storedWake = strings.TrimSpace(pool.Wake)
+		if storedWake == "" {
+			return fmt.Errorf("saved setup state is missing the wake mode; run `agentchute setup` to re-establish before updating, or pass --no-resync to swap only the binary")
+		}
+		// An empty wrapper list is the valid `--wrappers none` mode, not missing state.
+		wrappersArg = "none"
+		if w := compactStrings(pool.Wrappers); len(w) > 0 {
+			wrappersArg = strings.Join(w, ",")
+		}
+		// Global state carries install-wide knobs (shim dir, profile) so the re-sync
+		// replays them faithfully instead of reverting to defaults.
+		global, _ := readSetupGlobalState()
+
+		// The exact setup re-sync, replaying the saved install config.
+		setupArgs = []string{"setup", "--control-repo", cfg.ControlRepo, "--wake", storedWake, "--wrappers", wrappersArg, "--yes"}
+		if pool.Aliases {
+			setupArgs = append(setupArgs, "--aliases")
+		}
+		if sd := strings.TrimSpace(global.ShimDir); sd != "" {
+			setupArgs = append(setupArgs, "--shim-dir", sd)
+		}
+		if global.NoProfile {
+			setupArgs = append(setupArgs, "--no-profile")
+		} else if p := strings.TrimSpace(global.Profile); p != "" {
+			setupArgs = append(setupArgs, "--profile", p)
+		}
 	}
-	storedWake := strings.TrimSpace(pool.Wake)
-	if storedWake == "" {
-		return fmt.Errorf("saved setup state is missing the wake mode; run `agentchute setup` to re-establish before updating")
-	}
-	// An empty wrapper list is the valid `--wrappers none` mode, not missing state.
-	wrappersArg := "none"
-	if w := compactStrings(pool.Wrappers); len(w) > 0 {
-		wrappersArg = strings.Join(w, ",")
-	}
-	// Global state carries install-wide knobs (shim dir, profile) so the re-sync
-	// replays them faithfully instead of reverting to defaults.
-	global, _ := readSetupGlobalState()
 
 	// 2. Resolve the real binary we will replace — refuse a shim BEFORE any
 	// network work. Writability is probed later (apply only) so --dry-run never
@@ -137,19 +165,6 @@ func cmdUpdate(args []string) error {
 	bare := strings.TrimPrefix(targetTag, "v")
 	asset := fmt.Sprintf("agentchute_%s_%s_%s.tar.gz", bare, runtime.GOOS, runtime.GOARCH)
 
-	// The exact setup re-sync, replaying the saved install config.
-	setupArgs := []string{"setup", "--control-repo", cfg.ControlRepo, "--wake", storedWake, "--wrappers", wrappersArg, "--yes"}
-	if pool.Aliases {
-		setupArgs = append(setupArgs, "--aliases")
-	}
-	if sd := strings.TrimSpace(global.ShimDir); sd != "" {
-		setupArgs = append(setupArgs, "--shim-dir", sd)
-	}
-	if global.NoProfile {
-		setupArgs = append(setupArgs, "--no-profile")
-	} else if p := strings.TrimSpace(global.Profile); p != "" {
-		setupArgs = append(setupArgs, "--profile", p)
-	}
 	setupCmd := strings.Join(setupArgs, " ")
 	active := activeAgentIDs(cfg)
 
@@ -159,8 +174,13 @@ func cmdUpdate(args []string) error {
 		fmt.Printf("  target:        %s\n", targetTag)
 		fmt.Printf("  binary:        %s\n", target)
 		fmt.Printf("  asset:         %s\n", asset)
-		fmt.Printf("  re-sync:       %s\n", setupCmd)
-		fmt.Printf("  reset:         would stop local agentchute runtimes and clear %d live agent registration(s)\n", len(active))
+		if noResync {
+			fmt.Println("  re-sync:       skipped (--no-resync); binary swap only")
+			fmt.Println("  reset:         skipped (--no-resync); live registrations preserved")
+		} else {
+			fmt.Printf("  re-sync:       %s\n", setupCmd)
+			fmt.Printf("  reset:         would stop local agentchute runtimes and clear %d live agent registration(s)\n", len(active))
+		}
 		printActiveAgents(active)
 		fmt.Println("(dry-run; no changes made)")
 		return nil
@@ -184,7 +204,10 @@ func cmdUpdate(args []string) error {
 	}
 	defer os.Remove(tmpBin)
 
-	printRestartWarning(targetTag, active, false)
+	// --no-resync is a pure binary refresh: no bus reset, no restart needed.
+	if !noResync {
+		printRestartWarning(targetTag, active, false)
+	}
 
 	// 5. Atomic replace + best-effort parent-dir fsync for crash durability.
 	if err := os.Rename(tmpBin, target); err != nil {
@@ -193,14 +216,16 @@ func cmdUpdate(args []string) error {
 	syncDir(filepath.Dir(target))
 	fmt.Printf("Updated agentchute %s -> %s (%s)\n", current, targetTag, target)
 
+	if noResync {
+		// Binary-only update: skip the destructive setup re-sync entirely. Live
+		// registrations and wake infrastructure are left untouched.
+		fmt.Println("(--no-resync: skipped setup re-sync; live registrations preserved)")
+		return nil
+	}
+
 	// 6. Re-exec the NEW binary's setup so it writes the new version's
 	// templates/hooks/shims, not the old binary's.
-	setup := exec.Command(target, setupArgs...)
-	setup.Stdout = os.Stdout
-	setup.Stderr = os.Stderr
-	setup.Stdin = os.Stdin
-	setup.Dir = cfg.ControlRepo
-	if err := setup.Run(); err != nil {
+	if err := updateRunResync(target, setupArgs, cfg.ControlRepo); err != nil {
 		fmt.Fprintf(os.Stderr, "\nWARNING: binary updated to %s but `setup` re-sync FAILED: %v\n", targetTag, err)
 		fmt.Fprintf(os.Stderr, "Finish the re-sync manually from this repo:\n  %s %s\n", target, setupCmd)
 		return errors.New("setup re-sync after update failed (see warning above)")
@@ -211,9 +236,30 @@ func cmdUpdate(args []string) error {
 	return nil
 }
 
+// updateRunResync re-execs the freshly-swapped binary's `setup` so it writes the
+// NEW version's templates/hooks/shims and performs the bus reset. It is a package
+// var so tests can assert the --no-resync path never invokes it. The apply path
+// runs this only when --no-resync is absent.
+var updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
+	setup := exec.Command(target, setupArgs...)
+	setup.Stdout = os.Stdout
+	setup.Stderr = os.Stderr
+	setup.Stdin = os.Stdin
+	setup.Dir = controlRepo
+	return setup.Run()
+}
+
+// resolveUpdateTargetForTest, when non-empty, overrides the running-binary
+// lookup so tests can point the swap at a fake install dir without depending on
+// the location/permissions of the test binary. Empty in production.
+var resolveUpdateTargetForTest string
+
 // resolveUpdateTarget returns the path of the real agentchute binary to
 // replace, refusing wrapper shims and non-writable locations.
 func resolveUpdateTarget() (string, error) {
+	if resolveUpdateTargetForTest != "" {
+		return resolveBinaryTarget(resolveUpdateTargetForTest)
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("locate running binary: %w", err)

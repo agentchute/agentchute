@@ -3,12 +3,66 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
+
+// TestOSNotify_TaskNotInterpretedAsScript asserts that a task/message carrying
+// AppleScript metacharacters or newlines is passed to osascript as argv DATA,
+// never spliced into the script source where it could break out. We assert the
+// built command args (osascript is unavailable in CI).
+func TestOSNotify_TaskNotInterpretedAsScript(t *testing.T) {
+	evil := "x\" \non run\ndo shell script \"touch /tmp/pwned\"\nend run\n\""
+	name, args := macNotifyCommand("agentchute: new message", evil)
+
+	if name != "osascript" {
+		t.Fatalf("command = %q, want osascript", name)
+	}
+
+	// The fixed script template must be the first -e value and must read from
+	// argv, never embed the message.
+	if len(args) < 2 || args[0] != "-e" {
+		t.Fatalf("args[0:2] = %v, want [-e <script>]", args[:min(2, len(args))])
+	}
+	script := args[1]
+	if !strings.Contains(script, "item 1 of argv") {
+		t.Fatalf("script does not read message from argv:\n%s", script)
+	}
+	if strings.Contains(script, "do shell script") || strings.Contains(script, "pwned") {
+		t.Fatalf("evil payload leaked into the script source:\n%s", script)
+	}
+
+	// The sanitized message must be a positional arg AFTER the "--" separator,
+	// and its control characters (newlines) must be neutralized so it cannot
+	// even render as multi-line, let alone execute.
+	sep := -1
+	for i, a := range args {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 || sep+1 >= len(args) {
+		t.Fatalf("no positional message arg after -- separator: %v", args)
+	}
+	deliveredMsg := args[sep+1]
+	if strings.ContainsAny(deliveredMsg, "\n\r\x00") {
+		t.Fatalf("delivered message still contains control chars: %q", deliveredMsg)
+	}
+	if strings.Contains(deliveredMsg, "do shell script") {
+		// The literal text may survive (it's data), but it lives in an argv
+		// slot the fixed script only ever uses as a notification string — never
+		// evaluated. Confirm it is NOT in the script slot (already checked) and
+		// is purely positional data here. This assertion documents intent.
+		if deliveredMsg != sanitizeNotificationText(evil) {
+			t.Fatalf("delivered message = %q, want sanitized form", deliveredMsg)
+		}
+	}
+}
 
 // newWatchTestCfg sets up a control repo + inbox dir for the watch tests.
 // Returns the cfg + the inbox dir so tests can drop new messages.
@@ -102,7 +156,7 @@ func TestRunWatchLoopFiresOnlyOnNewArrivals(t *testing.T) {
 
 // v0.1.3 hotfix (codex review on d73d4dd): two distinct deliveries
 // carrying the same frontmatter message_id must BOTH fire. message_id
-// is not delivery-unique per AGENTCHUTE.md §6.4.1; the identity tuple
+// is not delivery-unique per AGENTCHUTE.md §6.4; the identity tuple
 // in the filename is authoritative. Same class as the v0.1.1 ledger bug.
 func TestRunWatchLoopFiresOnBothFilesWithSharedMessageID(t *testing.T) {
 	cfg := newWatchTestCfg(t)
@@ -146,7 +200,7 @@ func TestRunWatchLoopFiresOnBothFilesWithSharedMessageID(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if fires != 2 {
-		t.Errorf("fires = %d, want 2 (both files must fire; message_id is not delivery-unique per §6.4.1)", fires)
+		t.Errorf("fires = %d, want 2 (both files must fire; message_id is not delivery-unique per §6.4)", fires)
 	}
 }
 

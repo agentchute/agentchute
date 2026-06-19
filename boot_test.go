@@ -122,7 +122,7 @@ func TestBootWithUnreadMailReturnsBlocked(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
-		// Drop a valid §6.1.2-shaped message into the inbox.
+		// Drop a valid §6.1-shaped message into the inbox.
 		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
 		now := time.Now().UTC()
 		msgContent := []byte("---\nmessage_id: 2026-05-19T17:53:59.561894Z\nfrom: codex\nto: claude-code\ntask: review\n---\n\nbody\n")

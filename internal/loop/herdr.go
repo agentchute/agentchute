@@ -54,6 +54,11 @@ func PokeHerdrTargetContext(ctx context.Context, target string) error {
 	if target == "" {
 		return nil
 	}
+	// Re-validate at use time: a hand-written registration that bypassed
+	// Validate() must not reach herdr with a slash/colon/flag-shaped name.
+	if err := ValidateWakeTarget("herdr", target); err != nil {
+		return err
+	}
 	paneID, err := herdrPaneIDForAgent(ctx, target)
 	if err != nil {
 		return fmt.Errorf("resolve herdr pane for %q: %w", target, err)
@@ -119,6 +124,17 @@ type herdrAdapter struct{}
 
 func (herdrAdapter) Poke(ctx context.Context, target string) error {
 	return PokeHerdrTargetContext(ctx, target)
+}
+
+// Reachable resolves the stable herdr agent name to a live pane via the
+// injected root-package hook (herdrAgentReachable). Without the hook (loop-only
+// test linkage) the name cannot be resolved, so it is reported unreachable —
+// identical to a herdr lookup that found no pane under the old switch.
+func (herdrAdapter) Reachable(_ *Config, reg *Registration, _ time.Duration) bool {
+	if reg == nil || herdrReachableHook == nil {
+		return false
+	}
+	return herdrReachableHook(reg.WakeTarget)
 }
 
 func init() {

@@ -25,6 +25,14 @@ const (
 
 	setupPathBlockBegin = "# >>> agentchute setup PATH >>>"
 	setupPathBlockEnd   = "# <<< agentchute setup PATH <<<"
+
+	// install.sh writes its own PATH-managed region with a variable label/expr in
+	// the marker: "# agentchute PATH entry for <label> (<expr>) begin" ... " end".
+	// setup supersedes that region so the two installers never leave duplicate
+	// PATH-prepend blocks (one from install.sh, one from setup) in a profile.
+	installShPathMarkerPrefix = "# agentchute PATH entry for "
+	installShPathMarkerBegin  = " begin"
+	installShPathMarkerEnd    = " end"
 )
 
 type setupOptions struct {
@@ -98,6 +106,9 @@ func cmdSetup(args []string) error {
 	opts.ShimDir, err = filepath.Abs(opts.ShimDir)
 	if err != nil {
 		return err
+	}
+	if strings.ContainsAny(opts.ShimDir, "\"`$\\") {
+		return fmt.Errorf("invalid --shim-dir %q: must not contain quotes, dollar signs, backticks, or backslashes", opts.ShimDir)
 	}
 	if opts.Profile == "" {
 		opts.Profile = strings.TrimSpace(os.Getenv("AGENTCHUTE_PROFILE"))
@@ -615,8 +626,45 @@ func previousSetupShimWrappers(state setupGlobalState) []string {
 	return wrappers
 }
 
+// setupRunRuntimeReset is the DESTRUCTIVE phase of setup: it stops local
+// pollers/runners, clears runtime state files and repo Herdr names, then deletes
+// live registrations so agents re-enroll. It is a package var so tests can inject
+// a failure to prove the ordering invariant below. It is invoked LAST in
+// applySetup — after every idempotent, recoverable write (init/enrollment, hooks,
+// shims, PATH block, saved setup state) has landed — so a mid-setup failure can
+// never leave the bus with cleared registrations AND no wake infrastructure.
+var setupRunRuntimeReset = func(root string, cfg *loop.Config, wrappers []string) error {
+	reset := resetSetupRuntimeState(root, cfg, wrappers)
+	if len(reset.Pollers) > 0 {
+		fmt.Printf("stopped %d local poller(s): %s\n", len(reset.Pollers), strings.Join(reset.Pollers, ", "))
+	}
+	if len(reset.Runners) > 0 {
+		fmt.Printf("stopped %d local runner(s): %s\n", len(reset.Runners), strings.Join(reset.Runners, ", "))
+	}
+	if len(reset.RuntimeFiles) > 0 {
+		fmt.Printf("cleared %d runtime state file(s)\n", len(reset.RuntimeFiles))
+	}
+	if len(reset.HerdrNames) > 0 {
+		fmt.Printf("released %d herdr name(s): %s\n", len(reset.HerdrNames), strings.Join(reset.HerdrNames, ", "))
+	}
+	for _, warning := range reset.Warnings {
+		fmt.Printf("warning: setup reset: %s\n", warning)
+	}
+	cleared, err := clearSetupLiveRegistrations(cfg)
+	if err != nil {
+		return err
+	}
+	if len(cleared) > 0 {
+		fmt.Printf("cleared %d stale live registration(s): %s\n", len(cleared), strings.Join(cleared, ", "))
+	}
+	return nil
+}
+
 func applySetup(root string, opts setupOptions, wrappers []string) error {
 	return runInDir(root, func() error {
+		// Phase 1 — idempotent scaffolding. cmdInit writes AGENTCHUTE.md and the
+		// per-wrapper enrollment blocks (CLAUDE.md/CODEX.md/GEMINI.md/AGENTS.md).
+		// Re-runnable; safe to repeat after a partial failure.
 		if err := cmdInit([]string{"--yes"}); err != nil {
 			return fmt.Errorf("init: %w", err)
 		}
@@ -628,31 +676,16 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		if err != nil {
 			return fmt.Errorf("discover initialized repo: %w", err)
 		}
-		reset := resetSetupRuntimeState(root, cfg, wrappers)
-		if len(reset.Pollers) > 0 {
-			fmt.Printf("stopped %d local poller(s): %s\n", len(reset.Pollers), strings.Join(reset.Pollers, ", "))
-		}
-		if len(reset.Runners) > 0 {
-			fmt.Printf("stopped %d local runner(s): %s\n", len(reset.Runners), strings.Join(reset.Runners, ", "))
-		}
-		if len(reset.RuntimeFiles) > 0 {
-			fmt.Printf("cleared %d runtime state file(s)\n", len(reset.RuntimeFiles))
-		}
-		if len(reset.HerdrNames) > 0 {
-			fmt.Printf("released %d herdr name(s): %s\n", len(reset.HerdrNames), strings.Join(reset.HerdrNames, ", "))
-		}
-		for _, warning := range reset.Warnings {
-			fmt.Printf("warning: setup reset: %s\n", warning)
-		}
-		cleared, err := clearSetupLiveRegistrations(cfg)
-		if err != nil {
-			return err
-		}
-		if len(cleared) > 0 {
-			fmt.Printf("cleared %d stale live registration(s): %s\n", len(cleared), strings.Join(cleared, ", "))
-		}
+		// Capture the prior saved state BEFORE we overwrite it below: the
+		// dropped-wrapper hook/shim cleanup is computed against the previous
+		// install's wrapper/shim sets.
 		globalState, _ := readSetupGlobalState()
 		poolState, _ := readSetupPoolState(cfg)
+
+		// Phase 2 — idempotent wake-infrastructure writes (hooks, shims, PATH
+		// block, saved setup state). These run BEFORE the destructive reset so a
+		// failure here leaves prior wake infrastructure intact and a re-run
+		// recovers cleanly. The reset does not depend on any of these writes.
 		for _, wrapper := range droppedWrappers(poolState.Wrappers, wrappers) {
 			if err := removeSetupHook(wrapper, root); err != nil {
 				return err
@@ -763,6 +796,14 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			PathBlock:      pathBlock,
 			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
+			return err
+		}
+
+		// Phase 3 — destructive runtime reset, LAST. By the time we reach here
+		// every recoverable write above has landed, so even if the reset (or a
+		// crash during it) fails partway, the bus retains its wake infrastructure
+		// (hooks/shims/enrollment) and a `setup` re-run recovers cleanly.
+		if err := setupRunRuntimeReset(root, cfg, wrappers); err != nil {
 			return err
 		}
 
@@ -1036,24 +1077,91 @@ func replaceSetupBlock(existing, block string) string {
 }
 
 func removeSetupBlock(existing string) (string, bool) {
-	start := strings.Index(existing, setupPathBlockBegin)
+	// First retire any install.sh-managed PATH region(s) so setup supersedes them
+	// instead of stacking a second managed block in the same profile.
+	out, legacyRemoved := removeInstallShPathBlocks(existing)
+
+	start := strings.Index(out, setupPathBlockBegin)
 	if start < 0 {
-		return existing, false
+		return out, legacyRemoved
 	}
-	end := strings.Index(existing[start:], setupPathBlockEnd)
+	end := strings.Index(out[start:], setupPathBlockEnd)
 	if end < 0 {
-		return existing, false
+		return out, legacyRemoved
 	}
 	end += start + len(setupPathBlockEnd)
-	if end < len(existing) && existing[end] == '\n' {
+	if end < len(out) && out[end] == '\n' {
 		end++
 	}
-	next := strings.TrimRight(existing[:start], "\n")
-	if next != "" && strings.TrimSpace(existing[end:]) != "" {
+	next := strings.TrimRight(out[:start], "\n")
+	if next != "" && strings.TrimSpace(out[end:]) != "" {
 		next += "\n\n"
 	}
-	next += strings.TrimLeft(existing[end:], "\n")
+	next += strings.TrimLeft(out[end:], "\n")
 	return next, true
+}
+
+// removeInstallShPathBlocks strips every install.sh-managed PATH region from the
+// profile text. install.sh delimits its region with marker lines of the form
+// "# agentchute PATH entry for <label> (<expr>) begin" ... " end" where the
+// label/expr vary, so we match on the stable prefix and begin/end suffixes.
+func removeInstallShPathBlocks(existing string) (string, bool) {
+	changed := false
+	out := existing
+	for {
+		bStart, bEnd := installShMarkerLine(out, installShPathMarkerBegin)
+		if bStart < 0 {
+			break
+		}
+		// Find the matching end marker after the begin marker.
+		eStart, eEnd := installShMarkerLine(out[bEnd:], installShPathMarkerEnd)
+		if eStart < 0 {
+			break
+		}
+		eStart += bEnd
+		eEnd += bEnd
+		if eEnd < len(out) && out[eEnd] == '\n' {
+			eEnd++
+		}
+		prefix := strings.TrimRight(out[:bStart], "\n")
+		suffix := strings.TrimLeft(out[eEnd:], "\n")
+		next := prefix
+		if next != "" && strings.TrimSpace(suffix) != "" {
+			next += "\n\n"
+		}
+		next += suffix
+		out = next
+		changed = true
+	}
+	return out, changed
+}
+
+// installShMarkerLine returns the start and end byte offsets of the first whole
+// line in s that begins with the install.sh marker prefix and ends with the
+// given marker suffix (begin/end). Returns (-1, -1) when no such line exists.
+func installShMarkerLine(s, suffix string) (int, int) {
+	idx := 0
+	for idx < len(s) {
+		lineEnd := strings.IndexByte(s[idx:], '\n')
+		var line string
+		var absEnd int
+		if lineEnd < 0 {
+			line = s[idx:]
+			absEnd = len(s)
+		} else {
+			line = s[idx : idx+lineEnd]
+			absEnd = idx + lineEnd
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, installShPathMarkerPrefix) && strings.HasSuffix(trimmed, suffix) {
+			return idx, absEnd
+		}
+		if lineEnd < 0 {
+			break
+		}
+		idx = absEnd + 1
+	}
+	return -1, -1
 }
 
 func setupBackupPath(path string) string {

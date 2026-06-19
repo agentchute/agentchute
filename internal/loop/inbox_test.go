@@ -2,9 +2,11 @@ package loop
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -151,8 +153,118 @@ func TestWriteInboxMessageIgnoresTempCleanupError(t *testing.T) {
 	if _, err := os.Stat(msg.Path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(inbox, tempFilePrefix+msg.Filename)); err != nil {
-		t.Fatalf("temp file should remain after fake cleanup failure: %v", err)
+	// The temp file now uses a unique os.CreateTemp name (not the deterministic
+	// .tmp_<final>), so locate the leftover by its tempFilePrefix rather than an
+	// exact name.
+	entries, err := os.ReadDir(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundTemp := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), tempFilePrefix) {
+			foundTemp = true
+			break
+		}
+	}
+	if !foundTemp {
+		t.Fatalf("a temp file should remain after fake cleanup failure; inbox entries: %v", entries)
+	}
+}
+
+// TestWriteInboxMessage_ConcurrentSameSenderNoBodyMixup forces the temp-path
+// collision window: N goroutines write distinct bodies as the same sender at a
+// FIXED `now`, and generateNonce is pinned to a tiny pool so many attempts
+// produce the same final filename (and, under the old deterministic
+// `.tmp_<final>` scheme, the SAME temp path). With a shared temp, a late writer
+// could clobber an earlier writer's body before it hard-linked the inode,
+// delivering the wrong body to the winner. A unique temp per attempt
+// (os.CreateTemp) makes each body land in its own inode, so every delivered
+// file's body matches the writer that produced its filename.
+func TestWriteInboxMessage_ConcurrentSameSenderNoBodyMixup(t *testing.T) {
+	root := t.TempDir()
+	inbox := filepath.Join(root, "inbox", "claude-code")
+	if err := os.MkdirAll(inbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pin generateNonce so concurrent writers at the same `now` heavily collide
+	// on the final filename (and, under the OLD scheme, the SAME temp path),
+	// exercising the clobber window — but guarantee progress: the FIRST handful
+	// of draws cycle a tiny colliding pool; once exhausted, draws become unique
+	// (a monotonic counter) so every writer eventually wins a distinct final
+	// filename. Under the old deterministic temp, a clobbered body would surface
+	// as a body mismatch on the winner; under the fix it cannot.
+	oldGen := generateNonce
+	t.Cleanup(func() { generateNonce = oldGen })
+	collidingPool := []string{"aaaa", "bbbb", "cccc"}
+	const collidingDraws = 18 // > n, so the early concurrent rush collides hard
+	var nonceMu sync.Mutex
+	draw := 0
+	generateNonce = func() (string, error) {
+		nonceMu.Lock()
+		defer nonceMu.Unlock()
+		d := draw
+		draw++
+		if d < collidingDraws {
+			return collidingPool[d%len(collidingPool)], nil
+		}
+		// Unique tail: 4 lowercase hex chars derived from the draw counter so
+		// retries always find a free final filename and the test terminates.
+		return fmt.Sprintf("%04x", 0x1000+(d-collidingDraws)), nil
+	}
+
+	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
+	const n = 24
+
+	type result struct {
+		path string
+		body string
+	}
+	results := make([]result, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := fmt.Sprintf("---\nfrom: codex\nto: claude-code\n---\n\nbody-marker-%03d\n", i)
+			<-start
+			msg, err := WriteInboxMessage(inbox, now, "codex", []byte(body))
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			results[i] = result{path: msg.Path, body: body}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("writer %d failed: %v", i, err)
+		}
+	}
+	// Every delivered file must contain exactly the body its own writer wrote.
+	for i, r := range results {
+		got, err := os.ReadFile(r.path)
+		if err != nil {
+			t.Fatalf("writer %d: read delivered file %s: %v", i, r.path, err)
+		}
+		if string(got) != r.body {
+			t.Fatalf("writer %d: delivered file %s body mismatch\n got: %q\nwant: %q",
+				i, r.path, string(got), r.body)
+		}
+	}
+	// And every writer got a distinct final path (no two writers claimed one file).
+	seen := make(map[string]int)
+	for i, r := range results {
+		if prev, ok := seen[r.path]; ok {
+			t.Fatalf("writers %d and %d both delivered to %s", prev, i, r.path)
+		}
+		seen[r.path] = i
 	}
 }
 
@@ -211,7 +323,7 @@ func TestListInboxMessagesWithSkippedReportsMalformedNames(t *testing.T) {
 
 // InferSenderFromFilename should recover the sender when the filename retains
 // §6.1 structural shape (`_from-<slug>_msg-...` + `.md`) but the timestamp or
-// nonce is malformed (§11.4). Filenames missing the structural markers are
+// nonce is malformed (§11.1). Filenames missing the structural markers are
 // too broken to reliably attribute and must be dropped without inference,
 // even if the bare slug is recoverable from somewhere in the name.
 func TestInferSenderFromFilenameRecoversFromMalformedNames(t *testing.T) {
@@ -227,7 +339,7 @@ func TestInferSenderFromFilenameRecoversFromMalformedNames(t *testing.T) {
 		{"no from segment", "2026-05-09T16-32-00-123456Z_msg-abcd.md", "", false},
 		{"invalid slug (uppercase)", "_from-CODEX_msg-abcd.md", "", false},
 		{"empty filename", "", "", false},
-		// §11.4 narrowing: structural markers missing → no inference.
+		// §11.1 narrowing: structural markers missing → no inference.
 		{"missing _msg- segment", "2026-05-09T16-32-00-123456Z_from-codex_abcd.md", "", false},
 		{"missing .md suffix", "2026-05-09T16-32-00-123456Z_from-codex_msg-abcd", "", false},
 		{"only _from- segment", "junk_from-codex_junk", "", false},

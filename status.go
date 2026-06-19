@@ -61,17 +61,17 @@ func cmdStatus(args []string) error {
 
 	now := time.Now().UTC()
 	if agentID != "" {
-		// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.7): status --as
+		// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): status --as
 		// acts AS the agent (refreshes its last_seen). Refuse for an
 		// unregistered id. Pool-overview status (no --as) stays
 		// unaffected and remains a side-effect-free read.
 		selfPath := cfg.AgentRegistrationPath(agentID)
 		if _, err := os.Stat(selfPath); err == nil {
-			if err := loop.UpdateLastSeen(selfPath, now); err != nil {
+			if err := loop.UpdateLastSeen(cfg, agentID, now); err != nil {
 				return fmt.Errorf("update last_seen for %s: %w", agentID, err)
 			}
 		} else if os.IsNotExist(err) {
-			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first, or omit --as to view the pool overview (AGENTCHUTE.md §5.7)", agentID, agentID)
+			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first, or omit --as to view the pool overview (AGENTCHUTE.md §5.3)", agentID, agentID)
 		} else {
 			return fmt.Errorf("stat own registration: %w", err)
 		}

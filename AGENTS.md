@@ -122,7 +122,7 @@ agentchute dogfoods itself: agents working on agentchute coordinate through agen
 
 - **Each turn:** run `agentchute check --vendor <vendor>` first, or pass `--as <id>` for a custom/non-wrapper lane. If it says you are not registered, immediately run `agentchute boot --vendor <vendor>` plus `agentchute poller ensure --vendor <vendor>`, then rerun `check`. Process any messages.
 - **Sending:** `agentchute send --to <peer> --task ... --body ...` from a registered pane, or pass `--from <id>` explicitly (or follow `AGENTCHUTE.md` §6 directly — the binary just makes it ergonomic).
-- **Watchdog (optional):** cooperative waking on every `agentchute check` cycle (§10.5) is the default and covers most pools. If your wrapper supports a polling loop (e.g., Claude Code's `/loop`), running `agentchute watchdog --once --as <id>` each tick adds belt-and-suspenders liveness. Otherwise, the standalone `agentchute watchdog --as watchdog &` daemon is the fallback. See `AGENTCHUTE.md §10`.
+- **Watchdog (optional):** cooperative waking on every `agentchute check` cycle (§10.2) is the default and covers most pools. If your wrapper supports a polling loop (e.g., Claude Code's `/loop`), running `agentchute watchdog --once --as <id>` each tick adds belt-and-suspenders liveness. Otherwise, the standalone `agentchute watchdog --as watchdog &` daemon is the fallback. See `AGENTCHUTE.md §10`.
 - **Gitignore check:** `git check-ignore .agentchute/loop/agents/<your-id>.md` should print the path.
 
 ## Scope

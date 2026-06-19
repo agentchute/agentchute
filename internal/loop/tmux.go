@@ -42,6 +42,12 @@ func PokeTargetContext(ctx context.Context, target string) error {
 	if target == "" {
 		return nil
 	}
+	// Re-validate at use time: a hand-written registration that bypassed
+	// Validate() must not reach `tmux send-keys -t <target>` with a foreign or
+	// flag-shaped pane.
+	if err := ValidateWakeTarget("tmux", target); err != nil {
+		return err
+	}
 	if err := tmuxSendKeys(ctx, target, tmuxWakePrompt); err != nil {
 		return fmt.Errorf("send wake prompt: %w", err)
 	}

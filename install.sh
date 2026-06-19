@@ -56,11 +56,15 @@ is_valid_version() {
 	[ -z "$stripped" ]
 }
 
-# is_valid_install_dir rejects empty and PATH-hostile values (colon, newline).
+# is_valid_install_dir rejects empty, PATH-hostile, and shell-active values (colon, newline, quotes, dollar signs, backticks, backslashes).
 is_valid_install_dir() {
 	case "$1" in
 		'') return 1 ;;
 		*:*) return 1 ;;
+		*'"'*) return 1 ;;
+		*'$'*) return 1 ;;
+		*'`'*) return 1 ;;
+		*\\*) return 1 ;;
 		*'
 '*) return 1 ;;
 	esac
@@ -329,6 +333,13 @@ ensure_path_available() {
 		info "PATH profile entry for $label already present in $profile"
 		return 0
 	fi
+	# Defer to a setup-managed PATH region if one already covers this profile:
+	# `agentchute setup` owns a single managed block (markers below) and supersedes
+	# install.sh's per-label regions, so don't stack a second block alongside it.
+	if [ -f "$profile" ] && grep -F "# >>> agentchute setup PATH >>>" "$profile" >/dev/null 2>&1; then
+		info "setup-managed PATH block already present in $profile; skipping install.sh entry for $label"
+		return 0
+	fi
 	# Intentional: the printf formats keep $PATH/$HOME/$PATH[1] literal so they
 	# expand in the user's shell at profile-source time, not here (SC2016). The
 	# grep-then-append on $profile is sequential, not a concurrent pipeline
@@ -529,6 +540,7 @@ EOF
 		[ -n "${HOME:-}" ] || err "HOME unset; set AGENTCHUTE_SHIM_DIR explicitly for launcher shims"
 		shim_dir="${HOME}/.agentchute/bin"
 	fi
+	is_valid_install_dir "$shim_dir" || err "invalid shim dir: $shim_dir (must not contain quotes, dollar signs, backticks, or backslashes)"
 
 	# Tmux is the v0.1 reference peer-wake adapter. Not required to use the
 	# binary (CI, protocol-only, polling-only setups are valid), but without

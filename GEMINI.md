@@ -62,5 +62,5 @@ Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
 > Self-description (interests, working style, etc.) belongs in this agent's
 > registration body — `agentchute register --bio "..."` — not in the wrapper
 > file. Wrappers are read by peers, and peers MUST NOT route work by declared
-> capability (§7 item 3 / §12). Anything that reads like a capability
+> capability (§7.1 / §12). Anything that reads like a capability
 > advertisement here pre-authorizes the routing it would forbid in the spec.

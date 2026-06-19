@@ -6,13 +6,11 @@ Read this after `AGENTS.md` and before touching anything. This file should stay 
 
 ## Current State
 
-Latest release: `v0.6.1`
+Latest release: `v0.6.2`
 
-Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.6.1
+Release URL: https://github.com/agentchute/agentchute/releases/tag/v0.6.2
 
-Restart note: `v0.6.1` is the GitHub-available hotfix for the herdr wake submit bug and composable `setup --wake` paths. It also includes the `v0.6.0` **`agentchute update [--version <tag>]`** flow. Standard `install.sh` and `agentchute update` now resolve `v0.6.1`.
-
-Final v0.6.1 release verification (confirmed 2026-06-17): tag `v0.6.1` points at commit `3ce6377` (annotated tag `999dcd0`); GitHub release is published, non-draft, non-prerelease, and has darwin/linux amd64/arm64 archives plus `checksums.txt`; GoReleaser workflow run `27721495339` succeeded after preflight; `install.sh --version v0.6.1` downloaded, checksum-verified, and installed `agentchute 0.6.1`; `/releases/latest` and `install.sh --dry-run` both resolve `v0.6.1`; local `agentchute update --version v0.6.1` upgraded `/Users/alex/.local/bin/agentchute` from `v0.6.0` to `v0.6.1`.
+Restart note: `v0.6.2` includes the writes-before-reset setup reordering and the `--no-resync` update flag. Standard `install.sh` and `agentchute update` now resolve `v0.6.2`.
 
 Final v0.6.0 release verification (confirmed 2026-06-17): `main` and tag `v0.6.0` point at commit `02f6e46` (annotated tag `669599d`); `gh release view v0.6.0` shows a published non-draft/non-prerelease GitHub release with darwin/linux amd64/arm64 archives plus `checksums.txt`; the GoReleaser `release` workflow on the tag succeeded. Pre-release: full Go suite (incl. 12 update tests) + `install_test` (25/0) + `shellcheck` + `goreleaser check` green; codex security review (3 blockers + 4 lower fixed → LGTM); grok validated the download→verify→atomic-replace→re-exec flow with real artifacts.
 
@@ -22,6 +20,7 @@ Per-version release notes and older verification history live in [`CHANGELOG.md`
 
 Recent shipped work:
 
+- v0.6.2 release: Writes-before-reset setup reordering (idempotent hook/shim writes land before destructive runtime resets) + `--no-resync` flag for binary-only updates without saved state.
 - Contextual identity defaults: explicit `--as`, then `AGENTCHUTE_AGENT_ID`, then current tmux pane registration, then `<wrapper>-<folder>`.
 - Same-folder conflict handling with suffixes such as `codex-agentchute-2`.
 - v12 enrollment refresh for existing `AGENTS.md`, `CLAUDE.md`, `CODEX.md`, `GEMINI.md`, and `GROK.md` blocks.
@@ -63,7 +62,7 @@ Root `.claude/`, `.codex/`, and `.gemini/` hook dirs are local setup output for 
 
 The v0.5.0 squash carries the herdr adapter (new `internal/loop/herdr.go`, `herdr_state.go` + tests) plus the touched Go/docs/templates. Local untracked state that stays uncommitted: `.claude/`, `.codex/`, `.gemini/` setup-output hook directories (and `.bak` files), and anything under `.agentchute/loop/` that is runtime data (registrations, inboxes, archives, state, scratch).
 
-**herdr support** (github.com/ogulcancelik/herdr): SHIPPED in v0.5.0 as the L2 native wake adapter (sibling to `internal/loop/tmux.go`). L3 (socket/state import into core) remains rejected. `wake_method=herdr` targets the stable agent name; the poke is one argv call `herdr agent send <agent_id> "[agentchute:herdr] check inbox\r"`. Grok stays on the runner path (hookless; its multiline always-approve TUI does not reliably submit on an injected CR). Decided via 4-way (claude+codex senior, grok+gemini junior): name=agent_id (no workspace/tab encoding — panes move between tabs), runner precedence preserved under `agentchute run`. No outstanding herdr follow-ups.
+**herdr support** (github.com/ogulcancelik/herdr): SHIPPED in v0.5.0 as the L2 native wake adapter (sibling to `internal/loop/tmux.go`). L3 (socket/state import into core) remains rejected. `wake_method=herdr` targets the stable agent name; the poke is a two-step sequence: `herdr agent send <agent_id> "[agentchute:herdr] check inbox"` followed by `herdr pane send-keys <pane_id> Enter` (matching `internal/loop/herdr.go`). Grok stays on the runner path (hookless; its multiline always-approve TUI does not reliably submit on an Enter key event). Decided via 4-way (claude+codex senior, grok+gemini junior): name=agent_id (no workspace/tab encoding — panes move between tabs), runner precedence preserved under `agentchute run`. No outstanding herdr follow-ups.
 
 ## Verification
 

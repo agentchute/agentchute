@@ -117,12 +117,31 @@ func activeSessionAliveAtWithReason(session *loop.ActiveSession, now time.Time) 
 	if strings.TrimSpace(session.Host) != "" && localHost != "" && session.Host != localHost {
 		return false, fmt.Sprintf("session host %q != local %q", session.Host, localHost)
 	}
-	if session.PID > 0 && processAlive(session.PID) {
-		return true, "process alive"
-	}
+	// WI-4 Fix 3: clamp a small negative age (future-dated / clock-skewed
+	// heartbeat) to 0 so a future timestamp is not treated as dead — matching
+	// PollerFreshness, watchdog.go, and recipient_liveness.go.
 	age := now.UTC().Sub(session.LastSeen.UTC())
-	if age >= 0 && age <= activeSessionMaxAge {
+	if age < 0 {
+		age = 0
+	}
+	fresh := age <= activeSessionMaxAge
+	// WI-4 Fix 4 (PID-reuse hardening): a live PID alone is NOT proof of
+	// liveness. PIDs are recycled — a dead wrapper's PID can be reused by an
+	// unrelated long-lived process and would otherwise pass on existence
+	// alone. Require BOTH processAlive(PID) AND a reasonably-fresh session
+	// heartbeat. This is the least-invasive correct approach: the wrapper /
+	// runner re-stamps the session on every turn, so a genuinely live wrapper
+	// always has a fresh timestamp; a recycled PID attached to a stale
+	// timestamp is correctly rejected.
+	if session.PID > 0 && processAlive(session.PID) && fresh {
+		return true, fmt.Sprintf("process alive + fresh heartbeat (pid=%d age=%s)", session.PID, age.Round(time.Second))
+	}
+	// No live PID (or recycled PID): fall back to heartbeat freshness alone.
+	// A fresh heartbeat from a wrapper whose PID we cannot confirm (e.g. the
+	// process exited between turns but the scheduler is about to relaunch)
+	// still proves the host recently saw this lane.
+	if fresh {
 		return true, fmt.Sprintf("fresh heartbeat (age=%s)", age.Round(time.Second))
 	}
-	return false, fmt.Sprintf("process dead and heartbeat stale (age=%s threshold=%s)", age.Round(time.Second), activeSessionMaxAge)
+	return false, fmt.Sprintf("process dead/recycled and heartbeat stale (age=%s threshold=%s)", age.Round(time.Second), activeSessionMaxAge)
 }

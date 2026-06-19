@@ -24,6 +24,11 @@ type PollerHeartbeat struct {
 	LaunchEnabled   bool      `json:"launch_enabled,omitempty"`
 	LastSeen        time.Time `json:"last_seen"`
 	StartedAt       time.Time `json:"started_at,omitempty"`
+	// LastError records the most recent poll-computation failure. It is set
+	// when a tick's mail-consumption step errors WITHOUT refreshing LastSeen,
+	// so liveness consumers can distinguish a "beating but failing" poller
+	// from a healthy one. Cleared on the next successful tick.
+	LastError string `json:"last_error,omitempty"`
 }
 
 // SavePollerHeartbeat writes the heartbeat atomically under state/<agent>/.
@@ -81,7 +86,14 @@ func PollerFreshness(hb *PollerHeartbeat, now time.Time) (fresh bool, age, thres
 	}
 	age = now.UTC().Sub(hb.LastSeen.UTC())
 	threshold = PollerFreshnessThreshold(hb.IntervalSeconds)
-	return age >= 0 && age <= threshold, age, threshold
+	// Clamp a small negative age (a future-dated, clock-skewed heartbeat) to
+	// fresh — same as watchdog.go and recipient_liveness.go clamp negative
+	// ages to 0. Without this, a heartbeat a few seconds in the future reads
+	// stale and false-blocks the gate.
+	if age < 0 {
+		age = 0
+	}
+	return age <= threshold, age, threshold
 }
 
 func PollerFreshnessThreshold(intervalSeconds int) time.Duration {

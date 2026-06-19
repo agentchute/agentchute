@@ -64,7 +64,7 @@ func TestWriteRegistrationRoundTrip(t *testing.T) {
 		ControlRepo:  "/tmp/repo",
 		WorkingRepos: []string{"/tmp/repo"},
 		WakeMethod:   "tmux",
-		WakeTarget:   "main",
+		WakeTarget:   "%5",
 		LastSeen:     lastSeen,
 		Status:       StatusActive,
 		LastActive:   &lastActive,
@@ -115,8 +115,85 @@ func TestWriteRegistrationExclusiveRefusesExisting(t *testing.T) {
 	}
 }
 
+func TestReadFileLimit_RejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	// A symlink in the registration/inbox path must be refused, not silently
+	// followed to its target — a peer could plant a symlink to /etc/passwd or
+	// to another agent's private state.
+	if _, err := ReadFileLimit(link, MaxRegistrationBytes); err == nil {
+		t.Fatal("ReadFileLimit followed a symlink, want refusal")
+	}
+
+	// A real regular file still reads fine.
+	if data, err := ReadFileLimit(target, MaxRegistrationBytes); err != nil || string(data) != "secret" {
+		t.Fatalf("ReadFileLimit(regular) = %q, %v; want \"secret\", nil", data, err)
+	}
+}
+
+func TestValidateRejectsMalformedWakeTarget(t *testing.T) {
+	base := func() *Registration {
+		return &Registration{
+			AgentID:     "codex",
+			Vendor:      "openai",
+			ControlRepo: "/tmp/repo",
+			LastSeen:    time.Now().UTC(),
+			Status:      StatusActive,
+		}
+	}
+
+	// Live formats must pass Validate().
+	live := []struct {
+		method, target string
+	}{
+		{"tmux", "%0"},
+		{"tmux", "%1"},
+		{"tmux", "main:0.0"},
+		{"herdr", "claude-code-agentchute"},
+		{"herdr", "codex-agentchute"},
+		{RunnerWakeMethod, "unix:/Users/alex/code/agentchute/.agentchute/loop/state/grok-agentchute/runner.sock"},
+	}
+	for _, lf := range live {
+		reg := base()
+		reg.WakeMethod = lf.method
+		reg.WakeTarget = lf.target
+		if err := reg.Validate(); err != nil {
+			t.Errorf("live registration %s/%q failed Validate(): %v", lf.method, lf.target, err)
+		}
+	}
+
+	// Malformed / hostile targets must fail Validate().
+	bad := []struct {
+		name, method, target string
+	}{
+		{"tmux foreign pane no percent", "tmux", "main"},
+		{"tmux leading dash", "tmux", "-t"},
+		{"tmux injection", "tmux", "%0;reboot"},
+		{"herdr traversal", "herdr", "../../etc/passwd"},
+		{"runner non-unix", RunnerWakeMethod, "/tmp/evil.sock"},
+		{"runner newline", RunnerWakeMethod, "unix:/tmp/evil\n.sock"},
+	}
+	for _, b := range bad {
+		reg := base()
+		reg.WakeMethod = b.method
+		reg.WakeTarget = b.target
+		if err := reg.Validate(); err == nil {
+			t.Errorf("%s: malformed registration %s/%q passed Validate(), want error", b.name, b.method, b.target)
+		}
+	}
+}
+
 func TestUpdateLastSeenPreservesBody(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "codex.md")
+	cfg := newLockTestConfig(t)
+	path := cfg.AgentRegistrationPath("codex")
 	mustWrite(t, path, []byte(`---
 agent_id: codex
 vendor: openai
@@ -131,7 +208,7 @@ status: active
 `))
 
 	next := time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
-	if err := UpdateLastSeen(path, next); err != nil {
+	if err := UpdateLastSeen(cfg, "codex", next); err != nil {
 		t.Fatal(err)
 	}
 	reg, err := ReadRegistration(path)
@@ -147,7 +224,8 @@ status: active
 }
 
 func TestUpdateLastActivePreservesBody(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "codex.md")
+	cfg := newLockTestConfig(t)
+	path := cfg.AgentRegistrationPath("codex")
 	mustWrite(t, path, []byte(`---
 agent_id: codex
 vendor: openai
@@ -162,7 +240,7 @@ status: active
 `))
 
 	next := time.Date(2026, 5, 10, 0, 1, 0, 0, time.UTC)
-	if err := UpdateLastActive(path, next); err != nil {
+	if err := UpdateLastActive(cfg, "codex", next); err != nil {
 		t.Fatal(err)
 	}
 	reg, err := ReadRegistration(path)
@@ -178,7 +256,8 @@ status: active
 }
 
 func TestUpdateLastSeenUsesStructuredRegistrationWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "codex.md")
+	cfg := newLockTestConfig(t)
+	path := cfg.AgentRegistrationPath("codex")
 	mustWrite(t, path, []byte(`---
 agent_id: codex
 vendor: openai
@@ -192,7 +271,7 @@ status: active
 `))
 
 	next := time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
-	if err := UpdateLastSeen(path, next); err != nil {
+	if err := UpdateLastSeen(cfg, "codex", next); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)

@@ -13,6 +13,22 @@ import (
 )
 
 func resolveAgentID(flagID, vendor string, cfg *loop.Config) (string, error) {
+	id, err := resolveAgentIDRaw(flagID, vendor, cfg)
+	if err != nil {
+		return "", err
+	}
+	// Structural traversal-safety: every path that produces an agent id flows
+	// through this single validation, so a hostile --as / AGENTCHUTE_AGENT_ID
+	// (e.g. "../../etc/x") can never escape to filesystem resolution. The
+	// contextual-default derivation already yields valid ids; this re-check is
+	// defense in depth and the sole gate for the explicit-input paths.
+	if err := loop.ValidateAgentID(id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func resolveAgentIDRaw(flagID, vendor string, cfg *loop.Config) (string, error) {
 	// 1. Explicit --as flag wins.
 	if strings.TrimSpace(flagID) != "" {
 		return strings.TrimSpace(flagID), nil
@@ -57,7 +73,11 @@ func resolveAgentID(flagID, vendor string, cfg *loop.Config) (string, error) {
 	if cfg == nil {
 		return baseID, nil
 	}
-	return availableContextualAgentID(cfg, baseID, time.Now().UTC()), nil
+	id, err := availableContextualAgentID(cfg, baseID, time.Now().UTC())
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func resolveRegisteredAgentID(flagID string, cfg *loop.Config) (string, error) {
@@ -141,7 +161,7 @@ func agentIDForCurrentHerdrPane(cfg *loop.Config, vendor string) (string, bool) 
 	return "", false
 }
 
-func availableContextualAgentID(cfg *loop.Config, baseID string, now time.Time) string {
+func availableContextualAgentID(cfg *loop.Config, baseID string, now time.Time) (string, error) {
 	regs, _ := loop.ReadRegistrationsLenient(cfg.AgentsDir())
 	reserved := make(map[string]bool)
 	for _, reg := range regs {
@@ -153,11 +173,11 @@ func availableContextualAgentID(cfg *loop.Config, baseID string, now time.Time) 
 	candidate := baseID
 	for i := 2; ; i++ {
 		if !reserved[candidate] {
-			return candidate
+			return candidate, nil
 		}
 		candidate = fmt.Sprintf("%s-%d", baseID, i)
 		if i > 100 {
-			return candidate
+			return "", fmt.Errorf("could not allocate a free agent id for base %q after %d attempts", baseID, 100)
 		}
 	}
 }

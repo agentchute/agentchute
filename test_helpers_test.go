@@ -27,6 +27,19 @@ func mustWrite(t *testing.T, path string, data []byte) {
 	}
 }
 
+// mustWriteAgedInbox writes an inbox file and back-dates its filesystem mtime
+// to `arrival`. The watchdog now derives message age from mtime (arrival on
+// this host), not the sender-encoded filename timestamp, so tests that need an
+// inbox file aged past the message-age threshold must control its mtime rather
+// than rely on a past filename timestamp.
+func mustWriteAgedInbox(t *testing.T, path string, arrival time.Time) {
+	t.Helper()
+	mustWrite(t, path, []byte("hi"))
+	if err := os.Chtimes(path, arrival, arrival); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func withFakeTmuxTargets(t *testing.T, targets ...string) {
 	t.Helper()
 	old := tmuxProbeBinary
@@ -54,6 +67,15 @@ func withFakeTmuxTargets(t *testing.T, targets ...string) {
 	t.Cleanup(func() {
 		tmuxProbeBinary = old
 	})
+}
+
+// setTmuxPaneLockObserver installs a pane-lock acquisition observer and returns
+// a restore func. Tests use it to assert which target the tmux pane lock was
+// keyed on (the authoritative in-lock target, not the stale pre-lock snapshot).
+func setTmuxPaneLockObserver(fn func(target string)) func() {
+	old := tmuxPaneLockObserver
+	tmuxPaneLockObserver = fn
+	return func() { tmuxPaneLockObserver = old }
 }
 
 func mustWriteCanonicalHook(t *testing.T, root, wrapper string) {

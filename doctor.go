@@ -616,7 +616,7 @@ func checkInboxState(cfg *loop.Config, agentID string) doctorCheck {
 			return doctorCheck{
 				Name:     "inbox_state",
 				Severity: severityBlocker,
-				Message:  fmt.Sprintf("inbox directory missing for %s — run `agentchute boot --as %s --vendor <vendor>` (AGENTCHUTE.md §5.7)", agentID, agentID),
+				Message:  fmt.Sprintf("inbox directory missing for %s — run `agentchute boot --as %s --vendor <vendor>` (AGENTCHUTE.md §5.3)", agentID, agentID),
 			}
 		}
 		return doctorCheck{Name: "inbox_state", Severity: severityWarn, Message: fmt.Sprintf("inbox list error: %v", err)}
@@ -694,7 +694,10 @@ func checkWakeTargetValidity(cfg *loop.Config, agentID string) doctorCheck {
 		}
 		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=herdr, target=%s reachable", target)}
 	case loop.RunnerWakeMethod:
-		if !loop.RunnerSocketReachable(target, time.Second) {
+		// Recipient-bound: never dial a runner socket the recipient does not
+		// own. A registration naming a foreign socket is reported unreachable
+		// without a dial (the owned-check short-circuits).
+		if !runnerReachableForRecipient(cfg, reg, time.Second) {
 			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=%s but socket target %q is not reachable; runner may have exited", method, target)}
 		}
 		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=%s, target reachable", method)}
@@ -727,7 +730,10 @@ func checkRunnerSocketStaleness(cfg *loop.Config, agentID string) doctorCheck {
 	if reg.WakeMethod != loop.RunnerWakeMethod {
 		return doctorCheck{Name: "runner_socket_staleness", Severity: severitySkip, Message: "not using runner wake"}
 	}
-	if loop.RunnerSocketReachable(reg.WakeTarget, time.Second) {
+	// Recipient-bound: never dial a runner socket the recipient does not own.
+	// Operator diagnostics; the owned-check is defense-in-depth (harmless for a
+	// legit self socket, protective if the reg was tampered).
+	if runnerReachableForRecipient(cfg, reg, time.Second) {
 		return doctorCheck{Name: "runner_socket_staleness", Severity: severityOK, Message: fmt.Sprintf("runner socket %s reachable", reg.WakeTarget)}
 	}
 	return doctorCheck{

@@ -146,7 +146,7 @@ func TestResolvePointerTargetEmptyRejected(t *testing.T) {
 	}
 }
 
-// Sibling-repo case — the primary use case enabled by §4 / §7.6: a pointer at
+// Sibling-repo case — the primary use case enabled by §4 / §4.2: a pointer at
 // repo-A/.agentchute-control-repo points at ../control. The resolved target
 // MUST be allowed even though it escapes repo-A's directory (codex's round-2
 // revision; the hard-boundary check from earlier rounds was wrong).

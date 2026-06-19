@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -99,63 +100,81 @@ func cmdDefer(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load pending-reply ledger: %w", err)
 	}
-	entry, ok := ledger.FindByMessageID(messageID)
+	// Pick the sender from a PENDING entry — NEVER FindByMessageID's first bare
+	// row, which may be terminal and would scope the deferral to a sender that
+	// has nothing left to defer (rev2). FirstPendingByMessageID returns the
+	// first still-pending row for this message_id, so successive `defer
+	// --message <id>` calls reach successive pending senders (the "separate
+	// call" behavior actually works), and a terminal-first row owed by a
+	// DIFFERENT sender no longer renders the later pending sender unreachable.
+	pendingEntry, ok := ledger.FirstPendingByMessageID(messageID)
 	if !ok {
-		return fmt.Errorf("no pending-reply ledger entry for message_id %q (use agentchute pending to list)", messageID)
-	}
-	if entry.Status != loop.PendingReplyStatusPending {
-		return fmt.Errorf("ledger entry for %q is already in status %q; cannot defer", messageID, entry.Status)
+		// No pending obligation for this message_id: either none exists at all,
+		// or every matching row is already terminal (replied/deferred).
+		return fmt.Errorf("no pending-reply obligation for message_id %q (none found, or all already terminal); use agentchute pending to list", messageID)
 	}
 	// Defense-in-depth: even though LoadPendingLedger validates From/To as
 	// agent_ids and RecordPendingReply validates at write time, refuse to act
 	// on an entry whose `to` doesn't name us — the ledger is recipient-owned
 	// and a mismatched To means a corrupted state file, not a legitimate
 	// obligation (codex review on eb58443).
-	if err := loop.ValidateAgentID(entry.From); err != nil {
+	if err := loop.ValidateAgentID(pendingEntry.From); err != nil {
 		return fmt.Errorf("ledger entry %q has invalid from: %w", messageID, err)
 	}
-	if entry.To != agentID {
-		return fmt.Errorf("ledger entry %q to=%q does not match --as %q; refusing to act on a mismatched entry", messageID, entry.To, agentID)
+	if pendingEntry.To != agentID {
+		return fmt.Errorf("ledger entry %q to=%q does not match --as %q; refusing to act on a mismatched entry", messageID, pendingEntry.To, agentID)
 	}
+	// Sender-scoping (WI-2 follow-up): message_id is sender-controlled and
+	// reusable, so we scope the deferral to the sender of the matched PENDING
+	// entry. LIMITATION: `defer` is keyed on message_id alone and cannot
+	// disambiguate the same message_id reused by two different senders from its
+	// args; it defers the obligations owed to the FIRST pending sender. A
+	// same-message_id obligation from a DIFFERENT sender is left pending and is
+	// reached by a separate `defer --message <id>` call (which now picks the
+	// next still-pending sender). This is the safe direction: it can never clear
+	// another sender's obligation, and it can never strand a pending sender
+	// behind a terminal first row.
+	fromSender := pendingEntry.From
 
 	now := time.Now().UTC()
-	if err := loop.MarkPendingDeferred(cfg, agentID, messageID, reason, deferredUntil, now); err != nil {
+	if err := loop.MarkPendingDeferred(cfg, agentID, messageID, fromSender, reason, deferredUntil, now); err != nil {
 		return fmt.Errorf("mark deferred: %w", err)
 	}
 
-	// Compose and send the deferral-acknowledgment back to the original
-	// sender. Failures here are warnings, not errors: the local ledger
-	// transition has already cleared our gate.
-	ackBody := composeDeferralAckBody(entry, reason, deferredUntil)
-	ackContent := loop.ComposeMessage(now, agentID, entry.From, "deferred-reply", "info", entry.MessageID, ackBody)
+	// Compose and send the deferral-acknowledgment back to the DEFERRED sender
+	// (the still-pending sender we actually transitioned — pendingEntry.From,
+	// not FindByMessageID's first bare row). Failures here are warnings, not
+	// errors: the local ledger transition has already cleared our gate.
+	ackBody := composeDeferralAckBody(pendingEntry, reason, deferredUntil)
+	ackContent := loop.ComposeMessage(now, agentID, pendingEntry.From, "deferred-reply", "info", pendingEntry.MessageID, ackBody)
 
 	sendWarning := ""
-	senderInbox := cfg.AgentInboxDir(entry.From)
+	senderInbox := cfg.AgentInboxDir(pendingEntry.From)
 	ackMsg, err := loop.WriteInboxMessage(senderInbox, now, agentID, ackContent)
 	switch {
 	case err == nil:
 		// Poke the sender if pokable; failures are non-fatal.
-		regPath := cfg.AgentRegistrationPath(entry.From)
+		regPath := cfg.AgentRegistrationPath(pendingEntry.From)
 		if reg, regErr := loop.ReadRegistration(regPath); regErr == nil && reg.IsPokable() {
-			if pokeErr := loop.PokeWakeTarget(reg.WakeMethod, reg.WakeTarget); pokeErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: wake poke to %s failed (%v); ack still delivered\n", entry.From, pokeErr)
+			if pokeErr := loop.PokeRegistration(context.Background(), cfg, reg); pokeErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: wake poke to %s failed (%v); ack still delivered\n", pendingEntry.From, pokeErr)
 			}
 		}
 	case os.IsNotExist(err):
-		sendWarning = fmt.Sprintf("warning: sender %q has no inbox directory (unregistered?); deferral recorded locally, ack not delivered", entry.From)
+		sendWarning = fmt.Sprintf("warning: sender %q has no inbox directory (unregistered?); deferral recorded locally, ack not delivered", pendingEntry.From)
 	default:
-		sendWarning = fmt.Sprintf("warning: failed to deliver deferral ack to %s: %v (deferral recorded locally)", entry.From, err)
+		sendWarning = fmt.Sprintf("warning: failed to deliver deferral ack to %s: %v (deferral recorded locally)", pendingEntry.From, err)
 	}
 
 	fmt.Printf("Deferred %s\n", messageID)
-	fmt.Printf("  from:   %s\n", entry.From)
-	fmt.Printf("  task:   %s\n", entry.Task)
+	fmt.Printf("  from:   %s\n", pendingEntry.From)
+	fmt.Printf("  task:   %s\n", pendingEntry.Task)
 	fmt.Printf("  reason: %s\n", reason)
 	if deferredUntil != "" {
 		fmt.Printf("  until:  %s\n", deferredUntil)
 	}
 	if ackMsg.Filename != "" {
-		fmt.Printf("  ack:    %s -> %s\n", ackMsg.Filename, entry.From)
+		fmt.Printf("  ack:    %s -> %s\n", ackMsg.Filename, pendingEntry.From)
 	}
 	if sendWarning != "" {
 		fmt.Fprintln(os.Stderr, sendWarning)
