@@ -140,6 +140,28 @@ func PingRunner(target string, timeout time.Duration) (*RunnerPingResponse, erro
 
 type runnerWakeAdapter struct{}
 
+// Reachable reports whether reg's runner socket answers the ping/ack protocol,
+// WITHOUT ever dialing a socket the recipient does not legitimately own. This is
+// the WI-3 recipient-binding invariant, now living behind the WakeAdapter
+// interface: the owned-check (cfg.RunnerWakeTargetOwnedBy) runs FIRST and an
+// unowned target is reported unreachable WITHOUT a dial; only an owned target is
+// dialed (RunnerSocketReachable). The root-package runnerReachableForRecipient
+// delegates here, so this is the one place the owned-check-before-dial rule
+// lives.
+func (runnerWakeAdapter) Reachable(cfg *Config, reg *Registration, timeout time.Duration) bool {
+	if reg == nil || reg.WakeMethod != RunnerWakeMethod {
+		return false
+	}
+	if cfg == nil {
+		return false
+	}
+	if err := cfg.RunnerWakeTargetOwnedBy(reg.AgentID, reg.WakeTarget); err != nil {
+		// Not a socket this recipient owns: never dial it.
+		return false
+	}
+	return RunnerSocketReachable(reg.WakeTarget, timeout)
+}
+
 func (runnerWakeAdapter) Poke(ctx context.Context, target string) error {
 	path, err := ParseRunnerWakeTarget(target)
 	if err != nil {

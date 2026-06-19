@@ -22,16 +22,27 @@ import (
 // the only path registration-driven reachability probes should use. Non-runner
 // wake methods are out of scope for this socket-specific helper and report
 // unreachable here (callers handle other methods separately).
+//
+// The owned-check-before-dial logic now lives behind the WakeAdapter interface
+// (runnerWakeAdapter.Reachable). This helper delegates to the dispatcher so
+// there is ONE place the rule lives; the WakeMethod guard preserves the prior
+// "non-runner ⇒ unreachable here" contract that this socket-specific helper
+// promised its callers (the dispatcher itself would otherwise route a tmux/herdr
+// reg to its own adapter).
 func runnerReachableForRecipient(cfg *loop.Config, reg *loop.Registration, timeout time.Duration) bool {
 	if reg == nil || reg.WakeMethod != loop.RunnerWakeMethod {
 		return false
 	}
-	if cfg == nil {
-		return false
-	}
-	if err := cfg.RunnerWakeTargetOwnedBy(reg.AgentID, reg.WakeTarget); err != nil {
-		// Not a socket this recipient owns: never dial it.
-		return false
-	}
-	return loop.RunnerSocketReachable(reg.WakeTarget, timeout)
+	return loop.RegistrationReachable(cfg, reg, timeout)
+}
+
+// init wires the concrete tmux/herdr reachability probes (which live in this
+// root package and shell out via package-level binary vars) into the loop
+// package's reachability dispatcher. The loop-package tmux/herdr adapters cannot
+// call these directly without an import cycle (loop must not import main), so
+// they call the injected hooks. The runner adapter needs no hook — its
+// owned-check and dial both already live in loop.
+func init() {
+	loop.SetTmuxReachableHook(tmuxTargetReachable)
+	loop.SetHerdrReachableHook(herdrAgentReachable)
 }

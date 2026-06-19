@@ -98,29 +98,20 @@ func registrationHasReachableWake(cfg *loop.Config, reg *loop.Registration) bool
 	if reg == nil {
 		return false
 	}
-	method := strings.TrimSpace(reg.WakeMethod)
-	target := strings.TrimSpace(reg.WakeTarget)
-	if target == "" {
+	if strings.TrimSpace(reg.WakeTarget) == "" {
 		return false
 	}
 	localHost, _ := os.Hostname()
 	if strings.TrimSpace(reg.Host) != "" && strings.TrimSpace(localHost) != "" && reg.Host != localHost {
 		return false
 	}
-	switch method {
-	case "tmux":
-		return tmuxTargetReachable(target)
-	case "herdr":
-		return herdrAgentReachable(target)
-	case loop.RunnerWakeMethod:
-		// Recipient-bound: never dial a runner socket the recipient does not
-		// own. This is typically the agent's OWN registration (gate liveness),
-		// where the owned-check passes for a legit socket and is protective if
-		// the reg was tampered.
-		return runnerReachableForRecipient(cfg, reg, time.Second)
-	default:
-		return false
-	}
+	// One dispatcher decides reachability per wake_method (tmux/herdr/runner/
+	// unknown). The per-method switch that used to live here moved behind the
+	// WakeAdapter.Reachable interface. The runner method still does its
+	// recipient-bound owned-check BEFORE any dial (WI-3), now inside
+	// runnerWakeAdapter.Reachable; an unknown method has no adapter and reports
+	// unreachable, matching the old default arm exactly.
+	return loop.RegistrationReachable(cfg, reg, time.Second)
 }
 
 func stalePollerLiveness(agentID, vendor, detail, wakeMethod string) recipientLiveness {

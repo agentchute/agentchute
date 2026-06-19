@@ -126,6 +126,17 @@ func (herdrAdapter) Poke(ctx context.Context, target string) error {
 	return PokeHerdrTargetContext(ctx, target)
 }
 
+// Reachable resolves the stable herdr agent name to a live pane via the
+// injected root-package hook (herdrAgentReachable). Without the hook (loop-only
+// test linkage) the name cannot be resolved, so it is reported unreachable —
+// identical to a herdr lookup that found no pane under the old switch.
+func (herdrAdapter) Reachable(_ *Config, reg *Registration, _ time.Duration) bool {
+	if reg == nil || herdrReachableHook == nil {
+		return false
+	}
+	return herdrReachableHook(reg.WakeTarget)
+}
+
 func init() {
 	RegisterWakeAdapter("herdr", herdrAdapter{})
 }
