@@ -108,7 +108,11 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		} else if adoptID, ok := agentIDForCurrentTmuxPane(cfg, opts.Vendor); ok {
 			opts.AgentID = adoptID
 		} else {
-			opts.AgentID = nextContextualAgentIDByFilesystem(cfg, opts.ContextualBaseID, opts.AgentID)
+			nextID, nextErr := nextContextualAgentIDByFilesystem(cfg, opts.ContextualBaseID, opts.AgentID)
+			if nextErr != nil {
+				return nil, nextErr
+			}
+			opts.AgentID = nextID
 		}
 		result, err = performRegisterOnce(cfg, opts, host, now)
 		if err == nil {
@@ -386,7 +390,7 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 	}, nil
 }
 
-func nextContextualAgentIDByFilesystem(cfg *loop.Config, baseID, current string) string {
+func nextContextualAgentIDByFilesystem(cfg *loop.Config, baseID, current string) (string, error) {
 	if strings.TrimSpace(baseID) == "" {
 		baseID = current
 	}
@@ -396,10 +400,10 @@ func nextContextualAgentIDByFilesystem(cfg *loop.Config, baseID, current string)
 			continue
 		}
 		if _, err := os.Stat(cfg.AgentRegistrationPath(candidate)); os.IsNotExist(err) {
-			return candidate
+			return candidate, nil
 		}
 		if i > 100 {
-			return candidate
+			return "", fmt.Errorf("could not allocate a free agent id for base %q after %d attempts", baseID, 100)
 		}
 	}
 }

@@ -73,7 +73,11 @@ func resolveAgentIDRaw(flagID, vendor string, cfg *loop.Config) (string, error) 
 	if cfg == nil {
 		return baseID, nil
 	}
-	return availableContextualAgentID(cfg, baseID, time.Now().UTC()), nil
+	id, err := availableContextualAgentID(cfg, baseID, time.Now().UTC())
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func resolveRegisteredAgentID(flagID string, cfg *loop.Config) (string, error) {
@@ -157,7 +161,7 @@ func agentIDForCurrentHerdrPane(cfg *loop.Config, vendor string) (string, bool) 
 	return "", false
 }
 
-func availableContextualAgentID(cfg *loop.Config, baseID string, now time.Time) string {
+func availableContextualAgentID(cfg *loop.Config, baseID string, now time.Time) (string, error) {
 	regs, _ := loop.ReadRegistrationsLenient(cfg.AgentsDir())
 	reserved := make(map[string]bool)
 	for _, reg := range regs {
@@ -169,11 +173,11 @@ func availableContextualAgentID(cfg *loop.Config, baseID string, now time.Time) 
 	candidate := baseID
 	for i := 2; ; i++ {
 		if !reserved[candidate] {
-			return candidate
+			return candidate, nil
 		}
 		candidate = fmt.Sprintf("%s-%d", baseID, i)
 		if i > 100 {
-			return candidate
+			return "", fmt.Errorf("could not allocate a free agent id for base %q after %d attempts", baseID, 100)
 		}
 	}
 }

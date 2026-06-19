@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1138,6 +1139,40 @@ func TestRegisterExplicitEmptyMethodIgnoresTmuxPane(t *testing.T) {
 		}
 		if reg.WakeTarget != "" {
 			t.Errorf("expected empty WakeTarget (not auto-bound from TMUX_PANE), got %q", reg.WakeTarget)
+		}
+	})
+}
+
+// WI-8: nextContextualAgentIDByFilesystem and callers must error (not collide) past cap.
+// (added for TDD red-before)
+func TestNextContextualAgentIDByFilesystem_ErrorsPastCap(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := "claude-code-" + getFolderSlug(root)
+
+		agentsDir := cfg.AgentsDir()
+		_ = os.MkdirAll(agentsDir, 0700)
+
+		for i := 2; i <= 101; i++ {
+			id := fmt.Sprintf("%s-%d", base, i)
+			path := cfg.AgentRegistrationPath(id)
+			_ = os.MkdirAll(filepath.Dir(path), 0700)
+			_ = os.WriteFile(path, []byte("{}"), 0644)
+		}
+
+		_, err = nextContextualAgentIDByFilesystem(cfg, base, base)
+		if err == nil {
+			t.Fatal("next... past cap returned no error")
+		}
+		if !strings.Contains(err.Error(), "could not allocate a free agent id") {
+			t.Errorf("err=%v, want cap error", err)
 		}
 	})
 }

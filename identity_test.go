@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,4 +246,51 @@ func TestResolveAgentID(t *testing.T) {
 			t.Errorf("got %q, want 'claude-code-my-project' (poller heartbeat is liveness, not a distinct lane)", got)
 		}
 	})
+}
+
+// TestAvailableContextualAgentID_ErrorsPastCap: per WI-8, past cap must error
+// rather than return a colliding id (e.g. base-101 when 100 taken).
+func TestAvailableContextualAgentID_ErrorsPastCap(t *testing.T) {
+	root := t.TempDir()
+	cfg := &loop.Config{
+		LoopDir: filepath.Join(root, ".agentchute", "loop"),
+	}
+	agentsDir := cfg.AgentsDir()
+	_ = os.MkdirAll(agentsDir, 0700)
+
+	base := "claude-code-testcap"
+	now := time.Now().UTC()
+	hostname, _ := os.Hostname()
+
+	// Pre-create registrations for base and base-2 through base-101.
+	// All must reserve identity so loop exhausts candidates.
+	for i := 0; i <= 101; i++ {
+		id := base
+		if i >= 2 {
+			id = fmt.Sprintf("%s-%d", base, i)
+		} else if i == 1 {
+			// skip 1, cap logic uses -2+
+			continue
+		}
+		reg := &loop.Registration{
+			AgentID:     id,
+			Vendor:      "anthropic",
+			LastSeen:    now,
+			WakeMethod:  "tmux",
+			WakeTarget:  "%99",
+			Status:      loop.StatusActive,
+			Host:        hostname,
+			ControlRepo: root,
+		}
+		_ = loop.WriteRegistration(filepath.Join(agentsDir, id+".md"), reg)
+	}
+
+	// Must error, not return e.g. base-102 or any suffixed colliding id.
+	_, err := availableContextualAgentID(cfg, base, now)
+	if err == nil {
+		t.Fatalf("availableContextualAgentID past cap returned no error (would have collided)")
+	}
+	if !strings.Contains(err.Error(), "could not allocate a free agent id") {
+		t.Errorf("error = %v, want message about allocation failure", err)
+	}
 }
