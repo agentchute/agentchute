@@ -197,11 +197,25 @@ func WriteInboxMessage(inboxDir string, now time.Time, sender string, content []
 		}
 		filename := formatInboxFilename(now, sender, nonce)
 		finalPath := filepath.Join(inboxDir, filename)
-		tempPath := filepath.Join(inboxDir, tempFilePrefix+filename)
 
-		if err := atomicWriteFile(tempPath, content); err != nil {
+		// A UNIQUE temp per attempt (os.CreateTemp picks an unused name) — not
+		// the deterministic .tmp_<final>. Two concurrent same-sender writes that
+		// collide on (timestamp, nonce) would otherwise share one temp path: a
+		// late writer could clobber an earlier writer's body before it
+		// hard-linked the inode, so the link winner would deliver the WRONG
+		// body. A unique inode per attempt makes each body independent; the
+		// link-no-clobber to finalPath still resolves the final-filename race
+		// (loser retries with a fresh nonce AND a fresh temp).
+		tempFile, err := os.CreateTemp(inboxDir, tempFilePrefix+"*")
+		if err != nil {
 			return Message{}, err
 		}
+		tempPath := tempFile.Name()
+		if err := writeAndSyncOpenFile(tempFile, content); err != nil {
+			_ = os.Remove(tempPath)
+			return Message{}, err
+		}
+
 		if err := linkNoClobber(tempPath, finalPath); err != nil {
 			_ = os.Remove(tempPath)
 			if errors.Is(err, os.ErrExist) {
@@ -380,6 +394,28 @@ func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.T
 	return dest, nil
 }
 
+// writeAndSyncOpenFile writes content into an already-open temp file, fixes its
+// mode to 0600, fsyncs the data, and closes it. Mirrors atomicWriteFile's
+// durability sequence for the case where the caller created the temp via
+// os.CreateTemp (to get a unique inode) and will hard-link it into place itself.
+// The caller is responsible for removing the temp on any error AND on the
+// normal post-link cleanup path.
+func writeAndSyncOpenFile(f *os.File, content []byte) error {
+	if _, err := f.Write(content); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 func linkNoClobber(oldPath, newPath string) error {
 	if err := os.Link(oldPath, newPath); err != nil {
 		return err
@@ -460,7 +496,9 @@ func formatArchiveTimestamp(t time.Time) string {
 		t.Hour(), t.Minute(), t.Second())
 }
 
-func generateNonce() (string, error) {
+// generateNonce is a package var (not a plain func) only so tests can pin it to
+// force the filename/temp-path collision retry path deterministically.
+var generateNonce = func() (string, error) {
 	var b [2]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err

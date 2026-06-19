@@ -81,14 +81,6 @@ var ErrLedgerEntryNotFound = errors.New("pending-reply ledger entry not found")
 // no-op or surface it to the operator rather than silently re-transitioning.
 var ErrLedgerEntryNotPending = errors.New("pending-reply ledger entry is not in pending state")
 
-// ErrLedgerEntryCollision is returned by RecordPendingReply when an entry
-// with the same message_id but a *different* original_filename already
-// exists. AGENTCHUTE.md §6.4.1 says message_id is not delivery-unique, so
-// the recipient's filesystem (filename) is the canonical identity; two
-// distinct deliveries sharing a message_id must be surfaced, not silently
-// merged — otherwise the second obligation would vanish.
-var ErrLedgerEntryCollision = errors.New("pending-reply ledger collision: message_id already recorded with different original_filename")
-
 // LoadPendingLedger reads the recipient's ledger from disk. A missing file is
 // not an error — it returns an empty ledger so callers can append. Parse
 // errors and oversized files are surfaced (we don't silently lose state).
@@ -173,10 +165,22 @@ func SavePendingLedger(cfg *Config, agentID string, ledger *PendingLedger) error
 }
 
 // RecordPendingReply appends a new pending entry. Called by `check` when it
-// archives a message with frontmatter reply_required: true. If an entry with
-// the same message_id already exists (re-archive race or operator replay),
-// the existing entry is left untouched and no duplicate is appended — the
-// archive_path of the first observation wins, since it's the canonical record.
+// archives a message with frontmatter reply_required: true.
+//
+// The obligation's PRIMARY KEY is the canonical OriginalFilename — the inbox
+// filename, which the recipient's own filesystem assigned and therefore trusts.
+// message_id is sender-controlled and is NOT delivery-unique (AGENTCHUTE.md
+// §6.4.1), so it is kept only as informational metadata on the entry, never as
+// the dedup key. Keying on it would let a peer wedge `check`: two reply_required
+// messages reusing a message_id would either collide-and-error (the old fatal
+// ErrLedgerEntryCollision) or silently drop the second obligation. Keying on the
+// trusted filename, two deliveries with a shared message_id are simply two
+// distinct obligations and both are recorded.
+//
+// Idempotency: if an entry with the same OriginalFilename is already present
+// (re-archive race or operator replay), the existing entry is left untouched and
+// no duplicate is appended — the first observation wins. This is a no-op (nil),
+// never an error.
 //
 // `now` is the recipient-side observation time used for recorded_at; passing
 // it in (rather than calling time.Now) lets tests pin determinism.
@@ -212,19 +216,13 @@ func RecordPendingReply(cfg *Config, agentID string, entry PendingReplyEntry, no
 			return err
 		}
 		for _, existing := range ledger.Pending {
-			if existing.MessageID != entry.MessageID {
-				continue
-			}
-			// Same message_id: idempotent only when original_filename also matches.
-			// Distinct filename ⇒ two real deliveries with a shared message_id,
-			// which would otherwise silently drop the second obligation. Surface
-			// as a typed error so the caller decides (operator alert, retry with
-			// a re-issued message_id, etc.) — see codex review on 4d34826.
+			// Filename-keyed idempotency: the same OriginalFilename already
+			// recorded ⇒ no-op (re-archive replay safety). A duplicate
+			// message_id with a *new* filename falls through and is recorded as
+			// a distinct obligation — it is NOT a collision (WI-2 Fix 1).
 			if existing.OriginalFilename == entry.OriginalFilename {
 				return nil
 			}
-			return fmt.Errorf("%w: message_id=%q first_filename=%q second_filename=%q",
-				ErrLedgerEntryCollision, entry.MessageID, existing.OriginalFilename, entry.OriginalFilename)
 		}
 
 		entry.Status = PendingReplyStatusPending
@@ -243,11 +241,20 @@ func RecordPendingReply(cfg *Config, agentID string, entry PendingReplyEntry, no
 	})
 }
 
-// MarkPendingReplied transitions a pending entry to status "replied" and
-// populates reply_sent_at + reply_message_id. Returns ErrLedgerEntryNotFound
-// if no entry matches; ErrLedgerEntryNotPending if the entry exists but has
-// already left the pending state (idempotency hint to the caller, not a
-// fatal protocol violation).
+// MarkPendingReplied transitions EVERY pending entry whose message_id matches to
+// status "replied" and populates reply_sent_at + reply_message_id on each.
+//
+// A reply to a thread discharges that thread's obligation; since the obligation
+// is now filename-keyed (WI-2 Fix 1), a single message_id may map to MORE than
+// one entry (e.g. the poison case: two filenames, one message_id). Marking ALL
+// of them is correct — it cannot be exploited to leave an obligation
+// un-discharged, and it cannot over-discharge an unrelated thread because the
+// match is on the exact message_id.
+//
+// Returns ErrLedgerEntryNotFound if no entry has that message_id;
+// ErrLedgerEntryNotPending if entries exist but NONE is in the pending state
+// (idempotency hint to the caller, not a fatal protocol violation). Entries that
+// share the message_id but are already terminal are left untouched.
 func MarkPendingReplied(cfg *Config, agentID, messageID, replyMessageID string, replySentAt time.Time) error {
 	if err := ValidateAgentID(agentID); err != nil {
 		return err
@@ -271,24 +278,37 @@ func MarkPendingReplied(cfg *Config, agentID, messageID, replyMessageID string, 
 		if err != nil {
 			return err
 		}
-		idx, ok := indexByMessageID(ledger, messageID)
-		if !ok {
+		idxs := indicesByMessageID(ledger, messageID)
+		if len(idxs) == 0 {
 			return ErrLedgerEntryNotFound
 		}
-		if ledger.Pending[idx].Status != PendingReplyStatusPending {
+		sentAt := formatLedgerTimestamp(replySentAt)
+		transitioned := 0
+		for _, idx := range idxs {
+			if ledger.Pending[idx].Status != PendingReplyStatusPending {
+				continue
+			}
+			ledger.Pending[idx].Status = PendingReplyStatusReplied
+			ledger.Pending[idx].ReplySentAt = &sentAt
+			ledger.Pending[idx].ReplyMessageID = &rid
+			transitioned++
+		}
+		if transitioned == 0 {
 			return ErrLedgerEntryNotPending
 		}
-		sentAt := formatLedgerTimestamp(replySentAt)
-		ledger.Pending[idx].Status = PendingReplyStatusReplied
-		ledger.Pending[idx].ReplySentAt = &sentAt
-		ledger.Pending[idx].ReplyMessageID = &rid
 		return SavePendingLedger(cfg, agentID, ledger)
 	})
 }
 
-// MarkPendingDeferred transitions a pending entry to status "deferred". The
-// reason is required; `deferredUntil` is optional (empty string ⇒ nil in
-// the JSON, meaning "no scheduled unblock time").
+// MarkPendingDeferred transitions EVERY pending entry whose message_id matches
+// to status "deferred". The reason is required; `deferredUntil` is optional
+// (empty string ⇒ nil in the JSON, meaning "no scheduled unblock time").
+//
+// Like MarkPendingReplied, this marks ALL matching entries (the obligation is
+// filename-keyed, so one message_id may map to several entries — see WI-2
+// Fix 1). Returns ErrLedgerEntryNotFound if no entry has that message_id;
+// ErrLedgerEntryNotPending if entries exist but none is pending. Already-terminal
+// entries sharing the message_id are left untouched.
 func MarkPendingDeferred(cfg *Config, agentID, messageID, reason, deferredUntil string, deferredAt time.Time) error {
 	if err := ValidateAgentID(agentID); err != nil {
 		return err
@@ -306,20 +326,29 @@ func MarkPendingDeferred(cfg *Config, agentID, messageID, reason, deferredUntil 
 		if err != nil {
 			return err
 		}
-		idx, ok := indexByMessageID(ledger, messageID)
-		if !ok {
+		idxs := indicesByMessageID(ledger, messageID)
+		if len(idxs) == 0 {
 			return ErrLedgerEntryNotFound
 		}
-		if ledger.Pending[idx].Status != PendingReplyStatusPending {
-			return ErrLedgerEntryNotPending
-		}
 		at := formatLedgerTimestamp(deferredAt)
-		ledger.Pending[idx].Status = PendingReplyStatusDeferred
-		ledger.Pending[idx].DeferredAt = &at
-		r := reason
-		ledger.Pending[idx].DeferredReason = &r
-		if until := strings.TrimSpace(deferredUntil); until != "" {
-			ledger.Pending[idx].DeferredUntil = &until
+		until := strings.TrimSpace(deferredUntil)
+		transitioned := 0
+		for _, idx := range idxs {
+			if ledger.Pending[idx].Status != PendingReplyStatusPending {
+				continue
+			}
+			ledger.Pending[idx].Status = PendingReplyStatusDeferred
+			ledger.Pending[idx].DeferredAt = &at
+			r := reason
+			ledger.Pending[idx].DeferredReason = &r
+			if until != "" {
+				u := until
+				ledger.Pending[idx].DeferredUntil = &u
+			}
+			transitioned++
+		}
+		if transitioned == 0 {
+			return ErrLedgerEntryNotPending
 		}
 		return SavePendingLedger(cfg, agentID, ledger)
 	})
@@ -343,7 +372,13 @@ func (l *PendingLedger) PendingEntries() []PendingReplyEntry {
 	return out
 }
 
-// FindByMessageID returns the entry with matching message_id, if any.
+// FindByMessageID returns the FIRST entry with matching message_id, if any.
+// Obligations are filename-keyed (WI-2 Fix 1), so a message_id may map to more
+// than one entry; callers that need to act on every match (the mark/transition
+// paths) use indicesByMessageID. FindByMessageID is used by send/defer only to
+// read the thread's From/To for the recipient-owned-ledger validation, where
+// the first match is representative (all entries sharing a message_id come from
+// the same sender in the legitimate case).
 func (l *PendingLedger) FindByMessageID(messageID string) (PendingReplyEntry, bool) {
 	for _, e := range l.Pending {
 		if e.MessageID == messageID {
@@ -353,13 +388,17 @@ func (l *PendingLedger) FindByMessageID(messageID string) (PendingReplyEntry, bo
 	return PendingReplyEntry{}, false
 }
 
-func indexByMessageID(l *PendingLedger, messageID string) (int, bool) {
+// indicesByMessageID returns the indices of EVERY entry whose message_id
+// matches. Used by the mark/transition paths so discharging a thread discharges
+// all of that thread's filename-keyed obligations.
+func indicesByMessageID(l *PendingLedger, messageID string) []int {
+	var idxs []int
 	for i, e := range l.Pending {
 		if e.MessageID == messageID {
-			return i, true
+			idxs = append(idxs, i)
 		}
 	}
-	return 0, false
+	return idxs
 }
 
 // formatLedgerTimestamp returns RFC3339 UTC at second precision — matches

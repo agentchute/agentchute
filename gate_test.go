@@ -237,6 +237,94 @@ func TestGateRejectsUnknownPhase(t *testing.T) {
 	})
 }
 
+// TestGate_CorruptLedgerBlocksWithQuarantineNotFatal: a corrupt/unparseable
+// pending-replies.json must NOT brick the gate with a fatal command error
+// (which would block EVERY phase until a human edits state), and must NOT be
+// silently treated as "no obligations" (that would false-clear finish).
+// Instead the gate BLOCKS (errBlocked) with an actionable, quarantine-style
+// remediation, mirroring the malformed-inbox handling.
+func TestGate_CorruptLedgerBlocksWithQuarantineNotFatal(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Fresh poller heartbeat so liveness does not independently block — we
+		// want to prove the corrupt ledger is the (only) blocking reason.
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
+
+		// Corrupt the ledger on disk (unparseable JSON).
+		path := cfg.PendingRepliesPath("claude-code")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{ this is not valid json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
+		if !errors.Is(err, errBlocked) {
+			t.Fatalf("gate finish on corrupt ledger err = %v, want errBlocked (blocked, not fatal, not clear)", err)
+		}
+		// The blocking reason must be actionable and quarantine-flavored — not a
+		// generic "0 pending" clear and not a raw parse error crash.
+		if !strings.Contains(out, "blocked") {
+			t.Errorf("gate output should show blocked; got:\n%s", out)
+		}
+		lower := strings.ToLower(out)
+		if !strings.Contains(lower, "ledger") {
+			t.Errorf("blocking reason should reference the ledger; got:\n%s", out)
+		}
+		if !strings.Contains(lower, "corrupt") && !strings.Contains(lower, "quarantine") && !strings.Contains(lower, "unreadable") {
+			t.Errorf("blocking reason should be a corrupt/quarantine remediation; got:\n%s", out)
+		}
+	})
+}
+
+// TestGate_CorruptLedgerJSONOutputReportsBlocked: the --json shape must report
+// blocked:true with a reason for a corrupt ledger (not crash, not clear).
+func TestGate_CorruptLedgerJSONOutputReportsBlocked(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
+		path := cfg.PendingRepliesPath("claude-code")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("not json at all"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--json")) })
+		if !errors.Is(err, errBlocked) {
+			t.Fatalf("gate finish --json on corrupt ledger err = %v, want errBlocked", err)
+		}
+		var status gateStatus
+		if jerr := json.Unmarshal([]byte(out), &status); jerr != nil {
+			t.Fatalf("unmarshal gate JSON: %v\n%s", jerr, out)
+		}
+		if !status.Blocked {
+			t.Errorf("status.Blocked = false on corrupt ledger; want true\n%s", out)
+		}
+		if len(status.Reasons) == 0 {
+			t.Errorf("status.Reasons empty on corrupt ledger; want a remediation reason\n%s", out)
+		}
+	})
+}
+
 // Codex review (c17e310): gate must block on §11 protocol violations
 // (malformed inbox files), not just on valid unread mail. Otherwise an
 // agent can declare finish with quarantine work still owed.

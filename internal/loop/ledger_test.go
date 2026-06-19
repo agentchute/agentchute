@@ -445,40 +445,171 @@ func TestRecordPendingReplyRequiresArchivePath(t *testing.T) {
 	}
 }
 
-// Codex review (4d34826): same message_id with different original_filename
-// must NOT silently no-op — that would drop a delivered obligation. Same
-// filename remains idempotent (re-archive replay safety); different filename
-// surfaces as a typed collision error.
-func TestRecordPendingReplyCollisionOnDifferentFilename(t *testing.T) {
+// WI-2 Fix 1: the obligation is keyed on the recipient-trusted OriginalFilename
+// (the inbox filename), NOT the sender-controlled message_id. Two deliveries
+// that share a message_id but land under different filenames are two REAL
+// obligations and must BOTH be recorded — no fatal collision wedge (a peer can
+// no longer poison the consume loop by reusing a message_id). message_id stays
+// as informational metadata.
+func TestRecordPendingReply_DuplicateMessageIDDifferentFilenameBothRecorded(t *testing.T) {
 	cfg := newLedgerTestConfig(t)
 	now := time.Now().UTC()
 
 	first := newPendingEntry("shared-msg-id", "codex", "claude-code", "review")
 	first.OriginalFilename = "first_from-codex_msg-aaaa.md"
 	if err := RecordPendingReply(cfg, "claude-code", first, now); err != nil {
+		t.Fatalf("record first: %v", err)
+	}
+
+	// Same message_id, DIFFERENT original_filename: a distinct obligation, no error.
+	second := newPendingEntry("shared-msg-id", "codex", "claude-code", "review")
+	second.OriginalFilename = "second_from-codex_msg-bbbb.md"
+	if err := RecordPendingReply(cfg, "claude-code", second, now.Add(time.Second)); err != nil {
+		t.Fatalf("record second (different filename) must not error: %v", err)
+	}
+
+	ledger, err := LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Pending) != 2 {
+		t.Fatalf("Pending = %d, want 2 (same message_id, distinct filenames = distinct obligations)", len(ledger.Pending))
+	}
+	gotFiles := map[string]bool{}
+	for _, e := range ledger.Pending {
+		gotFiles[e.OriginalFilename] = true
+		if e.MessageID != "shared-msg-id" {
+			t.Errorf("MessageID = %q, want shared-msg-id (metadata preserved)", e.MessageID)
+		}
+	}
+	for _, want := range []string{"first_from-codex_msg-aaaa.md", "second_from-codex_msg-bbbb.md"} {
+		if !gotFiles[want] {
+			t.Errorf("missing obligation for filename %q", want)
+		}
+	}
+}
+
+// WI-2 Fix 1: re-recording the SAME OriginalFilename is idempotent (re-archive
+// replay safety) — single entry, nil error, first observation wins.
+func TestRecordPendingReply_SameFilenameIdempotent(t *testing.T) {
+	cfg := newLedgerTestConfig(t)
+	now := time.Now().UTC()
+
+	first := newPendingEntry("msg-1", "codex", "claude-code", "review")
+	first.OriginalFilename = "only_from-codex_msg-aaaa.md"
+	if err := RecordPendingReply(cfg, "claude-code", first, now); err != nil {
 		t.Fatal(err)
 	}
 
-	// Same message_id, DIFFERENT original_filename: must error, not silently no-op.
-	second := newPendingEntry("shared-msg-id", "codex", "claude-code", "review")
-	second.OriginalFilename = "second_from-codex_msg-bbbb.md"
-	err := RecordPendingReply(cfg, "claude-code", second, now.Add(time.Second))
-	if err == nil {
-		t.Fatal("expected collision error on same message_id with different original_filename")
-	}
-	if !errors.Is(err, ErrLedgerEntryCollision) {
-		t.Errorf("err = %v, want ErrLedgerEntryCollision", err)
+	// Same filename again, even with a *different* message_id and task, must
+	// no-op (the filename is the primary key; first observation wins).
+	dup := newPendingEntry("msg-2-rewritten", "codex", "claude-code", "rewritten task")
+	dup.OriginalFilename = "only_from-codex_msg-aaaa.md"
+	if err := RecordPendingReply(cfg, "claude-code", dup, now.Add(time.Second)); err != nil {
+		t.Fatalf("idempotent replay on same filename should not error: %v", err)
 	}
 
-	// Original-filename match still idempotent.
-	dup := newPendingEntry("shared-msg-id", "codex", "claude-code", "review")
-	dup.OriginalFilename = "first_from-codex_msg-aaaa.md"
-	if err := RecordPendingReply(cfg, "claude-code", dup, now.Add(2*time.Second)); err != nil {
-		t.Fatalf("idempotent replay should not error: %v", err)
-	}
 	ledger, _ := LoadPendingLedger(cfg, "claude-code")
 	if len(ledger.Pending) != 1 {
-		t.Errorf("Pending = %d, want 1 (idempotent replay must not duplicate)", len(ledger.Pending))
+		t.Fatalf("Pending = %d, want 1 (idempotent on filename)", len(ledger.Pending))
+	}
+	if ledger.Pending[0].MessageID != "msg-1" {
+		t.Errorf("MessageID = %q, want msg-1 (first observation wins)", ledger.Pending[0].MessageID)
+	}
+	if ledger.Pending[0].Task != "review" {
+		t.Errorf("Task = %q, want review (first observation wins)", ledger.Pending[0].Task)
+	}
+}
+
+// WI-2 Fix 1: discharging a thread discharges every pending obligation that
+// shares the thread's message_id. With the poison case (two filenames, one
+// message_id), marking ALL matching entries replied is correct and cannot leave
+// an obligation un-discharged. The normal single-match case is covered too.
+func TestMarkPendingReplied_DischargesAllMatchingMessageID(t *testing.T) {
+	cfg := newLedgerTestConfig(t)
+	now := time.Now().UTC()
+
+	// Two obligations, shared message_id, distinct filenames.
+	a := newPendingEntry("thread-1", "codex", "claude-code", "review")
+	a.OriginalFilename = "a_from-codex_msg-aaaa.md"
+	b := newPendingEntry("thread-1", "codex", "claude-code", "review")
+	b.OriginalFilename = "b_from-codex_msg-bbbb.md"
+	// A third, UNRELATED obligation that must stay pending.
+	c := newPendingEntry("thread-2", "codex", "claude-code", "other")
+	c.OriginalFilename = "c_from-codex_msg-cccc.md"
+	for _, e := range []PendingReplyEntry{a, b, c} {
+		if err := RecordPendingReply(cfg, "claude-code", e, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := MarkPendingReplied(cfg, "claude-code", "thread-1", "reply-msg", now.Add(time.Minute)); err != nil {
+		t.Fatalf("MarkPendingReplied: %v", err)
+	}
+
+	ledger, _ := LoadPendingLedger(cfg, "claude-code")
+	for _, e := range ledger.Pending {
+		switch e.MessageID {
+		case "thread-1":
+			if e.Status != PendingReplyStatusReplied {
+				t.Errorf("thread-1 entry %q status = %q, want replied", e.OriginalFilename, e.Status)
+			}
+			if e.ReplyMessageID == nil || *e.ReplyMessageID != "reply-msg" {
+				t.Errorf("thread-1 entry %q reply_message_id = %v, want reply-msg", e.OriginalFilename, e.ReplyMessageID)
+			}
+		case "thread-2":
+			if e.Status != PendingReplyStatusPending {
+				t.Errorf("unrelated thread-2 status = %q, want pending (untouched)", e.Status)
+			}
+		}
+	}
+	pending := ledger.PendingEntries()
+	if len(pending) != 1 || pending[0].MessageID != "thread-2" {
+		t.Fatalf("PendingEntries = %+v, want only thread-2 still blocking", pending)
+	}
+}
+
+// Single-match normal case: one obligation, MarkPendingReplied discharges it.
+func TestMarkPendingReplied_SingleMatchDischarges(t *testing.T) {
+	cfg := newLedgerTestConfig(t)
+	now := time.Now().UTC()
+	entry := newPendingEntry("only-msg", "codex", "claude-code", "review")
+	if err := RecordPendingReply(cfg, "claude-code", entry, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkPendingReplied(cfg, "claude-code", "only-msg", "reply-1", now); err != nil {
+		t.Fatalf("MarkPendingReplied: %v", err)
+	}
+	ledger, _ := LoadPendingLedger(cfg, "claude-code")
+	if len(ledger.PendingEntries()) != 0 {
+		t.Errorf("PendingEntries = %d, want 0 after single-match discharge", len(ledger.PendingEntries()))
+	}
+}
+
+// MarkPendingDeferred also discharges ALL pending entries sharing the message_id.
+func TestMarkPendingDeferred_DischargesAllMatchingMessageID(t *testing.T) {
+	cfg := newLedgerTestConfig(t)
+	now := time.Now().UTC()
+	a := newPendingEntry("thread-1", "codex", "claude-code", "review")
+	a.OriginalFilename = "a_from-codex_msg-aaaa.md"
+	b := newPendingEntry("thread-1", "codex", "claude-code", "review")
+	b.OriginalFilename = "b_from-codex_msg-bbbb.md"
+	for _, e := range []PendingReplyEntry{a, b} {
+		if err := RecordPendingReply(cfg, "claude-code", e, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := MarkPendingDeferred(cfg, "claude-code", "thread-1", "no eta", "", now); err != nil {
+		t.Fatalf("MarkPendingDeferred: %v", err)
+	}
+	ledger, _ := LoadPendingLedger(cfg, "claude-code")
+	if len(ledger.PendingEntries()) != 0 {
+		t.Errorf("PendingEntries = %d, want 0 after deferring all matches", len(ledger.PendingEntries()))
+	}
+	for _, e := range ledger.Pending {
+		if e.Status != PendingReplyStatusDeferred {
+			t.Errorf("entry %q status = %q, want deferred", e.OriginalFilename, e.Status)
+		}
 	}
 }
 

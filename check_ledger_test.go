@@ -15,8 +15,16 @@ import (
 // into recipient's inbox and returns its filename + path.
 func writeReplyRequiredInbox(t *testing.T, cfg *loop.Config, recipient, messageID string) (string, string) {
 	t.Helper()
+	return writeReplyRequiredInboxNamed(t, cfg, recipient, messageID,
+		"2026-05-19T22-02-00-000000Z_from-codex_msg-abcd.md")
+}
+
+// writeReplyRequiredInboxNamed is writeReplyRequiredInbox with an explicit
+// inbox filename, so tests can deliver two reply_required messages that share a
+// message_id but have distinct (recipient-trusted) filenames.
+func writeReplyRequiredInboxNamed(t *testing.T, cfg *loop.Config, recipient, messageID, filename string) (string, string) {
+	t.Helper()
 	inbox := cfg.AgentInboxDir(recipient)
-	filename := "2026-05-19T22-02-00-000000Z_from-codex_msg-abcd.md"
 	body := "---\n" +
 		"message_id: " + messageID + "\n" +
 		"from: codex\n" +
@@ -30,6 +38,55 @@ func writeReplyRequiredInbox(t *testing.T, cfg *loop.Config, recipient, messageI
 		t.Fatal(err)
 	}
 	return filename, path
+}
+
+// TestCheck_DuplicateMessageIDDoesNotWedge: a peer cannot poison the consume
+// loop by sending two reply_required messages with the SAME message_id but
+// different filenames. `check` must consume BOTH without error and record BOTH
+// obligations (filename-keyed). Pre-WI-2, the second delivery tripped the fatal
+// ErrLedgerEntryCollision wedge in RecordPendingReply and `check` returned a
+// non-nil error, stranding the message in the inbox.
+func TestCheck_DuplicateMessageIDDoesNotWedge(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	f1, p1 := writeReplyRequiredInboxNamed(t, cfg, "claude-code", "poison-id",
+		"2026-05-19T22-02-00-000000Z_from-codex_msg-aaaa.md")
+	f2, p2 := writeReplyRequiredInboxNamed(t, cfg, "claude-code", "poison-id",
+		"2026-05-19T22-02-01-000000Z_from-codex_msg-bbbb.md")
+
+	withCwd(t, root, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdCheck([]string{"--as", "claude-code"})
+		}); err != nil {
+			t.Fatalf("check wedged on duplicate message_id: %v", err)
+		}
+	})
+
+	// Both messages consumed (archived out of the inbox).
+	if _, err := os.Stat(p1); !os.IsNotExist(err) {
+		t.Fatalf("%s still in inbox (stat err=%v); check did not consume it", f1, err)
+	}
+	if _, err := os.Stat(p2); !os.IsNotExist(err) {
+		t.Fatalf("%s still in inbox (stat err=%v); check did not consume it", f2, err)
+	}
+
+	// Both obligations recorded, keyed by filename.
+	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Pending) != 2 {
+		t.Fatalf("ledger has %d entries; want 2 (both poison deliveries recorded)", len(ledger.Pending))
+	}
+	files := map[string]bool{}
+	for _, e := range ledger.Pending {
+		files[e.OriginalFilename] = true
+		if e.MessageID != "poison-id" {
+			t.Errorf("MessageID = %q, want poison-id", e.MessageID)
+		}
+	}
+	if !files[f1] || !files[f2] {
+		t.Fatalf("ledger filenames = %v, want both %q and %q", files, f1, f2)
+	}
 }
 
 // TestCheck_RecordFailureLeavesMessageInInbox: when recording the reply
