@@ -104,9 +104,6 @@ func cmdDefer(args []string) error {
 	if !ok {
 		return fmt.Errorf("no pending-reply ledger entry for message_id %q (use agentchute pending to list)", messageID)
 	}
-	if entry.Status != loop.PendingReplyStatusPending {
-		return fmt.Errorf("ledger entry for %q is already in status %q; cannot defer", messageID, entry.Status)
-	}
 	// Defense-in-depth: even though LoadPendingLedger validates From/To as
 	// agent_ids and RecordPendingReply validates at write time, refuse to act
 	// on an entry whose `to` doesn't name us — the ledger is recipient-owned
@@ -118,9 +115,24 @@ func cmdDefer(args []string) error {
 	if entry.To != agentID {
 		return fmt.Errorf("ledger entry %q to=%q does not match --as %q; refusing to act on a mismatched entry", messageID, entry.To, agentID)
 	}
+	// Sender-scoping (WI-2 follow-up): message_id is sender-controlled and
+	// reusable, so we scope the deferral to the sender of the matched entry.
+	// LIMITATION: `defer` is keyed on message_id alone and cannot disambiguate
+	// the same message_id reused by two different senders from its args. It
+	// defers only the obligations owed to FindByMessageID's first match's sender
+	// (fromSender below); a same-message_id obligation from a DIFFERENT sender is
+	// left pending and must be deferred in a separate call. This is the safe
+	// direction: it can never clear another sender's obligation.
+	fromSender := entry.From
+	// Do NOT short-circuit on the first match being terminal: a same-sender,
+	// same-message_id duplicate may still be pending. Decide on the full
+	// sender-scoped pending set instead.
+	if len(ledger.PendingByMessageIDFrom(messageID, fromSender)) == 0 {
+		return fmt.Errorf("ledger entry for %q (from %q) is already in status %q; cannot defer", messageID, fromSender, entry.Status)
+	}
 
 	now := time.Now().UTC()
-	if err := loop.MarkPendingDeferred(cfg, agentID, messageID, reason, deferredUntil, now); err != nil {
+	if err := loop.MarkPendingDeferred(cfg, agentID, messageID, fromSender, reason, deferredUntil, now); err != nil {
 		return fmt.Errorf("mark deferred: %w", err)
 	}
 

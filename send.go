@@ -195,10 +195,18 @@ func cmdSend(args []string) error {
 		if lerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to read pending-reply ledger: %v\n", lerr)
 		} else if entry, ok := ledger.FindByMessageID(replyTo); ok {
+			// The obligation we may discharge is the one owed to the recipient
+			// we are actually replying TO (toID). Scope by sender: message_id is
+			// sender-controlled and reusable, so a reply to one peer must NEVER
+			// clear an obligation owed to a DIFFERENT peer (WI-2 follow-up).
+			// FindByMessageID gives us a representative row for the warnings; the
+			// transition itself runs over the full sender-scoped set so a
+			// terminal duplicate can't strand a still-pending one.
 			switch {
-			case entry.Status != loop.PendingReplyStatusPending:
-				ledgerTransition = fmt.Sprintf("note: pending-reply ledger entry %s was already in status %q; not re-transitioned", replyTo, entry.Status)
 			case entry.From != toID:
+				// The message_id is known, but it names an obligation owed to
+				// someone other than toID. Threading via a third party's msg-id
+				// while delivering elsewhere must NOT clear that obligation.
 				fmt.Fprintf(os.Stderr, "warning: --reply-to %s names a message from %q, but this send is to %q; obligation left pending\n", replyTo, entry.From, toID)
 			case entry.To != fromID:
 				// Mirror cmdDefer's recipient-owned-ledger invariant. The
@@ -207,7 +215,13 @@ func cmdSend(args []string) error {
 				// review on aa5f0d9 / check.go integration).
 				fmt.Fprintf(os.Stderr, "warning: --reply-to %s has ledger entry to=%q, but --from is %q; refusing to clear a mismatched obligation\n", replyTo, entry.To, fromID)
 			default:
-				if merr := loop.MarkPendingReplied(cfg, fromID, replyTo, messageID, now); merr != nil {
+				// entry.From == toID and entry.To == fromID. Discharge every
+				// PENDING obligation scoped to (replyTo, toID). If none is
+				// pending (all matching rows already terminal), it is an
+				// idempotent no-op note rather than a re-transition.
+				if len(ledger.PendingByMessageIDFrom(replyTo, toID)) == 0 {
+					ledgerTransition = fmt.Sprintf("note: pending-reply ledger entry %s was already in status %q; not re-transitioned", replyTo, entry.Status)
+				} else if merr := loop.MarkPendingReplied(cfg, fromID, replyTo, toID, messageID, now); merr != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to update pending-reply ledger for %s: %v\n", replyTo, merr)
 				} else {
 					ledgerTransition = fmt.Sprintf("cleared pending-reply ledger entry %s", replyTo)

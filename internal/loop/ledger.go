@@ -241,26 +241,39 @@ func RecordPendingReply(cfg *Config, agentID string, entry PendingReplyEntry, no
 	})
 }
 
-// MarkPendingReplied transitions EVERY pending entry whose message_id matches to
-// status "replied" and populates reply_sent_at + reply_message_id on each.
+// MarkPendingReplied transitions EVERY pending entry that matches BOTH
+// message_id AND fromSender (the original sender whose obligation we are
+// discharging) to status "replied" and populates reply_sent_at +
+// reply_message_id on each.
 //
-// A reply to a thread discharges that thread's obligation; since the obligation
-// is now filename-keyed (WI-2 Fix 1), a single message_id may map to MORE than
-// one entry (e.g. the poison case: two filenames, one message_id). Marking ALL
-// of them is correct — it cannot be exploited to leave an obligation
-// un-discharged, and it cannot over-discharge an unrelated thread because the
-// match is on the exact message_id.
+// SENDER-SCOPED (WI-2 follow-up): message_id is sender-controlled and NOT
+// delivery-unique, so a peer can reuse another sender's message_id. Scoping the
+// transition to From == fromSender prevents a reply to one sender from clearing
+// an obligation owed to a DIFFERENT sender. The ledger is recipient-owned, so
+// To == agentID already holds for legitimate entries; we keep that invariant by
+// only ever transitioning rows that are ours (Load validates To, and the
+// callers refuse mismatched-To entries before reaching here).
 //
-// Returns ErrLedgerEntryNotFound if no entry has that message_id;
-// ErrLedgerEntryNotPending if entries exist but NONE is in the pending state
-// (idempotency hint to the caller, not a fatal protocol violation). Entries that
-// share the message_id but are already terminal are left untouched.
-func MarkPendingReplied(cfg *Config, agentID, messageID, replyMessageID string, replySentAt time.Time) error {
+// A single (message_id, fromSender) pair may still map to MORE than one entry
+// (the obligation is filename-keyed — WI-2 Fix 1; e.g. two filenames, one
+// message_id, same sender). Marking ALL such pending entries is correct: it
+// discharges every duplicate so none is left stranded, and it cannot
+// over-discharge an unrelated thread because the match is exact on both keys.
+//
+// Returns ErrLedgerEntryNotFound if no entry matches (message_id, fromSender);
+// ErrLedgerEntryNotPending if matches exist but NONE is in the pending state
+// (idempotency hint to the caller, not a fatal protocol violation). Matching
+// entries that are already terminal are skipped, never blocking the pending
+// ones (no terminal-first short-circuit).
+func MarkPendingReplied(cfg *Config, agentID, messageID, fromSender, replyMessageID string, replySentAt time.Time) error {
 	if err := ValidateAgentID(agentID); err != nil {
 		return err
 	}
 	if strings.TrimSpace(messageID) == "" {
 		return fmt.Errorf("MarkPendingReplied: message_id required")
+	}
+	if strings.TrimSpace(fromSender) == "" {
+		return fmt.Errorf("MarkPendingReplied: fromSender required")
 	}
 	rid := strings.TrimSpace(replyMessageID)
 	if rid == "" {
@@ -278,7 +291,7 @@ func MarkPendingReplied(cfg *Config, agentID, messageID, replyMessageID string, 
 		if err != nil {
 			return err
 		}
-		idxs := indicesByMessageID(ledger, messageID)
+		idxs := indicesByMessageIDFrom(ledger, messageID, fromSender)
 		if len(idxs) == 0 {
 			return ErrLedgerEntryNotFound
 		}
@@ -300,21 +313,29 @@ func MarkPendingReplied(cfg *Config, agentID, messageID, replyMessageID string, 
 	})
 }
 
-// MarkPendingDeferred transitions EVERY pending entry whose message_id matches
-// to status "deferred". The reason is required; `deferredUntil` is optional
-// (empty string ⇒ nil in the JSON, meaning "no scheduled unblock time").
+// MarkPendingDeferred transitions EVERY pending entry that matches BOTH
+// message_id AND fromSender to status "deferred". The reason is required;
+// `deferredUntil` is optional (empty string ⇒ nil in the JSON, meaning "no
+// scheduled unblock time").
 //
-// Like MarkPendingReplied, this marks ALL matching entries (the obligation is
-// filename-keyed, so one message_id may map to several entries — see WI-2
-// Fix 1). Returns ErrLedgerEntryNotFound if no entry has that message_id;
-// ErrLedgerEntryNotPending if entries exist but none is pending. Already-terminal
-// entries sharing the message_id are left untouched.
-func MarkPendingDeferred(cfg *Config, agentID, messageID, reason, deferredUntil string, deferredAt time.Time) error {
+// SENDER-SCOPED (WI-2 follow-up), mirroring MarkPendingReplied: scoping the
+// transition to From == fromSender prevents a deferral keyed on a reused
+// message_id from clearing another sender's obligation. A single
+// (message_id, fromSender) pair may map to several filename-keyed entries
+// (WI-2 Fix 1); all PENDING such entries are transitioned so none is stranded.
+//
+// Returns ErrLedgerEntryNotFound if no entry matches (message_id, fromSender);
+// ErrLedgerEntryNotPending if matches exist but none is pending. Already-terminal
+// matching entries are skipped, never short-circuiting the pending ones.
+func MarkPendingDeferred(cfg *Config, agentID, messageID, fromSender, reason, deferredUntil string, deferredAt time.Time) error {
 	if err := ValidateAgentID(agentID); err != nil {
 		return err
 	}
 	if strings.TrimSpace(messageID) == "" {
 		return fmt.Errorf("MarkPendingDeferred: message_id required")
+	}
+	if strings.TrimSpace(fromSender) == "" {
+		return fmt.Errorf("MarkPendingDeferred: fromSender required")
 	}
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("MarkPendingDeferred: reason required")
@@ -326,7 +347,7 @@ func MarkPendingDeferred(cfg *Config, agentID, messageID, reason, deferredUntil 
 		if err != nil {
 			return err
 		}
-		idxs := indicesByMessageID(ledger, messageID)
+		idxs := indicesByMessageIDFrom(ledger, messageID, fromSender)
 		if len(idxs) == 0 {
 			return ErrLedgerEntryNotFound
 		}
@@ -375,10 +396,10 @@ func (l *PendingLedger) PendingEntries() []PendingReplyEntry {
 // FindByMessageID returns the FIRST entry with matching message_id, if any.
 // Obligations are filename-keyed (WI-2 Fix 1), so a message_id may map to more
 // than one entry; callers that need to act on every match (the mark/transition
-// paths) use indicesByMessageID. FindByMessageID is used by send/defer only to
-// read the thread's From/To for the recipient-owned-ledger validation, where
-// the first match is representative (all entries sharing a message_id come from
-// the same sender in the legitimate case).
+// paths) use indicesByMessageIDFrom. FindByMessageID is used by send/defer only
+// to READ the thread's From/To (for the cross-sender warning and the
+// recipient-owned-ledger validation), never to gate the transition — the
+// transition is sender-scoped and acts on every matching pending row.
 func (l *PendingLedger) FindByMessageID(messageID string) (PendingReplyEntry, bool) {
 	for _, e := range l.Pending {
 		if e.MessageID == messageID {
@@ -389,8 +410,8 @@ func (l *PendingLedger) FindByMessageID(messageID string) (PendingReplyEntry, bo
 }
 
 // indicesByMessageID returns the indices of EVERY entry whose message_id
-// matches. Used by the mark/transition paths so discharging a thread discharges
-// all of that thread's filename-keyed obligations.
+// matches. Used by send/defer only to detect whether a message_id is known at
+// all (the cross-sender warning path), independent of which sender owns it.
 func indicesByMessageID(l *PendingLedger, messageID string) []int {
 	var idxs []int
 	for i, e := range l.Pending {
@@ -399,6 +420,37 @@ func indicesByMessageID(l *PendingLedger, messageID string) []int {
 		}
 	}
 	return idxs
+}
+
+// indicesByMessageIDFrom returns the indices of EVERY entry matching BOTH
+// message_id AND from (the original sender). Used by the mark/transition paths
+// so discharging a thread discharges all of that sender's filename-keyed
+// obligations for that message_id — and only that sender's (WI-2 follow-up:
+// message_id is sender-controlled and reusable, so the sender must be part of
+// the predicate to avoid clearing a different sender's obligation).
+func indicesByMessageIDFrom(l *PendingLedger, messageID, from string) []int {
+	var idxs []int
+	for i, e := range l.Pending {
+		if e.MessageID == messageID && e.From == from {
+			idxs = append(idxs, i)
+		}
+	}
+	return idxs
+}
+
+// PendingByMessageIDFrom returns the PENDING entries (status == pending) that
+// match BOTH message_id AND from. send uses it to decide whether a
+// sender-scoped reply actually has a pending obligation to discharge, without
+// the first-match short-circuit that could otherwise let a terminal duplicate
+// hide a still-pending one. Returned slice is a copy.
+func (l *PendingLedger) PendingByMessageIDFrom(messageID, from string) []PendingReplyEntry {
+	var out []PendingReplyEntry
+	for _, e := range l.Pending {
+		if e.MessageID == messageID && e.From == from && e.Status == PendingReplyStatusPending {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // formatLedgerTimestamp returns RFC3339 UTC at second precision — matches

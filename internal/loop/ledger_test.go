@@ -161,7 +161,7 @@ func TestRecordPendingReplyDistinguishesByMessageID(t *testing.T) {
 	}
 
 	// Reply to one; the other must still block.
-	if err := MarkPendingReplied(cfg, "claude-code", entryA.MessageID, "reply-msg-id", now.Add(time.Minute)); err != nil {
+	if err := MarkPendingReplied(cfg, "claude-code", entryA.MessageID, "codex", "reply-msg-id", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	ledger, _ = LoadPendingLedger(cfg, "claude-code")
@@ -184,7 +184,7 @@ func TestMarkPendingRepliedTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := MarkPendingReplied(cfg, "claude-code", "msg-1", "reply-msg-99", repliedAt); err != nil {
+	if err := MarkPendingReplied(cfg, "claude-code", "msg-1", "codex", "reply-msg-99", repliedAt); err != nil {
 		t.Fatal(err)
 	}
 
@@ -212,7 +212,7 @@ func TestMarkPendingRepliedTransition(t *testing.T) {
 
 func TestMarkPendingRepliedNotFound(t *testing.T) {
 	cfg := newLedgerTestConfig(t)
-	err := MarkPendingReplied(cfg, "claude-code", "missing", "reply-id", time.Now().UTC())
+	err := MarkPendingReplied(cfg, "claude-code", "missing", "codex", "reply-id", time.Now().UTC())
 	if !errors.Is(err, ErrLedgerEntryNotFound) {
 		t.Fatalf("err = %v, want ErrLedgerEntryNotFound", err)
 	}
@@ -225,11 +225,11 @@ func TestMarkPendingRepliedNotPending(t *testing.T) {
 	if err := RecordPendingReply(cfg, "claude-code", entry, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := MarkPendingReplied(cfg, "claude-code", "msg-1", "reply-99", now); err != nil {
+	if err := MarkPendingReplied(cfg, "claude-code", "msg-1", "codex", "reply-99", now); err != nil {
 		t.Fatal(err)
 	}
 	// Second reply against a non-pending entry must surface a typed error.
-	err := MarkPendingReplied(cfg, "claude-code", "msg-1", "reply-100", now)
+	err := MarkPendingReplied(cfg, "claude-code", "msg-1", "codex", "reply-100", now)
 	if !errors.Is(err, ErrLedgerEntryNotPending) {
 		t.Fatalf("err = %v, want ErrLedgerEntryNotPending", err)
 	}
@@ -244,7 +244,7 @@ func TestMarkPendingDeferredTransition(t *testing.T) {
 	if err := RecordPendingReply(cfg, "claude-code", entry, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := MarkPendingDeferred(cfg, "claude-code", "msg-1", "needs research", "2026-05-26T00:00:00Z", deferAt); err != nil {
+	if err := MarkPendingDeferred(cfg, "claude-code", "msg-1", "codex", "needs research", "2026-05-26T00:00:00Z", deferAt); err != nil {
 		t.Fatal(err)
 	}
 
@@ -275,7 +275,7 @@ func TestMarkPendingDeferredRequiresReason(t *testing.T) {
 	if err := RecordPendingReply(cfg, "claude-code", entry, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := MarkPendingDeferred(cfg, "claude-code", "msg-1", "", "", now); err == nil {
+	if err := MarkPendingDeferred(cfg, "claude-code", "msg-1", "codex", "", "", now); err == nil {
 		t.Fatal("expected reason-required error")
 	}
 }
@@ -287,7 +287,7 @@ func TestMarkPendingDeferredOptionalUntil(t *testing.T) {
 	if err := RecordPendingReply(cfg, "claude-code", entry, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := MarkPendingDeferred(cfg, "claude-code", "msg-1", "no eta", "", now); err != nil {
+	if err := MarkPendingDeferred(cfg, "claude-code", "msg-1", "codex", "no eta", "", now); err != nil {
 		t.Fatal(err)
 	}
 	ledger, _ := LoadPendingLedger(cfg, "claude-code")
@@ -410,7 +410,7 @@ func TestMarkPendingRepliedRequiresReplyMessageID(t *testing.T) {
 	if err := RecordPendingReply(cfg, "claude-code", entry, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := MarkPendingReplied(cfg, "claude-code", "msg-1", "  ", now); err == nil {
+	if err := MarkPendingReplied(cfg, "claude-code", "msg-1", "codex", "  ", now); err == nil {
 		t.Fatal("expected error on empty reply_message_id")
 	}
 	ledger, _ := LoadPendingLedger(cfg, "claude-code")
@@ -543,7 +543,7 @@ func TestMarkPendingReplied_DischargesAllMatchingMessageID(t *testing.T) {
 		}
 	}
 
-	if err := MarkPendingReplied(cfg, "claude-code", "thread-1", "reply-msg", now.Add(time.Minute)); err != nil {
+	if err := MarkPendingReplied(cfg, "claude-code", "thread-1", "codex", "reply-msg", now.Add(time.Minute)); err != nil {
 		t.Fatalf("MarkPendingReplied: %v", err)
 	}
 
@@ -577,7 +577,7 @@ func TestMarkPendingReplied_SingleMatchDischarges(t *testing.T) {
 	if err := RecordPendingReply(cfg, "claude-code", entry, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := MarkPendingReplied(cfg, "claude-code", "only-msg", "reply-1", now); err != nil {
+	if err := MarkPendingReplied(cfg, "claude-code", "only-msg", "codex", "reply-1", now); err != nil {
 		t.Fatalf("MarkPendingReplied: %v", err)
 	}
 	ledger, _ := LoadPendingLedger(cfg, "claude-code")
@@ -599,7 +599,7 @@ func TestMarkPendingDeferred_DischargesAllMatchingMessageID(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := MarkPendingDeferred(cfg, "claude-code", "thread-1", "no eta", "", now); err != nil {
+	if err := MarkPendingDeferred(cfg, "claude-code", "thread-1", "codex", "no eta", "", now); err != nil {
 		t.Fatalf("MarkPendingDeferred: %v", err)
 	}
 	ledger, _ := LoadPendingLedger(cfg, "claude-code")
@@ -720,6 +720,168 @@ func TestLoadPendingLedgerRejectsInvalidAgentIDFields(t *testing.T) {
 	}
 	if _, err := LoadPendingLedger(cfg, "claude-code"); err == nil {
 		t.Fatal("expected error on invalid from agent_id in ledger")
+	}
+}
+
+// WI-2 follow-up: MarkPendingReplied is SENDER-SCOPED. message_id is
+// sender-controlled and reusable, so two senders can land entries with the same
+// message_id. Replying to one sender's obligation must transition ONLY that
+// sender's pending entries and leave the other sender's untouched.
+func TestMarkPendingReplied_SenderScopedOnly(t *testing.T) {
+	cfg := newLedgerTestConfig(t)
+	now := time.Now().UTC()
+
+	// Two obligations, SAME message_id, DIFFERENT senders.
+	fromA := newPendingEntry("shared-id", "peer-a", "claude-code", "review")
+	fromA.OriginalFilename = "a_from-peer-a_msg-aaaa.md"
+	fromB := newPendingEntry("shared-id", "peer-b", "claude-code", "review")
+	fromB.OriginalFilename = "b_from-peer-b_msg-bbbb.md"
+	for _, e := range []PendingReplyEntry{fromA, fromB} {
+		if err := RecordPendingReply(cfg, "claude-code", e, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Reply to peer-a's obligation only.
+	if err := MarkPendingReplied(cfg, "claude-code", "shared-id", "peer-a", "reply-1", now.Add(time.Minute)); err != nil {
+		t.Fatalf("MarkPendingReplied: %v", err)
+	}
+
+	ledger, _ := LoadPendingLedger(cfg, "claude-code")
+	for _, e := range ledger.Pending {
+		switch e.From {
+		case "peer-a":
+			if e.Status != PendingReplyStatusReplied {
+				t.Errorf("peer-a entry status = %q, want replied", e.Status)
+			}
+		case "peer-b":
+			if e.Status != PendingReplyStatusPending {
+				t.Errorf("peer-b entry status = %q, want pending (other sender's obligation must NOT be cleared)", e.Status)
+			}
+		}
+	}
+	pending := ledger.PendingEntries()
+	if len(pending) != 1 || pending[0].From != "peer-b" {
+		t.Fatalf("PendingEntries = %+v, want only peer-b still blocking", pending)
+	}
+}
+
+// WI-2 follow-up: a (message_id, fromSender) with NO match returns NotFound
+// even if the same message_id exists under a DIFFERENT sender. The scope is the
+// (message_id, sender) pair, not the bare message_id.
+func TestMarkPendingReplied_OtherSenderOnlyIsNotFound(t *testing.T) {
+	cfg := newLedgerTestConfig(t)
+	now := time.Now().UTC()
+	entry := newPendingEntry("shared-id", "peer-a", "claude-code", "review")
+	if err := RecordPendingReply(cfg, "claude-code", entry, now); err != nil {
+		t.Fatal(err)
+	}
+	// Discharge scoped to peer-b: no (shared-id, peer-b) row exists.
+	err := MarkPendingReplied(cfg, "claude-code", "shared-id", "peer-b", "reply-1", now)
+	if !errors.Is(err, ErrLedgerEntryNotFound) {
+		t.Fatalf("err = %v, want ErrLedgerEntryNotFound (no row for the scoped sender)", err)
+	}
+	// peer-a's obligation stays pending.
+	ledger, _ := LoadPendingLedger(cfg, "claude-code")
+	if len(ledger.PendingEntries()) != 1 {
+		t.Errorf("PendingEntries = %d, want 1 (other-sender discharge must not touch peer-a)", len(ledger.PendingEntries()))
+	}
+}
+
+// WI-2 follow-up: MarkPendingDeferred is SENDER-SCOPED too — deferring one
+// sender's obligation leaves a same-message_id obligation from another sender
+// pending.
+func TestMarkPendingDeferred_SenderScopedOnly(t *testing.T) {
+	cfg := newLedgerTestConfig(t)
+	now := time.Now().UTC()
+	fromA := newPendingEntry("shared-id", "peer-a", "claude-code", "review")
+	fromA.OriginalFilename = "a_from-peer-a_msg-aaaa.md"
+	fromB := newPendingEntry("shared-id", "peer-b", "claude-code", "review")
+	fromB.OriginalFilename = "b_from-peer-b_msg-bbbb.md"
+	for _, e := range []PendingReplyEntry{fromA, fromB} {
+		if err := RecordPendingReply(cfg, "claude-code", e, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := MarkPendingDeferred(cfg, "claude-code", "shared-id", "peer-a", "no eta", "", now); err != nil {
+		t.Fatalf("MarkPendingDeferred: %v", err)
+	}
+	ledger, _ := LoadPendingLedger(cfg, "claude-code")
+	for _, e := range ledger.Pending {
+		switch e.From {
+		case "peer-a":
+			if e.Status != PendingReplyStatusDeferred {
+				t.Errorf("peer-a entry status = %q, want deferred", e.Status)
+			}
+		case "peer-b":
+			if e.Status != PendingReplyStatusPending {
+				t.Errorf("peer-b entry status = %q, want pending (other sender's obligation must NOT be cleared)", e.Status)
+			}
+		}
+	}
+	pending := ledger.PendingEntries()
+	if len(pending) != 1 || pending[0].From != "peer-b" {
+		t.Fatalf("PendingEntries = %+v, want only peer-b still blocking", pending)
+	}
+}
+
+// WI-2 follow-up: the terminal-first short-circuit is gone. Two entries, same
+// sender, same message_id: first already terminal (replied), second still
+// pending. MarkPendingReplied must discharge the second (skip the terminal one,
+// never block on it). RED before the fix only at the send/defer layer; this
+// asserts the ledger primitive handles the mixed-status set directly.
+func TestMarkPendingReplied_TerminalFirstDoesNotStrandPending(t *testing.T) {
+	cfg := newLedgerTestConfig(t)
+	now := time.Now().UTC()
+
+	first := newPendingEntry("shared-id", "peer-a", "claude-code", "review")
+	first.OriginalFilename = "first_from-peer-a_msg-aaaa.md"
+	second := newPendingEntry("shared-id", "peer-a", "claude-code", "review")
+	second.OriginalFilename = "second_from-peer-a_msg-bbbb.md"
+	for _, e := range []PendingReplyEntry{first, second} {
+		if err := RecordPendingReply(cfg, "claude-code", e, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Discharge the FIRST filename's obligation directly via the ledger by
+	// hand-marking it replied, simulating a prior partial discharge.
+	ledger, _ := LoadPendingLedger(cfg, "claude-code")
+	ledger.Pending[0].Status = PendingReplyStatusReplied
+	rid := "earlier-reply"
+	ledger.Pending[0].ReplyMessageID = &rid
+	sentAt := formatLedgerTimestamp(now)
+	ledger.Pending[0].ReplySentAt = &sentAt
+	if err := SavePendingLedger(cfg, "claude-code", ledger); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now discharge the message_id again: the still-pending second entry must
+	// transition; the already-terminal first must not block it.
+	if err := MarkPendingReplied(cfg, "claude-code", "shared-id", "peer-a", "reply-2", now.Add(time.Minute)); err != nil {
+		t.Fatalf("MarkPendingReplied: %v (terminal-first entry must not short-circuit the pending one)", err)
+	}
+	ledger, _ = LoadPendingLedger(cfg, "claude-code")
+	if len(ledger.PendingEntries()) != 0 {
+		t.Errorf("PendingEntries = %d, want 0 (the pending duplicate must not be stranded)", len(ledger.PendingEntries()))
+	}
+}
+
+func TestPendingByMessageIDFrom(t *testing.T) {
+	ledger := &PendingLedger{Pending: []PendingReplyEntry{
+		{MessageID: "m", From: "peer-a", To: "claude-code", Status: PendingReplyStatusPending},
+		{MessageID: "m", From: "peer-a", To: "claude-code", Status: PendingReplyStatusReplied},
+		{MessageID: "m", From: "peer-b", To: "claude-code", Status: PendingReplyStatusPending},
+		{MessageID: "other", From: "peer-a", To: "claude-code", Status: PendingReplyStatusPending},
+	}}
+	got := ledger.PendingByMessageIDFrom("m", "peer-a")
+	if len(got) != 1 {
+		t.Fatalf("PendingByMessageIDFrom(m, peer-a) = %d, want 1 (only the pending peer-a row)", len(got))
+	}
+	if got[0].Status != PendingReplyStatusPending || got[0].From != "peer-a" {
+		t.Errorf("got %+v, want a pending peer-a row", got[0])
+	}
+	if n := len(ledger.PendingByMessageIDFrom("m", "peer-c")); n != 0 {
+		t.Errorf("PendingByMessageIDFrom(m, peer-c) = %d, want 0", n)
 	}
 }
 

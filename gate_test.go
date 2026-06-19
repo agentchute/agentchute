@@ -52,7 +52,7 @@ func TestGateConsensusBlocksOnPendingReply(t *testing.T) {
 		}
 
 		// Clear the ledger entry; gate must now pass.
-		if err := loop.MarkPendingReplied(cfg, "claude-code", entry.MessageID, "reply-msg-1", time.Now().UTC()); err != nil {
+		if err := loop.MarkPendingReplied(cfg, "claude-code", entry.MessageID, entry.From, "reply-msg-1", time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
 		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("consensus")) })

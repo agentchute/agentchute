@@ -255,6 +255,151 @@ func TestDeferRejectsAlreadyDeferred(t *testing.T) {
 	})
 }
 
+// WI-2 follow-up (codex, 4-way review): defer must not strand a still-pending
+// duplicate when FindByMessageID's first match is already terminal. Two
+// obligations from the same sender share a message_id; the first is replied,
+// the second pending. defer --message <id> must defer the second, not error out
+// on the terminal first.
+func TestDefer_TerminalFirstStillDefersPendingDuplicate(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMUX_PANE", "%2")
+		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sharedMsgID := "2026-05-19T17:53:59.561894Z"
+	now := time.Now().UTC()
+	first := loop.PendingReplyEntry{
+		MessageID: sharedMsgID, From: "codex", To: "claude-code", Task: "review",
+		OriginalFilename: "a_from-codex_msg-aaaa.md", ArchivePath: "archive/a.md",
+	}
+	second := loop.PendingReplyEntry{
+		MessageID: sharedMsgID, From: "codex", To: "claude-code", Task: "review",
+		OriginalFilename: "b_from-codex_msg-bbbb.md", ArchivePath: "archive/b.md",
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", first, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", second, now); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-discharge ONLY the first entry to terminal "replied" (hand-edit so the
+	// sender-scoped mark doesn't also discharge the second).
+	preLedger, _ := loop.LoadPendingLedger(cfg, "claude-code")
+	for i := range preLedger.Pending {
+		if preLedger.Pending[i].OriginalFilename == first.OriginalFilename {
+			preLedger.Pending[i].Status = loop.PendingReplyStatusReplied
+			rid := "earlier-reply"
+			preLedger.Pending[i].ReplyMessageID = &rid
+			sentAt := now.UTC().Format("2006-01-02T15:04:05Z")
+			preLedger.Pending[i].ReplySentAt = &sentAt
+		}
+	}
+	if err := loop.SavePendingLedger(cfg, "claude-code", preLedger); err != nil {
+		t.Fatal(err)
+	}
+
+	withCwd(t, root, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdDefer([]string{"--as", "claude-code", "--message", sharedMsgID, "--reason", "later"})
+		}); err != nil {
+			t.Fatalf("cmdDefer must defer the still-pending duplicate, got err = %v", err)
+		}
+	})
+
+	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending := ledger.PendingEntries(); len(pending) != 0 {
+		t.Errorf("PendingEntries = %d, want 0; the pending duplicate was stranded: %+v", len(pending), pending)
+	}
+}
+
+// WI-2 follow-up (codex, 4-way review): defer scopes to the sender of the
+// matched entry. A same-message_id obligation owed to a DIFFERENT sender must
+// stay pending (defer can never clear another sender's obligation).
+func TestDefer_DoesNotClearOtherSendersObligation(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMUX_PANE", "%2")
+		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMUX_PANE", "%3")
+		if err := cmdRegister([]string{"--as", "gemini-cli", "--vendor", "google"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sharedMsgID := "2026-05-19T17:53:59.561894Z"
+	now := time.Now().UTC()
+	fromCodex := loop.PendingReplyEntry{
+		MessageID: sharedMsgID, From: "codex", To: "claude-code", Task: "review",
+		OriginalFilename: "codex_from-codex_msg-aaaa.md", ArchivePath: "archive/codex.md",
+	}
+	fromGemini := loop.PendingReplyEntry{
+		MessageID: sharedMsgID, From: "gemini-cli", To: "claude-code", Task: "review",
+		OriginalFilename: "gemini_from-gemini-cli_msg-bbbb.md", ArchivePath: "archive/gemini.md",
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", fromCodex, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", fromGemini, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// FindByMessageID returns the FIRST match (codex, recorded first), so this
+	// defers codex's obligation. gemini-cli's same-message_id obligation must
+	// stay pending.
+	withCwd(t, root, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdDefer([]string{"--as", "claude-code", "--message", sharedMsgID, "--reason", "later"})
+		}); err != nil {
+			t.Fatalf("cmdDefer: %v", err)
+		}
+	})
+
+	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ledger.Pending {
+		switch e.From {
+		case "codex":
+			if e.Status != loop.PendingReplyStatusDeferred {
+				t.Errorf("codex obligation status = %q, want deferred", e.Status)
+			}
+		case "gemini-cli":
+			if e.Status != loop.PendingReplyStatusPending {
+				t.Errorf("gemini-cli obligation status = %q, want pending (defer scoped to codex must not clear gemini-cli's obligation)", e.Status)
+			}
+		}
+	}
+	pending := ledger.PendingEntries()
+	if len(pending) != 1 || pending[0].From != "gemini-cli" {
+		t.Fatalf("PendingEntries = %+v, want only gemini-cli still blocking", pending)
+	}
+}
+
 func TestDeferRequiresReason(t *testing.T) {
 	msgID, _ := setupDeferFixture(t)
 	root := os.Getenv("TEST_DEFER_ROOT")
