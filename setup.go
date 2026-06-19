@@ -615,8 +615,45 @@ func previousSetupShimWrappers(state setupGlobalState) []string {
 	return wrappers
 }
 
+// setupRunRuntimeReset is the DESTRUCTIVE phase of setup: it stops local
+// pollers/runners, clears runtime state files and repo Herdr names, then deletes
+// live registrations so agents re-enroll. It is a package var so tests can inject
+// a failure to prove the ordering invariant below. It is invoked LAST in
+// applySetup — after every idempotent, recoverable write (init/enrollment, hooks,
+// shims, PATH block, saved setup state) has landed — so a mid-setup failure can
+// never leave the bus with cleared registrations AND no wake infrastructure.
+var setupRunRuntimeReset = func(root string, cfg *loop.Config, wrappers []string) error {
+	reset := resetSetupRuntimeState(root, cfg, wrappers)
+	if len(reset.Pollers) > 0 {
+		fmt.Printf("stopped %d local poller(s): %s\n", len(reset.Pollers), strings.Join(reset.Pollers, ", "))
+	}
+	if len(reset.Runners) > 0 {
+		fmt.Printf("stopped %d local runner(s): %s\n", len(reset.Runners), strings.Join(reset.Runners, ", "))
+	}
+	if len(reset.RuntimeFiles) > 0 {
+		fmt.Printf("cleared %d runtime state file(s)\n", len(reset.RuntimeFiles))
+	}
+	if len(reset.HerdrNames) > 0 {
+		fmt.Printf("released %d herdr name(s): %s\n", len(reset.HerdrNames), strings.Join(reset.HerdrNames, ", "))
+	}
+	for _, warning := range reset.Warnings {
+		fmt.Printf("warning: setup reset: %s\n", warning)
+	}
+	cleared, err := clearSetupLiveRegistrations(cfg)
+	if err != nil {
+		return err
+	}
+	if len(cleared) > 0 {
+		fmt.Printf("cleared %d stale live registration(s): %s\n", len(cleared), strings.Join(cleared, ", "))
+	}
+	return nil
+}
+
 func applySetup(root string, opts setupOptions, wrappers []string) error {
 	return runInDir(root, func() error {
+		// Phase 1 — idempotent scaffolding. cmdInit writes AGENTCHUTE.md and the
+		// per-wrapper enrollment blocks (CLAUDE.md/CODEX.md/GEMINI.md/AGENTS.md).
+		// Re-runnable; safe to repeat after a partial failure.
 		if err := cmdInit([]string{"--yes"}); err != nil {
 			return fmt.Errorf("init: %w", err)
 		}
@@ -628,31 +665,16 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		if err != nil {
 			return fmt.Errorf("discover initialized repo: %w", err)
 		}
-		reset := resetSetupRuntimeState(root, cfg, wrappers)
-		if len(reset.Pollers) > 0 {
-			fmt.Printf("stopped %d local poller(s): %s\n", len(reset.Pollers), strings.Join(reset.Pollers, ", "))
-		}
-		if len(reset.Runners) > 0 {
-			fmt.Printf("stopped %d local runner(s): %s\n", len(reset.Runners), strings.Join(reset.Runners, ", "))
-		}
-		if len(reset.RuntimeFiles) > 0 {
-			fmt.Printf("cleared %d runtime state file(s)\n", len(reset.RuntimeFiles))
-		}
-		if len(reset.HerdrNames) > 0 {
-			fmt.Printf("released %d herdr name(s): %s\n", len(reset.HerdrNames), strings.Join(reset.HerdrNames, ", "))
-		}
-		for _, warning := range reset.Warnings {
-			fmt.Printf("warning: setup reset: %s\n", warning)
-		}
-		cleared, err := clearSetupLiveRegistrations(cfg)
-		if err != nil {
-			return err
-		}
-		if len(cleared) > 0 {
-			fmt.Printf("cleared %d stale live registration(s): %s\n", len(cleared), strings.Join(cleared, ", "))
-		}
+		// Capture the prior saved state BEFORE we overwrite it below: the
+		// dropped-wrapper hook/shim cleanup is computed against the previous
+		// install's wrapper/shim sets.
 		globalState, _ := readSetupGlobalState()
 		poolState, _ := readSetupPoolState(cfg)
+
+		// Phase 2 — idempotent wake-infrastructure writes (hooks, shims, PATH
+		// block, saved setup state). These run BEFORE the destructive reset so a
+		// failure here leaves prior wake infrastructure intact and a re-run
+		// recovers cleanly. The reset does not depend on any of these writes.
 		for _, wrapper := range droppedWrappers(poolState.Wrappers, wrappers) {
 			if err := removeSetupHook(wrapper, root); err != nil {
 				return err
@@ -763,6 +785,14 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			PathBlock:      pathBlock,
 			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
+			return err
+		}
+
+		// Phase 3 — destructive runtime reset, LAST. By the time we reach here
+		// every recoverable write above has landed, so even if the reset (or a
+		// crash during it) fails partway, the bus retains its wake infrastructure
+		// (hooks/shims/enrollment) and a `setup` re-run recovers cleanly.
+		if err := setupRunRuntimeReset(root, cfg, wrappers); err != nil {
 			return err
 		}
 

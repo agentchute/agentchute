@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -243,7 +244,102 @@ func TestCmdUpdateRefusesMissingPoolState(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "saved setup state") {
 			t.Fatalf("update without saved setup state must refuse; got %v", err)
 		}
+		// The refusal must now point the user at --no-resync as the escape hatch.
+		if !strings.Contains(err.Error(), "--no-resync") {
+			t.Fatalf("missing-state refusal must mention --no-resync; got %v", err)
+		}
 	})
+}
+
+// --no-resync allows a binary-only update even when there is NO saved setup
+// state (a pool created by an older binary or via `init`): the update must not
+// refuse and the dry-run plan must report the re-sync/reset as skipped.
+func TestUpdate_NoResyncAllowsBinaryOnlyWhenNoSetupState(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root) // AGENTCHUTE.md + loop dir, but NO state/setup.json
+		out, err := captureStdout(t, func() error {
+			return cmdUpdate([]string{"--version", "v0.5.0", "--no-resync", "--dry-run"})
+		})
+		if err != nil {
+			t.Fatalf("--no-resync must not require saved setup state: %v", err)
+		}
+		if !strings.Contains(out, "skipped (--no-resync)") {
+			t.Fatalf("dry-run plan should report re-sync/reset skipped under --no-resync; got:\n%s", out)
+		}
+	})
+}
+
+// With --no-resync the apply path swaps the binary but must NEVER invoke the
+// destructive setup re-sync seam (no bus reset, registrations preserved). We
+// assert via the updateRunResync seam: a stub that records invocation must stay
+// untouched, while the binary is replaced by the served archive.
+func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions used by the writable probe")
+	}
+	root := t.TempDir()
+
+	// A fake "installed binary" in a writable dir so resolveUpdateTarget/the
+	// writable probe accept it, and the atomic rename has a real target.
+	installDir := t.TempDir()
+	bin := filepath.Join(installDir, "agentchute")
+	if err := os.WriteFile(bin, []byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0}, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Serve the release archive + checksum for v0.5.0.
+	asset := fmt.Sprintf("agentchute_0.5.0_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	archive := makeTarGz(t, map[string][]byte{"agentchute": []byte("NEW-BINARY-BYTES")})
+	sum := sha256.Sum256(archive)
+	checksum := hex.EncodeToString(sum[:])
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "checksums.txt"):
+			fmt.Fprintf(w, "%s  %s\n", checksum, asset)
+		case strings.HasSuffix(r.URL.Path, asset):
+			w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	// Seam: point the target binary resolver at our fake install, and record
+	// whether the destructive re-sync was ever invoked.
+	oldBase := updateGitHubBase
+	oldTarget := resolveUpdateTargetForTest
+	oldResync := updateRunResync
+	updateGitHubBase = srv.URL
+	resolveUpdateTargetForTest = bin
+	resyncCalled := false
+	updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
+		resyncCalled = true
+		return nil
+	}
+	t.Cleanup(func() {
+		updateGitHubBase = oldBase
+		resolveUpdateTargetForTest = oldTarget
+		updateRunResync = oldResync
+	})
+
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root) // deliberately NO saved setup state
+		if err := cmdUpdate([]string{"--version", "v0.5.0", "--no-resync"}); err != nil {
+			t.Fatalf("--no-resync binary-only update failed: %v", err)
+		}
+	})
+
+	if resyncCalled {
+		t.Fatal("--no-resync must NOT invoke the destructive setup re-sync")
+	}
+	got, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "NEW-BINARY-BYTES" {
+		t.Fatalf("binary should be swapped to the served archive; got %q", got)
+	}
 }
 
 // #1 regression: path resolution must not require a writable dir (so --dry-run

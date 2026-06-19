@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -659,6 +660,85 @@ func TestSetupWrapperNarrowingRemovesDroppedHooksAndShims(t *testing.T) {
 	for _, name := range []string{"ac-gemini", "ac-grok", "ac-claude"} {
 		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); err != nil {
 			t.Fatalf("%s shim should remain (INVARIANT: all four shims in runner mode): %v", name, err)
+		}
+	}
+}
+
+// ORDERING INVARIANT: the idempotent, recoverable writes (init/enrollment,
+// hooks, shims, PATH block, saved setup state) must all land BEFORE the
+// destructive runtime reset. We inject a failure into the reset seam and assert
+// every wake-infrastructure artifact already exists — so a mid-setup failure can
+// never leave the bus with cleared registrations AND no wake infrastructure. A
+// pre-reorder build (reset first) leaves these unwritten when the reset fails and
+// this test goes red.
+func TestSetup_TemplatesWrittenBeforeRuntimeReset(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	realDir := filepath.Join(t.TempDir(), "real")
+	mustMkdir(t, realDir)
+	realCodex := filepath.Join(realDir, "codex")
+	mustWrite(t, realCodex, []byte("#!/bin/sh\nexit 0\n"))
+	if err := os.Chmod(realCodex, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", realDir)
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	profile := filepath.Join(home, ".zshrc")
+
+	// Inject a failure into the DESTRUCTIVE reset phase. Record whether any
+	// wake-infrastructure write had already happened by the time it ran.
+	resetRan := false
+	var hadEnrollment, hadHook, hadShim bool
+	oldReset := setupRunRuntimeReset
+	setupRunRuntimeReset = func(rt string, cfg *loop.Config, wrappers []string) error {
+		resetRan = true
+		_, e1 := os.Stat(filepath.Join(root, "CODEX.md"))
+		hadEnrollment = e1 == nil
+		_, e2 := os.Stat(filepath.Join(root, ".codex", "hooks.json"))
+		hadHook = e2 == nil
+		_, e3 := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-codex"))
+		hadShim = e3 == nil
+		return errors.New("injected runtime-reset failure")
+	}
+	t.Cleanup(func() { setupRunRuntimeReset = oldReset })
+
+	var setupErr error
+	withCwd(t, root, func() {
+		setupErr = cmdSetup([]string{"--wake", "runner", "--wrappers", "codex", "--profile", profile, "--yes"})
+	})
+
+	// The injected reset failure must surface (reset is still part of setup)...
+	if setupErr == nil || !strings.Contains(setupErr.Error(), "injected runtime-reset failure") {
+		t.Fatalf("injected reset failure should surface from setup; got %v", setupErr)
+	}
+	if !resetRan {
+		t.Fatal("destructive reset seam was never invoked")
+	}
+	// ...but the recoverable writes were already on disk when it ran: wake
+	// infrastructure stays intact and a re-run recovers cleanly.
+	if !hadEnrollment {
+		t.Error("enrollment block (CODEX.md) was NOT written before the destructive reset")
+	}
+	if !hadHook {
+		t.Error("codex hook (.codex/hooks.json) was NOT written before the destructive reset")
+	}
+	if !hadShim {
+		t.Error("ac-codex shim was NOT written before the destructive reset")
+	}
+	// And they are durable on disk after the failed setup returns.
+	for _, p := range []string{
+		filepath.Join(root, "CODEX.md"),
+		filepath.Join(root, ".codex", "hooks.json"),
+		filepath.Join(home, ".agentchute", "bin", "ac-codex"),
+	} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("wake-infra artifact missing after failed setup: %s (%v)", p, err)
 		}
 	}
 }
