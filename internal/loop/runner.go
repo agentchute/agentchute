@@ -47,16 +47,17 @@ func RunnerWakeTarget(socketPath string) string {
 	return runnerTargetUnix + socketPath
 }
 
-// ParseRunnerWakeTarget parses an agentchute-run wake target.
+// ParseRunnerWakeTarget parses an agentchute-run wake target. It also enforces
+// the wake_target shape (unix: prefix, non-empty clean absolute path) so every
+// caller that dials the socket — the poke adapter AND the liveness pings — is
+// protected from a hand-written registration smuggling a relative path or a
+// path with embedded control characters.
 func ParseRunnerWakeTarget(target string) (string, error) {
+	if err := ValidateWakeTarget(RunnerWakeMethod, target); err != nil {
+		return "", err
+	}
 	target = strings.TrimSpace(target)
-	if !strings.HasPrefix(target, runnerTargetUnix) {
-		return "", fmt.Errorf("agentchute-run wake target must start with %q", runnerTargetUnix)
-	}
 	path := strings.TrimSpace(strings.TrimPrefix(target, runnerTargetUnix))
-	if path == "" {
-		return "", fmt.Errorf("agentchute-run wake target has empty socket path")
-	}
 	return path, nil
 }
 

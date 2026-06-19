@@ -64,7 +64,7 @@ func TestWriteRegistrationRoundTrip(t *testing.T) {
 		ControlRepo:  "/tmp/repo",
 		WorkingRepos: []string{"/tmp/repo"},
 		WakeMethod:   "tmux",
-		WakeTarget:   "main",
+		WakeTarget:   "%5",
 		LastSeen:     lastSeen,
 		Status:       StatusActive,
 		LastActive:   &lastActive,
@@ -112,6 +112,58 @@ func TestWriteRegistrationExclusiveRefusesExisting(t *testing.T) {
 	}
 	if got.Host != "" {
 		t.Fatalf("exclusive collision overwrote registration: %#v", got)
+	}
+}
+
+func TestValidateRejectsMalformedWakeTarget(t *testing.T) {
+	base := func() *Registration {
+		return &Registration{
+			AgentID:     "codex",
+			Vendor:      "openai",
+			ControlRepo: "/tmp/repo",
+			LastSeen:    time.Now().UTC(),
+			Status:      StatusActive,
+		}
+	}
+
+	// Live formats must pass Validate().
+	live := []struct {
+		method, target string
+	}{
+		{"tmux", "%0"},
+		{"tmux", "%1"},
+		{"tmux", "main:0.0"},
+		{"herdr", "claude-code-agentchute"},
+		{"herdr", "codex-agentchute"},
+		{RunnerWakeMethod, "unix:/Users/alex/code/agentchute/.agentchute/loop/state/grok-agentchute/runner.sock"},
+	}
+	for _, lf := range live {
+		reg := base()
+		reg.WakeMethod = lf.method
+		reg.WakeTarget = lf.target
+		if err := reg.Validate(); err != nil {
+			t.Errorf("live registration %s/%q failed Validate(): %v", lf.method, lf.target, err)
+		}
+	}
+
+	// Malformed / hostile targets must fail Validate().
+	bad := []struct {
+		name, method, target string
+	}{
+		{"tmux foreign pane no percent", "tmux", "main"},
+		{"tmux leading dash", "tmux", "-t"},
+		{"tmux injection", "tmux", "%0;reboot"},
+		{"herdr traversal", "herdr", "../../etc/passwd"},
+		{"runner non-unix", RunnerWakeMethod, "/tmp/evil.sock"},
+		{"runner newline", RunnerWakeMethod, "unix:/tmp/evil\n.sock"},
+	}
+	for _, b := range bad {
+		reg := base()
+		reg.WakeMethod = b.method
+		reg.WakeTarget = b.target
+		if err := reg.Validate(); err == nil {
+			t.Errorf("%s: malformed registration %s/%q passed Validate(), want error", b.name, b.method, b.target)
+		}
 	}
 }
 

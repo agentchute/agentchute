@@ -274,6 +274,16 @@ func (r *Registration) Validate() error {
 	if method == "" && target != "" {
 		return fmt.Errorf("wake_target set without wake_method")
 	}
+	// Shape-validate the wake_target so a hand-written peer registration cannot
+	// smuggle an injection-shaped target (foreign pane, leading-dash flag
+	// confusion, newline) past the parser into a poke. The pure validator runs
+	// here; recipient-binding for unix: sockets is enforced separately in the
+	// poke path (it needs Config + recipientID).
+	if method != "" {
+		if err := ValidateWakeTarget(method, target); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

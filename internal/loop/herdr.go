@@ -54,6 +54,11 @@ func PokeHerdrTargetContext(ctx context.Context, target string) error {
 	if target == "" {
 		return nil
 	}
+	// Re-validate at use time: a hand-written registration that bypassed
+	// Validate() must not reach herdr with a slash/colon/flag-shaped name.
+	if err := ValidateWakeTarget("herdr", target); err != nil {
+		return err
+	}
 	paneID, err := herdrPaneIDForAgent(ctx, target)
 	if err != nil {
 		return fmt.Errorf("resolve herdr pane for %q: %w", target, err)

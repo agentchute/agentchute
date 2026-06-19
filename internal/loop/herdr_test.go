@@ -97,29 +97,27 @@ func TestPokeHerdrEmptyTargetNoOp(t *testing.T) {
 	}
 }
 
-func TestPokeHerdrPassesArgsAsSingleArgsNoShellEval(t *testing.T) {
+func TestPokeHerdrRejectsInjectionShapedTarget(t *testing.T) {
 	oldBinary, oldSleep := herdrBinary, pokeSleep
 	t.Cleanup(func() { herdrBinary, pokeSleep = oldBinary, oldSleep })
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "herdr.log")
 	sentinel := filepath.Join(dir, "pwned")
-	// A target laden with shell metacharacters. Because the adapter uses argv
-	// exec (never sh -c), it must arrive verbatim as one argument and must not
-	// execute the embedded command.
+	// A target laden with shell metacharacters. The wake_target shape validator
+	// now rejects it up front (a herdr target must be an agent-id slug), so it
+	// never reaches herdr at all — strictly stronger than the prior argv-only
+	// defense. Belt-and-suspenders: also assert no shell metacharacter was
+	// evaluated and the binary was never invoked.
 	evil := "x\"; touch " + sentinel + " #"
 	herdrBinary = writeFakeHerdr(t, dir, logPath, true, 0)
 	pokeSleep = time.Millisecond
 
-	if err := PokeHerdrTargetContext(context.Background(), evil); err != nil {
-		t.Fatal(err)
+	if err := PokeHerdrTargetContext(context.Background(), evil); err == nil {
+		t.Fatal("injection-shaped herdr target must be rejected before the poke")
 	}
-	got, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(got), "agent\tget\t"+evil+"\t") {
-		t.Fatalf("evil target not passed verbatim as one arg:\n%q", got)
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("herdr binary must not be invoked for a rejected target (log exists: %v)", err)
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Fatal("shell metacharacters in target were evaluated — argv safety broken")
