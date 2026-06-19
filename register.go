@@ -317,7 +317,10 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 	// removed post-revalidation, not the raw find candidates.
 	var peerWakeStale []peerWakeStale
 	if len(samePaneCandidates) > 0 {
-		removed, perr := revalidateAndRemoveSamePanePeers(cfg, samePaneCandidates, opts.AgentID, samePaneHost, samePaneTarget)
+		// reg.LastSeen is OUR publish LastSeen (== now); it feeds the
+		// last-writer-wins tie-breaker so a reciprocal same-pane delete leaves
+		// exactly one survivor (the later writer) rather than wiping both regs.
+		removed, perr := revalidateAndRemoveSamePanePeers(cfg, samePaneCandidates, opts.AgentID, samePaneHost, samePaneTarget, reg.LastSeen)
 		if perr != nil {
 			return nil, fmt.Errorf("prune same-pane tmux registrations: %w", perr)
 		}

@@ -213,14 +213,43 @@ func findSamePanePeerTmuxRegistrations(cfg *loop.Config, selfID, host, target st
 // reg: not us, same host, wake_method tmux, wake_target equal to the FINAL
 // target we wrote. Kept in exact lockstep with the find scan so the revalidated
 // remove never deletes a peer that has since moved pane or gone non-tmux.
-func samePaneStillMatches(selfID, host, target string) func(*loop.Registration) bool {
+//
+// LAST-WRITER-WINS TIE-BREAKER (same-pane prune ONLY). The host/method/target
+// predicate alone cannot catch a RECIPROCAL same-pane delete: when A and B both
+// land on pane %1 and each finds the other as a candidate, at remove-time BOTH
+// fresh regs still legitimately match the pane, so BOTH removes would fire and
+// the pane would lose both registrations (data loss). We add a strict total
+// order on (LastSeen, AgentID) and delete the peer ONLY if it is strictly
+// "older" than us: less(peer) < less(us), where less(x) = (x.LastSeen, x.AgentID)
+// compared lexicographically (older LastSeen first, ties broken by AgentID "<").
+//
+// Correctness: in the reciprocal case A(LastSeen tA) vs B(LastSeen tB) with
+// tA<tB — A's remove of B sees B newer (tB>tA) → A does NOT delete B; B's remove
+// of A sees A older (tA<tB) → B DELETES A. Single survivor B (the later writer),
+// never a mutual delete. A genuine older duplicate (strictly smaller LastSeen)
+// is still pruned by the newer registrant. Equal LastSeen is broken
+// deterministically by AgentID so exactly one side deletes — no both-skip.
+//
+// `ourLastSeen` is OUR publish LastSeen (the `now`/`reg.LastSeen` we just wrote);
+// the comparison is the PEER's FRESH (re-read) LastSeen against it. This applies
+// to the same-pane prune ONLY — the stale-peer unreachable prune
+// (stalePeerStillMatches) keeps its no-tie-breaker predicate by design.
+func samePaneStillMatches(selfID, host, target string, ourLastSeen time.Time) func(*loop.Registration) bool {
 	host = strings.TrimSpace(host)
 	target = strings.TrimSpace(target)
 	return func(fresh *loop.Registration) bool {
-		return fresh.AgentID != selfID &&
-			strings.TrimSpace(fresh.Host) == host &&
-			strings.TrimSpace(fresh.WakeMethod) == "tmux" &&
-			strings.TrimSpace(fresh.WakeTarget) == target
+		if fresh.AgentID == selfID ||
+			strings.TrimSpace(fresh.Host) != host ||
+			strings.TrimSpace(fresh.WakeMethod) != "tmux" ||
+			strings.TrimSpace(fresh.WakeTarget) != target {
+			return false
+		}
+		// Tie-breaker: remove only a peer strictly older than us by the
+		// (LastSeen, AgentID) total order. A newer (or equal-time-but-
+		// higher-AgentID) peer wins the pane; we yield to it.
+		peerOlder := fresh.LastSeen.Before(ourLastSeen) ||
+			(fresh.LastSeen.Equal(ourLastSeen) && fresh.AgentID < selfID)
+		return peerOlder
 	}
 }
 
@@ -234,8 +263,12 @@ func samePaneStillMatches(selfID, host, target string) func(*loop.Registration) 
 // it takes each PEER's agent lock via revalidateAndRemovePeer (see that func's
 // deadlock argument). register.go honors this by deferring the call until after
 // WithAgentLock returns.
-func revalidateAndRemoveSamePanePeers(cfg *loop.Config, peers []peerWakeStale, selfID, host, target string) ([]peerWakeStale, error) {
-	match := samePaneStillMatches(selfID, host, target)
+//
+// `ourLastSeen` is OUR publish LastSeen (the value we just wrote, == `now`); it
+// feeds the last-writer-wins tie-breaker in samePaneStillMatches so a reciprocal
+// same-pane delete leaves exactly one survivor (the later writer).
+func revalidateAndRemoveSamePanePeers(cfg *loop.Config, peers []peerWakeStale, selfID, host, target string, ourLastSeen time.Time) ([]peerWakeStale, error) {
+	match := samePaneStillMatches(selfID, host, target, ourLastSeen)
 	var removed []peerWakeStale
 	for _, peer := range peers {
 		ok, rerr := revalidateAndRemovePeer(cfg, peer, match)
