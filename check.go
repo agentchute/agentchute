@@ -75,7 +75,7 @@ func cmdCheck(args []string) error {
 	selfExists := false
 	if _, err := os.Stat(selfPath); err == nil {
 		selfExists = true
-		if err := loop.UpdateLastSeen(selfPath, now); err != nil {
+		if err := loop.UpdateLastSeen(cfg, agentID, now); err != nil {
 			return fmt.Errorf("update last_seen for %s: %w", agentID, err)
 		}
 	} else if os.IsNotExist(err) {
@@ -216,7 +216,7 @@ func cmdCheck(args []string) error {
 
 	// Update last_active per AGENTCHUTE.md §6.3 step 5 if we actually consumed.
 	if !noArchive && processed > 0 && selfExists {
-		if err := loop.UpdateLastActive(selfPath, now); err != nil {
+		if err := loop.UpdateLastActive(cfg, agentID, now); err != nil {
 			// Non-fatal: messages are archived; only the timestamp update lost.
 			fmt.Fprintf(os.Stderr, "warning: failed to update last_active (%v)\n", err)
 		}

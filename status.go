@@ -67,7 +67,7 @@ func cmdStatus(args []string) error {
 		// unaffected and remains a side-effect-free read.
 		selfPath := cfg.AgentRegistrationPath(agentID)
 		if _, err := os.Stat(selfPath); err == nil {
-			if err := loop.UpdateLastSeen(selfPath, now); err != nil {
+			if err := loop.UpdateLastSeen(cfg, agentID, now); err != nil {
 				return fmt.Errorf("update last_seen for %s: %w", agentID, err)
 			}
 		} else if os.IsNotExist(err) {

@@ -116,7 +116,8 @@ func TestWriteRegistrationExclusiveRefusesExisting(t *testing.T) {
 }
 
 func TestUpdateLastSeenPreservesBody(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "codex.md")
+	cfg := newLockTestConfig(t)
+	path := cfg.AgentRegistrationPath("codex")
 	mustWrite(t, path, []byte(`---
 agent_id: codex
 vendor: openai
@@ -131,7 +132,7 @@ status: active
 `))
 
 	next := time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
-	if err := UpdateLastSeen(path, next); err != nil {
+	if err := UpdateLastSeen(cfg, "codex", next); err != nil {
 		t.Fatal(err)
 	}
 	reg, err := ReadRegistration(path)
@@ -147,7 +148,8 @@ status: active
 }
 
 func TestUpdateLastActivePreservesBody(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "codex.md")
+	cfg := newLockTestConfig(t)
+	path := cfg.AgentRegistrationPath("codex")
 	mustWrite(t, path, []byte(`---
 agent_id: codex
 vendor: openai
@@ -162,7 +164,7 @@ status: active
 `))
 
 	next := time.Date(2026, 5, 10, 0, 1, 0, 0, time.UTC)
-	if err := UpdateLastActive(path, next); err != nil {
+	if err := UpdateLastActive(cfg, "codex", next); err != nil {
 		t.Fatal(err)
 	}
 	reg, err := ReadRegistration(path)
@@ -178,7 +180,8 @@ status: active
 }
 
 func TestUpdateLastSeenUsesStructuredRegistrationWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "codex.md")
+	cfg := newLockTestConfig(t)
+	path := cfg.AgentRegistrationPath("codex")
 	mustWrite(t, path, []byte(`---
 agent_id: codex
 vendor: openai
@@ -192,7 +195,7 @@ status: active
 `))
 
 	next := time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
-	if err := UpdateLastSeen(path, next); err != nil {
+	if err := UpdateLastSeen(cfg, "codex", next); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)

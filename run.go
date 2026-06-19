@@ -214,6 +214,7 @@ type runnerRuntime struct {
 	mu                  sync.Mutex
 	ptmxMu              sync.Mutex
 	stopOnce            sync.Once
+	pollWG              sync.WaitGroup
 	shutdownRequested   atomic.Bool
 	pendingWake         bool
 	lastInjection       time.Time
@@ -309,6 +310,10 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 
 	defer func() {
 		rt.stopLoops()
+		// Wait for the poll loop to fully exit BEFORE marking offline. stopLoops
+		// only closes stopCh; a pollOnce already in flight would otherwise run
+		// its UpdateLastSeen after markRunnerOffline and resurrect Status=active.
+		rt.pollWG.Wait()
 		rt.closePTY()
 		_ = os.Remove(socketPath)
 		_ = rt.saveStateWithStatus("offline")
@@ -316,6 +321,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	}()
 
 	go rt.acceptWakeLoop()
+	rt.pollWG.Add(1)
 	go rt.pollLoop()
 	go rt.injectLoop()
 	go rt.copyPTYOutput()
@@ -368,14 +374,21 @@ func registerRunner(cfg *loop.Config, opts runnerOptions, socketPath string, now
 }
 
 func markRunnerOffline(cfg *loop.Config, agentID string) error {
-	regPath := cfg.AgentRegistrationPath(agentID)
-	reg, err := loop.ReadRegistration(regPath)
-	if err != nil {
-		return err
-	}
-	reg.Status = loop.StatusOffline
-	reg.LastSeen = time.Now().UTC()
-	return loop.WriteRegistration(regPath, reg)
+	// Serialize against a concurrent pollOnce -> UpdateLastSeen so the offline
+	// status write is not clobbered by a stale-read last_seen refresh that would
+	// resurrect Status=active after shutdown. (The caller also joins the poll
+	// loop before invoking this, so by here no poller should still be running;
+	// the lock is belt-and-suspenders against any other writer.)
+	return loop.WithAgentLock(cfg, agentID, func() error {
+		regPath := cfg.AgentRegistrationPath(agentID)
+		reg, err := loop.ReadRegistration(regPath)
+		if err != nil {
+			return err
+		}
+		reg.Status = loop.StatusOffline
+		reg.LastSeen = time.Now().UTC()
+		return loop.WriteRegistration(regPath, reg)
+	})
 }
 
 func refuseLiveRunnerCollision(cfg *loop.Config, agentID string) error {
@@ -421,7 +434,6 @@ func clearStaleRunnerWakeTargets(cfg *loop.Config, selfID string) ([]string, err
 		}
 	}
 	localHost := strings.TrimSpace(localHostname())
-	now := time.Now().UTC()
 	var cleared []string
 	for _, reg := range regs {
 		if reg.AgentID == selfID || reg.WakeMethod != loop.RunnerWakeMethod || strings.TrimSpace(reg.WakeTarget) == "" {
@@ -433,14 +445,45 @@ func clearStaleRunnerWakeTargets(cfg *loop.Config, selfID string) ([]string, err
 		if runnerRegistrationHealthy(cfg, reg, 300*time.Millisecond) {
 			continue
 		}
-		reg.WakeMethod = ""
-		reg.WakeTarget = ""
-		reg.Status = loop.StatusOffline
-		reg.LastSeen = now
-		if err := loop.WriteRegistration(cfg.AgentRegistrationPath(reg.AgentID), reg); err != nil {
+		// Mutate this peer's registration under ITS OWN lock (not selfID's), and
+		// re-read inside the lock so a peer poll loop's concurrent last_seen
+		// refresh between the unlocked scan and our write cannot be clobbered —
+		// and so we don't act on a stale view if the peer healed/changed its
+		// wake target in the interim. This is a peer's lock, never our own, so
+		// it does not nest with the self-lock the runner takes elsewhere.
+		peerID := reg.AgentID
+		var clearedThis bool
+		err := loop.WithAgentLock(cfg, peerID, func() error {
+			fresh, err := loop.ReadRegistration(cfg.AgentRegistrationPath(peerID))
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil // peer deregistered between scan and lock
+				}
+				return err
+			}
+			// Re-verify the staleness predicate against the fresh view.
+			if fresh.WakeMethod != loop.RunnerWakeMethod || strings.TrimSpace(fresh.WakeTarget) == "" {
+				return nil
+			}
+			if runnerRegistrationHealthy(cfg, fresh, 300*time.Millisecond) {
+				return nil
+			}
+			fresh.WakeMethod = ""
+			fresh.WakeTarget = ""
+			fresh.Status = loop.StatusOffline
+			fresh.LastSeen = time.Now().UTC()
+			if err := loop.WriteRegistration(cfg.AgentRegistrationPath(peerID), fresh); err != nil {
+				return err
+			}
+			clearedThis = true
+			return nil
+		})
+		if err != nil {
 			return cleared, err
 		}
-		cleared = append(cleared, reg.AgentID)
+		if clearedThis {
+			cleared = append(cleared, peerID)
+		}
 	}
 	return cleared, nil
 }
@@ -558,6 +601,7 @@ func (r *runnerRuntime) pingResponse(status string) loop.RunnerPingResponse {
 }
 
 func (r *runnerRuntime) pollLoop() {
+	defer r.pollWG.Done()
 	ticker := time.NewTicker(time.Duration(r.opts.IntervalSeconds) * time.Second)
 	defer ticker.Stop()
 	r.pollOnce(false)
@@ -573,7 +617,7 @@ func (r *runnerRuntime) pollLoop() {
 
 func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	now := time.Now().UTC()
-	if err := loop.UpdateLastSeen(r.cfg.AgentRegistrationPath(r.opts.AgentID), now); err != nil {
+	if err := loop.UpdateLastSeen(r.cfg, r.opts.AgentID, now); err != nil {
 		fmt.Fprintf(os.Stderr, "agentchute run: update last_seen: %v\n", err)
 	}
 	msgs, _, err := loop.ListInboxMessagesWithSkipped(r.cfg.AgentInboxDir(r.opts.AgentID))

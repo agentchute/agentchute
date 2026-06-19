@@ -151,7 +151,7 @@ func cmdSend(args []string) error {
 	// reply to.
 	selfPath := cfg.AgentRegistrationPath(fromID)
 	if _, err := os.Stat(selfPath); err == nil {
-		if err := loop.UpdateLastSeen(selfPath, now); err != nil {
+		if err := loop.UpdateLastSeen(cfg, fromID, now); err != nil {
 			return fmt.Errorf("update last_seen for %s: %w", fromID, err)
 		}
 	} else if os.IsNotExist(err) {

@@ -372,6 +372,16 @@ func EnsurePrivateDir(path string) error {
 	return ensurePrivateDir(path)
 }
 
+// WithAgentLock runs fn while holding the exclusive per-agent file lock at
+// <loop>/state/<agent>/.lock. Exported for package-main callers (the runner)
+// that read-modify-write an agent's registration outside this package and must
+// serialize against UpdateLastSeen / ledger writes. See the build-tagged
+// withAgentLock for the no-nested-lock contract: a single call stack must never
+// acquire this lock twice for the same agentID.
+func WithAgentLock(cfg *Config, agentID string, fn func() error) error {
+	return withAgentLock(cfg, agentID, fn)
+}
+
 func ensurePrivateDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err

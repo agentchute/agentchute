@@ -203,39 +203,44 @@ func RecordPendingReply(cfg *Config, agentID string, entry PendingReplyEntry, no
 		return fmt.Errorf("RecordPendingReply: archive_path required")
 	}
 
-	ledger, err := LoadPendingLedger(cfg, agentID)
-	if err != nil {
-		return err
-	}
-	for _, existing := range ledger.Pending {
-		if existing.MessageID != entry.MessageID {
-			continue
+	// Hold the per-agent lock across load->append->save so concurrent recorders
+	// (e.g. two `check` invocations, or check racing a wake-triggered re-archive)
+	// cannot read the same ledger and clobber each other's append (lost update).
+	return withAgentLock(cfg, agentID, func() error {
+		ledger, err := LoadPendingLedger(cfg, agentID)
+		if err != nil {
+			return err
 		}
-		// Same message_id: idempotent only when original_filename also matches.
-		// Distinct filename ⇒ two real deliveries with a shared message_id,
-		// which would otherwise silently drop the second obligation. Surface
-		// as a typed error so the caller decides (operator alert, retry with
-		// a re-issued message_id, etc.) — see codex review on 4d34826.
-		if existing.OriginalFilename == entry.OriginalFilename {
-			return nil
+		for _, existing := range ledger.Pending {
+			if existing.MessageID != entry.MessageID {
+				continue
+			}
+			// Same message_id: idempotent only when original_filename also matches.
+			// Distinct filename ⇒ two real deliveries with a shared message_id,
+			// which would otherwise silently drop the second obligation. Surface
+			// as a typed error so the caller decides (operator alert, retry with
+			// a re-issued message_id, etc.) — see codex review on 4d34826.
+			if existing.OriginalFilename == entry.OriginalFilename {
+				return nil
+			}
+			return fmt.Errorf("%w: message_id=%q first_filename=%q second_filename=%q",
+				ErrLedgerEntryCollision, entry.MessageID, existing.OriginalFilename, entry.OriginalFilename)
 		}
-		return fmt.Errorf("%w: message_id=%q first_filename=%q second_filename=%q",
-			ErrLedgerEntryCollision, entry.MessageID, existing.OriginalFilename, entry.OriginalFilename)
-	}
 
-	entry.Status = PendingReplyStatusPending
-	if strings.TrimSpace(entry.RecordedAt) == "" {
-		entry.RecordedAt = formatLedgerTimestamp(now)
-	}
-	// Defensive: ensure nullable fields are nil on a fresh pending entry.
-	entry.ReplySentAt = nil
-	entry.ReplyMessageID = nil
-	entry.DeferredAt = nil
-	entry.DeferredUntil = nil
-	entry.DeferredReason = nil
+		entry.Status = PendingReplyStatusPending
+		if strings.TrimSpace(entry.RecordedAt) == "" {
+			entry.RecordedAt = formatLedgerTimestamp(now)
+		}
+		// Defensive: ensure nullable fields are nil on a fresh pending entry.
+		entry.ReplySentAt = nil
+		entry.ReplyMessageID = nil
+		entry.DeferredAt = nil
+		entry.DeferredUntil = nil
+		entry.DeferredReason = nil
 
-	ledger.Pending = append(ledger.Pending, entry)
-	return SavePendingLedger(cfg, agentID, ledger)
+		ledger.Pending = append(ledger.Pending, entry)
+		return SavePendingLedger(cfg, agentID, ledger)
+	})
 }
 
 // MarkPendingReplied transitions a pending entry to status "replied" and
@@ -259,22 +264,26 @@ func MarkPendingReplied(cfg *Config, agentID, messageID, replyMessageID string, 
 		// row (codex review on 4d34826).
 		return fmt.Errorf("MarkPendingReplied: reply_message_id required")
 	}
-	ledger, err := LoadPendingLedger(cfg, agentID)
-	if err != nil {
-		return err
-	}
-	idx, ok := indexByMessageID(ledger, messageID)
-	if !ok {
-		return ErrLedgerEntryNotFound
-	}
-	if ledger.Pending[idx].Status != PendingReplyStatusPending {
-		return ErrLedgerEntryNotPending
-	}
-	sentAt := formatLedgerTimestamp(replySentAt)
-	ledger.Pending[idx].Status = PendingReplyStatusReplied
-	ledger.Pending[idx].ReplySentAt = &sentAt
-	ledger.Pending[idx].ReplyMessageID = &rid
-	return SavePendingLedger(cfg, agentID, ledger)
+	// Lock the load->mutate->save so a concurrent recorder/defer on the same
+	// agent cannot drop this transition.
+	return withAgentLock(cfg, agentID, func() error {
+		ledger, err := LoadPendingLedger(cfg, agentID)
+		if err != nil {
+			return err
+		}
+		idx, ok := indexByMessageID(ledger, messageID)
+		if !ok {
+			return ErrLedgerEntryNotFound
+		}
+		if ledger.Pending[idx].Status != PendingReplyStatusPending {
+			return ErrLedgerEntryNotPending
+		}
+		sentAt := formatLedgerTimestamp(replySentAt)
+		ledger.Pending[idx].Status = PendingReplyStatusReplied
+		ledger.Pending[idx].ReplySentAt = &sentAt
+		ledger.Pending[idx].ReplyMessageID = &rid
+		return SavePendingLedger(cfg, agentID, ledger)
+	})
 }
 
 // MarkPendingDeferred transitions a pending entry to status "deferred". The
@@ -290,26 +299,30 @@ func MarkPendingDeferred(cfg *Config, agentID, messageID, reason, deferredUntil 
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("MarkPendingDeferred: reason required")
 	}
-	ledger, err := LoadPendingLedger(cfg, agentID)
-	if err != nil {
-		return err
-	}
-	idx, ok := indexByMessageID(ledger, messageID)
-	if !ok {
-		return ErrLedgerEntryNotFound
-	}
-	if ledger.Pending[idx].Status != PendingReplyStatusPending {
-		return ErrLedgerEntryNotPending
-	}
-	at := formatLedgerTimestamp(deferredAt)
-	ledger.Pending[idx].Status = PendingReplyStatusDeferred
-	ledger.Pending[idx].DeferredAt = &at
-	r := reason
-	ledger.Pending[idx].DeferredReason = &r
-	if until := strings.TrimSpace(deferredUntil); until != "" {
-		ledger.Pending[idx].DeferredUntil = &until
-	}
-	return SavePendingLedger(cfg, agentID, ledger)
+	// Lock the load->mutate->save so a concurrent recorder/reply on the same
+	// agent cannot drop this transition.
+	return withAgentLock(cfg, agentID, func() error {
+		ledger, err := LoadPendingLedger(cfg, agentID)
+		if err != nil {
+			return err
+		}
+		idx, ok := indexByMessageID(ledger, messageID)
+		if !ok {
+			return ErrLedgerEntryNotFound
+		}
+		if ledger.Pending[idx].Status != PendingReplyStatusPending {
+			return ErrLedgerEntryNotPending
+		}
+		at := formatLedgerTimestamp(deferredAt)
+		ledger.Pending[idx].Status = PendingReplyStatusDeferred
+		ledger.Pending[idx].DeferredAt = &at
+		r := reason
+		ledger.Pending[idx].DeferredReason = &r
+		if until := strings.TrimSpace(deferredUntil); until != "" {
+			ledger.Pending[idx].DeferredUntil = &until
+		}
+		return SavePendingLedger(cfg, agentID, ledger)
+	})
 }
 
 // PendingEntries returns the subset of entries that still block gate --before

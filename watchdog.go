@@ -121,7 +121,7 @@ func runWatchdogCycle(ctx context.Context, cfg *loop.Config, opts watchdogOption
 		}
 		return fmt.Errorf("stat watchdog registration: %w", err)
 	}
-	if err := loop.UpdateLastSeen(selfPath, now); err != nil {
+	if err := loop.UpdateLastSeen(cfg, opts.AgentID, now); err != nil {
 		return fmt.Errorf("update watchdog last_seen: %w", err)
 	}
 

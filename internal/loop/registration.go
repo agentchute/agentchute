@@ -205,26 +205,36 @@ func WriteRegistrationExclusive(path string, r *Registration) error {
 }
 
 // UpdateLastSeen updates last_seen via the same structured path as other
-// registration writes.
-func UpdateLastSeen(path string, t time.Time) error {
-	reg, err := ReadRegistration(path)
-	if err != nil {
-		return err
-	}
-	reg.LastSeen = t.UTC()
-	return WriteRegistration(path, reg)
+// registration writes. The read-modify-write runs under the per-agent lock so
+// a concurrent status mutation (e.g. the runner marking itself offline) is not
+// clobbered by a stale-read overwrite, and two concurrent updaters cannot tear
+// the registration file.
+func UpdateLastSeen(cfg *Config, agentID string, t time.Time) error {
+	return withAgentLock(cfg, agentID, func() error {
+		path := cfg.AgentRegistrationPath(agentID)
+		reg, err := ReadRegistration(path)
+		if err != nil {
+			return err
+		}
+		reg.LastSeen = t.UTC()
+		return WriteRegistration(path, reg)
+	})
 }
 
 // UpdateLastActive updates last_active via the same structured path as other
-// registration writes.
-func UpdateLastActive(path string, t time.Time) error {
-	reg, err := ReadRegistration(path)
-	if err != nil {
-		return err
-	}
-	lastActive := t.UTC()
-	reg.LastActive = &lastActive
-	return WriteRegistration(path, reg)
+// registration writes. Runs under the per-agent lock for the same lost-update
+// reasons as UpdateLastSeen.
+func UpdateLastActive(cfg *Config, agentID string, t time.Time) error {
+	return withAgentLock(cfg, agentID, func() error {
+		path := cfg.AgentRegistrationPath(agentID)
+		reg, err := ReadRegistration(path)
+		if err != nil {
+			return err
+		}
+		lastActive := t.UTC()
+		reg.LastActive = &lastActive
+		return WriteRegistration(path, reg)
+	})
 }
 
 // Validate checks the fields required by the v1 registration format.
@@ -489,10 +499,17 @@ func atomicWriteFile(path string, data []byte) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return err
 	}
+	// The temp file no longer exists under tmpName (rename consumed it) and the
+	// new content is already live at path. Clear cleanup BEFORE syncDir so a
+	// syncDir failure cannot trigger the deferred os.Remove(tmpName) — which
+	// would now resolve to the published target's old inode in some fs races —
+	// and so the published content is never treated as unwritten. The syncDir
+	// error is still returned: the write succeeded but the dir-entry durability
+	// barrier did not, which the caller may want to know about.
+	cleanup = false
 	if err := syncDir(dir); err != nil {
 		return err
 	}
-	cleanup = false
 	return nil
 }
 
