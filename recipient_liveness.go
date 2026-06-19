@@ -28,6 +28,12 @@ func evaluateRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) 
 		}
 	}
 
+	// WI-4 Fix 5: when a session exists but is dead, keep its reason so the
+	// eventual stale-liveness message explains WHY the session did not count
+	// (e.g. "process dead/recycled and heartbeat stale ..."), instead of
+	// silently discarding it. deadSessionDetail is prefixed onto whatever
+	// downstream stale detail we end up reporting.
+	deadSessionDetail := ""
 	session, sessionErr := loop.LoadActiveSession(cfg, agentID)
 	if sessionErr == nil {
 		alive, reason := activeSessionAliveAtWithReason(session, now)
@@ -42,9 +48,16 @@ func evaluateRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) 
 				Message: fmt.Sprintf("active wrapper session: pid=%d host=%s age=%s", session.PID, session.Host, age.Round(time.Second)),
 			}
 		}
-		// If session exists but is dead, we'll fall through but keep the reason
-		// in case we need to surface it in stalePollerLiveness.
-		_ = reason
+		deadSessionDetail = fmt.Sprintf("active session present but not alive (%s)", reason)
+	}
+
+	// withSession threads the dead-session reason into a stale detail so the
+	// operator sees both the session failure and the poller/wake failure.
+	withSession := func(detail string) string {
+		if deadSessionDetail == "" {
+			return detail
+		}
+		return deadSessionDetail + "; " + detail
 	}
 
 	hb, err := loop.LoadPollerHeartbeat(cfg, agentID)
@@ -52,7 +65,7 @@ func evaluateRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) 
 		fresh, age, threshold := loop.PollerFreshness(hb, now)
 		if fresh {
 			if !hb.LaunchEnabled {
-				return stalePollerLiveness(agentID, reg.Vendor, fmt.Sprintf("heartbeat-only poller is fresh but cannot consume mail: method=%s host=%s age=%s threshold=%s", hb.Method, hb.Host, age.Round(time.Second), threshold), reg.WakeMethod)
+				return stalePollerLiveness(agentID, reg.Vendor, withSession(fmt.Sprintf("heartbeat-only poller is fresh but cannot consume mail: method=%s host=%s age=%s threshold=%s", hb.Method, hb.Host, age.Round(time.Second), threshold)), reg.WakeMethod)
 			}
 			return recipientLiveness{
 				OK:      true,
@@ -60,19 +73,25 @@ func evaluateRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) 
 				Message: fmt.Sprintf("fresh poller heartbeat: method=%s host=%s age=%s threshold=%s", hb.Method, hb.Host, age.Round(time.Second), threshold),
 			}
 		}
-		return stalePollerLiveness(agentID, reg.Vendor, fmt.Sprintf("poller heartbeat stale: age=%s threshold=%s", age.Round(time.Second), threshold), reg.WakeMethod)
+		// Surface a recorded poll-computation failure (WI-4 Fix 2) so a
+		// "beating but failing" poller is distinguishable from a silent one.
+		staleDetail := fmt.Sprintf("poller heartbeat stale: age=%s threshold=%s", age.Round(time.Second), threshold)
+		if e := strings.TrimSpace(hb.LastError); e != "" {
+			staleDetail += fmt.Sprintf(" (last poll error: %s)", e)
+		}
+		return stalePollerLiveness(agentID, reg.Vendor, withSession(staleDetail), reg.WakeMethod)
 	}
 	if !os.IsNotExist(err) {
-		return stalePollerLiveness(agentID, reg.Vendor, fmt.Sprintf("poller heartbeat unreadable: %v", err), reg.WakeMethod)
+		return stalePollerLiveness(agentID, reg.Vendor, withSession(fmt.Sprintf("poller heartbeat unreadable: %v", err)), reg.WakeMethod)
 	}
 
 	// Final fallback: if we have an unreachable wake method, report that
 	// specifically.
 	if reg.WakeMethod != "" && reg.WakeTarget != "" {
-		return stalePollerLiveness(agentID, reg.Vendor, fmt.Sprintf("unreachable wake target: %s/%s", reg.WakeMethod, reg.WakeTarget), reg.WakeMethod)
+		return stalePollerLiveness(agentID, reg.Vendor, withSession(fmt.Sprintf("unreachable wake target: %s/%s", reg.WakeMethod, reg.WakeTarget)), reg.WakeMethod)
 	}
 
-	return stalePollerLiveness(agentID, reg.Vendor, "missing poller heartbeat", reg.WakeMethod)
+	return stalePollerLiveness(agentID, reg.Vendor, withSession("missing poller heartbeat"), reg.WakeMethod)
 }
 
 func registrationHasReachableWake(cfg *loop.Config, reg *loop.Registration) bool {

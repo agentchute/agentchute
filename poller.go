@@ -180,6 +180,18 @@ func (r *pollerRuntime) reap() {
 }
 
 func pollerTick(cfg *loop.Config, p serviceParams, rt *pollerRuntime, startedAt time.Time) error {
+	// WI-4 Fix 2: refresh the heartbeat only AFTER a successful poll
+	// computation. Previously the heartbeat was stamped first, so a poller
+	// stuck/erroring inside computeSelfPollResult kept a "fresh" heartbeat
+	// while consuming no mail — liveness could not tell "beating but failing"
+	// from "healthy". On a compute error we record last_error WITHOUT
+	// refreshing last_seen, letting the heartbeat age out while preserving the
+	// diagnostic.
+	result, err := computeSelfPollResult(cfg, p.AgentID)
+	if err != nil {
+		recordPollerHeartbeatError(cfg, p.AgentID, err)
+		return err
+	}
 	if err := loop.SavePollerHeartbeat(cfg, loop.PollerHeartbeat{
 		AgentID:         p.AgentID,
 		Method:          "poller-run",
@@ -191,10 +203,6 @@ func pollerTick(cfg *loop.Config, p serviceParams, rt *pollerRuntime, startedAt 
 		StartedAt:       startedAt,
 	}); err != nil {
 		return fmt.Errorf("write poller heartbeat: %w", err)
-	}
-	result, err := computeSelfPollResult(cfg, p.AgentID)
-	if err != nil {
-		return err
 	}
 	if !result.ShouldWake {
 		if rt != nil {
@@ -229,6 +237,23 @@ func pollerTick(cfg *loop.Config, p serviceParams, rt *pollerRuntime, startedAt 
 	rt.done = make(chan error, 1)
 	go func() { rt.done <- cmd.Wait() }()
 	return nil
+}
+
+// recordPollerHeartbeatError stamps the most recent poll-computation failure
+// onto the existing heartbeat WITHOUT advancing last_seen, so liveness sees a
+// "beating but failing" poller age out while keeping the diagnostic. If no
+// prior heartbeat exists there is nothing to age — a never-started poller has
+// no liveness claim to preserve, so we skip. Best-effort: a write failure here
+// is swallowed (the original poll error is what the caller propagates).
+func recordPollerHeartbeatError(cfg *loop.Config, agentID string, pollErr error) {
+	hb, err := loop.LoadPollerHeartbeat(cfg, agentID)
+	if err != nil {
+		return
+	}
+	hb.LastError = pollErr.Error()
+	// Preserve LastSeen as-is so PollerFreshness keeps aging; SavePollerHeartbeat
+	// would only re-stamp it if zero, which it is not here.
+	_ = loop.SavePollerHeartbeat(cfg, *hb)
 }
 
 func pollerWrapperEnv(env []string, cfg *loop.Config, agentID string) []string {
@@ -301,10 +326,18 @@ func cmdPollerEnsure(args []string) error {
 		}
 		return nil
 	}
-	if err := startDetachedPoller(cfg, common); err != nil {
+	pollerPID, err := startDetachedPoller(cfg, common)
+	if err != nil {
 		return err
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// WI-4 Fix 5: the detached poller's first tick runs computeSelfPollResult
+	// (an inbox scan) BEFORE writing the heartbeat (Fix 2 reordering), so on a
+	// slow-disk host the first heartbeat can lag the spawn by more than the
+	// old 2s budget — yielding a spurious "no fresh heartbeat appeared". Wait
+	// longer, and if the deadline lapses but the spawned process is still
+	// alive, treat it as "starting" rather than a hard failure (a dead PID is
+	// the genuine error).
+	deadline := time.Now().Add(pollerFirstHeartbeatDeadline)
 	for time.Now().Before(deadline) {
 		if fresh, summary := pollerFreshSummary(cfg, common.AgentID, time.Now().UTC()); fresh {
 			if !common.Quiet {
@@ -314,22 +347,36 @@ func cmdPollerEnsure(args []string) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("poller started but no fresh heartbeat appeared at %s", cfg.PollerHeartbeatPath(common.AgentID))
+	if pollerPID > 0 && processAlive(pollerPID) {
+		if !common.Quiet {
+			fmt.Printf("poller ensure: %s poller started (pid=%d) but first heartbeat is still pending (slow disk?); it should appear shortly at %s\n", common.AgentID, pollerPID, cfg.PollerHeartbeatPath(common.AgentID))
+		}
+		return nil
+	}
+	return fmt.Errorf("poller started but no fresh heartbeat appeared at %s (process pid=%d not alive)", cfg.PollerHeartbeatPath(common.AgentID), pollerPID)
 }
 
-func startDetachedPoller(cfg *loop.Config, p pollerCommon) error {
+// pollerFirstHeartbeatDeadline bounds how long `poller ensure` waits for a
+// freshly-spawned detached poller's first heartbeat. With Fix 2 the first tick
+// scans the inbox before writing the heartbeat, so this is generous enough to
+// absorb a slow-disk first scan without spuriously failing.
+const pollerFirstHeartbeatDeadline = 5 * time.Second
+
+// startDetachedPoller spawns the detached poller and returns its PID so the
+// caller can fall back to a liveness check if the first heartbeat is slow.
+func startDetachedPoller(cfg *loop.Config, p pollerCommon) (int, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	stateDir := cfg.AgentStateDir(p.AgentID)
 	if err := loop.EnsurePrivateDir(stateDir); err != nil {
-		return err
+		return 0, err
 	}
 	logPath := filepath.Join(stateDir, "poller.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer logFile.Close()
 
@@ -358,9 +405,13 @@ func startDetachedPoller(cfg *loop.Config, p pollerCommon) error {
 	cmd.Stderr = logFile
 	cmd.Env = os.Environ()
 	if err := cmd.Start(); err != nil {
-		return err
+		return 0, err
 	}
-	return cmd.Process.Release()
+	pid := cmd.Process.Pid
+	if err := cmd.Process.Release(); err != nil {
+		return pid, err
+	}
+	return pid, nil
 }
 
 func cmdPollerStatus(args []string) error {

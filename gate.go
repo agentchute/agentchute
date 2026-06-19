@@ -280,8 +280,26 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 	if s.MissingReg {
 		reasons = append(reasons, "not registered (run `agentchute boot --as <id> --vendor <vendor>` first; §5.7)")
 	}
+	// WI-4 Fix 1: liveness blocks only when the agent OWES work. An agent
+	// owes work if it has unread direct mail, malformed inbox files (a §11
+	// quarantine obligation), or pending-reply ledger entries — in those
+	// cases it must stay reachable, so dead liveness is a hard block. When
+	// nothing is owed (clean inbox + no obligations + registered), a dead
+	// wake target/poller must NOT block finish/continue: it downgrades to a
+	// non-blocking warning (still surfaced in message/JSON). This closes the
+	// documented dead-poller finish-gate deadlock.
+	//
+	// commit/release/consensus keep the original always-block semantics so a
+	// publishing agent still proves reachability before it acts on the bus.
+	owedWork := s.UnreadCount > 0 || s.MalformedCount > 0 || s.RepliesPending > 0
 	if !s.MissingReg && !s.LivenessOK {
-		reasons = append(reasons, fmt.Sprintf("recipient liveness not proven (%s)", s.LivenessMessage))
+		livenessOwedOptional := (phase == gatePhaseFinish || phase == gatePhaseContinue) && !owedWork
+		msg := fmt.Sprintf("recipient liveness not proven (%s)", s.LivenessMessage)
+		if livenessOwedOptional {
+			warnings = append(warnings, msg)
+		} else {
+			reasons = append(reasons, msg)
+		}
 	}
 
 	// commit + release additionally block on age-stale registration unless

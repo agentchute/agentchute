@@ -188,6 +188,68 @@ func TestPollerLaunchedWrapperReceivesAgentchuteEnv(t *testing.T) {
 	}
 }
 
+// WI-4 Fix 2: the heartbeat must be refreshed only AFTER a successful poll
+// computation. If computeSelfPollResult errors, the heartbeat must NOT be
+// re-stamped (its age keeps growing) so liveness can tell "beating but
+// failing" apart from "healthy" — and the error is recorded as last_error.
+func TestPollerTick_NoHeartbeatRefreshOnPollError(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	agentID := "codex-agentchute-2"
+
+	withCwd(t, root, func() {
+		if err := cmdRegister([]string{"--as", agentID, "--vendor", "openai"}); err != nil {
+			t.Fatal(err)
+		}
+		// Seed a known-old heartbeat so we can detect whether a tick re-stamps it.
+		oldSeen := time.Now().UTC().Add(-7 * time.Minute)
+		if err := loop.SavePollerHeartbeat(cfg, loop.PollerHeartbeat{
+			AgentID:         agentID,
+			Method:          "poller-run",
+			Host:            localHostname(),
+			PID:             os.Getpid(),
+			IntervalSeconds: loop.DefaultPollerIntervalSeconds,
+			LastSeen:        oldSeen,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		// Force computeSelfPollResult to error: the inbox dir exists (so
+		// needsBoot is false) but is unreadable, so the listing read fails
+		// with a non-ErrInboxMissing error.
+		inboxDir := cfg.AgentInboxDir(agentID)
+		if err := os.Chmod(inboxDir, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(inboxDir, 0o700) })
+
+		params := serviceParams{
+			AgentID:  agentID,
+			Vendor:   "openai",
+			Interval: loop.DefaultPollerIntervalSeconds,
+			Repo:     root,
+		}
+		err := pollerTick(cfg, params, nil, time.Now().UTC())
+		if err == nil {
+			t.Fatal("pollerTick with unreadable inbox returned nil; want a poll-computation error")
+		}
+	})
+
+	hb, loadErr := loop.LoadPollerHeartbeat(cfg, agentID)
+	if loadErr != nil {
+		t.Fatalf("load heartbeat: %v", loadErr)
+	}
+	// The heartbeat must NOT have been refreshed to ~now: its age stays old.
+	age := time.Now().UTC().Sub(hb.LastSeen.UTC())
+	if age < 6*time.Minute {
+		t.Fatalf("heartbeat was refreshed on poll error (age=%s); want it to keep aging (>= ~6m)", age.Round(time.Second))
+	}
+	// The failure must be recorded so liveness can distinguish "beating but
+	// failing" from "healthy".
+	if strings.TrimSpace(hb.LastError) == "" {
+		t.Errorf("LastError not recorded on poll-computation failure: %+v", hb)
+	}
+}
+
 func TestPollerDefaultDoesNotLaunchWrapperWhenWorkPending(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	agentID := "codex-agentchute-2"

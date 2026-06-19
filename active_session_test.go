@@ -71,6 +71,43 @@ func TestActiveSessionAliveAllowsRecentHeartbeatOnlyTemporarily(t *testing.T) {
 	}
 }
 
+// WI-4 Fix 3: a future-dated (clock-skewed) active-session heartbeat must not
+// be treated as dead. The freshness check clamps a small negative age to 0,
+// matching PollerFreshness/watchdog/recipient_liveness. (No live PID here, so
+// the heartbeat-freshness branch is what proves liveness.)
+func TestActiveSession_FutureTimestampNotDead(t *testing.T) {
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	session := &loop.ActiveSession{
+		AgentID:  "codex-agentchute",
+		Host:     localHostname(),
+		// last_seen 30s in the future relative to `now`.
+		LastSeen: now.Add(30 * time.Second),
+	}
+	if !activeSessionAliveAt(session, now) {
+		t.Fatal("future-dated active-session heartbeat treated as dead; want alive under clock-skew clamp")
+	}
+}
+
+// WI-4 Fix 4: PID-reuse hardening. A live PID alone must NOT prove liveness —
+// the recorded session timestamp must also be reasonably fresh. Otherwise a
+// dead wrapper whose PID got recycled by an unrelated long-lived process would
+// pass liveness on PID-existence alone. Here the PID is alive (this test
+// process) but the session heartbeat is stale, so it must read NOT alive.
+func TestActiveSession_StalePIDReuseNotAlive(t *testing.T) {
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	session := &loop.ActiveSession{
+		AgentID: "codex-agentchute",
+		Host:    localHostname(),
+		// A real, live PID (this test process), but a stale heartbeat: the
+		// PID may have been recycled by an unrelated process.
+		PID:      os.Getpid(),
+		LastSeen: now.Add(-(activeSessionMaxAge + time.Minute)),
+	}
+	if activeSessionAliveAt(session, now) {
+		t.Fatal("stale session with a recycled-but-live PID proved liveness; want NOT alive (require fresh timestamp alongside processAlive)")
+	}
+}
+
 func TestSelfCheckViaShellPrefersRunnerPID(t *testing.T) {
 	root := setupBootFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
