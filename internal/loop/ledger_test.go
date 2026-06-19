@@ -885,6 +885,58 @@ func TestPendingByMessageIDFrom(t *testing.T) {
 	}
 }
 
+func TestEntriesByMessageIDFrom(t *testing.T) {
+	ledger := &PendingLedger{Pending: []PendingReplyEntry{
+		{MessageID: "m", From: "peer-a", To: "claude-code", Status: PendingReplyStatusPending},
+		{MessageID: "m", From: "peer-a", To: "claude-code", Status: PendingReplyStatusReplied},
+		{MessageID: "m", From: "peer-b", To: "claude-code", Status: PendingReplyStatusPending},
+		{MessageID: "other", From: "peer-a", To: "claude-code", Status: PendingReplyStatusPending},
+	}}
+	// ALL entries (any status) matching message_id AND from.
+	got := ledger.EntriesByMessageIDFrom("m", "peer-a")
+	if len(got) != 2 {
+		t.Fatalf("EntriesByMessageIDFrom(m, peer-a) = %d, want 2 (pending + replied peer-a rows)", len(got))
+	}
+	for _, e := range got {
+		if e.From != "peer-a" || e.MessageID != "m" {
+			t.Errorf("got %+v, want a peer-a/m row", e)
+		}
+	}
+	// A sender with no entry at all returns empty (distinguishes
+	// "exists-but-terminal" from "no-such-sender-entry" for send).
+	if n := len(ledger.EntriesByMessageIDFrom("m", "peer-c")); n != 0 {
+		t.Errorf("EntriesByMessageIDFrom(m, peer-c) = %d, want 0", n)
+	}
+}
+
+func TestFirstPendingByMessageID(t *testing.T) {
+	ledger := &PendingLedger{Pending: []PendingReplyEntry{
+		// First bare row is TERMINAL — must be skipped.
+		{MessageID: "m", From: "peer-a", To: "claude-code", Status: PendingReplyStatusReplied},
+		// Later row is PENDING — must be the one returned.
+		{MessageID: "m", From: "peer-b", To: "claude-code", Status: PendingReplyStatusPending},
+	}}
+	got, ok := ledger.FirstPendingByMessageID("m")
+	if !ok {
+		t.Fatal("FirstPendingByMessageID(m) ok=false, want true (a later pending row exists)")
+	}
+	if got.From != "peer-b" || got.Status != PendingReplyStatusPending {
+		t.Errorf("got %+v, want the pending peer-b row (terminal first row must be skipped)", got)
+	}
+	// All-terminal ⇒ not ok.
+	allTerminal := &PendingLedger{Pending: []PendingReplyEntry{
+		{MessageID: "m", From: "peer-a", To: "claude-code", Status: PendingReplyStatusReplied},
+		{MessageID: "m", From: "peer-b", To: "claude-code", Status: PendingReplyStatusDeferred},
+	}}
+	if _, ok := allTerminal.FirstPendingByMessageID("m"); ok {
+		t.Error("FirstPendingByMessageID(m) ok=true on all-terminal rows, want false")
+	}
+	// No such message_id ⇒ not ok.
+	if _, ok := ledger.FirstPendingByMessageID("nope"); ok {
+		t.Error("FirstPendingByMessageID(nope) ok=true for missing id, want false")
+	}
+}
+
 func TestFindByMessageIDMiss(t *testing.T) {
 	ledger := &PendingLedger{Pending: []PendingReplyEntry{
 		{MessageID: "exists", Status: PendingReplyStatusPending},

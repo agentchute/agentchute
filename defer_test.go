@@ -400,6 +400,155 @@ func TestDefer_DoesNotClearOtherSendersObligation(t *testing.T) {
 	}
 }
 
+// WI-2 follow-up rev2 (codex, 4-way review): the terminal-first DIFFERENT-sender
+// case codex flagged as missing. The FIRST bare row is TERMINAL (senderA); a
+// LATER row is PENDING from a DIFFERENT sender (senderB), same message_id. Before
+// rev2, defer scoped fromSender to FindByMessageID's first bare row (terminal
+// senderA) → errored "already in status replied", and a retry hit the same first
+// terminal row → senderB permanently unreachable. After rev2, defer picks a
+// PENDING sender (senderB) → senderB is deferred (reachable), not an error.
+func TestDefer_TerminalFirstRow_ReachesLaterPendingDifferentSender(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMUX_PANE", "%2")
+		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMUX_PANE", "%3")
+		if err := cmdRegister([]string{"--as", "gemini-cli", "--vendor", "google"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sharedMsgID := "2026-05-19T17:53:59.561894Z"
+	now := time.Now().UTC()
+	// senderA == codex holds the FIRST row (will be pre-discharged to terminal).
+	fromCodex := loop.PendingReplyEntry{
+		MessageID: sharedMsgID, From: "codex", To: "claude-code", Task: "review",
+		OriginalFilename: "codex_from-codex_msg-aaaa.md", ArchivePath: "archive/codex.md",
+	}
+	// senderB == gemini-cli holds a LATER PENDING row, DIFFERENT sender.
+	fromGemini := loop.PendingReplyEntry{
+		MessageID: sharedMsgID, From: "gemini-cli", To: "claude-code", Task: "review",
+		OriginalFilename: "gemini_from-gemini-cli_msg-bbbb.md", ArchivePath: "archive/gemini.md",
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", fromCodex, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", fromGemini, now); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-discharge ONLY the first (codex) entry to terminal "replied".
+	preLedger, _ := loop.LoadPendingLedger(cfg, "claude-code")
+	for i := range preLedger.Pending {
+		if preLedger.Pending[i].From == "codex" {
+			preLedger.Pending[i].Status = loop.PendingReplyStatusReplied
+			rid := "earlier-reply"
+			preLedger.Pending[i].ReplyMessageID = &rid
+			sentAt := now.UTC().Format("2006-01-02T15:04:05Z")
+			preLedger.Pending[i].ReplySentAt = &sentAt
+		}
+	}
+	if err := loop.SavePendingLedger(cfg, "claude-code", preLedger); err != nil {
+		t.Fatal(err)
+	}
+
+	withCwd(t, root, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdDefer([]string{"--as", "claude-code", "--message", sharedMsgID, "--reason", "later"})
+		}); err != nil {
+			t.Fatalf("cmdDefer must reach the later pending DIFFERENT-sender row, got err = %v", err)
+		}
+	})
+
+	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ledger.Pending {
+		switch e.From {
+		case "codex":
+			if e.Status != loop.PendingReplyStatusReplied {
+				t.Errorf("codex obligation status = %q, want replied (untouched terminal first row)", e.Status)
+			}
+		case "gemini-cli":
+			if e.Status != loop.PendingReplyStatusDeferred {
+				t.Errorf("gemini-cli obligation status = %q, want deferred (the later pending different-sender row must be reached)", e.Status)
+			}
+		}
+	}
+	if pending := ledger.PendingEntries(); len(pending) != 0 {
+		t.Errorf("PendingEntries = %d, want 0 (later pending row was stranded): %+v", len(pending), pending)
+	}
+}
+
+// WI-2 follow-up rev2: every row for the message_id is terminal ⇒ defer errors
+// cleanly (no pending obligation to defer), never panics or scopes to a
+// terminal sender.
+func TestDefer_NoPendingForMessageID_Errors(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMUX_PANE", "%2")
+		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sharedMsgID := "2026-05-19T17:53:59.561894Z"
+	now := time.Now().UTC()
+	first := loop.PendingReplyEntry{
+		MessageID: sharedMsgID, From: "codex", To: "claude-code", Task: "review",
+		OriginalFilename: "a_from-codex_msg-aaaa.md", ArchivePath: "archive/a.md",
+	}
+	second := loop.PendingReplyEntry{
+		MessageID: sharedMsgID, From: "codex", To: "claude-code", Task: "review",
+		OriginalFilename: "b_from-codex_msg-bbbb.md", ArchivePath: "archive/b.md",
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", first, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", second, now); err != nil {
+		t.Fatal(err)
+	}
+	// Hand-mark BOTH rows terminal so nothing is pending.
+	preLedger, _ := loop.LoadPendingLedger(cfg, "claude-code")
+	for i := range preLedger.Pending {
+		preLedger.Pending[i].Status = loop.PendingReplyStatusReplied
+		rid := "prior-reply"
+		preLedger.Pending[i].ReplyMessageID = &rid
+		sentAt := now.UTC().Format("2006-01-02T15:04:05Z")
+		preLedger.Pending[i].ReplySentAt = &sentAt
+	}
+	if err := loop.SavePendingLedger(cfg, "claude-code", preLedger); err != nil {
+		t.Fatal(err)
+	}
+
+	withCwd(t, root, func() {
+		_, err := captureStdout(t, func() error {
+			return cmdDefer([]string{"--as", "claude-code", "--message", sharedMsgID, "--reason", "later"})
+		})
+		if err == nil {
+			t.Fatal("expected error deferring a message_id with no pending obligation")
+		}
+	})
+}
+
 func TestDeferRequiresReason(t *testing.T) {
 	msgID, _ := setupDeferFixture(t)
 	root := os.Getenv("TEST_DEFER_ROOT")

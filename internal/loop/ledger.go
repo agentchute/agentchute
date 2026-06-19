@@ -453,6 +453,37 @@ func (l *PendingLedger) PendingByMessageIDFrom(messageID, from string) []Pending
 	return out
 }
 
+// EntriesByMessageIDFrom returns ALL entries (any status) matching BOTH
+// message_id AND from. send uses it to distinguish "an obligation owed to this
+// recipient exists but is already terminal" (non-empty result, none pending)
+// from "no obligation under this message_id is owed to this recipient at all"
+// (empty result) — WITHOUT ever keying any decision on FindByMessageID's first
+// bare row (WI-2 follow-up rev2). Returned slice is a copy.
+func (l *PendingLedger) EntriesByMessageIDFrom(messageID, from string) []PendingReplyEntry {
+	var out []PendingReplyEntry
+	for _, e := range l.Pending {
+		if e.MessageID == messageID && e.From == from {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// FirstPendingByMessageID returns the FIRST entry with matching message_id whose
+// status is pending. defer uses it to pick a sender that actually has a PENDING
+// obligation — never the first bare row, which may be terminal and would scope
+// the deferral to a sender with nothing left to defer (WI-2 follow-up rev2).
+// Returns ok=false when no pending entry exists for the message_id (none at all,
+// or every match is already terminal).
+func (l *PendingLedger) FirstPendingByMessageID(messageID string) (PendingReplyEntry, bool) {
+	for _, e := range l.Pending {
+		if e.MessageID == messageID && e.Status == PendingReplyStatusPending {
+			return e, true
+		}
+	}
+	return PendingReplyEntry{}, false
+}
+
 // formatLedgerTimestamp returns RFC3339 UTC at second precision — matches
 // the spec example's `recorded_at: "2026-05-19T17:54:30Z"` shape and the
 // archive filename timestamp granularity.

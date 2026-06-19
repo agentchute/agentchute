@@ -194,43 +194,54 @@ func cmdSend(args []string) error {
 		ledger, lerr := loop.LoadPendingLedger(cfg, fromID)
 		if lerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to read pending-reply ledger: %v\n", lerr)
-		} else if entry, ok := ledger.FindByMessageID(replyTo); ok {
+		} else {
 			// The obligation we may discharge is the one owed to the recipient
-			// we are actually replying TO (toID). Scope by sender: message_id is
+			// we are actually replying TO (toID — KNOWN, not inferred from the
+			// ledger). Scope every decision by toID: message_id is
 			// sender-controlled and reusable, so a reply to one peer must NEVER
 			// clear an obligation owed to a DIFFERENT peer (WI-2 follow-up).
-			// FindByMessageID gives us a representative row for the warnings; the
-			// transition itself runs over the full sender-scoped set so a
-			// terminal duplicate can't strand a still-pending one.
+			//
+			// CRITICAL (rev2): NOTHING here keys on FindByMessageID's first bare
+			// row. EntriesByMessageIDFrom(replyTo, toID) returns exactly the rows
+			// owed to us BY toID (any status), so inverse ordering — toID's row
+			// not being the first bare match — can no longer short-circuit the
+			// discharge. FindByMessageID is consulted ONLY to distinguish
+			// "threading via another peer's id" from "no such message_id at all"
+			// when toID owns nothing under this id.
+			scoped := ledger.EntriesByMessageIDFrom(replyTo, toID)
 			switch {
-			case entry.From != toID:
-				// The message_id is known, but it names an obligation owed to
-				// someone other than toID. Threading via a third party's msg-id
-				// while delivering elsewhere must NOT clear that obligation.
-				fmt.Fprintf(os.Stderr, "warning: --reply-to %s names a message from %q, but this send is to %q; obligation left pending\n", replyTo, entry.From, toID)
-			case entry.To != fromID:
-				// Mirror cmdDefer's recipient-owned-ledger invariant. The
-				// ledger is OURS; if a corrupted state file has entry.To
-				// pointing at someone else, refuse to act on it (codex
-				// review on aa5f0d9 / check.go integration).
-				fmt.Fprintf(os.Stderr, "warning: --reply-to %s has ledger entry to=%q, but --from is %q; refusing to clear a mismatched obligation\n", replyTo, entry.To, fromID)
+			case len(scoped) == 0:
+				if other, exists := ledger.FindByMessageID(replyTo); exists {
+					// A message_id entry exists but NOT from toID → threading via
+					// another peer's id while delivering to toID. Do NOT clear the
+					// other peer's obligation.
+					fmt.Fprintf(os.Stderr, "warning: --reply-to %s names a message from %q, but this send is to %q; obligation left pending\n", replyTo, other.From, toID)
+				}
+				// else: no such message_id at all → silent OK. --reply-to is a
+				// freeform threading hint; the agent may be threading to a
+				// message that never carried reply_required: true.
+			case mismatchedTo(scoped, fromID):
+				// Mirror cmdDefer's recipient-owned-ledger invariant. The ledger
+				// is OURS; if a corrupted state file has any scoped entry.To
+				// pointing at someone other than fromID, refuse to act on it
+				// (codex review on aa5f0d9 / check.go integration).
+				fmt.Fprintf(os.Stderr, "warning: --reply-to %s has a ledger entry whose to does not match --from %q; refusing to clear a mismatched obligation\n", replyTo, fromID)
+			case len(ledger.PendingByMessageIDFrom(replyTo, toID)) == 0:
+				// toID owns ≥1 row under this message_id, but every one is
+				// already terminal. Idempotent no-op note rather than a
+				// re-transition.
+				ledgerTransition = fmt.Sprintf("note: pending-reply ledger entry %s was already in a terminal status; not re-transitioned", replyTo)
 			default:
-				// entry.From == toID and entry.To == fromID. Discharge every
-				// PENDING obligation scoped to (replyTo, toID). If none is
-				// pending (all matching rows already terminal), it is an
-				// idempotent no-op note rather than a re-transition.
-				if len(ledger.PendingByMessageIDFrom(replyTo, toID)) == 0 {
-					ledgerTransition = fmt.Sprintf("note: pending-reply ledger entry %s was already in status %q; not re-transitioned", replyTo, entry.Status)
-				} else if merr := loop.MarkPendingReplied(cfg, fromID, replyTo, toID, messageID, now); merr != nil {
+				// toID owns ≥1 PENDING row. Discharge every pending obligation
+				// scoped to (replyTo, toID); a terminal duplicate cannot strand
+				// a still-pending one (MarkPendingReplied skips terminals).
+				if merr := loop.MarkPendingReplied(cfg, fromID, replyTo, toID, messageID, now); merr != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to update pending-reply ledger for %s: %v\n", replyTo, merr)
 				} else {
 					ledgerTransition = fmt.Sprintf("cleared pending-reply ledger entry %s", replyTo)
 				}
 			}
 		}
-		// No matching entry: silent OK. --reply-to is a freeform threading
-		// hint; the agent may be threading to a message that never carried
-		// reply_required: true.
 	}
 
 	result := sendResult{
@@ -357,6 +368,20 @@ func countFrom(entries []loop.PendingReplyEntry, from string) int {
 		}
 	}
 	return n
+}
+
+// mismatchedTo reports whether ANY scoped ledger entry has a `to` that is not
+// fromID. The ledger is recipient-owned, so every legitimate entry's To must
+// name us (fromID); a single mismatch means a corrupted state file and the
+// whole sender-scoped discharge must be refused (rev2 recipient-owned invariant,
+// keyed on the scoped set rather than the first bare row).
+func mismatchedTo(entries []loop.PendingReplyEntry, fromID string) bool {
+	for _, e := range entries {
+		if e.To != fromID {
+			return true
+		}
+	}
+	return false
 }
 
 // applyAskHeading prepends a `## ASK` heading if the body doesn't already

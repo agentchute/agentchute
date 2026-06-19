@@ -392,6 +392,128 @@ func TestSend_ReplyToDoesNotClearOtherSendersObligation(t *testing.T) {
 	}
 }
 
+// WI-2 follow-up rev2 (codex, 4-way review): the INVERSE-ordering case codex
+// flagged as missing. The ledger holds an entry from senderA FIRST and a
+// PENDING entry from senderB LATER, sharing a message_id. We reply --to senderB.
+// Before rev2, the discharge decision keyed on FindByMessageID's first BARE row
+// (senderA): `entry.From != toID` fired, warned, and left senderB's obligation
+// pending. After rev2, the decision scopes by the KNOWN recipient (toID=senderB),
+// so senderB's obligation is discharged and senderA's is left untouched.
+func TestSend_ReplyToInverseOrder_DischargesIntendedSenderWhenNotFirstRow(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%3")
+		if err := cmdRegister([]string{"--as", "gemini-cli", "--vendor", "google"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	sharedMsgID := "2026-05-19T17:53:59.561894Z"
+	now := time.Now().UTC()
+
+	// senderA == gemini-cli holds the FIRST row.
+	fromGemini := loop.PendingReplyEntry{
+		MessageID:        sharedMsgID,
+		From:             "gemini-cli",
+		To:               "claude-code",
+		Task:             "review",
+		OriginalFilename: "2026-05-19T17-53-59-561894Z_from-gemini-cli_msg-aaaa.md",
+		ArchivePath:      "archive/gemini.md",
+	}
+	// senderB == codex (the agent we reply to) holds a LATER pending row.
+	fromCodex := loop.PendingReplyEntry{
+		MessageID:        sharedMsgID,
+		From:             "codex",
+		To:               "claude-code",
+		Task:             "review",
+		OriginalFilename: "2026-05-19T17-53-59-561894Z_from-codex_msg-bbbb.md",
+		ArchivePath:      "archive/codex.md",
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", fromGemini, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", fromCodex, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reply to codex (the LATER row) with the shared message_id.
+	withCwd(t, root, func() {
+		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
+			"--task", "codex-reply", "--reply-to", sharedMsgID,
+			"--body", "to codex", "--no-wake"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ledger.Pending {
+		switch e.From {
+		case "codex":
+			if e.Status != loop.PendingReplyStatusReplied {
+				t.Errorf("codex obligation status = %q, want replied (the intended sender, even though it is the LATER/non-first row, must be discharged)", e.Status)
+			}
+		case "gemini-cli":
+			if e.Status != loop.PendingReplyStatusPending {
+				t.Errorf("gemini-cli obligation status = %q, want pending (replying to codex must not touch gemini-cli's obligation)", e.Status)
+			}
+		}
+	}
+	pending := ledger.PendingEntries()
+	if len(pending) != 1 || pending[0].From != "gemini-cli" {
+		t.Fatalf("PendingEntries = %+v, want only gemini-cli still blocking", pending)
+	}
+}
+
+// WI-2 follow-up rev2: --reply-to names a message_id that exists ONLY from a
+// third party (senderA), but we send --to senderB. No obligation owed to senderB
+// under that message_id exists, so nothing is cleared and senderA's obligation
+// is left pending (a warning is emitted).
+func TestSend_ReplyToThirdPartyMessageIDLeavesPending(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%3")
+		if err := cmdRegister([]string{"--as", "gemini-cli", "--vendor", "google"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	msgID := "2026-05-19T17:53:59.561894Z"
+	now := time.Now().UTC()
+	// The message_id exists ONLY from gemini-cli (senderA).
+	fromGemini := loop.PendingReplyEntry{
+		MessageID:        msgID,
+		From:             "gemini-cli",
+		To:               "claude-code",
+		Task:             "review",
+		OriginalFilename: "2026-05-19T17-53-59-561894Z_from-gemini-cli_msg-aaaa.md",
+		ArchivePath:      "archive/gemini.md",
+	}
+	if err := loop.RecordPendingReply(cfg, "claude-code", fromGemini, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Send --to codex (senderB) with --reply-to <gemini's msg-id>.
+	withCwd(t, root, func() {
+		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
+			"--task", "unrelated", "--reply-to", msgID,
+			"--body", "threading via gemini's id", "--no-wake"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := ledger.FindByMessageID(msgID)
+	if got.Status != loop.PendingReplyStatusPending {
+		t.Errorf("gemini-cli obligation status = %q, want pending (sending to codex via gemini's msg-id must not clear gemini's obligation)", got.Status)
+	}
+}
+
 // --reply-to with no matching ledger entry is silent OK (the reference is
 // just a threading hint, not necessarily a reply_required discharge).
 func TestSendReplyToWithoutMatchingEntryIsSilent(t *testing.T) {
