@@ -49,42 +49,60 @@ func TestPollerStatusBlocksWhenHeartbeatMissing(t *testing.T) {
 }
 
 func TestPollerEnsureNoopsWhenRunnerWakeReachable(t *testing.T) {
-	root, cfg := setupSendFixture(t)
-	socketPath := cfg.RunnerSocketPath("codex")
-	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{
-		OK:        true,
-		RunnerPID: os.Getpid(),
-		Status:    "active",
-	})
-
-	now := time.Now().UTC()
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), &loop.Registration{
-		AgentID:     "codex",
-		Vendor:      "openai",
-		ControlRepo: root,
-		WorkingRepos: []string{
-			root,
-		},
-		Host:       localHostname(),
-		WakeMethod: loop.RunnerWakeMethod,
-		WakeTarget: loop.RunnerWakeTarget(socketPath),
-		LastSeen:   now,
-		Status:     loop.StatusActive,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
+	root, _ := setupSendFixture(t)
 	withCwd(t, root, func() {
-		_, err := captureStdout(t, func() error {
+		// Resolve the config exactly as the poller command does (cwd-relative,
+		// symlink-normalized). On macOS t.TempDir() returns /var/... while
+		// os.Getwd() returns /private/var/..., which yields a different
+		// runner-socket temp-path hash. The owned-check (RunnerWakeTargetOwnedBy)
+		// recomputes that path from LoopDir, so the registered wake_target MUST
+		// be built from the same normalized cfg the recipient resolves — exactly
+		// as production, where every party Discovers LoopDir from the shared
+		// control repo. Building it from the unnormalized fixture cfg made the
+		// owned-check (correctly) reject a target it could not match.
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: cwd})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		socketPath := cfg.RunnerSocketPath("codex")
+		startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{
+			OK:        true,
+			RunnerPID: os.Getpid(),
+			Status:    "active",
+		})
+
+		now := time.Now().UTC()
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), &loop.Registration{
+			AgentID:     "codex",
+			Vendor:      "openai",
+			ControlRepo: cfg.ControlRepo,
+			WorkingRepos: []string{
+				cfg.ControlRepo,
+			},
+			Host:       localHostname(),
+			WakeMethod: loop.RunnerWakeMethod,
+			WakeTarget: loop.RunnerWakeTarget(socketPath),
+			LastSeen:   now,
+			Status:     loop.StatusActive,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = captureStdout(t, func() error {
 			return cmdPoller([]string{"ensure", "--as", "codex", "--vendor", "openai", "--quiet"})
 		})
 		if err != nil {
 			t.Fatalf("poller ensure err = %v", err)
 		}
+		if _, err := loop.LoadPollerHeartbeat(cfg, "codex"); !os.IsNotExist(err) {
+			t.Fatalf("poller heartbeat err = %v, want missing heartbeat", err)
+		}
 	})
-	if _, err := loop.LoadPollerHeartbeat(cfg, "codex"); !os.IsNotExist(err) {
-		t.Fatalf("poller heartbeat err = %v, want missing heartbeat", err)
-	}
 }
 
 func TestPollerEnsureNoopsWhenActiveSessionReachable(t *testing.T) {

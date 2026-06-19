@@ -273,7 +273,7 @@ func cmdPollerEnsure(args []string) error {
 	if err != nil {
 		return err
 	}
-	if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(common.AgentID)); err == nil && registrationHasReachableWake(reg) {
+	if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(common.AgentID)); err == nil && registrationHasReachableWake(cfg, reg) {
 		if !common.Quiet {
 			fmt.Printf("poller ensure: %s has reachable wake target (%s); poller not required\n", common.AgentID, reg.WakeMethod)
 		}

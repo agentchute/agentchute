@@ -20,7 +20,7 @@ func evaluateRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) 
 	if err != nil {
 		return recipientLiveness{OK: false, Via: "skip", Message: "registration unreadable"}
 	}
-	if registrationHasReachableWake(reg) {
+	if registrationHasReachableWake(cfg, reg) {
 		return recipientLiveness{
 			OK:      true,
 			Via:     "wake",
@@ -75,7 +75,7 @@ func evaluateRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) 
 	return stalePollerLiveness(agentID, reg.Vendor, "missing poller heartbeat", reg.WakeMethod)
 }
 
-func registrationHasReachableWake(reg *loop.Registration) bool {
+func registrationHasReachableWake(cfg *loop.Config, reg *loop.Registration) bool {
 	if reg == nil {
 		return false
 	}
@@ -94,7 +94,11 @@ func registrationHasReachableWake(reg *loop.Registration) bool {
 	case "herdr":
 		return herdrAgentReachable(target)
 	case loop.RunnerWakeMethod:
-		return loop.RunnerSocketReachable(target, time.Second)
+		// Recipient-bound: never dial a runner socket the recipient does not
+		// own. This is typically the agent's OWN registration (gate liveness),
+		// where the owned-check passes for a legit socket and is protective if
+		// the reg was tampered.
+		return runnerReachableForRecipient(cfg, reg, time.Second)
 	default:
 		return false
 	}

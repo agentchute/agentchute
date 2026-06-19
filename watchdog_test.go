@@ -232,6 +232,56 @@ func TestWatchdogPoke_OwnedRunnerSocketAttemptsDial(t *testing.T) {
 	}
 }
 
+// TestWatchdogReachability_DoesNotDialUnownedSocket: the runner-supervision
+// reachability probe in the liveness sweep must NOT dial a peer's advertised
+// runner socket unless that path is one the recipient legitimately owns. A
+// hostile registration naming a live attacker-controlled socket would otherwise
+// be connected to during the sweep. We stand up a REAL listener at an unowned
+// path with an accept-counter and assert the sweep never touched it.
+//
+// This closes the gap in TestWatchdogPoke_RefusesUnownedRunnerSocket: that test
+// only proved the later poke logged "refused" (its evil path had no listener so
+// the reachability dial failed silently); it did NOT prove the reachability
+// probe was skipped. Here a live listener makes any dial observable.
+func TestWatchdogReachability_DoesNotDialUnownedSocket(t *testing.T) {
+	root, cfg := setupWatchdogFixture(t)
+	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
+
+	// A REAL listening "evil" socket at a path codex does NOT own.
+	evilPath := shortSocketPath(t, "evil.sock")
+	evil := listenCounting(t, evilPath)
+
+	writeRegistration(t, cfg.AgentRegistrationPath("watchdog"), "watchdog", "examplecorp", root, "", now.Add(-time.Minute), loop.StatusActive, nil)
+	peer := &loop.Registration{
+		AgentID:     "codex",
+		Vendor:      "openai",
+		ControlRepo: root,
+		WakeMethod:  loop.RunnerWakeMethod,
+		WakeTarget:  loop.RunnerWakeTarget(evilPath),
+		LastSeen:    now.Add(-10 * time.Minute),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), peer); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
+
+	if err := runWatchdogCycle(context.Background(), cfg, watchdogOptions{
+		AgentID:             "watchdog",
+		StaleThreshold:      5 * time.Minute,
+		MessageAgeThreshold: time.Minute,
+		Now:                 func() time.Time { return now },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Give any errant dial a moment to land before asserting zero.
+	time.Sleep(50 * time.Millisecond)
+	if c := evil.count(); c != 0 {
+		t.Fatalf("watchdog sweep dialed the unowned runner socket %d time(s); owned-check must short-circuit before dial", c)
+	}
+}
+
 func mustReadString(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
