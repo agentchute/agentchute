@@ -115,6 +115,30 @@ func TestWriteRegistrationExclusiveRefusesExisting(t *testing.T) {
 	}
 }
 
+func TestReadFileLimit_RejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	// A symlink in the registration/inbox path must be refused, not silently
+	// followed to its target — a peer could plant a symlink to /etc/passwd or
+	// to another agent's private state.
+	if _, err := ReadFileLimit(link, MaxRegistrationBytes); err == nil {
+		t.Fatal("ReadFileLimit followed a symlink, want refusal")
+	}
+
+	// A real regular file still reads fine.
+	if data, err := ReadFileLimit(target, MaxRegistrationBytes); err != nil || string(data) != "secret" {
+		t.Fatalf("ReadFileLimit(regular) = %q, %v; want \"secret\", nil", data, err)
+	}
+}
+
 func TestValidateRejectsMalformedWakeTarget(t *testing.T) {
 	base := func() *Registration {
 		return &Registration{

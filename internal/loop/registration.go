@@ -22,11 +22,15 @@ const (
 // ReadFileLimit reads up to max bytes from path, returning ErrFileTooLarge
 // (wrapped with the path) if the file exceeds the cap. Used wherever a peer
 // agent could plant a file we are obligated to read.
+//
+// The open is no-follow (O_NOFOLLOW on unix) and the regular-file check runs
+// against the OPENED fd (fstat), not a separate Lstat of the path. This closes
+// the Lstat→Open TOCTOU window where a peer swaps a vetted regular file for a
+// symlink between the check and the read. On unix the guarantee is structural;
+// on Windows (no portable O_NOFOLLOW) it degrades to a best-effort Lstat +
+// open, see openRegularNoFollow.
 func ReadFileLimit(path string, max int64) ([]byte, error) {
-	if err := ensureRegularFile(path); err != nil {
-		return nil, err
-	}
-	f, err := os.Open(path)
+	f, err := openRegularNoFollow(path)
 	if err != nil {
 		return nil, err
 	}
@@ -39,21 +43,6 @@ func ReadFileLimit(path string, max int64) ([]byte, error) {
 		return nil, fmt.Errorf("%s: file exceeds %d-byte limit", path, max)
 	}
 	return data, nil
-}
-
-func ensureRegularFile(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	mode := info.Mode()
-	if mode&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s: symlink not allowed", path)
-	}
-	if !mode.IsRegular() {
-		return fmt.Errorf("%s: not a regular file", path)
-	}
-	return nil
 }
 
 type Status string
