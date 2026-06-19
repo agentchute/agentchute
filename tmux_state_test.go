@@ -137,6 +137,109 @@ func TestPruneSamePane_RemovesStillMatchingPeer(t *testing.T) {
 	}
 }
 
+// TestSamePaneStillMatches_YieldsWhenPeerMtimeUnknown is the fail-closed guard:
+// when the peer's publish mtime is UNKNOWN (the os.Stat in revalidateAndRemovePeer
+// failed → mtimeKnown=false), the same-pane predicate must YIELD (return false /
+// do NOT delete) even though the host/method/target match — because we cannot
+// prove the peer is strictly older than us. "Delete on uncertainty" was the
+// defect; the fix is "if we cannot prove the peer is older, skip". The decision
+// must NOT depend on the (meaningless) peerMtime/ourMtime values when mtimeKnown
+// is false: this asserts it across BOTH a peer-mtime that would otherwise sort
+// older AND one that would sort newer.
+func TestSamePaneStillMatches_YieldsWhenPeerMtimeUnknown(t *testing.T) {
+	host, _ := os.Hostname()
+	const selfID = "self-agent"
+	const peerID = "peer-agent"
+	ourMtime := time.Now()
+
+	// A fresh reg that fully MATCHES host/method/target — the ONLY thing that
+	// should still spare it is mtimeKnown=false.
+	fresh := &loop.Registration{
+		AgentID:    peerID,
+		Host:       host,
+		WakeMethod: "tmux",
+		WakeTarget: "%1",
+	}
+	match := samePaneStillMatches(selfID, host, "%1", ourMtime)
+
+	// Sub-case A: an UNKNOWN peerMtime that, IF treated as known, would sort the
+	// peer as strictly older (peerMtime < ourMtime) → would otherwise be DELETED.
+	if match(fresh, ourMtime.Add(-time.Minute), false) {
+		t.Fatalf("mtimeKnown=false must YIELD (no delete) even when peerMtime would sort older")
+	}
+	// Sub-case B: an UNKNOWN peerMtime that would sort the peer newer (peer wins
+	// anyway). Still must yield — the gate is mtimeKnown, not the value.
+	if match(fresh, ourMtime.Add(time.Minute), false) {
+		t.Fatalf("mtimeKnown=false must YIELD (no delete) regardless of peerMtime value")
+	}
+	// Sub-case C: zero peerMtime (the actual value left after a failed os.Stat).
+	// Zero sorts as the OLDEST possible time → under the old code it would DELETE;
+	// the fail-closed gate must yield.
+	if match(fresh, time.Time{}, false) {
+		t.Fatalf("mtimeKnown=false with zero peerMtime must YIELD (the exact fail-closed defect)")
+	}
+}
+
+// TestSamePaneStillMatches_DeletesOlderWhenMtimeKnown is the no-regression
+// counterpart: with mtimeKnown=true and the peer strictly older by file mtime,
+// the predicate still returns true (delete the genuine older duplicate).
+func TestSamePaneStillMatches_DeletesOlderWhenMtimeKnown(t *testing.T) {
+	host, _ := os.Hostname()
+	const selfID = "self-agent"
+	const peerID = "peer-agent"
+	ourMtime := time.Now()
+
+	fresh := &loop.Registration{
+		AgentID:    peerID,
+		Host:       host,
+		WakeMethod: "tmux",
+		WakeTarget: "%1",
+	}
+	match := samePaneStillMatches(selfID, host, "%1", ourMtime)
+
+	if !match(fresh, ourMtime.Add(-time.Minute), true) {
+		t.Fatalf("mtimeKnown=true with strictly-older peer must DELETE (return true)")
+	}
+	// And a strictly-newer KNOWN peer still wins the pane (we yield).
+	if match(fresh, ourMtime.Add(time.Minute), true) {
+		t.Fatalf("mtimeKnown=true with strictly-newer peer must YIELD (return false)")
+	}
+}
+
+// TestStalePeerStillMatches_IgnoresMtimeKnown proves the stale-peer (unreachable)
+// prune is UNCHANGED by the new mtimeKnown arg: its delete decision is pure
+// unreachability and is independent of publish order, so it returns the SAME
+// result whether mtimeKnown is true or false (and regardless of peerMtime).
+func TestStalePeerStillMatches_IgnoresMtimeKnown(t *testing.T) {
+	cfg := newTmuxStateTestConfig(t)
+	host, _ := os.Hostname()
+	const selfID = "self-agent"
+	const peerID = "peer-agent"
+
+	// Only %7 is reachable; %99 is not.
+	withFakeTmuxTargets(t, "%7")
+	match := stalePeerStillMatches(cfg, selfID)
+
+	// Unreachable target → stale → delete, for BOTH mtimeKnown values and any mtime.
+	stale := &loop.Registration{AgentID: peerID, Host: host, WakeMethod: "tmux", WakeTarget: "%99"}
+	for _, known := range []bool{true, false} {
+		if !match(stale, time.Now(), known) {
+			t.Fatalf("unreachable stale peer must be deleted regardless of mtimeKnown=%v", known)
+		}
+		if !match(stale, time.Time{}, known) {
+			t.Fatalf("unreachable stale peer must be deleted with zero mtime, mtimeKnown=%v", known)
+		}
+	}
+
+	// Reachable target → not stale → keep, for BOTH mtimeKnown values.
+	reachable := &loop.Registration{AgentID: peerID, Host: host, WakeMethod: "tmux", WakeTarget: "%7"}
+	for _, known := range []bool{true, false} {
+		if match(reachable, time.Now(), known) {
+			t.Fatalf("reachable peer must be kept regardless of mtimeKnown=%v", known)
+		}
+	}
+}
+
 // TestPruneStalePeer_SkipsPeerThatBecameValid: a stale-peer candidate is found
 // (its tmux target unreachable), but before the revalidated remove the peer
 // rebinds to a REACHABLE target. The now-valid reg must NOT be removed.

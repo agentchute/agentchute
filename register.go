@@ -170,7 +170,14 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 	// file mtime (real write order) and NOT reg.LastSeen (the pre-write `now`
 	// captured by the caller), because a stalled registrant's LastSeen can be
 	// older than its actual write, which misorders the tie-break.
+	//
+	// ourMtimeKnown tracks whether that stat SUCCEEDED. If it failed we cannot
+	// establish OUR own publish order, so the same-pane prune is SKIPPED entirely
+	// (fail-closed): without our publish time the tie-break is undefined and a
+	// blind delete could wipe a legitimately-newer peer. The stale-peer prune is
+	// unaffected (it has no publish-order tie-break).
 	var ourMtime time.Time
+	var ourMtimeKnown bool
 
 	// Lock order is agent -> pane. The per-agent lock is OUTERMOST so the read of
 	// `existing`, the FINAL-wake decision, the merge, the inbox dir creation, the
@@ -277,8 +284,11 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 			// Capture OUR file mtime = the ACTUAL publish time, in-lock, right
 			// after the write succeeds. This is the publish-order signal the
 			// same-pane tie-breaker uses (instead of the pre-write reg.LastSeen).
+			// ourMtimeKnown records stat success; on failure the same-pane prune
+			// is skipped below (fail-closed — no own publish order, no safe prune).
 			if info, serr := os.Stat(regPath); serr == nil {
 				ourMtime = info.ModTime()
+				ourMtimeKnown = true
 			}
 
 			// Same-pane FIND keyed on the FINAL written target — a write-time
@@ -331,13 +341,19 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 	// own agent -> pane ordering. The reported set reflects what was ACTUALLY
 	// removed post-revalidation, not the raw find candidates.
 	var peerWakeStale []peerWakeStale
-	if len(samePaneCandidates) > 0 {
+	if len(samePaneCandidates) > 0 && ourMtimeKnown {
 		// ourMtime is OUR registration FILE's mtime, stat'd in-lock right after
 		// the write (the ACTUAL publish time). It feeds the last-writer-wins
 		// tie-breaker so a reciprocal same-pane delete leaves exactly one survivor
 		// (the actual later writer, by real OS write order) rather than wiping
 		// both regs. mtime is used over reg.LastSeen because LastSeen is the
 		// pre-write `now` and can be stale relative to a stalled writer's write.
+		//
+		// FAIL-CLOSED: the prune runs ONLY when ourMtimeKnown — if the in-lock
+		// stat of our own reg failed we have no publish order for OURSELVES, so
+		// the tie-break is undefined and we skip same-pane pruning entirely rather
+		// than risk deleting a legitimately-newer peer on uncertainty. (The peer
+		// side is independently fail-closed in revalidateAndRemovePeer.)
 		removed, perr := revalidateAndRemoveSamePanePeers(cfg, samePaneCandidates, opts.AgentID, samePaneHost, samePaneTarget, ourMtime)
 		if perr != nil {
 			return nil, fmt.Errorf("prune same-pane tmux registrations: %w", perr)

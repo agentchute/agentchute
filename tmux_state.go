@@ -101,7 +101,13 @@ func findStalePeerTmuxWakeTargets(cfg *loop.Config, selfID string) ([]peerWakeSt
 // stable (we hold the peer lock, so no concurrent rewrite) so the mtime reflects
 // the peer's ACTUAL last write time. It is passed to the predicate as the
 // same-pane publish-order signal (the stale-peer predicate ignores it).
-func revalidateAndRemovePeer(cfg *loop.Config, peer peerWakeStale, stillMatches func(*loop.Registration, time.Time) bool) (bool, error) {
+//
+// FAIL-CLOSED ON STAT FAILURE: if the os.Stat of the peer file fails, we CANNOT
+// prove the peer's publish order, so we pass mtimeKnown=false and leave peerMtime
+// zero. The same-pane predicate then YIELDS (never deletes on uncertainty),
+// matching the existing vanished/corrupt-reg skip above. A zero peerMtime would
+// otherwise sort as the OLDEST possible time and wrongly trigger a delete.
+func revalidateAndRemovePeer(cfg *loop.Config, peer peerWakeStale, stillMatches func(*loop.Registration, time.Time, bool) bool) (bool, error) {
 	if peer.Path == "" {
 		return false, nil
 	}
@@ -119,12 +125,15 @@ func revalidateAndRemovePeer(cfg *loop.Config, peer peerWakeStale, stillMatches 
 		}
 		// Peer file mtime = the peer's actual write time (stable under the peer
 		// lock). Drives the same-pane publish-order tie-break; ignored by the
-		// stale-peer predicate.
-		var peerMtime time.Time
+		// stale-peer predicate. On a stat error mtimeKnown stays false → the
+		// same-pane predicate yields (fail-closed: never delete when we cannot
+		// prove the peer's publish order).
+		peerMtime, mtimeKnown := time.Time{}, false
 		if info, serr := os.Stat(peer.Path); serr == nil {
 			peerMtime = info.ModTime()
+			mtimeKnown = true
 		}
-		if !stillMatches(fresh, peerMtime) {
+		if !stillMatches(fresh, peerMtime, mtimeKnown) {
 			// Peer moved / rebound / became valid between find and remove. Its
 			// fresh reg is authoritative; skip — this is the data-loss fix.
 			return nil
@@ -148,12 +157,15 @@ func revalidateAndRemovePeer(cfg *loop.Config, peer peerWakeStale, stillMatches 
 // remove never deletes anything the scan would not have collected.
 //
 // The stale-peer prune has NO publish-order tie-breaker by design, so it ignores
-// the `peerMtime` arg; it only needs the (fresh, peerMtime) signature shared with
-// the same-pane predicate so both can be threaded through revalidateAndRemovePeer.
-func stalePeerStillMatches(cfg *loop.Config, selfID string) func(*loop.Registration, time.Time) bool {
+// BOTH the `peerMtime` and `mtimeKnown` args; it only needs the
+// (fresh, peerMtime, mtimeKnown) signature shared with the same-pane predicate so
+// both can be threaded through revalidateAndRemovePeer. Its delete decision is
+// pure unreachability — independent of publish order — so an unknown peer mtime
+// does NOT change it: a vanished pane is still pruned regardless of mtimeKnown.
+func stalePeerStillMatches(cfg *loop.Config, selfID string) func(*loop.Registration, time.Time, bool) bool {
 	localHost, _ := os.Hostname()
 	localHost = strings.TrimSpace(localHost)
-	return func(fresh *loop.Registration, _ time.Time) bool {
+	return func(fresh *loop.Registration, _ time.Time, _ bool) bool {
 		if fresh.AgentID == selfID {
 			return false
 		}
@@ -264,14 +276,29 @@ func findSamePanePeerTmuxRegistrations(cfg *loop.Config, selfID, host, target st
 // peer lock) file mtime against it. This applies to the same-pane prune ONLY —
 // the stale-peer unreachable prune (stalePeerStillMatches) keeps its
 // no-tie-breaker predicate by design.
-func samePaneStillMatches(selfID, host, target string, ourMtime time.Time) func(*loop.Registration, time.Time) bool {
+//
+// FAIL-CLOSED ON UNKNOWN PEER MTIME: if the peer's mtime could not be determined
+// (`mtimeKnown=false` — the os.Stat in revalidateAndRemovePeer failed), the
+// publish order is UNKNOWN and we cannot prove the peer is strictly older, so the
+// predicate YIELDS (returns false, no delete). This is "skip on uncertainty",
+// matching the vanished/corrupt-reg skip in revalidateAndRemovePeer. A zero
+// peerMtime would otherwise sort as the OLDEST possible time and wrongly delete a
+// matching peer whose publish order we never established.
+func samePaneStillMatches(selfID, host, target string, ourMtime time.Time) func(*loop.Registration, time.Time, bool) bool {
 	host = strings.TrimSpace(host)
 	target = strings.TrimSpace(target)
-	return func(fresh *loop.Registration, peerMtime time.Time) bool {
+	return func(fresh *loop.Registration, peerMtime time.Time, mtimeKnown bool) bool {
 		if fresh.AgentID == selfID ||
 			strings.TrimSpace(fresh.Host) != host ||
 			strings.TrimSpace(fresh.WakeMethod) != "tmux" ||
 			strings.TrimSpace(fresh.WakeTarget) != target {
+			return false
+		}
+		// Fail-closed: without the peer's publish mtime we cannot prove it is
+		// strictly older than us, so yield (never delete on uncertainty). This
+		// must come BEFORE the tie-break compare so a zero peerMtime can never
+		// sort as "oldest" and trigger a delete.
+		if !mtimeKnown {
 			return false
 		}
 		// Tie-breaker: remove only a peer strictly older than us by the
