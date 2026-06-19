@@ -283,6 +283,15 @@ func computeWakeReceipt(cfg *loop.Config, toID string, noWake bool) wakeReceipt 
 	if !reg.IsPokable() {
 		return wakeReceipt{method: reg.WakeMethod, attempted: false, result: "skipped (no method declared)"}
 	}
+	// Recipient-binding for runner sockets: refuse to dial a unix: socket whose
+	// path the recipient does not legitimately own (e.g. a hand-written
+	// registration naming unix:/tmp/evil.sock). The pure shape validator can't
+	// see the recipient id; this check can.
+	if reg.WakeMethod == loop.RunnerWakeMethod {
+		if err := cfg.RunnerWakeTargetOwnedBy(toID, reg.WakeTarget); err != nil {
+			return wakeReceipt{method: reg.WakeMethod, attempted: false, result: fmt.Sprintf("refused (%v)", err)}
+		}
+	}
 	if err := loop.PokeWakeTarget(reg.WakeMethod, reg.WakeTarget); err != nil {
 		return wakeReceipt{method: reg.WakeMethod, attempted: true, result: fmt.Sprintf("failed (%v)", err)}
 	}

@@ -205,10 +205,25 @@ func TestPokeHerdrCancelsDuringInterKeySleep(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "context canceled") {
-			t.Fatalf("PokeHerdrTargetContext error = %v, want context canceled", err)
+		// Cancellation can surface two equivalent ways depending on whether the
+		// cancel lands during the inter-key sleep (context.Canceled) or while
+		// the `agent send` exec is still draining (the killed child reports
+		// "signal: killed"). Both prove the cancel propagated and the turn was
+		// abandoned before the Enter key event; accept either.
+		if err == nil {
+			t.Fatal("PokeHerdrTargetContext returned nil after cancellation, want a cancellation error")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "context canceled") && !strings.Contains(msg, "signal: killed") {
+			t.Fatalf("PokeHerdrTargetContext error = %v, want context canceled or signal: killed", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("PokeHerdrTargetContext did not return after context cancellation")
+	}
+
+	// In neither cancellation path should the submitting Enter key event have
+	// been sent.
+	if data, _ := os.ReadFile(logPath); strings.Contains(string(data), "send-keys") {
+		t.Fatalf("Enter was sent despite cancellation before the inter-key sleep:\n%q", data)
 	}
 }

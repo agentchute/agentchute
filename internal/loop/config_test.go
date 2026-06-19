@@ -3,6 +3,7 @@ package loop
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -193,5 +194,64 @@ func mustWrite(t *testing.T, path string, data []byte) {
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunnerSocketPathShortStaysInState(t *testing.T) {
+	cfg := &Config{
+		ControlRepo: "/r",
+		LoopDir:     "/r/.x/loop",
+		Vendor:      "x",
+	}
+	got := cfg.RunnerSocketPath("codex")
+	want := filepath.Join(cfg.AgentStateDir("codex"), "runner.sock")
+	if got != want {
+		t.Fatalf("short in-state RunnerSocketPath = %q, want %q", got, want)
+	}
+}
+
+func TestRunnerSocketPathLongFallsToPerUserTempDir(t *testing.T) {
+	// A loop dir long enough that the in-state socket path crosses the 100-char
+	// trigger, forcing the temp fallback.
+	longRoot := filepath.Join("/", strings.Repeat("deep-directory-segment/", 6), "control-repo")
+	cfg := &Config{
+		ControlRepo: longRoot,
+		LoopDir:     filepath.Join(longRoot, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
+	}
+	got := cfg.RunnerSocketPath("codex-agentchute")
+	tempDir := filepath.Join(os.TempDir(), "agentchute-run-"+currentUID())
+	if filepath.Dir(got) != tempDir {
+		t.Fatalf("long-path RunnerSocketPath dir = %q, want per-user temp dir %q", filepath.Dir(got), tempDir)
+	}
+	if !strings.HasSuffix(got, "-codex-agentchute.sock") {
+		t.Fatalf("temp socket path %q should end with -<agentID>.sock", got)
+	}
+	// Per-user: the directory name must carry the current uid, so a second
+	// local user gets a different directory.
+	if !strings.Contains(filepath.Base(tempDir), currentUID()) {
+		t.Fatalf("temp dir %q is not per-user (missing uid)", tempDir)
+	}
+}
+
+func TestRunnerWakeTargetOwnedBy(t *testing.T) {
+	cfg := &Config{
+		ControlRepo: "/r",
+		LoopDir:     "/r/.x/loop",
+		Vendor:      "x",
+	}
+	// The recipient's own socket target is accepted.
+	owned := RunnerWakeTarget(cfg.RunnerSocketPath("codex"))
+	if err := cfg.RunnerWakeTargetOwnedBy("codex", owned); err != nil {
+		t.Fatalf("owned target rejected: %v", err)
+	}
+	// A foreign /tmp socket is refused even though it is shape-valid.
+	if err := cfg.RunnerWakeTargetOwnedBy("codex", "unix:/tmp/evil.sock"); err == nil {
+		t.Fatal("foreign socket target accepted, want refusal")
+	}
+	// Another agent's owned socket is not codex's to bind.
+	other := RunnerWakeTarget(cfg.RunnerSocketPath("gemini-cli"))
+	if err := cfg.RunnerWakeTargetOwnedBy("codex", other); err == nil {
+		t.Fatal("another agent's socket accepted for codex, want refusal")
 	}
 }

@@ -248,7 +248,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	listener, err := startRunnerSocket(socketPath)
+	listener, err := startRunnerSocket(cfg, socketPath)
 	if err != nil {
 		_ = ptmx.Close()
 		_ = cmd.Process.Kill()
@@ -489,8 +489,20 @@ func clearStaleRunnerWakeTargets(cfg *loop.Config, selfID string) ([]string, err
 }
 
 func runnerRegistrationHealthy(cfg *loop.Config, reg *loop.Registration, timeout time.Duration) bool {
+	// Recipient-binding: never dial a runner wake_target the peer doesn't own.
+	// A hostile registration naming unix:/tmp/evil.sock for an innocent peer id
+	// would otherwise make THIS runner connect to an attacker socket during the
+	// stale-clear scan.
+	if err := cfg.RunnerWakeTargetOwnedBy(reg.AgentID, reg.WakeTarget); err != nil {
+		return false
+	}
 	resp, err := loop.PingRunner(reg.WakeTarget, timeout)
 	if err != nil {
+		return false
+	}
+	// The runner ping echoes the agent_id it serves; a socket answering for a
+	// different id is not this peer's runner.
+	if resp.AgentID != "" && resp.AgentID != reg.AgentID {
 		return false
 	}
 	state, err := loop.LoadRunnerState(cfg, reg.AgentID)
@@ -525,8 +537,8 @@ func processAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-func startRunnerSocket(path string) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+func startRunnerSocket(cfg *loop.Config, path string) (net.Listener, error) {
+	if err := cfg.EnsureRunnerSocketDir(path); err != nil {
 		return nil, err
 	}
 	target := loop.RunnerWakeTarget(path)

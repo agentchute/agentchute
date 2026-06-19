@@ -154,15 +154,79 @@ func (c *Config) RunnerStatePath(agentID string) string {
 }
 
 // RunnerSocketPath returns the default local Unix socket path for the
-// agentchute-run wake adapter.
+// agentchute-run wake adapter. When the in-state path is too long for a Unix
+// socket address (the sun_path limit is ~104 bytes on darwin/108 on linux), it
+// falls back to a per-user temp directory; see runnerSocketTempPath.
 func (c *Config) RunnerSocketPath(agentID string) string {
-	inState := filepath.Join(c.AgentStateDir(agentID), "runner.sock")
+	inState := c.runnerSocketInStatePath(agentID)
 	if len(inState) < 100 {
 		return inState
 	}
+	return c.runnerSocketTempPath(agentID)
+}
+
+func (c *Config) runnerSocketInStatePath(agentID string) string {
+	return filepath.Join(c.AgentStateDir(agentID), "runner.sock")
+}
+
+// runnerSocketTempDir is the per-user temp directory for runner sockets that
+// don't fit in-state. Predictable but NOT shared: the uid suffix means a second
+// local user cannot pre-create or squat the directory to intercept this user's
+// sockets. See ensureOwnedRunnerSocketDir (build-tagged) for the bind-time
+// ownership check.
+func runnerSocketTempDir() string {
+	return filepath.Join(os.TempDir(), "agentchute-run-"+currentUID())
+}
+
+func (c *Config) runnerSocketTempPath(agentID string) string {
 	sum := sha256.Sum256([]byte(c.LoopDir + "\x00" + agentID))
 	short := hex.EncodeToString(sum[:])[:16]
-	return filepath.Join(os.TempDir(), "agentchute-run", short+"-"+agentID+".sock")
+	return filepath.Join(runnerSocketTempDir(), short+"-"+agentID+".sock")
+}
+
+// RunnerSocketPathsOwnedBy returns every socket path the named recipient could
+// legitimately own: the in-state path and the per-user temp fallback. A peer's
+// runner wake_target must name one of these; anything else is an attempt to
+// bind a foreign socket. Returned in no particular order.
+func (c *Config) RunnerSocketPathsOwnedBy(agentID string) []string {
+	return []string{
+		c.runnerSocketInStatePath(agentID),
+		c.runnerSocketTempPath(agentID),
+	}
+}
+
+// RunnerWakeTargetOwnedBy reports whether a runner wake_target's socket path is
+// one the recipient legitimately owns (RunnerSocketPathsOwnedBy). This is the
+// recipient-binding check that complements the pure shape validator: it refuses
+// a registration that names, e.g., unix:/tmp/evil.sock for a recipient whose
+// real socket lives elsewhere. Returns an error describing the mismatch.
+func (c *Config) RunnerWakeTargetOwnedBy(agentID, target string) error {
+	if err := ValidateWakeTarget(RunnerWakeMethod, target); err != nil {
+		return err
+	}
+	path, err := ParseRunnerWakeTarget(target)
+	if err != nil {
+		return err
+	}
+	for _, owned := range c.RunnerSocketPathsOwnedBy(agentID) {
+		if path == owned {
+			return nil
+		}
+	}
+	return fmt.Errorf("runner wake_target %q is not a socket owned by %q (expected one of %v)", target, agentID, c.RunnerSocketPathsOwnedBy(agentID))
+}
+
+// EnsureRunnerSocketDir creates the parent directory for socketPath and, when
+// that directory is the per-user temp fallback, verifies it is owned by the
+// current uid (defense against a shared-/tmp squatter). In-state socket dirs
+// are created with the standard private-dir helper. Call this before binding a
+// runner socket.
+func (c *Config) EnsureRunnerSocketDir(socketPath string) error {
+	dir := filepath.Dir(socketPath)
+	if dir == runnerSocketTempDir() {
+		return ensureOwnedRunnerSocketDir(dir)
+	}
+	return ensurePrivateDir(dir)
 }
 
 // WatchdogLogPath returns the watchdog log path.
