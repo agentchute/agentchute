@@ -683,6 +683,148 @@ func TestRegisterBioFlagSetsAndOverwritesBody(t *testing.T) {
 	})
 }
 
+// TestRegister_PreservedWakeUsesInLockFreshExisting closes the WI-1 follow-up
+// defect: in a preserve-from-existing path, publishRegistrationOnce must take
+// the wake fields from the AUTHORITATIVE in-lock re-read of `existing`, not from
+// the stale pre-lock values resolveWakeForRegistration captured. We simulate a
+// concurrent locked writer by mutating the on-disk registration to wake=NEW
+// AFTER the pre-lock snapshot (passed in as OLD) but BEFORE publish takes the
+// lock. The written registration must reflect NEW.
+func TestRegister_PreservedWakeUsesInLockFreshExisting(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "test-agent"
+		now := time.Now().UTC().Truncate(time.Second)
+		regPath := cfg.AgentRegistrationPath(agentID)
+
+		// On-disk registration the pre-lock read would have seen: wake=OLD (%10).
+		old := &loop.Registration{
+			AgentID:     agentID,
+			Vendor:      "anthropic",
+			ControlRepo: root,
+			WakeMethod:  "tmux",
+			WakeTarget:  "%10",
+			LastSeen:    now,
+			Status:      loop.StatusActive,
+		}
+		if err := loop.WriteRegistration(regPath, old); err != nil {
+			t.Fatal(err)
+		}
+
+		// Simulate a concurrent locked writer that updated the wake target to NEW
+		// (%20) between the pre-lock snapshot and publish taking the lock.
+		fresh := *old
+		fresh.WakeTarget = "%20"
+		if err := loop.WriteRegistration(regPath, &fresh); err != nil {
+			t.Fatal(err)
+		}
+
+		// Pre-lock values are the STALE OLD (%10) snapshot; preservedFromExisting=true.
+		opts := registerOpts{AgentID: agentID, Vendor: "anthropic"}
+		if _, err := publishRegistrationOnce(cfg, opts, "", now, regPath, "tmux", "%10", nil, true); err != nil {
+			t.Fatal(err)
+		}
+
+		reg, err := loop.ReadRegistration(regPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reg.WakeTarget != "%20" {
+			t.Fatalf("preserved wake target = %q, want %%20 (in-lock fresh existing, not stale pre-lock %%10)", reg.WakeTarget)
+		}
+		if reg.WakeMethod != "tmux" {
+			t.Fatalf("preserved wake method = %q, want tmux", reg.WakeMethod)
+		}
+	})
+}
+
+// TestRegister_PreservedWakeExistingVanished: a preserve-from-existing path
+// where the on-disk registration is deleted between the pre-lock snapshot and
+// the locked write must NOT resurrect the stale pre-lock wake. The written reg
+// has EMPTY wake.
+func TestRegister_PreservedWakeExistingVanished(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "test-agent"
+		now := time.Now().UTC().Truncate(time.Second)
+		regPath := cfg.AgentRegistrationPath(agentID)
+
+		// No on-disk registration (it vanished after the pre-lock read). Pre-lock
+		// values are the stale OLD (%10) snapshot; preservedFromExisting=true.
+		opts := registerOpts{AgentID: agentID, Vendor: "anthropic"}
+		if _, err := publishRegistrationOnce(cfg, opts, "", now, regPath, "tmux", "%10", nil, true); err != nil {
+			t.Fatal(err)
+		}
+
+		reg, err := loop.ReadRegistration(regPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reg.WakeMethod != "" || reg.WakeTarget != "" {
+			t.Fatalf("vanished-existing preserve resurrected stale wake = %q:%q, want empty", reg.WakeMethod, reg.WakeTarget)
+		}
+	})
+}
+
+// TestRegister_FreshResolvedWakeNotOverwritten: a fresh-resolved path
+// (preservedFromExisting=false) must write the freshly-resolved wake regardless
+// of what is on disk — the in-lock re-derive only applies to PRESERVED wake, so
+// no regression to the live-pane / explicit-flag paths.
+func TestRegister_FreshResolvedWakeNotOverwritten(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "test-agent"
+		now := time.Now().UTC().Truncate(time.Second)
+		regPath := cfg.AgentRegistrationPath(agentID)
+
+		// On-disk registration with a DIFFERENT wake (%30) than the fresh one.
+		old := &loop.Registration{
+			AgentID:     agentID,
+			Vendor:      "anthropic",
+			ControlRepo: root,
+			WakeMethod:  "tmux",
+			WakeTarget:  "%30",
+			LastSeen:    now,
+			Status:      loop.StatusActive,
+		}
+		if err := loop.WriteRegistration(regPath, old); err != nil {
+			t.Fatal(err)
+		}
+
+		// Fresh-resolved wake (%40, e.g. from a live pane): preservedFromExisting=false.
+		opts := registerOpts{AgentID: agentID, Vendor: "anthropic"}
+		if _, err := publishRegistrationOnce(cfg, opts, "", now, regPath, "tmux", "%40", nil, false); err != nil {
+			t.Fatal(err)
+		}
+
+		reg, err := loop.ReadRegistration(regPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reg.WakeTarget != "%40" {
+			t.Fatalf("fresh-resolved wake target = %q, want %%40 (not overwritten by on-disk %%30)", reg.WakeTarget)
+		}
+	})
+}
+
 func TestRegisterExplicitEmptyTmuxPaneOverridesEnv(t *testing.T) {
 	withFakeTmuxTargets(t, "%99")
 	root := t.TempDir()

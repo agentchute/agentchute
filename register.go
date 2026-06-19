@@ -131,10 +131,10 @@ func performRegisterOnce(cfg *loop.Config, opts registerOpts, host string, now t
 		return nil, fmt.Errorf("read existing registration: %w", err)
 	}
 
-	wakeMethod, wakeTarget, warnings := resolveWakeForRegistration(opts, existing)
+	wakeMethod, wakeTarget, preservedFromExisting, warnings := resolveWakeForRegistration(opts, existing)
 
 	publish := func() (*registerResult, error) {
-		return publishRegistrationOnce(cfg, opts, host, now, regPath, wakeMethod, wakeTarget, warnings)
+		return publishRegistrationOnce(cfg, opts, host, now, regPath, wakeMethod, wakeTarget, warnings, preservedFromExisting)
 	}
 	// Lock order is pane -> agent: the tmux pane lock (taken here) wraps the
 	// publish closure, and publishRegistrationOnce takes the per-agent lock
@@ -147,7 +147,7 @@ func performRegisterOnce(cfg *loop.Config, opts registerOpts, host string, now t
 	return publish()
 }
 
-func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, now time.Time, regPath string, wakeMethod, wakeTarget string, warnings []string) (*registerResult, error) {
+func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, now time.Time, regPath string, wakeMethod, wakeTarget string, warnings []string, preservedFromExisting bool) (*registerResult, error) {
 	inboxDir := cfg.AgentInboxDir(opts.AgentID)
 
 	var reg *loop.Registration
@@ -195,6 +195,26 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 			// watchdog pokes even after re-enrolling.
 		}
 
+		// WI-1 follow-up: when the wake was resolved as "preserve from existing",
+		// the wakeMethod/wakeTarget args are a STALE pre-lock snapshot. Re-derive
+		// the preserved wake from the AUTHORITATIVE in-lock `existing` so a
+		// concurrent locked writer (clearStaleRunnerWakeTargets, another
+		// re-register) is not clobbered/resurrected. We deliberately do NOT
+		// re-call resolveWakeForRegistration here — it has side effects (herdr
+		// pane binding, tmux probing). Only the preserved branch is stale; every
+		// fresh-resolved or deliberate-clear value passes through unchanged.
+		if preservedFromExisting {
+			if existingFound {
+				reg.WakeMethod = existing.WakeMethod
+				reg.WakeTarget = existing.WakeTarget
+			} else {
+				// Existing vanished between the pre-lock read and the lock: do not
+				// resurrect the stale snapshot — enroll non-pokable.
+				reg.WakeMethod = ""
+				reg.WakeTarget = ""
+			}
+		}
+
 		if opts.BioProvided {
 			reg.Body = opts.Bio
 		}
@@ -232,6 +252,12 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 		return nil, err
 	}
 
+	// The wake actually WRITTEN is reg.WakeMethod/reg.WakeTarget — for the
+	// preserve-from-existing branch this is the in-lock re-derived value, not the
+	// stale pre-lock args. The same-pane prune and the result's Resolved* fields
+	// must report what was published, so read from reg.
+	writtenWakeMethod, writtenWakeTarget := reg.WakeMethod, reg.WakeTarget
+
 	// Peer pruning runs OUTSIDE the agent lock: it touches only PEER registration
 	// files (never our own) and takes no agent lock, so keeping it out of the
 	// locked region keeps that region minimal without changing behavior.
@@ -243,8 +269,8 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 		}
 		peerWakeStale = append(peerWakeStale, stale...)
 	}
-	if strings.TrimSpace(wakeMethod) == "tmux" && strings.TrimSpace(wakeTarget) != "" {
-		samePane, err := pruneSamePanePeerTmuxRegistrations(cfg, opts.AgentID, host, wakeTarget)
+	if strings.TrimSpace(writtenWakeMethod) == "tmux" && strings.TrimSpace(writtenWakeTarget) != "" {
+		samePane, err := pruneSamePanePeerTmuxRegistrations(cfg, opts.AgentID, host, writtenWakeTarget)
 		if err != nil {
 			return nil, fmt.Errorf("prune same-pane tmux registrations: %w", err)
 		}
@@ -256,8 +282,8 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 		InboxDir:           inboxDir,
 		Refreshed:          true, // spec rev3 §A.1: any successful boot write reports refreshed
 		ExistingFound:      existingFound,
-		ResolvedWakeMethod: wakeMethod,
-		ResolvedWakeTarget: wakeTarget,
+		ResolvedWakeMethod: writtenWakeMethod,
+		ResolvedWakeTarget: writtenWakeTarget,
 		ResolvedHost:       host,
 		PeerWakeStale:      peerWakeStale,
 		Warnings:           warnings,
@@ -282,9 +308,19 @@ func nextContextualAgentIDByFilesystem(cfg *loop.Config, baseID, current string)
 	}
 }
 
-func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) (string, string, []string) {
-	wakeMethod, wakeTarget := opts.WakeMethod, opts.WakeTarget
-	var warnings []string
+// resolveWakeForRegistration resolves the wake_method/wake_target to publish.
+//
+// The returned `preservedFromExisting` is true ONLY for the two branches that
+// echo back the pre-lock `existing` registration's wake fields verbatim (the
+// "tmux pane unreachable, preserve existing" branch and the bare existing
+// fallback). For those branches the returned wake values are a STALE pre-lock
+// snapshot: publishRegistrationOnce must re-derive them from the authoritative
+// in-lock re-read of `existing` instead of writing these. Every other return is
+// freshly resolved from live context (opts / current pane / herdr binding) or a
+// deliberate clear ("", ""), so preservedFromExisting is false and the returned
+// values are written as-is.
+func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) (wakeMethod, wakeTarget string, preservedFromExisting bool, warnings []string) {
+	wakeMethod, wakeTarget = opts.WakeMethod, opts.WakeTarget
 
 	if opts.WakeMethodProvided || opts.WakeTargetProvided {
 		if !opts.WakeTargetProvided && strings.TrimSpace(wakeMethod) == "tmux" {
@@ -300,15 +336,15 @@ func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) 
 			method, target, herdrWarnings, ok := herdrWakeForRegistration(opts)
 			warnings = append(warnings, herdrWarnings...)
 			if ok {
-				return method, target, warnings
+				return method, target, false, warnings
 			}
 			// Could not bind (collision / rename failure / no herdr binary):
 			// clear method+target so the agent enrolls non-pokable rather than
 			// with an invalid wake_method=herdr and an empty target (which
 			// registration validation would reject).
-			return "", "", warnings
+			return "", "", false, warnings
 		}
-		return wakeMethod, wakeTarget, warnings
+		return wakeMethod, wakeTarget, false, warnings
 	}
 
 	// Native herdr wake for bare launches inside a herdr pane. Skipped when
@@ -319,7 +355,7 @@ func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) 
 		method, target, herdrWarnings, ok := herdrWakeForRegistration(opts)
 		warnings = append(warnings, herdrWarnings...)
 		if ok {
-			return method, target, warnings
+			return method, target, false, warnings
 		}
 		// Binding failed (collision or rename error): fall through to tmux /
 		// existing-target preservation below.
@@ -327,24 +363,27 @@ func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) 
 
 	if pane := currentTmuxPane(); pane != "" {
 		if tmuxTargetReachable(pane) {
-			return "tmux", pane, warnings
+			return "tmux", pane, false, warnings
 		}
 		if opts.ClearStaleTmuxWake {
-			return "", "", append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; clearing tmux wake target", pane))
+			return "", "", false, append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; clearing tmux wake target", pane))
 		}
 		if existing != nil {
-			return existing.WakeMethod, existing.WakeTarget, append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; preserving existing wake target", pane))
+			// Preserve-from-existing: the returned values are a stale pre-lock
+			// snapshot; publishRegistrationOnce re-derives them in-lock.
+			return existing.WakeMethod, existing.WakeTarget, true, append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; preserving existing wake target", pane))
 		}
-		return "", "", append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; no wake target registered", pane))
+		return "", "", false, append(warnings, fmt.Sprintf("TMUX_PANE=%s is not reachable; no wake target registered", pane))
 	}
 
 	if existing != nil && strings.TrimSpace(existing.WakeMethod) == "tmux" && opts.ClearStaleTmuxWake {
-		return "", "", warnings
+		return "", "", false, warnings
 	}
 	if existing != nil {
-		return existing.WakeMethod, existing.WakeTarget, warnings
+		// Preserve-from-existing: stale pre-lock snapshot, re-derived in-lock.
+		return existing.WakeMethod, existing.WakeTarget, true, warnings
 	}
-	return "", "", warnings
+	return "", "", false, warnings
 }
 
 func cmdRegister(args []string) error {
