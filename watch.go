@@ -306,13 +306,60 @@ func fireActions(opts watchOptions, e watchEntry) {
 func osNotify(title, message string) error {
 	switch runtime.GOOS {
 	case "darwin":
-		script := fmt.Sprintf(`display notification %q with title %q`, message, title)
-		return osexec.Command("osascript", "-e", script).Run()
+		name, args := macNotifyCommand(title, message)
+		return osexec.Command(name, args...).Run()
 	case "linux":
+		// notify-send already receives title/message as separate argv
+		// elements, so there is no script-injection surface — the shell is
+		// never involved.
 		return osexec.Command("notify-send", title, message).Run()
 	default:
 		return fmt.Errorf("--notify is not supported on %s; use --print or --exec", runtime.GOOS)
 	}
+}
+
+// macNotifyCommand builds the osascript invocation for a macOS notification
+// WITHOUT interpolating the (untrusted) title/message into the AppleScript
+// source. The script is a fixed template that reads its values from argv —
+// `osascript <script> -- <message> <title>` — so a task/sender carrying
+// AppleScript metacharacters, quotes, or newlines is delivered as data, never
+// executed as code. The message body is, additionally, sanitized of control
+// characters and length-capped as defense in depth (a stray newline would not
+// break out, but it would still render oddly).
+//
+// Returned as (name, args) so it can be asserted in tests without running
+// osascript (unavailable in CI).
+func macNotifyCommand(title, message string) (string, []string) {
+	const script = `on run argv
+	display notification (item 1 of argv) with title (item 2 of argv)
+end run`
+	return "osascript", []string{
+		"-e", script,
+		"--", // everything after is positional argv for the script, never flags
+		sanitizeNotificationText(message),
+		sanitizeNotificationText(title),
+	}
+}
+
+// sanitizeNotificationText strips control characters (newlines, NUL, escape,
+// etc.) and caps length. Even though the argv form already prevents script
+// injection, control characters in a notification are pointless and a very long
+// task could bloat the notification; this keeps the surface tidy.
+func sanitizeNotificationText(s string) string {
+	const maxLen = 512
+	var b strings.Builder
+	for _, r := range s {
+		if r == '\t' || r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune(' ')
+		}
+	}
+	out := b.String()
+	if len(out) > maxLen {
+		out = out[:maxLen]
+	}
+	return out
 }
 
 func watchUsage(err error) error {
