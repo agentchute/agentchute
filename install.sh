@@ -64,7 +64,7 @@ is_valid_install_dir() {
 		*'"'*) return 1 ;;
 		*'$'*) return 1 ;;
 		*'`'*) return 1 ;;
-		*'\'*) return 1 ;;
+		*\\*) return 1 ;;
 		*'
 '*) return 1 ;;
 	esac
