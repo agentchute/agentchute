@@ -47,7 +47,7 @@ const (
 // or hand-corrupted state. 4 MiB fits thousands of entries.
 const MaxPendingLedgerBytes = 4 << 20
 
-// PendingReplyEntry is one row in the ledger. Schema per spec rev3 Part A.9.
+// PendingReplyEntry is one row in the ledger. Tracks the AGENTCHUTE.md §6.4 reply obligation.
 // Nullable timestamps and reason are *string so encoding/json emits literal
 // JSON null when unset (matches the spec example); *string also makes the
 // "did the transition happen?" check unambiguous in callers (nil vs. empty).
@@ -277,7 +277,7 @@ func MarkPendingReplied(cfg *Config, agentID, messageID, fromSender, replyMessag
 	}
 	rid := strings.TrimSpace(replyMessageID)
 	if rid == "" {
-		// Spec rev3 A.9 records reply_sent_at + reply_message_id together
+		// The ledger records reply_sent_at + reply_message_id together
 		// on transition. Allowing an empty reply_message_id would discharge
 		// the obligation without a durable reference to the reply, which
 		// breaks traceability — refuse rather than persist a half-populated

@@ -36,13 +36,22 @@ func runnerReachableForRecipient(cfg *loop.Config, reg *loop.Registration, timeo
 	return loop.RegistrationReachable(cfg, reg, timeout)
 }
 
-// init wires the concrete tmux/herdr reachability probes (which live in this
-// root package and shell out via package-level binary vars) into the loop
-// package's reachability dispatcher. The loop-package tmux/herdr adapters cannot
-// call these directly without an import cycle (loop must not import main), so
-// they call the injected hooks. The runner adapter needs no hook — its
-// owned-check and dial both already live in loop.
+func herdrAgentPaneID(name string) (string, bool) {
+	info, found := herdrAgentByName(name)
+	if !found {
+		return "", false
+	}
+	return info.PaneID, true
+}
+
+// init wires the concrete tmux/herdr probes (which live in this root package and
+// shell out via package-level binary vars) into the loop package's wake
+// dispatcher. The loop-package tmux/herdr adapters cannot call these directly
+// without an import cycle (loop must not import main), so they call the injected
+// hooks. The runner adapter needs no hook — its owned-check and dial both
+// already live in loop.
 func init() {
-	loop.SetTmuxReachableHook(tmuxTargetReachable)
-	loop.SetHerdrReachableHook(herdrAgentReachable)
+	loop.SetTmuxReachableHook(tmuxTargetReachableWithin)
+	loop.SetHerdrReachableHook(herdrAgentReachableWithin)
+	loop.SetHerdrPaneResolverHook(herdrAgentPaneID)
 }

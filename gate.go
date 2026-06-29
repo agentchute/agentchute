@@ -18,18 +18,17 @@ import (
 // stronger phases that wrap it) flag the agent's own registration as stale.
 // Mirrors the watchdog default in check.go (cooperativeStaleThreshold uses
 // the same 5m for peer activity, but a registration is "stale" at a longer
-// 30m grace per spec rev3 §A.3).
+// 30m grace).
 const StaleRegThreshold = 30 * time.Minute
 
 // Lifecycle phases recognized by `gate --before <phase>`. Order matters
 // only for grouping: each later phase implies the earlier phase's checks.
 //
 // The `continue` phase (v0.2) is a sibling of `finish` optimized for
-// in-session decision hooks like gemini-cli's AfterAgent or codex Stop:
-// "should the wrapper immediately continue into another turn?" Identical
-// blocking predicate as `finish` (unread / malformed / pending-replies)
-// — diverges only in output framing for hook-specific JSON shapes like
-// `decision:deny` (gemini AfterAgent) vs `decision:block` (codex Stop).
+// in-session catchup: "should the wrapper immediately continue into another
+// turn?" Identical blocking predicate as `finish` (unread / malformed /
+// pending-replies / corrupt ledger) — diverges only when a wrapper-specific
+// hook envelope is requested.
 const (
 	gatePhaseConsensus = "consensus"
 	gatePhaseCommit    = "commit"
@@ -40,11 +39,11 @@ const (
 
 // cmdGate is the lifecycle gate. Read-only: never refreshes registration,
 // never archives, never pokes peers. Reports whether the agent is clear to
-// proceed past <phase>; exits 2 (the canonical "blocked" signal honored by
-// codex Stop hooks and gemini emergency-brake surfaces) when an obligation
-// remains.
+// proceed past <phase>; exits 2 in text/--json modes (the canonical "blocked"
+// signal) when an obligation remains. Wrapper-specific hook-envelope modes
+// return exit 0 and signal block/allow in their JSON payload.
 //
-// Spec: v0.1.1 rev3 §A.3.
+// Spec: AGENTCHUTE.md §6 (messaging obligations), §9 (liveness), §10 (watchdog).
 func cmdGate(args []string) error {
 	fs := flag.NewFlagSet("gate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -58,7 +57,7 @@ func cmdGate(args []string) error {
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or $AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
 	fs.StringVar(&codexHook, "codex-hook", "", "codex hook JSON shape for the named event (Stop)")
-	fs.StringVar(&geminiHook, "gemini-hook", "", "gemini-cli hook JSON shape for the named event (AfterAgent — typically paired with --before continue)")
+	fs.StringVar(&geminiHook, "gemini-hook", "", "legacy gemini-cli decision JSON shape (AfterAgent); current Gemini hooks use BeforeAgent + --json")
 	fs.BoolVar(&requireConfirm, "require-confirm", false, "refuse unless warn-level conditions are explicitly acknowledged")
 	fs.BoolVar(&ackStaleReg, "ack-stale-reg", false, "acknowledge that the registration is stale (for --require-confirm)")
 
@@ -170,7 +169,7 @@ func cmdGate(args []string) error {
 		livenessMessage = liveness.Message
 	}
 
-	// Wake-stale — release-phase warn surface (per spec rev3 §A.3).
+	// Wake-stale — release-phase warn surface (per the watchdog liveness model, AGENTCHUTE.md §10).
 	// Reads peer registrations and counts those that declare a wake_method
 	// (pokable) but whose last_seen exceeds StaleRegThreshold. A non-zero
 	// count populates the JSON shape and shows up in text output; it does
@@ -212,10 +211,10 @@ func cmdGate(args []string) error {
 		// JSON, exit 0 (codex's preferred shape; main.go won't see errBlocked).
 		return emitGateCodexStop(status)
 	case geminiHook == "AfterAgent":
-		// gemini-cli AfterAgent: {"decision":"deny","reason":"..."} on
-		// block forces another turn; {"decision":"allow"} on clear lets
-		// the session end. Always exits 0 (the JSON is the signal).
-		// Typically paired with --before continue; v0.2 wake-method R&D.
+		// Legacy/experimental gemini-cli AfterAgent decision envelope:
+		// {"decision":"deny","reason":"..."} on block, {"decision":"allow"}
+		// on clear. Always exits 0 (the JSON is the signal). Current shipped
+		// Gemini hooks use BeforeAgent + --json exit-code blocking instead.
 		return emitGateGeminiAfterAgent(status)
 	case jsonOut:
 		if err := emitGateJSON(status); err != nil {
@@ -333,7 +332,7 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 		}
 	}
 
-	// release warns on wake_stale but does not block (per spec rev3 §A.3).
+	// release warns on wake_stale but does not block (per AGENTCHUTE.md §10).
 	if phase == gatePhaseRelease && s.WakeStaleCount > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d peer registration(s) declare a wake_method but are stale (last_seen > %s); pokes may fail", s.WakeStaleCount, StaleRegThreshold))
 	}
@@ -418,7 +417,8 @@ func emitGateCodexStop(s gateStatus) error {
 	return enc.Encode(out)
 }
 
-// emitGateGeminiAfterAgent emits gemini-cli's AfterAgent decision JSON.
+// emitGateGeminiAfterAgent emits the legacy/experimental gemini-cli AfterAgent
+// decision JSON. Current shipped Gemini hooks use BeforeAgent + --json.
 // On block: `{"decision":"deny","reason":"..."}` forces another turn.
 // On clear: `{"decision":"allow"}` lets the session end. Always exits 0
 // (the JSON is the signal). v0.2 wake-method R&D: this is the in-session
@@ -459,21 +459,31 @@ named phase. Read-only: never refreshes registration, never archives,
 never pokes peers.
 
 Phases:
-  consensus  blocks on unread direct mail OR pending required-replies
+  consensus  blocks on outstanding work + unproven recipient liveness
   commit     same as consensus + flags stale registration (> 30m)
   release    same as commit + warns on wake_stale peer registrations
-  finish     blocks on unread direct mail OR pending required-replies
+  finish     blocks on outstanding work
              (strongest gate; for end-of-turn use)
   continue   same predicate as finish; for in-session decision hooks
-             (gemini AfterAgent, codex Stop) that ask "continue the turn?"
+             that ask "continue the turn?"
 
-All phases also block if this agent is not registered or recipient liveness is
-not proven by a reachable wake target, active session heartbeat, or
-launch-enabled poller heartbeat.
+Outstanding work / trust blockers (all phases):
+  - unread direct mail in the inbox
+  - malformed inbox files that require check quarantine + corrective notice
+  - pending required-reply ledger entries
+  - corrupt or unreadable pending-reply ledger state
+  - missing self-registration
+
+All phases block if this agent is not registered. Unproven recipient liveness
+(no reachable wake target, active session heartbeat, or launch-enabled poller
+heartbeat) blocks consensus/commit/release; on finish/continue it blocks only
+when work is owed (unread mail, malformed files, pending replies, or a corrupt
+ledger) and otherwise only WARNS (does not block).
 
 Exit codes:
-  0  clear to proceed
-  2  blocked (message explains why; honored by codex Stop and gemini)
+  0  clear to proceed; also used by hook-envelope modes whose JSON is the signal
+     (--codex-hook Stop, --gemini-hook AfterAgent)
+  2  blocked in text/--json modes (including shipped Claude/Gemini finish hooks)
   1  command failure (binary error, filesystem error, etc.)
 
 Flags:
@@ -482,10 +492,10 @@ Flags:
   --vendor <vendor>     vendor or origin (anthropic, openai, google, xai)
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
-  --json                structured JSON output
+  --json                structured JSON output (blocked still exits 2)
   --codex-hook <event>  codex hook JSON shape (Stop)
-  --gemini-hook <event> gemini-cli hook JSON shape (AfterAgent); on block emits
-                        {"decision":"deny","reason":"..."}, else {"decision":"allow"}
+  --gemini-hook <event> legacy gemini-cli decision JSON shape (AfterAgent);
+                        current Gemini templates use BeforeAgent + --json
   --require-confirm     refuse unless warn-level conditions are acknowledged
   --ack-stale-reg       acknowledge stale registration (for --require-confirm)
 `)

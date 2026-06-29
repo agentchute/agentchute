@@ -1,49 +1,71 @@
 # CLAUDE.md
 
-<!-- agentchute-enrollment v14 begin -->
+<!-- agentchute-enrollment v15 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
-Canonical enrollment spec: [`AGENTS.md`](AGENTS.md). This file is a thin pointer.
+Canonical enrollment spec: [`AGENTS.md`](AGENTS.md) (full identity precedence, polling, hooks). This file is a thin pointer.
 
-**Default wrapper identity**: base `agent_id=claude-code`, `vendor=anthropic`. When `--as` and `AGENTCHUTE_AGENT_ID` are omitted, the CLI derives a project-scoped id like `claude-code-<folder>` and adds `-2`, `-3`, etc. if another live lane already owns that id.
+**1. Pin your identity — once.** Base `agent_id=claude-code`, `vendor=anthropic`. Resolve your lane id ONCE at startup and reuse the SAME id on every call:
 
-> **Several agents of this vendor on one bus?** Let the contextual default allocate separate ids per project/worktree, or give each process its own stable roster id via `--as <roster-id>` / `AGENTCHUTE_AGENT_ID=<roster-id>`. A shared id routes every lane to one inbox and defeats the finish-gate.
-
-For a custom stable lane name, set the session identity first:
+- Launched via the installed `ac-*` launcher for this wrapper (`agentchute run`)? Your id is already pinned in `$AGENTCHUTE_AGENT_ID` — use it as-is.
+- Otherwise set it yourself, before `boot`:
 
 ```sh
-export AGENTCHUTE_AGENT_ID="<roster-id>"
+export AGENTCHUTE_AGENT_ID="<roster-id>"                                 # named lane, or…
+export AGENTCHUTE_AGENT_ID="$(agentchute identity --vendor anthropic)"  # accept the contextual default (run once, before boot)
 ```
 
-**Setup** (one command per control repo):
+Then pass `--as "$AGENTCHUTE_AGENT_ID"` (or rely on the env) on every command. **Do NOT** drive `check`/`gate`/`send` with a bare `--vendor` and no `--as`/env: with no pinned id the CLI re-derives the contextual default each call and can land on a DIFFERENT `-N` suffix (e.g. `claude-code-<folder>-2`), checking the WRONG inbox and missing your finish-gate. `identity --vendor` is one-time discovery, NOT a per-call identity. Running several agents of this vendor on one bus? Give EACH process its own id — a shared id routes every lane to one inbox and defeats the finish-gate.
+
+**2. Verify at session start** (read-only; confirms you are enrolled AND reachable):
+
+```sh
+agentchute doctor --as "$AGENTCHUTE_AGENT_ID"
+```
+
+**3. Setup** (one command per control repo):
 
 ```sh
 agentchute setup --wake runner --wrappers claude-code --yes
 ```
 
-> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the namespaced launcher for this wrapper.
+`--wrappers claude-code` is single-agent scope (just this wrapper); a shared multi-vendor pool uses `--wrappers all` (see [`AGENTS.md`](AGENTS.md)). Use `--wake runner` for the universal launcher+socket path; add `tmux` or `herdr` if peers reach you via pane send-keys (e.g. `--wake runner,tmux`).
 
-Use `--wake runner` for the universal launcher+socket path; add `tmux` or `herdr` if peers reach you via pane send-keys (e.g. `--wake runner,tmux`).
+> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the namespaced launcher for this wrapper (`ac-claude`/`ac-codex`/`ac-gemini`/`ac-grok`). Start runner-mode sessions with that installed `ac-*` launcher.
 
-Start runner-mode sessions with the installed `ac-*` launcher for this wrapper.
-
-**Wake events** arrive as `[agentchute:tmux] check inbox`, `[agentchute:herdr] check inbox`, or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox`.
-
+**Wake events** arrive as `[agentchute:tmux] check inbox`, `[agentchute:herdr] check inbox`, or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox` — so actually RUN `agentchute check --as "$AGENTCHUTE_AGENT_ID"`. The runner injects the cue but does NOT auto-consume mail; `check` is what reads, archives, and records your reply obligations.
 
 **If startup enrollment doesn't run** (rare; indicates a setup gap):
 
 ```sh
-agentchute boot --vendor anthropic
-agentchute poller ensure --vendor anthropic
+agentchute boot --as "$AGENTCHUTE_AGENT_ID" --vendor anthropic
+agentchute poller ensure --as "$AGENTCHUTE_AGENT_ID" --vendor anthropic
 ```
 
-**STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --vendor anthropic`) or obligations are deferred (`agentchute defer --vendor anthropic --message <message-id> --reason "..."`).
+**STOP / finish gate**: don't sign off, tag, or report completion until you PASS the finish gate (read-only; catches unread mail, pending required-replies, AND liveness — `check` alone is consume-only and misses the last two):
 
-Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v14 end -->
+```sh
+agentchute gate --before finish --as "$AGENTCHUTE_AGENT_ID"
+```
+
+Consume unread mail with `agentchute check --as "$AGENTCHUTE_AGENT_ID"` (it reads + archives), then answer each obligation or release it with `agentchute defer --as "$AGENTCHUTE_AGENT_ID" --message <message-id> --reason "..."` until the gate is clear.
+
+Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
+<!-- agentchute-enrollment v15 end -->
 
 ---
 
 ## Claude-specific notes
 
 None at the moment. If something genuinely Claude-Code-specific comes up (a tool sandbox quirk, a path-mapping detail, an integration that other CLIs don't have), it goes here as a short addendum and explicitly defers to `AGENTS.md` for everything else.
+
+## Communication profile — reference & reminder
+
+Before you send or act on a task, review the **Agent-to-Agent Communication Rules** in [`AGENTS.md`](AGENTS.md). Then adapt per this profile (claude family — `guided`):
+
+- Rich structure is tolerated; you MAY reason privately through hard design/review before acting. Honor CONSTRAINTS as invariants; stop at ACCEPTANCE (no gold-plating); produce OUTPUT exactly.
+- Do not let a reasoning invitation become scope expansion — ACCEPTANCE is the stop line.
+- Runtime (launch/config, not prompt text): raise effort / extended thinking for hard reasoning, architecture, or review; normal effort for well-specified slices.
+- Best-fit: hard reasoning, novel design, synthesis, final review. Worst-fit (over-qualified): rote edits a worker handles. Tier note: larger/smaller models of this family share this profile — route hard work to the larger tier, well-specified execution to the smaller.
+
+_Profile verified against Anthropic/Claude guidance as of 2026-06-29; owner: claude-code wrapper operator. Re-verify on model update._

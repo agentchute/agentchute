@@ -1,46 +1,57 @@
 # CODEX.md
 
-<!-- agentchute-enrollment v14 begin -->
+<!-- agentchute-enrollment v15 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
-Canonical enrollment spec: [`AGENTS.md`](AGENTS.md). This file is a thin pointer.
+Canonical enrollment spec: [`AGENTS.md`](AGENTS.md) (full identity precedence, polling, hooks). This file is a thin pointer.
 
-**Default wrapper identity**: base `agent_id=codex`, `vendor=openai`. When `--as` and `AGENTCHUTE_AGENT_ID` are omitted, the CLI derives a project-scoped id like `codex-<folder>` and adds `-2`, `-3`, etc. if another live lane already owns that id.
+**1. Pin your identity — once.** Base `agent_id=codex`, `vendor=openai`. Resolve your lane id ONCE at startup and reuse the SAME id on every call:
 
-> **Several agents of this vendor on one bus?** Let the contextual default allocate separate ids per project/worktree, or give each process its own stable roster id via `--as <roster-id>` / `AGENTCHUTE_AGENT_ID=<roster-id>`. A shared id routes every lane to one inbox and defeats the finish-gate.
-
-For a custom stable lane name, set the session identity first:
+- Launched via the installed `ac-*` launcher for this wrapper (`agentchute run`)? Your id is already pinned in `$AGENTCHUTE_AGENT_ID` — use it as-is.
+- Otherwise set it yourself, before `boot`:
 
 ```sh
-export AGENTCHUTE_AGENT_ID="<roster-id>"
+export AGENTCHUTE_AGENT_ID="<roster-id>"                                 # named lane, or…
+export AGENTCHUTE_AGENT_ID="$(agentchute identity --vendor openai)"  # accept the contextual default (run once, before boot)
 ```
 
-**Setup** (one command per control repo):
+Then pass `--as "$AGENTCHUTE_AGENT_ID"` (or rely on the env) on every command. **Do NOT** drive `check`/`gate`/`send` with a bare `--vendor` and no `--as`/env: with no pinned id the CLI re-derives the contextual default each call and can land on a DIFFERENT `-N` suffix (e.g. `codex-<folder>-2`), checking the WRONG inbox and missing your finish-gate. `identity --vendor` is one-time discovery, NOT a per-call identity. Running several agents of this vendor on one bus? Give EACH process its own id — a shared id routes every lane to one inbox and defeats the finish-gate.
+
+**2. Verify at session start** (read-only; confirms you are enrolled AND reachable):
+
+```sh
+agentchute doctor --as "$AGENTCHUTE_AGENT_ID"
+```
+
+**3. Setup** (one command per control repo):
 
 ```sh
 agentchute setup --wake runner --wrappers codex --yes
 ```
 
-> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the namespaced launcher for this wrapper.
+`--wrappers codex` is single-agent scope (just this wrapper); a shared multi-vendor pool uses `--wrappers all` (see [`AGENTS.md`](AGENTS.md)). Use `--wake runner` for the universal launcher+socket path; add `tmux` or `herdr` if peers reach you via pane send-keys (e.g. `--wake runner,tmux`).
 
-Use `--wake runner` for the universal launcher+socket path; add `tmux` or `herdr` if peers reach you via pane send-keys (e.g. `--wake runner,tmux`).
+> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the namespaced launcher for this wrapper (`ac-claude`/`ac-codex`/`ac-gemini`/`ac-grok`). Start runner-mode sessions with that installed `ac-*` launcher.
 
-Start runner-mode sessions with the installed `ac-*` launcher for this wrapper.
-
-**Wake events** arrive as `[agentchute:tmux] check inbox`, `[agentchute:herdr] check inbox`, or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox`.
-
+**Wake events** arrive as `[agentchute:tmux] check inbox`, `[agentchute:herdr] check inbox`, or `[agentchute:run] check inbox`. The bracketed prefix is machine metadata; the instruction is `check inbox` — so actually RUN `agentchute check --as "$AGENTCHUTE_AGENT_ID"`. The runner injects the cue but does NOT auto-consume mail; `check` is what reads, archives, and records your reply obligations.
 
 **If startup enrollment doesn't run** (rare; indicates a setup gap):
 
 ```sh
-agentchute boot --vendor openai
-agentchute poller ensure --vendor openai
+agentchute boot --as "$AGENTCHUTE_AGENT_ID" --vendor openai
+agentchute poller ensure --as "$AGENTCHUTE_AGENT_ID" --vendor openai
 ```
 
-**STOP**: don't sign off, tag, or report completion until your inbox is clear (`agentchute check --vendor openai`) or obligations are deferred (`agentchute defer --vendor openai --message <message-id> --reason "..."`).
+**STOP / finish gate**: don't sign off, tag, or report completion until you PASS the finish gate (read-only; catches unread mail, pending required-replies, AND liveness — `check` alone is consume-only and misses the last two):
 
-Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v14 end -->
+```sh
+agentchute gate --before finish --as "$AGENTCHUTE_AGENT_ID"
+```
+
+Consume unread mail with `agentchute check --as "$AGENTCHUTE_AGENT_ID"` (it reads + archives), then answer each obligation or release it with `agentchute defer --as "$AGENTCHUTE_AGENT_ID" --message <message-id> --reason "..."` until the gate is clear.
+
+Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
+<!-- agentchute-enrollment v15 end -->
 
 ---
 
@@ -53,3 +64,15 @@ Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
 - Use `.agentchute/loop/` for coordination. Check your inbox at turn start, archive consumed messages, and reply through agentchute or the documented file protocol.
 
 See `AGENTS.md` for the working rules; codex's review posture (concise, file:line cited, severity-ordered findings) flows from the rules there.
+
+## Communication profile — reference & reminder
+
+Before you send or act on a task, review the **Agent-to-Agent Communication Rules** in [`AGENTS.md`](AGENTS.md). Then adapt per this profile (codex family — `outcome`):
+
+- Treat GOAL + ACCEPTANCE as the outcome and choose your own steps. Do not write an upfront plan or status preamble before executing (it can cause early stop). Respect `review-only` vs `implement` — do not turn a request into edits unless the mode says so.
+- Durable repo conventions live in [`AGENTS.md`](AGENTS.md); treat envelope CONSTRAINTS as task-specific additions and don't restate durable rules in the task.
+- Verify against ACCEPTANCE (run tests/build) before declaring done; cite what you ran.
+- Runtime: scale reasoning effort to difficulty (medium default, higher for hard, long-horizon work).
+- Best-fit: autonomous multi-file execution, hard refactors, long-horizon agentic coding, review. Worst-fit: tight step-by-step human supervision.
+
+_Profile verified against OpenAI/Codex guidance as of 2026-06-29; owner: codex wrapper operator. Re-verify on model update._

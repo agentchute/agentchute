@@ -256,7 +256,7 @@ func TestPokeRegistration_TmuxHerdrUnaffected(t *testing.T) {
 
 	herdrFake := &fakeAdapter{}
 	RegisterWakeAdapter("herdr", herdrFake)
-	t.Cleanup(func() { RegisterWakeAdapter("herdr", noopRemovedAdapter{}) })
+	t.Cleanup(func() { RegisterWakeAdapter("herdr", herdrAdapter{}) })
 
 	tmuxReg := &Registration{AgentID: "codex", WakeMethod: "tmux", WakeTarget: "%0"}
 	if err := PokeRegistration(context.Background(), cfg, tmuxReg); err != nil {
@@ -272,6 +272,50 @@ func TestPokeRegistration_TmuxHerdrUnaffected(t *testing.T) {
 	}
 	if herdrFake.calls != 1 || herdrFake.lastTgt != "codex-agentchute" {
 		t.Fatalf("herdr adapter calls=%d tgt=%q, want 1/%q", herdrFake.calls, herdrFake.lastTgt, "codex-agentchute")
+	}
+}
+
+func TestTmuxHerdrReachableHooksReceiveTimeout(t *testing.T) {
+	cfg := setupAnnounceFixture(t)
+	timeout := 123 * time.Millisecond
+
+	oldTmux := tmuxReachableHook
+	oldHerdr := herdrReachableHook
+	t.Cleanup(func() {
+		tmuxReachableHook = oldTmux
+		herdrReachableHook = oldHerdr
+		RegisterWakeAdapter("tmux", tmuxAdapter{})
+		RegisterWakeAdapter("herdr", herdrAdapter{})
+	})
+	RegisterWakeAdapter("tmux", tmuxAdapter{})
+	RegisterWakeAdapter("herdr", herdrAdapter{})
+
+	var tmuxTarget string
+	var tmuxTimeout time.Duration
+	SetTmuxReachableHook(func(target string, got time.Duration) bool {
+		tmuxTarget = target
+		tmuxTimeout = got
+		return true
+	})
+	if !RegistrationReachable(cfg, &Registration{WakeMethod: "tmux", WakeTarget: "%7"}, timeout) {
+		t.Fatal("tmux hook returned true but dispatcher reported unreachable")
+	}
+	if tmuxTarget != "%7" || tmuxTimeout != timeout {
+		t.Fatalf("tmux hook got target=%q timeout=%s, want target=%%7 timeout=%s", tmuxTarget, tmuxTimeout, timeout)
+	}
+
+	var herdrTarget string
+	var herdrTimeout time.Duration
+	SetHerdrReachableHook(func(target string, got time.Duration) bool {
+		herdrTarget = target
+		herdrTimeout = got
+		return true
+	})
+	if !RegistrationReachable(cfg, &Registration{WakeMethod: "herdr", WakeTarget: "codex-agentchute"}, timeout) {
+		t.Fatal("herdr hook returned true but dispatcher reported unreachable")
+	}
+	if herdrTarget != "codex-agentchute" || herdrTimeout != timeout {
+		t.Fatalf("herdr hook got target=%q timeout=%s, want target=codex-agentchute timeout=%s", herdrTarget, herdrTimeout, timeout)
 	}
 }
 

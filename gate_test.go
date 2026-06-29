@@ -17,7 +17,24 @@ func gateArgs(phase string, extra ...string) []string {
 	return append(base, extra...)
 }
 
-// Test 1 (spec rev3 Part 4) ledger half: gate --before consensus blocks when
+func TestGateHelpDocumentsBlockersAndHookExitCodes(t *testing.T) {
+	help := gateHelp()
+	for _, want := range []string{
+		"malformed inbox files",
+		"corrupt or unreadable pending-reply ledger",
+		"blocked in text/--json modes",
+		"--codex-hook Stop",
+		"--gemini-hook AfterAgent",
+		"current Gemini templates use BeforeAgent + --json",
+		"pending replies, or a corrupt",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("gate help missing %q:\n%s", want, help)
+		}
+	}
+}
+
+// Reply-obligation ledger half: gate --before consensus blocks when
 // a pending-reply ledger entry exists, then clears after the entry transitions
 // to replied/deferred.
 func TestGateConsensusBlocksOnPendingReply(t *testing.T) {
@@ -354,7 +371,7 @@ func TestGateBlocksOnMalformedInbox(t *testing.T) {
 }
 
 // Codex review (c17e310): `release` phase must warn on WAKE_STALE peer
-// registrations per spec rev3 §A.3. Warn-only — does not block release.
+// registrations (AGENTCHUTE.md §10). Warn-only — does not block release.
 func TestGateReleaseWarnsOnWakeStalePeer(t *testing.T) {
 	withFakeTmuxTargets(t, "%1", "%2")
 	root := setupBootFixture(t)
@@ -725,8 +742,9 @@ func TestGateContinuePhaseSamePredicateAsFinish(t *testing.T) {
 	})
 }
 
-// v0.2: --gemini-hook AfterAgent emits decision:deny on block,
-// decision:allow on clear. Always exit 0 — the JSON is the signal.
+// Legacy/experimental --gemini-hook AfterAgent emits decision:deny on block,
+// decision:allow on clear. Always exit 0 — the JSON is the signal. The shipped
+// Gemini hook template uses BeforeAgent + --json instead.
 func TestGateGeminiHookAfterAgentBlockedShape(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {

@@ -445,3 +445,193 @@ status: active
 		t.Fatal("expected symlink-registration rejection")
 	}
 }
+
+// WI-E2: the four self-healing reachability cache fields round-trip through the
+// registration read/write path (backward-compatible; absent = old behavior).
+// WI-E3: launch provenance (launched_by / shim_name / hook_event) round-trips
+// through write/read, and an absent-provenance registration stays byte-identical
+// to the pre-upgrade format (no new keys emitted).
+func TestRegistration_LaunchProvenanceRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gemini.md")
+	reg := &Registration{
+		AgentID:     "gemini-cli",
+		Vendor:      "google",
+		ControlRepo: "/tmp/repo",
+		LastSeen:    time.Now().UTC(),
+		Status:      StatusActive,
+		LaunchedBy:  LaunchedByRunner,
+		ShimName:    "ac-gemini",
+		HookEvent:   "boot",
+	}
+	if err := WriteRegistration(path, reg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadRegistration(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LaunchedBy != LaunchedByRunner {
+		t.Fatalf("LaunchedBy = %q, want %q", got.LaunchedBy, LaunchedByRunner)
+	}
+	if got.ShimName != "ac-gemini" {
+		t.Fatalf("ShimName = %q, want ac-gemini", got.ShimName)
+	}
+	if got.HookEvent != "boot" {
+		t.Fatalf("HookEvent = %q, want boot", got.HookEvent)
+	}
+
+	// Backward-compat: a registration with NO provenance fields reads back with
+	// all three absent AND serializes byte-identically (no new keys present).
+	plain := &Registration{
+		AgentID:     "gemini-cli",
+		Vendor:      "google",
+		ControlRepo: "/tmp/repo",
+		LastSeen:    time.Now().UTC(),
+		Status:      StatusActive,
+	}
+	plainPath := filepath.Join(t.TempDir(), "plain.md")
+	if err := WriteRegistration(plainPath, plain); err != nil {
+		t.Fatal(err)
+	}
+	gotPlain, err := ReadRegistration(plainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPlain.LaunchedBy != "" || gotPlain.ShimName != "" || gotPlain.HookEvent != "" {
+		t.Fatalf("plain registration grew provenance fields: %#v", gotPlain)
+	}
+	data, err := os.ReadFile(plainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"launched_by", "shim_name", "hook_event"} {
+		if strings.Contains(string(data), key) {
+			t.Fatalf("plain registration serialized %q key (not byte-identical to pre-upgrade):\n%s", key, data)
+		}
+	}
+}
+
+func TestRegistration_ReachabilityFieldsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codex.md")
+	reachableAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	reg := &Registration{
+		AgentID:            "codex",
+		Vendor:             "openai",
+		ControlRepo:        "/tmp/repo",
+		WakeMethod:         "herdr",
+		WakeTarget:         "codex-agentchute",
+		LastSeen:           time.Now().UTC(),
+		Status:             StatusActive,
+		ReachableAt:        &reachableAt,
+		ReachabilityMethod: "herdr",
+		ReachabilityTarget: "codex-agentchute",
+		ReachabilityError:  "prior probe: name not bound to a live pane",
+	}
+	if err := WriteRegistration(path, reg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadRegistration(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReachableAt == nil || !got.ReachableAt.Equal(reachableAt) {
+		t.Fatalf("ReachableAt = %v, want %v", got.ReachableAt, reachableAt)
+	}
+	if got.ReachabilityMethod != "herdr" {
+		t.Fatalf("ReachabilityMethod = %q, want herdr", got.ReachabilityMethod)
+	}
+	if got.ReachabilityTarget != "codex-agentchute" {
+		t.Fatalf("ReachabilityTarget = %q, want codex-agentchute", got.ReachabilityTarget)
+	}
+	if got.ReachabilityError != "prior probe: name not bound to a live pane" {
+		t.Fatalf("ReachabilityError = %q round-trip mismatch", got.ReachabilityError)
+	}
+
+	// Backward-compat: a registration with NO reachability fields reads back with
+	// all four zero/absent (old behavior).
+	plain := &Registration{
+		AgentID:     "codex",
+		Vendor:      "openai",
+		ControlRepo: "/tmp/repo",
+		LastSeen:    time.Now().UTC(),
+		Status:      StatusActive,
+	}
+	plainPath := filepath.Join(t.TempDir(), "plain.md")
+	if err := WriteRegistration(plainPath, plain); err != nil {
+		t.Fatal(err)
+	}
+	gotPlain, err := ReadRegistration(plainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPlain.ReachableAt != nil || gotPlain.ReachabilityMethod != "" ||
+		gotPlain.ReachabilityTarget != "" || gotPlain.ReachabilityError != "" {
+		t.Fatalf("plain registration grew reachability fields: %#v", gotPlain)
+	}
+}
+
+// WI-E2: IsReachable is true ONLY for a fresh, endpoint-bound cache hit. A
+// wake-target change, a method mismatch, an expired timestamp, or an absent
+// ReachableAt all invalidate the cache. IsPokable stays structural (unchanged).
+func TestRegistration_IsReachableEndpointBoundTTL(t *testing.T) {
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	ttl := 60 * time.Second
+
+	base := func() *Registration {
+		at := now.Add(-10 * time.Second)
+		return &Registration{
+			AgentID:            "codex",
+			WakeMethod:         "herdr",
+			WakeTarget:         "codex-agentchute",
+			ReachableAt:        &at,
+			ReachabilityMethod: "herdr",
+			ReachabilityTarget: "codex-agentchute",
+		}
+	}
+
+	if r := base(); !r.IsReachable(now, ttl) {
+		t.Fatal("fresh endpoint-bound cache within ttl: IsReachable=false, want true")
+	}
+
+	// Expired.
+	expired := base()
+	old := now.Add(-2 * ttl)
+	expired.ReachableAt = &old
+	if expired.IsReachable(now, ttl) {
+		t.Fatal("expired cache: IsReachable=true, want false")
+	}
+
+	// Method mismatch (endpoint changed).
+	methodMismatch := base()
+	methodMismatch.ReachabilityMethod = "tmux"
+	if methodMismatch.IsReachable(now, ttl) {
+		t.Fatal("method mismatch: IsReachable=true, want false (endpoint-bound)")
+	}
+
+	// Target mismatch (wake target changed → cache invalidated).
+	targetMismatch := base()
+	targetMismatch.WakeTarget = "codex-agentchute-2"
+	if targetMismatch.IsReachable(now, ttl) {
+		t.Fatal("target mismatch: IsReachable=true, want false (endpoint-bound)")
+	}
+
+	// Absent ReachableAt.
+	absent := base()
+	absent.ReachableAt = nil
+	if absent.IsReachable(now, ttl) {
+		t.Fatal("absent ReachableAt: IsReachable=true, want false")
+	}
+
+	// IsPokable stays purely structural: the cache fields do not touch it.
+	pokable := base()
+	pokable.ReachableAt = nil
+	pokable.ReachabilityMethod = ""
+	pokable.ReachabilityTarget = ""
+	if !pokable.IsPokable() {
+		t.Fatal("IsPokable=false for a reg with wake_method+wake_target; must stay structural")
+	}
+	noWake := &Registration{AgentID: "codex"}
+	if noWake.IsPokable() {
+		t.Fatal("IsPokable=true for a reg with no wake strings; must stay structural")
+	}
+}

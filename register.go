@@ -45,11 +45,20 @@ type registerOpts struct {
 	BioProvided        bool
 	ClearStaleTmuxWake bool
 	PruneStalePeerTmux bool
+
+	// WI-E3 launch provenance (advisory). When non-empty these are written into
+	// the registration so verify views are truthful and the launch-bypass warning
+	// can detect a raw launch. Empty values PRESERVE the existing registration's
+	// provenance on a re-register (a last_seen-style refresh must not wipe how the
+	// lane enrolled), so plain callers that never set them stay byte-identical.
+	LaunchedBy string
+	ShimName   string
+	HookEvent  string
 }
 
 // registerResult is performRegister's outcome.
 //
-// `Refreshed` follows the v0.1.1 spec rev3 §A.1 wire semantics: true
+// `Refreshed` follows the registration wire semantics (AGENTCHUTE.md §5): true
 // whenever performRegister touched the registration file (whether fresh
 // enrollment or an update to an existing registration). It is NOT a
 // signal of "was there a prior registration"; that distinct semantic is
@@ -58,7 +67,7 @@ type registerOpts struct {
 type registerResult struct {
 	Reg                *loop.Registration
 	InboxDir           string
-	Refreshed          bool   // true on every successful write; matches spec rev3 Test 8.
+	Refreshed          bool   // true on every successful registration write (AGENTCHUTE.md §5).
 	ExistingFound      bool   // true if a prior registration file existed before this call.
 	ResolvedWakeMethod string // post-merge wake_method actually written (may come from existing reg)
 	ResolvedWakeTarget string // post-merge wake_target actually written
@@ -125,10 +134,11 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 func performRegisterOnce(cfg *loop.Config, opts registerOpts, host string, now time.Time) (*registerResult, error) {
 	regPath := cfg.AgentRegistrationPath(opts.AgentID)
 	// PRE-LOCK phase. The initial (lock-free) read of `existing` is advisory: it
-	// only feeds the DEFER decision in resolveWakeForRegistration (never the
-	// written value). resolveWakeForRegistration also performs the side-effecting
-	// live-context resolution (herdr binding, current-pane probe) here, ONCE, so
-	// it is not re-run under the lock.
+	// can request preservation of a still-truthful primary or feed the DEFER
+	// decision in resolveWakeForRegistration. The in-lock re-read remains
+	// authoritative when deferToExisting is true. resolveWakeForRegistration
+	// also performs the side-effecting, live-context resolution (herdr binding,
+	// current-pane probe) here, ONCE, so it is not re-run under the lock.
 	existing, err := loop.ReadRegistration(regPath)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read existing registration: %w", err)
@@ -137,7 +147,7 @@ func performRegisterOnce(cfg *loop.Config, opts registerOpts, host string, now t
 	// liveWakeMethod/Target is the FINAL wake when deferToExisting is false;
 	// otherwise it is ignored and the FINAL wake is derived in-lock from the
 	// authoritative re-read of `existing`.
-	liveWakeMethod, liveWakeTarget, deferToExisting, warnings := resolveWakeForRegistration(opts, existing)
+	liveWakeMethod, liveWakeTarget, deferToExisting, warnings := resolveWakeForRegistration(cfg, opts, existing)
 
 	// Lock order is now agent -> pane (flipped from pane -> agent). The agent lock
 	// is OUTERMOST so the FINAL wake — which keys the tmux pane lock and the
@@ -231,6 +241,12 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 			WakeTarget:   finalWakeTarget,
 			LastSeen:     now,
 			Status:       loop.StatusActive,
+			// WI-E3 launch provenance: a non-empty value from the caller wins (a
+			// fresh runner/hook/manual launch updates how the lane enrolled); empty
+			// values fall back to the existing registration below.
+			LaunchedBy: opts.LaunchedBy,
+			ShimName:   opts.ShimName,
+			HookEvent:  opts.HookEvent,
 		}
 
 		if existingFound {
@@ -239,6 +255,18 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 			}
 			if existing.LastActive != nil {
 				reg.LastActive = existing.LastActive
+			}
+			// WI-E3: preserve provenance the caller did not supply so a re-register
+			// (e.g. a last_seen refresh that goes through performRegister) never
+			// wipes the recorded launch provenance.
+			if strings.TrimSpace(opts.LaunchedBy) == "" {
+				reg.LaunchedBy = existing.LaunchedBy
+			}
+			if strings.TrimSpace(opts.ShimName) == "" {
+				reg.ShimName = existing.ShimName
+			}
+			if strings.TrimSpace(opts.HookEvent) == "" {
+				reg.HookEvent = existing.HookEvent
 			}
 			reg.Body = existing.Body
 			// Status and RestartAt are NOT preserved. `register` / `boot` mean
@@ -380,7 +408,7 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 	return &registerResult{
 		Reg:                reg,
 		InboxDir:           inboxDir,
-		Refreshed:          true, // spec rev3 §A.1: any successful boot write reports refreshed
+		Refreshed:          true, // AGENTCHUTE.md §5: any successful boot/register write reports refreshed
 		ExistingFound:      existingFound,
 		ResolvedWakeMethod: writtenWakeMethod,
 		ResolvedWakeTarget: writtenWakeTarget,
@@ -415,27 +443,29 @@ func nextContextualAgentIDByFilesystem(cfg *loop.Config, baseID, current string)
 // resolveWakeForRegistration is the PRE-LOCK phase of wake resolution. It runs
 // the side-effecting, live-context resolution (herdr pane binding, current tmux
 // pane + reachability probe, explicit opts) BEFORE the agent lock and must not be
-// re-run in-lock. It does NOT depend on a stable view of `existing` (the `existing`
-// arg is only consulted to decide whether to DEFER, never to produce the written
-// value).
+// re-run in-lock. It does NOT depend on a stable view of `existing`: that
+// pre-lock value can only request preservation of a wake target it can prove
+// still belongs to this live process, or decide whether to DEFER to the
+// authoritative in-lock read.
 //
 // The returned `deferToExisting` partitions the result into two in-lock behaviors
 // (see publishRegistrationOnce):
 //
-//   - deferToExisting=false — a wake was resolved from LIVE context, or the caller
-//     deliberately CLEARED it. The returned (wakeMethod, wakeTarget) is the FINAL
-//     wake and is written verbatim. Covers: explicit --wake-* flags, a reachable
-//     current pane, a successful herdr binding, and the deliberate clears
-//     (ClearStaleTmuxWake, herdr-bind-failure, explicit non-tmux without target).
+//   - deferToExisting=false — a wake was resolved from LIVE context, or
+//     deliberately CLEARED by the caller. The returned (wakeMethod, wakeTarget)
+//     is the FINAL wake and is written verbatim. Covers: explicit --wake-* flags,
+//     a reachable current pane, a successful herdr binding, and the deliberate
+//     clears (ClearStaleTmuxWake, herdr-bind-failure, explicit non-tmux without
+//     target).
 //
-//   - deferToExisting=true — NO live wake was found. The returned values are
-//     irrelevant; the FINAL wake is derived in-lock from the AUTHORITATIVE re-read
-//     of `existing` (its wake if present, else empty). This covers both the
-//     "preserve existing across an unreachable/absent pane" branches AND the
+//   - deferToExisting=true — preserve the authoritative in-lock existing wake, or
+//     write empty when no in-lock existing registration remains. The returned
+//     values are irrelevant. This covers a pre-lock existing wake proven truthful,
+//     the "preserve existing across an unreachable/absent pane" branches, and the
 //     fresh-no-context fallthrough. Deferring the fallthrough (rather than writing
 //     empty) is what stops a stale/empty pre-lock decision from clobbering a wake
 //     written by a concurrent nil->existing create seen only under the lock.
-func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) (wakeMethod, wakeTarget string, deferToExisting bool, warnings []string) {
+func resolveWakeForRegistration(cfg *loop.Config, opts registerOpts, existing *loop.Registration) (wakeMethod, wakeTarget string, deferToExisting bool, warnings []string) {
 	wakeMethod, wakeTarget = opts.WakeMethod, opts.WakeTarget
 
 	if opts.WakeMethodProvided || opts.WakeTargetProvided {
@@ -463,21 +493,18 @@ func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) 
 		return wakeMethod, wakeTarget, false, warnings
 	}
 
-	// Native herdr wake for bare launches inside a herdr pane. Skipped when
-	// running under `agentchute run` (the runner socket owns the wake — never
-	// switch to herdr just because HERDR_ENV is also set) and takes precedence
-	// over tmux when both terminal envs are present.
-	if !underAgentchuteRunner() && herdrEnvActive() {
-		method, target, herdrWarnings, ok := herdrWakeForRegistration(opts)
-		warnings = append(warnings, herdrWarnings...)
-		if ok {
-			return method, target, false, warnings
-		}
-		// Binding failed (collision or rename error): fall through to tmux /
-		// existing-target preservation below.
+	if existingWakeStillTruthful(cfg, opts, existing) {
+		return "", "", true, warnings
 	}
 
-	if pane := currentTmuxPane(); pane != "" {
+	method, target, selected, selectWarnings := selectTruthfulPrimary(cfg, opts, existing)
+	warnings = append(warnings, selectWarnings...)
+	if selected {
+		return method, target, false, warnings
+	}
+
+	if !underAgentchuteRunner() && currentTmuxPane() != "" {
+		pane := currentTmuxPane()
 		if tmuxTargetReachable(pane) {
 			return "tmux", pane, false, warnings
 		}
@@ -506,6 +533,107 @@ func resolveWakeForRegistration(opts registerOpts, existing *loop.Registration) 
 	// No live context, no pre-lock existing: DEFER so an in-lock nil->existing
 	// create is honored, not clobbered with empty (defect #2).
 	return "", "", true, warnings
+}
+
+func existingWakeStillTruthful(cfg *loop.Config, opts registerOpts, existing *loop.Registration) bool {
+	if existing == nil || !existing.IsPokable() {
+		return false
+	}
+	method := strings.TrimSpace(existing.WakeMethod)
+	target := strings.TrimSpace(existing.WakeTarget)
+	switch method {
+	case loop.RunnerWakeMethod:
+		return underAgentchuteRunner() && wakeEndpointReachable(cfg, opts.AgentID, method, target)
+	case "herdr":
+		pane := currentHerdrPane()
+		if pane != "" {
+			info, found := herdrAgentByName(target)
+			return found && info.PaneID == pane
+		}
+		return wakeEndpointReachable(cfg, opts.AgentID, method, target)
+	case "tmux":
+		pane := currentTmuxPane()
+		if pane == "" {
+			if opts.ClearStaleTmuxWake {
+				return false
+			}
+			return wakeEndpointReachable(cfg, opts.AgentID, method, target)
+		}
+		return pane == target && tmuxTargetReachable(target)
+	default:
+		return wakeEndpointReachable(cfg, opts.AgentID, method, target)
+	}
+}
+
+func selectTruthfulPrimary(cfg *loop.Config, opts registerOpts, existing *loop.Registration) (wakeMethod, wakeTarget string, selected bool, warnings []string) {
+	if method, target, ok := selectRunnerPrimary(cfg, opts.AgentID, existing); ok {
+		return method, target, true, nil
+	}
+
+	// Native herdr wake for bare launches inside a herdr pane. Skipped when
+	// running under `agentchute run` (the runner socket owns the wake — never
+	// switch to herdr just because HERDR_ENV is also set) and takes precedence
+	// over tmux when both terminal envs are present.
+	if !underAgentchuteRunner() && herdrEnvActive() {
+		method, target, herdrWarnings, ok := herdrWakeForRegistration(opts)
+		warnings = append(warnings, herdrWarnings...)
+		if ok {
+			return method, target, true, warnings
+		}
+		// Binding failed (collision or rename error): fall through to tmux /
+		// existing-target preservation below.
+	}
+
+	if !underAgentchuteRunner() {
+		if pane := currentTmuxPane(); pane != "" && tmuxTargetReachable(pane) {
+			return "tmux", pane, true, warnings
+		}
+	}
+	return "", "", false, warnings
+}
+
+func selectRunnerPrimary(cfg *loop.Config, agentID string, existing *loop.Registration) (method, target string, ok bool) {
+	if cfg == nil || strings.TrimSpace(agentID) == "" {
+		return "", "", false
+	}
+	var candidates []string
+	if existing != nil && strings.TrimSpace(existing.WakeMethod) == loop.RunnerWakeMethod {
+		if t := strings.TrimSpace(existing.WakeTarget); t != "" {
+			candidates = append(candidates, t)
+		}
+	}
+	if underAgentchuteRunner() {
+		detected := loop.RunnerWakeTarget(cfg.RunnerSocketPath(agentID))
+		seen := false
+		for _, candidate := range candidates {
+			if candidate == detected {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			candidates = append(candidates, detected)
+		}
+	}
+	for _, candidate := range candidates {
+		if wakeEndpointReachable(cfg, agentID, loop.RunnerWakeMethod, candidate) {
+			return loop.RunnerWakeMethod, candidate, true
+		}
+	}
+	return "", "", false
+}
+
+func wakeEndpointReachable(cfg *loop.Config, agentID, method, target string) bool {
+	method = strings.TrimSpace(method)
+	target = strings.TrimSpace(target)
+	if cfg == nil || strings.TrimSpace(agentID) == "" || method == "" || target == "" {
+		return false
+	}
+	return loop.RegistrationReachable(cfg, &loop.Registration{
+		AgentID:    agentID,
+		WakeMethod: method,
+		WakeTarget: target,
+	}, reproveProbeTimeout)
 }
 
 func cmdRegister(args []string) error {
@@ -540,6 +668,8 @@ func cmdRegister(args []string) error {
 		Bio:                bio,
 		WorkingRepos:       workingRepos,
 		PruneStalePeerTmux: true,
+		// A hand-run `agentchute register` is the manual/raw enroll path.
+		LaunchedBy: loop.LaunchedByManual,
 	}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {

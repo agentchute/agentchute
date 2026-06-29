@@ -11,32 +11,20 @@ import (
 )
 
 // writeFakeHerdr installs a fake `herdr` executable in dir. Every invocation
-// appends its argv (tab-separated, one line per call) to logPath. When
-// respondJSON is set, `agent get` emits a pane_id JSON document on stdout so
-// the poke's name→pane resolution succeeds. exitCode drives the error path.
-func writeFakeHerdr(t *testing.T, dir, logPath string, respondJSON bool, exitCode int) string {
-	getResponse := ""
-	if respondJSON {
-		getResponse = `{"result":{"agent":{"pane_id":"w3:p9"}}}`
-	}
-	return writeFakeHerdrWithGetResponse(t, dir, logPath, getResponse, exitCode)
-}
-
-// writeFakeHerdrWithGetResponse is like writeFakeHerdr but lets a test control
-// the exact stdout `agent get` emits, to exercise malformed/empty resolution.
-func writeFakeHerdrWithGetResponse(t *testing.T, dir, logPath, getResponse string, exitCode int) string {
+// appends its argv (tab-separated, one line per call) to logPath so a test can
+// assert exactly which `agent send` / `pane send-keys` calls the poke made.
+// exitCode drives the error path (a non-zero exit makes runHerdr fail).
+//
+// Name→pane resolution no longer shells out to `herdr agent get`: the loop poke
+// resolves the pane via the injected SetHerdrPaneResolverHook (see
+// stubHerdrPaneResolver), so the fake binary only needs to log argv.
+func writeFakeHerdr(t *testing.T, dir, logPath string, exitCode int) string {
 	t.Helper()
 	herdrPath := filepath.Join(dir, "herdr")
-	respPath := filepath.Join(dir, "getresp")
-	if err := os.WriteFile(respPath, []byte(getResponse), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
 	b.WriteString("printf '%s\\t' \"$@\" >> " + shellSingleQuote(logPath) + "\n")
 	b.WriteString("printf '\\n' >> " + shellSingleQuote(logPath) + "\n")
-	// `cat` the canned response file so arbitrary JSON needs no shell escaping.
-	b.WriteString("if [ \"$1\" = agent ] && [ \"$2\" = get ]; then cat " + shellSingleQuote(respPath) + "; fi\n")
 	b.WriteString("exit " + strconv.Itoa(exitCode) + "\n")
 	if err := os.WriteFile(herdrPath, []byte(b.String()), 0o755); err != nil {
 		t.Fatal(err)
@@ -44,19 +32,33 @@ func writeFakeHerdrWithGetResponse(t *testing.T, dir, logPath, getResponse strin
 	return herdrPath
 }
 
-// The herdr poke must (1) resolve the agent name to a pane via `agent get`,
-// (2) deliver the wake prompt as literal text WITHOUT a trailing CR, and
-// (3) submit via a real `pane send-keys <pane> Enter` key event. The old
-// `agent send "<text>\r"` shape never submitted, because herdr `agent send`
-// writes literal text and the recipient TUI submits on an Enter key event.
+// stubHerdrPaneResolver injects a herdr pane resolver hook for the duration of
+// the test and restores the prior hook on cleanup. In loop-only test linkage the
+// root package's init() never runs, so the production resolver
+// (SetHerdrPaneResolverHook(herdrAgentPaneID)) is never wired and
+// herdrPaneIDForAgent — which now REQUIRES the hook (the loop/main boundary) —
+// would otherwise error. ok=false makes resolution report no live pane.
+func stubHerdrPaneResolver(t *testing.T, paneID string, ok bool) {
+	t.Helper()
+	prev := herdrPaneResolverHook
+	t.Cleanup(func() { SetHerdrPaneResolverHook(prev) })
+	SetHerdrPaneResolverHook(func(string) (string, bool) { return paneID, ok })
+}
+
+// The herdr poke resolves the name→pane via the injected resolver hook, then
+// delivers the wake prompt as literal text WITHOUT a trailing CR and submits via
+// a real `pane send-keys <pane> Enter` key event. The old `agent send "<text>\r"`
+// shape never submitted, because herdr `agent send` writes literal text and the
+// recipient TUI submits on an Enter key event.
 func TestPokeHerdrResolvesPaneAndSendsEnterKeyEvent(t *testing.T) {
 	oldBinary, oldSleep := herdrBinary, pokeSleep
 	t.Cleanup(func() { herdrBinary, pokeSleep = oldBinary, oldSleep })
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "herdr.log")
-	herdrBinary = writeFakeHerdr(t, dir, logPath, true, 0)
+	herdrBinary = writeFakeHerdr(t, dir, logPath, 0)
 	pokeSleep = time.Millisecond
+	stubHerdrPaneResolver(t, "w3:p9", true)
 
 	if err := PokeHerdrTargetContext(context.Background(), "codex-agentchute"); err != nil {
 		t.Fatal(err)
@@ -67,9 +69,6 @@ func TestPokeHerdrResolvesPaneAndSendsEnterKeyEvent(t *testing.T) {
 	}
 	got := string(data)
 
-	if !strings.Contains(got, "agent\tget\tcodex-agentchute\t") {
-		t.Errorf("herdr log missing pane resolution (`agent get`):\n%q", got)
-	}
 	if !strings.Contains(got, "agent\tsend\tcodex-agentchute\t"+herdrWakePrompt+"\t") {
 		t.Errorf("herdr log missing literal wake prompt:\n%q", got)
 	}
@@ -87,7 +86,7 @@ func TestPokeHerdrEmptyTargetNoOp(t *testing.T) {
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "herdr.log")
-	herdrBinary = writeFakeHerdr(t, dir, logPath, true, 0)
+	herdrBinary = writeFakeHerdr(t, dir, logPath, 0)
 
 	if err := PokeHerdrTargetContext(context.Background(), "   "); err != nil {
 		t.Fatalf("empty target should be a no-op, got %v", err)
@@ -110,7 +109,7 @@ func TestPokeHerdrRejectsInjectionShapedTarget(t *testing.T) {
 	// defense. Belt-and-suspenders: also assert no shell metacharacter was
 	// evaluated and the binary was never invoked.
 	evil := "x\"; touch " + sentinel + " #"
-	herdrBinary = writeFakeHerdr(t, dir, logPath, true, 0)
+	herdrBinary = writeFakeHerdr(t, dir, logPath, 0)
 	pokeSleep = time.Millisecond
 
 	if err := PokeHerdrTargetContext(context.Background(), evil); err == nil {
@@ -124,54 +123,63 @@ func TestPokeHerdrRejectsInjectionShapedTarget(t *testing.T) {
 	}
 }
 
+// The pane resolver hook is REQUIRED: with no hook wired (the default in
+// loop-only test linkage, where the root package's init() never runs) the poke
+// must fail fast with a wrapped "resolver not wired" error and never invoke
+// herdr. This replaces the old test that asserted the removed `agent get`
+// fallback behavior.
+func TestPokeHerdrRequiresPaneResolverHook(t *testing.T) {
+	prev := herdrPaneResolverHook
+	t.Cleanup(func() { SetHerdrPaneResolverHook(prev) })
+	SetHerdrPaneResolverHook(nil)
+
+	oldBinary := herdrBinary
+	t.Cleanup(func() { herdrBinary = oldBinary })
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "herdr.log")
+	herdrBinary = writeFakeHerdr(t, dir, logPath, 0)
+
+	err := PokeHerdrTargetContext(context.Background(), "ghost-agent")
+	if err == nil {
+		t.Fatal("expected error when the herdr pane resolver hook is unset")
+	}
+	if !strings.Contains(err.Error(), "resolve herdr pane") {
+		t.Fatalf("error should wrap the pane-resolution context; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "resolver not wired") {
+		t.Fatalf("error should name the unset resolver hook; got %v", err)
+	}
+	// Resolution fails up front, so herdr must never be invoked.
+	if _, statErr := os.Stat(logPath); !os.IsNotExist(statErr) {
+		t.Fatalf("herdr binary must not be invoked when resolution fails (log exists: %v)", statErr)
+	}
+}
+
+// When the hook is wired but reports no live pane (ok=false), resolution fails
+// and the error is wrapped with the pane-resolution context — and no text or
+// Enter is sent.
 func TestPokeHerdrWrapsResolutionError(t *testing.T) {
 	oldBinary := herdrBinary
 	t.Cleanup(func() { herdrBinary = oldBinary })
 
 	dir := t.TempDir()
-	// agent get exits non-zero (no JSON) → resolution fails before any send.
-	herdrBinary = writeFakeHerdr(t, dir, filepath.Join(dir, "herdr.log"), false, 1)
+	logPath := filepath.Join(dir, "herdr.log")
+	herdrBinary = writeFakeHerdr(t, dir, logPath, 0)
+	stubHerdrPaneResolver(t, "", false)
 
 	err := PokeHerdrTargetContext(context.Background(), "ghost-agent")
 	if err == nil {
-		t.Fatal("expected error when herdr `agent get` fails")
+		t.Fatal("expected error when the resolver reports no live pane")
 	}
 	if !strings.Contains(err.Error(), "resolve herdr pane") {
 		t.Fatalf("error should wrap the pane-resolution context; got %v", err)
 	}
-}
-
-func TestPokeHerdrRejectsMalformedResolution(t *testing.T) {
-	cases := []struct {
-		name     string
-		response string
-		exitCode int
-	}{
-		{"malformed JSON", "not json{", 0},
-		{"valid JSON, empty pane_id", `{"result":{"agent":{"pane_id":""}}}`, 0},
-		{"valid JSON, no pane_id field", `{"result":{"agent":{}}}`, 0},
+	if !strings.Contains(err.Error(), "no pane_id reported") {
+		t.Fatalf("error should report the missing pane_id; got %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			oldBinary := herdrBinary
-			t.Cleanup(func() { herdrBinary = oldBinary })
-
-			dir := t.TempDir()
-			logPath := filepath.Join(dir, "herdr.log")
-			herdrBinary = writeFakeHerdrWithGetResponse(t, dir, logPath, tc.response, tc.exitCode)
-
-			err := PokeHerdrTargetContext(context.Background(), "codex-agentchute")
-			if err == nil {
-				t.Fatal("expected resolution error, got nil")
-			}
-			if !strings.Contains(err.Error(), "resolve herdr pane") {
-				t.Fatalf("error should wrap pane-resolution context; got %v", err)
-			}
-			// No text or Enter must be sent when resolution fails.
-			if data, _ := os.ReadFile(logPath); strings.Contains(string(data), "agent\tsend") || strings.Contains(string(data), "send-keys") {
-				t.Fatalf("must not send text/Enter after failed resolution:\n%q", data)
-			}
-		})
+	// No text or Enter must be sent when resolution fails.
+	if _, statErr := os.Stat(logPath); !os.IsNotExist(statErr) {
+		t.Fatalf("herdr binary must not be invoked when resolution fails (log exists: %v)", statErr)
 	}
 }
 
@@ -181,8 +189,9 @@ func TestPokeHerdrCancelsDuringInterKeySleep(t *testing.T) {
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "herdr.log")
-	herdrBinary = writeFakeHerdr(t, dir, logPath, true, 0)
+	herdrBinary = writeFakeHerdr(t, dir, logPath, 0)
 	pokeSleep = time.Hour
+	stubHerdrPaneResolver(t, "w3:p9", true)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

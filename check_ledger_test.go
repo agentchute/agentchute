@@ -239,7 +239,51 @@ func TestCheck_RecordThenArchive_IdempotentOnReRecord(t *testing.T) {
 	}
 }
 
-// Spec rev3 §A.9 lifecycle: `check` archives a message with frontmatter
+func TestCheck_RecordThenConcurrentArchiveIsIdempotent(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	filename, inboxPath := writeReplyRequiredInbox(t, cfg, "claude-code", "idem-archive-race")
+
+	orig := recordReplyObligationFn
+	archivedByPeer := false
+	recordReplyObligationFn = func(c *loop.Config, agentID string, msg loop.Message, archivePath string, content []byte, now time.Time) error {
+		if err := orig(c, agentID, msg, archivePath, content, now); err != nil {
+			return err
+		}
+		if archivedByPeer {
+			return nil
+		}
+		archivedByPeer = true
+		_, err := loop.ArchiveMessage(msg, c.ArchiveDir(), agentID, now)
+		return err
+	}
+	t.Cleanup(func() { recordReplyObligationFn = orig })
+
+	withCwd(t, root, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdCheck([]string{"--as", "claude-code"})
+		}); err != nil {
+			t.Fatalf("check should tolerate a concurrent archive after record: %v", err)
+		}
+	})
+	if !archivedByPeer {
+		t.Fatal("test did not simulate concurrent archive")
+	}
+	if _, err := os.Stat(inboxPath); !os.IsNotExist(err) {
+		t.Fatalf("message should be gone from inbox after idempotent archive race, stat err=%v", err)
+	}
+	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Pending) != 1 {
+		t.Fatalf("ledger has %d entries; want exactly 1 after concurrent archive race", len(ledger.Pending))
+	}
+	if ledger.Pending[0].OriginalFilename != filename {
+		t.Fatalf("ledger OriginalFilename = %q, want %q", ledger.Pending[0].OriginalFilename, filename)
+	}
+}
+
+// Reply-obligation lifecycle (AGENTCHUTE.md §6.4): `check` archives a message with frontmatter
 // `reply_required: true` AND records a pending entry in the recipient's
 // ledger. This is the missing piece of Test 1's end-to-end flow.
 func TestCheckRecordsPendingReplyOnArchiveOfReplyRequiredMessage(t *testing.T) {
@@ -357,7 +401,7 @@ func TestCheckDoesNotRecordLedgerForNonReplyRequiredMessages(t *testing.T) {
 	}
 }
 
-// End-to-end Test 1 (spec rev3 Part 4): the msg-43b6 reproduction.
+// End-to-end: the msg-43b6 reproduction.
 //
 //  1. codex sends claude-code a reply_required + ## ASK message
 //  2. claude-code runs `check` → message archived AND ledger entry created

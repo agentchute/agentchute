@@ -13,7 +13,11 @@ import (
 
 // agentLockTimeout bounds how long withAgentLock waits to acquire the per-agent
 // lock before giving up, so a stuck peer never hangs a command forever.
-const agentLockTimeout = 5 * time.Second
+//
+// It is a package var (not a const) ONLY so tests can lower it to keep the
+// bounded-wait test fast; production never reassigns it, so the effective
+// behavior is the same 5s timeout.
+var agentLockTimeout = 5 * time.Second
 
 // agentLockRetryInterval is the poll cadence for the non-blocking lock loop.
 const agentLockRetryInterval = 25 * time.Millisecond

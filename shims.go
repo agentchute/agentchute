@@ -22,7 +22,7 @@ type shimSpec struct {
 var shimSpecs = []shimSpec{
 	{Name: "ac-claude", Aliases: []string{"claude", "claude-code"}, AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}},
 	{Name: "ac-codex", Aliases: []string{"codex"}, AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}},
-	{Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli"}},
+	{Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli", "agy"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli", "agy"}},
 	{Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
 }
 
@@ -232,6 +232,7 @@ func cmdShimsExec(args []string) error {
 		"--vendor", spec.Vendor,
 		"--control-repo", cfg.ControlRepo,
 		"--loop-dir", cfg.LoopDir,
+		"--shim-name", spec.Name,
 		"--",
 	}
 	runArgs = append(runArgs, wrapperArgs...)

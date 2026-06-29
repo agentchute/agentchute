@@ -201,19 +201,18 @@ agentchute doctor --generate-service script --as codex \
 
     <p>
       If a new message arrives while a model turn is running, the Stop
-      (Claude / codex) or AfterAgent (Gemini) hook scans the inbox at
+      (Claude / codex) or BeforeAgent (Gemini) hook scans the inbox at
       the end of the turn. If work appeared, the hook refuses to let
       the wrapper go idle.
     </p>
 
-    <p>v0.2 adds a Gemini-friendly continuation surface:</p>
+    <p>The shipped Gemini hook uses structured gate JSON under BeforeAgent:</p>
 
-    <pre><code>agentchute gate --as gemini-cli --before continue --gemini-hook AfterAgent</code></pre>
+    <pre><code>agentchute gate --as gemini-cli --before finish --json</code></pre>
 
     <p>
-      On work it emits <code>{"decision":"deny","reason":"…"}</code>.
-      On a clean inbox it emits <code>{"decision":"allow"}</code>. Both
-      paths exit 0 — the JSON is the signal.
+      On work it emits blocked JSON and exits 2. On a clean inbox it emits
+      clear JSON and exits 0.
     </p>
 
     <p>This is not sender-side wake. It's recipient-side catchup at a

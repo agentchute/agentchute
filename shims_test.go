@@ -120,6 +120,35 @@ func TestShimsInstallAliasesOptIn(t *testing.T) {
 	}
 }
 
+// WI-E3 (gemini input): `agy` is the actual gemini-cli binary name on PATH, so
+// the launcher must recognize it as the gemini-cli wrapper / ac-gemini.
+func TestShims_AgyResolvesToGeminiWrapper(t *testing.T) {
+	spec, ok := shimSpecForName("agy")
+	if !ok {
+		t.Fatal("shimSpecForName(\"agy\") not recognized; want the gemini-cli wrapper")
+	}
+	if spec.Name != "ac-gemini" || spec.AgentID != "gemini-cli" {
+		t.Fatalf("agy resolved to %s/%s, want ac-gemini/gemini-cli", spec.Name, spec.AgentID)
+	}
+	// agy must also be a valid --wrapper alias selector and a real-binary candidate.
+	selected, err := selectShimSpecs("agy")
+	if err != nil {
+		t.Fatalf("selectShimSpecs(\"agy\"): %v", err)
+	}
+	if len(selected) != 1 || selected[0].Name != "ac-gemini" {
+		t.Fatalf("selectShimSpecs(\"agy\") = %v, want [ac-gemini]", selected)
+	}
+	foundCandidate := false
+	for _, c := range spec.Candidates {
+		if c == "agy" {
+			foundCandidate = true
+		}
+	}
+	if !foundCandidate {
+		t.Fatalf("ac-gemini candidates %v missing agy (real binary cannot be resolved)", spec.Candidates)
+	}
+}
+
 func TestShimsExecRefusesHardDiscoveryError(t *testing.T) {
 	root := t.TempDir()
 	shimDir := filepath.Join(t.TempDir(), "shim")

@@ -293,7 +293,7 @@ func recordReplyObligation(cfg *loop.Config, agentID string, msg loop.Message, a
 	}
 	messageID := strings.TrimSpace(fm["message_id"])
 	if messageID == "" {
-		// Per spec rev3 A.9 schema, message_id is the ledger's primary key.
+		// The reply-obligation ledger keys on message_id (AGENTCHUTE.md §6.4).
 		// Frontmatter that sets reply_required: true without a message_id is
 		// malformed; refuse rather than fabricate.
 		return fmt.Errorf("reply_required: true set but message_id missing in frontmatter")

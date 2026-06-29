@@ -299,7 +299,7 @@ func buildPendingContext(entries []pendingEntry, replies []loop.PendingReplyEntr
 				fmt.Fprintf(&ctx, "  - %s from %s — %s\n", r.MessageID, r.From, r.Task)
 			}
 		}
-		fmt.Fprintf(&ctx, "Run `agentchute check --as %s` to read and archive, reply via `agentchute send --from %s --to <peer> --reply-to <message-id>`, or defer with `agentchute defer --as %s --message <message-id>`.", agentID, agentID, agentID)
+		fmt.Fprintf(&ctx, "Run `agentchute check --as %s` to read and archive, reply via `agentchute send --from %s --to <peer> --reply-to <message-id> --body \"...\"`, or defer with `agentchute defer --as %s --message <message-id> --reason \"...\"`.", agentID, agentID, agentID)
 	}
 	if malformed > 0 {
 		fmt.Fprintf(&ctx, "\n(%d malformed file(s) need quarantine; run `agentchute check --as %s`.)", malformed, agentID)

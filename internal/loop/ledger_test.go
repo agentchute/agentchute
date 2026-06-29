@@ -135,7 +135,7 @@ func TestRecordPendingReplyRequiresFields(t *testing.T) {
 	}
 }
 
-// Test 9 from spec rev3 Part 4: ledger identity (no collision) on same sender + same task.
+// Ledger identity (no collision) on same sender + same task.
 func TestRecordPendingReplyDistinguishesByMessageID(t *testing.T) {
 	cfg := newLedgerTestConfig(t)
 	now := time.Date(2026, 5, 19, 17, 54, 30, 0, time.UTC)
@@ -323,7 +323,7 @@ func TestSavePendingLedgerAtomicWriteAndPerms(t *testing.T) {
 	}
 }
 
-// On-disk JSON matches the spec rev3 A.9 shape: nullable fields encode as
+// On-disk JSON matches the reply-obligation ledger shape (AGENTCHUTE.md §6.4): nullable fields encode as
 // literal `null`, status is one of the canonical strings, recorded_at is
 // RFC3339 UTC.
 func TestPendingLedgerJSONShape(t *testing.T) {
@@ -653,7 +653,7 @@ func TestPendingEntriesConservativeOnUnknownStatus(t *testing.T) {
 	}
 }
 
-// Codex review (4d34826): strict A.9 shape — task field always emitted,
+// Codex review (4d34826): strict ledger shape — task field always emitted,
 // even when empty, so the JSON shape is fixed across all entries.
 func TestPendingLedgerJSONShapeIncludesTaskFieldWhenEmpty(t *testing.T) {
 	cfg := newLedgerTestConfig(t)

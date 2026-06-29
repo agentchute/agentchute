@@ -423,8 +423,8 @@ func signalProcess(pid int, sig os.Signal) error {
 }
 
 func clearSetupHerdrName(root, agentID string) (bool, string) {
-	info := herdrAgentLookup(agentID)
-	if !info.Found {
+	info, found := herdrAgentByName(agentID)
+	if !found {
 		return false, ""
 	}
 	if !setupPathMatchesRoot(info.Cwd, root) && !setupPathMatchesRoot(info.ForegroundCwd, root) {

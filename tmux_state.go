@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -20,6 +21,10 @@ func currentTmuxPane() string {
 }
 
 func tmuxTargetReachable(target string) bool {
+	return tmuxTargetReachableWithin(target, time.Second)
+}
+
+func tmuxTargetReachableWithin(target string, timeout time.Duration) bool {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return false
@@ -27,7 +32,12 @@ func tmuxTargetReachable(target string) bool {
 	if _, err := exec.LookPath(tmuxProbeBinary); err != nil {
 		return false
 	}
-	return exec.Command(tmuxProbeBinary, "list-panes", "-t", target).Run() == nil
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return exec.CommandContext(ctx, tmuxProbeBinary, "list-panes", "-t", target).Run() == nil
 }
 
 type peerWakeStale struct {

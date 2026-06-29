@@ -154,7 +154,7 @@ func agentIDForCurrentHerdrPane(cfg *loop.Config, vendor string) (string, bool) 
 		}
 		// The wake_target is the stable herdr name; adopt this registration
 		// only if that name currently resolves to OUR pane.
-		if herdrAgentLookup(strings.TrimSpace(reg.WakeTarget)).PaneID == pane {
+		if info, found := herdrAgentByName(strings.TrimSpace(reg.WakeTarget)); found && info.PaneID == pane {
 			return reg.AgentID, true
 		}
 	}

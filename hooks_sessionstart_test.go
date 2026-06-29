@@ -114,6 +114,34 @@ func TestHookTemplatesRunSelfCheckBeforeFinishGate(t *testing.T) {
 	}
 }
 
+func TestGeminiHookTemplateUsesBeforeAgentJSONGate(t *testing.T) {
+	data, err := hooksFS.ReadFile("examples/hooks/gemini/.gemini/settings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := hookCommandsForEvent(t, data, "BeforeAgent")
+	var gateCmd string
+	for _, cmd := range cmds {
+		if strings.Contains(cmd, " gate ") {
+			gateCmd = cmd
+			break
+		}
+	}
+	if gateCmd == "" {
+		t.Fatal("Gemini BeforeAgent hook has no gate command")
+	}
+	for _, want := range []string{"--before finish", "--json"} {
+		if !strings.Contains(gateCmd, want) {
+			t.Fatalf("Gemini gate command missing %q: %q", want, gateCmd)
+		}
+	}
+	for _, stale := range []string{"--gemini-hook", "AfterAgent"} {
+		if strings.Contains(gateCmd, stale) {
+			t.Fatalf("Gemini shipped hook must use BeforeAgent + --json, not %s: %q", stale, gateCmd)
+		}
+	}
+}
+
 // hookCommandsForEvent extracts every hook command string for one event key
 // from a wrapper hook config. The claude/codex/gemini configs share the shape
 // {"hooks": {"<event>": [ {"hooks": [ {"command": "..."} ]} ]}}.

@@ -9,7 +9,7 @@
 ## What the reference CLI ships
 
 - **Transport.** Shared local filesystem with atomic create/rename semantics (POSIX `rename(2)` or equivalent). Works on local disks, NFS, SSHFS, and other mounted filesystems as long as atomicity holds across writers — see the cross-host caveats below.
-- **Wake adapters.** `wake_method: tmux`, `herdr` (L2 native), and `runner` (local Unix domain socket). These are **convenience accelerators** over the §8.2 polling model; they allow immediate wake when the agents share a host or tmux/herdr daemon.
+- **Wake adapters.** `wake_method: tmux`, `herdr` (L2 native), and `agentchute-run` (local Unix domain socket). These are **convenience accelerators** over the §8.2 polling model; they allow immediate wake when the agents share a host or tmux/herdr daemon. (`agentchute setup --wake runner` is the command that installs the `agentchute-run` wake path — `runner` is the setup-flag token; `agentchute-run` is the wire `wake_method` value recorded in the registration.)
 - **Watchdog / cooperative waking.** Filesystem-walk over `.<vendor>/loop/agents/`, per-peer poke via the wake adapters when stale + has-unread. These are **latency accelerators** for the pool; durable discovery remains the recipient's responsibility.
 
 If your setup matches that — single filesystem, agents in tmux/herdr/runner contexts on one server, polling via `agentchute check` or the watchdog — you don't need anything in this document.
@@ -71,8 +71,8 @@ The tmux adapter is one instance of a generic "deliver a keystroke or trigger to
 |---|---|---|
 | **tmux** | `tmux send-keys` | shipped in reference CLI |
 | **herdr** | `herdr agent send` (text) + `pane send-keys Enter` | shipped in v0.5.0 |
-| **macOS** | `osascript` (notification) | shipped in v0.1.2 (notifies human) |
-| **Linux** | `notify-send` | shipped in v0.1.2 (notifies human) |
+| **macOS** | `osascript` (notification) | human-relay notification helper, not a `wake_method` adapter |
+| **Linux** | `notify-send` | human-relay notification helper, not a `wake_method` adapter |
 | **wezterm** | `wezterm cli send-text` | protocol-compatible, awaits CLI adapter |
 | **kitty** | `kitty @ send-text` | protocol-compatible, awaits CLI adapter |
 | **iTerm2** | AppleScript / Python API | protocol-compatible, awaits CLI adapter (macOS-only) |
@@ -83,16 +83,24 @@ The tmux adapter is one instance of a generic "deliver a keystroke or trigger to
 
 Beyond multiplexers, "wake adapter" is conceptually open: SSH-tunneled remote pokes, IPC pipes, webhooks, OS-level notification systems. Anything that takes a `wake_target` string and delivers an **optional wake hint** to the recipient. OS notifications (macOS/Linux) notify the **local human operator**, who then pokes the agent; they are best-effort human-relay accelerators for non-tmux sessions. All adapters are convenience accelerators over the §8.2 polling baseline.
 
+### Multi-wake (ordered backup endpoints) — premium / future
+
+**The idea.** A registration could OPTIONALLY publish ordered *backup* wake endpoints in addition to its primary `wake_method`/`wake_target`. A sender would try the primary first and, only if it fails, escalate through the declared backups in order (first reachable/successful wins) — the order is whatever the registration declares, with no hardcoded transport ranking, and a runner (`agentchute-run`) backup would be subject to the same recipient-binding owned-check as a primary.
+
+**Why it is deferred.** The reachability win comes from making the *primary* endpoint truthful, not from adding fallbacks on top of it: the self-healing reachability cache + a durable inbox (every `send` enqueues regardless of wake) + recipient-side polling and the watchdog already guarantee delivery when a poke is missed. Layered escalation is redundancy on top of that baseline — it adds escalation loops, a wire format, and a hot-path fork in the two central wake functions for a payoff the primary-truthfulness work already covers. So it is parked as a future premium design rather than carried in the core.
+
+**Reserved field name.** `wake_endpoints` (list) is RESERVED in [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.1 for this extension. The reference CLI does not read or write it today; an implementation would claim that name (e.g. a list of `"<wake_method> <wake_target>"` entries, shape-validated exactly like the primary).
+
 ### herdr native integration
 
 herdr (github.com/ogulcancelik/herdr) is an agent-aware terminal multiplexer used as the production runtime for many agentchute pools. The reference CLI ships a native `herdr` wake adapter (v0.5.0).
 
 - **Identity / wake_target**: the adapter targets the recipient by a stable herdr *agent name*, never an ephemeral pane id (pane ids are not persistent across herdr restarts). At registration and on every `self-check`, the agent binds its pane to its agentchute `agent_id` with `herdr agent rename <HERDR_PANE_ID> <agent_id>` and records `wake_method: herdr`, `wake_target: <agent_id>`. herdr resolves the name to the current pane internally, so the target survives pane re-layout and tab moves.
-- **Poke**: mirrors the tmux two-step. `herdr agent send <agent_id> "[agentchute:herdr] check inbox"` writes the prompt as **literal text** (herdr's `agent send` does not submit — its own help: "use pane run when you want command text plus Enter"); then, after a brief inter-key delay, `herdr pane send-keys <pane_id> Enter` injects a real Enter **key event** that the recipient TUI treats as submit. A trailing CR in the text is rendered as a literal byte and never fires a turn. The stable `<agent_id>` is resolved to its current `<pane_id>` via `herdr agent get <agent_id>` (pane commands reject names; panes move). All arguments are argv-only — never shell-evaluated.
-- **Coexistence / precedence**: auto-detection registers herdr only for *bare* launches inside a herdr pane (`HERDR_ENV`/`HERDR_PANE_ID` present). Agents launched through `agentchute run` (the `ac-*` shims) keep the runner-socket wake — the runner owns the PTY and is never overridden by herdr just because the herdr env is also set. Precedence: explicit `--wake-method` → runner (under `agentchute run`) → herdr → tmux → non-pokable.
+- **Poke**: mirrors the tmux two-step. `herdr agent send <agent_id> "[agentchute:herdr] check inbox"` writes the prompt as **literal text** (herdr's `agent send` does not submit — its own help: "use pane run when you want command text plus Enter"); then, after a brief inter-key delay, `herdr pane send-keys <pane_id> Enter` injects a real Enter **key event** that the recipient TUI treats as submit. A trailing CR in the text is rendered as a literal byte and never fires a turn. The stable `<agent_id>` is resolved to its current `<pane_id>` via the reference CLI's herdr name resolver (`herdr agent list` + match on the bound `name`, robust to handle≠name; pane commands reject names and panes move). All arguments are argv-only — never shell-evaluated.
+- **Coexistence / precedence**: auto-detection registers herdr only for *bare* launches inside a herdr pane (`HERDR_ENV`/`HERDR_PANE_ID` present). Agents launched through `agentchute run` (the `ac-*` shims) keep the runner-socket wake — the runner owns the PTY and is never overridden by herdr just because the herdr env is also set. Precedence: explicit `--wake-method` → `agentchute-run` (under `agentchute run`) → herdr → tmux → non-pokable.
 - **Hookless wrappers**: a wrapper with no lifecycle hooks (e.g. Grok) cannot self-enroll on a bare herdr launch, so it stays on the runner-socket path (`ac-grok`). Native herdr wake is for hook-capable lanes or a manual `agentchute boot`.
 - **Identity collisions**: a contextual identity is already disambiguated with `-2`/`-3` suffixes, so its herdr name is unique. An *explicit* `--as`/`AGENTCHUTE_AGENT_ID` whose name is already bound to a different live pane is not hijacked — the herdr wake is skipped with a warning rather than making `herdr agent send <name>` ambiguous.
-- **Doctor**: `wake_method=herdr` validity is probed read-only with `herdr agent get <agent_id>` — no keystrokes are sent.
+- **Doctor**: `wake_method=herdr` reachability is probed read-only via `herdr agent list` + matching the registered `agent_id` to a live pane's `name` (`herdrAgentReachable` → `herdrAgentByName`) — **not** `herdr agent get <agent_id>`, which resolves by bound handle and misses renamed lanes (e.g. `agy`); no keystrokes are sent. (The poke path resolves the pane through the same `herdr agent list` + `name`-match resolver.)
 
 ### Multi-socket tmux
 

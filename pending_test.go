@@ -35,7 +35,7 @@ func TestReadFrontmatterRejectsOversizeFile(t *testing.T) {
 	}
 }
 
-// Spec rev3 §A.9: pending --json now reports pending-reply ledger entries
+// AGENTCHUTE.md §6.4: pending --json now reports pending-reply ledger entries
 // alongside the unread inbox count, so per-turn hook context surfaces the
 // full obligation picture.
 func TestPendingJSONIncludesPendingReplies(t *testing.T) {
@@ -139,6 +139,12 @@ func TestPendingCodexHookSurfacesLedger(t *testing.T) {
 		if !strings.Contains(ctx, "agentchute defer") {
 			t.Errorf("codex hook context missing defer hint:\n%s", ctx)
 		}
+		if !strings.Contains(ctx, `--reply-to <message-id> --body "..."`) {
+			t.Errorf("codex hook context missing runnable reply hint:\n%s", ctx)
+		}
+		if !strings.Contains(ctx, `--message <message-id> --reason "..."`) {
+			t.Errorf("codex hook context missing runnable defer hint:\n%s", ctx)
+		}
 	})
 }
 
@@ -200,6 +206,12 @@ func TestPendingClaudeHookUserPromptSubmitShape(t *testing.T) {
 		}
 		if !strings.Contains(wrap.HookSpecificOutput.AdditionalContext, "pending reply obligation") {
 			t.Errorf("AdditionalContext missing pending-reply mention:\n%s", wrap.HookSpecificOutput.AdditionalContext)
+		}
+		if !strings.Contains(wrap.HookSpecificOutput.AdditionalContext, `--reply-to <message-id> --body "..."`) {
+			t.Errorf("AdditionalContext missing runnable reply hint:\n%s", wrap.HookSpecificOutput.AdditionalContext)
+		}
+		if !strings.Contains(wrap.HookSpecificOutput.AdditionalContext, `--message <message-id> --reason "..."`) {
+			t.Errorf("AdditionalContext missing runnable defer hint:\n%s", wrap.HookSpecificOutput.AdditionalContext)
 		}
 	})
 }
@@ -280,7 +292,7 @@ func TestPendingReadsWhitespaceTolerantFrontmatter(t *testing.T) {
 	})
 }
 
-// Spec rev3 Part 4 Tests 2 + 7: pending must be strictly read-only.
+// pending must be strictly read-only.
 // Running it many times over a populated inbox must NOT change the inbox
 // file count, archive count, or write to malformed dir. This is the
 // hook-safety contract — SessionStart / UserPromptSubmit / BeforeAgent

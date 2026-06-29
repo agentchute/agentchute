@@ -18,7 +18,8 @@ import (
 // interactive enrollment at the top of a turn (where exit 2 signals "you
 // still have inbox or pending-reply obligations to clear").
 //
-// Spec: v0.1.1 rev3 §A.1. Implementation reuses performRegister (shared
+// Spec: AGENTCHUTE.md §5 (Registration), §5.3 (enforced enrollment).
+// Implementation reuses performRegister (shared
 // with cmdRegister) for the registration phase and the same inbox / ledger
 // reads `pending` + `gate` use.
 func cmdBoot(args []string) error {
@@ -28,7 +29,7 @@ func cmdBoot(args []string) error {
 	var agentID, vendor, host, wakeMethod, wakeTarget, controlRepo, loopDir, bio, codexHook string
 	var quiet, jsonOut, contextOnly bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
-	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, local, human)")
+	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google, xai, local, human)")
 	fs.StringVar(&host, "host", "", "host this agent runs on (defaults to OS hostname)")
 	fs.StringVar(&wakeMethod, "wake-method", "", "wake adapter (e.g., tmux, herdr); leave empty for non-pokable agents")
 	fs.StringVar(&wakeTarget, "wake-target", "", "wake target; auto-detected from $TMUX_PANE (tmux) or $HERDR_PANE_ID→agent id (herdr)")
@@ -54,6 +55,11 @@ func cmdBoot(args []string) error {
 		Bio:                bio,
 		PruneStalePeerTmux: true,
 	}
+	// WI-E3 provenance: boot is a SessionStart-class hook enroll. When it fires
+	// INSIDE the runner (AGENTCHUTE_RUNNER=1 set on the runner's child), the
+	// runner owns the lane — record `runner` so the provenance is not demoted to
+	// `hook`, keeping the verify view truthful for runner-launched wrappers.
+	opts.LaunchedBy, opts.HookEvent = hookLaunchProvenance("boot")
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "host":
@@ -195,8 +201,9 @@ type bootStatus struct {
 	Warnings       []string                 `json:"warnings,omitempty"`
 	Blocked        bool                     `json:"blocked"`
 
-	// StaleReg / WakeStale reserved for forward-compat with spec rev3 §A.1's
-	// `stale_reg` and `wake_stale` JSON fields. Always false after a
+	// StaleReg / WakeStale reserved for forward-compat with the boot JSON
+	// wire shape's `stale_reg` and `wake_stale` fields (AGENTCHUTE.md §5).
+	// Always false after a
 	// successful boot since the register step freshly stamps last_seen; kept
 	// in the shape so downstream parsers can rely on a stable schema.
 	StaleReg  bool `json:"stale_reg"`
@@ -260,35 +267,47 @@ func emitBootJSON(s bootStatus) error {
 	return enc.Encode(s)
 }
 
-// emitBootContextOnly is the generic hook-safe text output suitable for
-// SessionStart developer-context injection. Never blocks — even with
-// outstanding obligations — because hook stdout becomes context, not a
-// turn-failure signal.
-func emitBootContextOnly(s bootStatus) error {
+// writeBootContext renders the boot summary body to w using a
+// leading-separator style: lines after the first are joined by a leading
+// "\n" and NO trailing newline is emitted. This is the genuinely-common
+// core shared by emitBootContextOnly (which appends one trailing newline
+// for stdout) and emitBootCodexSessionStart (which embeds the body verbatim
+// in the JSON envelope). Keeping the leading-separator style here makes the
+// codex string byte-identical to its prior form and the stdout text
+// byte-identical once the single trailing newline is added by the caller.
+func writeBootContext(w io.Writer, s bootStatus) {
 	switch {
 	case s.UnreadCount == 0 && s.RepliesPending == 0:
-		fmt.Printf("agentchute: %s enrolled (%s). Inbox clear; no pending reply obligations.\n", s.Agent, s.Vendor)
+		fmt.Fprintf(w, "agentchute: %s enrolled (%s). Inbox clear; no pending reply obligations.", s.Agent, s.Vendor)
 	default:
-		fmt.Printf("agentchute: %s enrolled (%s). %s.\n", s.Agent, s.Vendor, blockedSummary(s))
+		fmt.Fprintf(w, "agentchute: %s enrolled (%s). %s.", s.Agent, s.Vendor, blockedSummary(s))
 		for _, u := range s.Unread {
 			flags := ""
 			if u.ReplyRequired {
 				flags = " [REPLY-REQUIRED]"
 			}
-			fmt.Printf("  - unread: %s from %s — %s%s\n", u.Timestamp, u.From, u.Task, flags)
+			fmt.Fprintf(w, "\n  - unread: %s from %s — %s%s", u.Timestamp, u.From, u.Task, flags)
 		}
 		for _, p := range s.PendingReplies {
-			fmt.Printf("  - pending reply: %s from %s — %s\n", p.MessageID, p.From, p.Task)
+			fmt.Fprintf(w, "\n  - pending reply: %s from %s — %s", p.MessageID, p.From, p.Task)
 		}
-		fmt.Println()
-		fmt.Printf("Run `agentchute check --as %s` to consume unread; reply via `agentchute send --from %s --to <peer> --reply-to <message-id>` or `agentchute defer --as %s --message <message-id>`.\n", s.Agent, s.Agent, s.Agent)
+		fmt.Fprintf(w, "\n\nRun `agentchute check --as %s` to consume unread; reply via `agentchute send --from %s --to <peer> --reply-to <message-id> --body \"...\"` or `agentchute defer --as %s --message <message-id> --reason \"...\"`.", s.Agent, s.Agent, s.Agent)
 	}
 	if s.MalformedCount > 0 {
-		fmt.Printf("agentchute: %d malformed file(s) await quarantine — run `agentchute check --as %s`.\n", s.MalformedCount, s.Agent)
+		fmt.Fprintf(w, "\nagentchute: %d malformed file(s) await quarantine — run `agentchute check --as %s`.", s.MalformedCount, s.Agent)
 	}
 	for _, warning := range s.Warnings {
-		fmt.Printf("agentchute warning: %s\n", warning)
+		fmt.Fprintf(w, "\nagentchute warning: %s", warning)
 	}
+}
+
+// emitBootContextOnly is the generic hook-safe text output suitable for
+// SessionStart developer-context injection. Never blocks — even with
+// outstanding obligations — because hook stdout becomes context, not a
+// turn-failure signal.
+func emitBootContextOnly(s bootStatus) error {
+	writeBootContext(os.Stdout, s)
+	fmt.Println()
 	return nil
 }
 
@@ -297,29 +316,7 @@ func emitBootContextOnly(s bootStatus) error {
 // as model-visible developer context.
 func emitBootCodexSessionStart(s bootStatus) error {
 	var ctx strings.Builder
-	switch {
-	case s.UnreadCount == 0 && s.RepliesPending == 0:
-		fmt.Fprintf(&ctx, "agentchute: %s enrolled (%s). Inbox clear; no pending reply obligations.", s.Agent, s.Vendor)
-	default:
-		fmt.Fprintf(&ctx, "agentchute: %s enrolled (%s). %s.", s.Agent, s.Vendor, blockedSummary(s))
-		for _, u := range s.Unread {
-			flags := ""
-			if u.ReplyRequired {
-				flags = " [REPLY-REQUIRED]"
-			}
-			fmt.Fprintf(&ctx, "\n  - unread: %s from %s — %s%s", u.Timestamp, u.From, u.Task, flags)
-		}
-		for _, p := range s.PendingReplies {
-			fmt.Fprintf(&ctx, "\n  - pending reply: %s from %s — %s", p.MessageID, p.From, p.Task)
-		}
-		fmt.Fprintf(&ctx, "\n\nRun `agentchute check --as %s` to consume unread; reply via `agentchute send --from %s --to <peer> --reply-to <message-id>` or `agentchute defer --as %s --message <message-id>`.", s.Agent, s.Agent, s.Agent)
-	}
-	if s.MalformedCount > 0 {
-		fmt.Fprintf(&ctx, "\nagentchute: %d malformed file(s) await quarantine — run `agentchute check --as %s`.", s.MalformedCount, s.Agent)
-	}
-	for _, warning := range s.Warnings {
-		fmt.Fprintf(&ctx, "\nagentchute warning: %s", warning)
-	}
+	writeBootContext(&ctx, s)
 	out := map[string]any{
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":     "SessionStart",
@@ -358,10 +355,10 @@ Exit codes (--context-only / --codex-hook): always 0 unless command failure.
 
 Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
-  --vendor <vendor>     vendor or origin (anthropic, openai, google, local, human)
+  --vendor <vendor>     vendor or origin (anthropic, openai, google, xai, local, human)
   --host <name>         host (defaults to OS hostname)
-  --wake-method <m>     wake adapter (tmux, etc.); auto-detected from $TMUX_PANE
-  --wake-target <addr>  wake target; auto-detected from $TMUX_PANE when method is tmux
+  --wake-method <m>     wake adapter (tmux, herdr, agentchute-run); auto-detected from the launch context ($TMUX_PANE, herdr pane, or runner socket)
+  --wake-target <addr>  wake target; auto-detected from the launch context (tmux/herdr pane, runner socket)
   --bio <text>          short self-description for the registration body
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)

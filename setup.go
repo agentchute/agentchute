@@ -400,7 +400,7 @@ type setupWrapper struct {
 var setupWrappers = []setupWrapper{
 	{Name: "claude-code", Candidates: []string{"claude", "claude-code"}, Hookable: true},
 	{Name: "codex", Candidates: []string{"codex"}, Hookable: true},
-	{Name: "gemini-cli", Candidates: []string{"gemini", "gemini-cli"}, Hookable: true},
+	{Name: "gemini-cli", Candidates: []string{"gemini", "gemini-cli", "agy"}, Hookable: true},
 	{Name: "grok", Candidates: []string{"grok"}, Hookable: false},
 }
 

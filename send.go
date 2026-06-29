@@ -14,7 +14,8 @@ import (
 )
 
 // cmdSend writes an inbound message to a recipient's inbox and (best-effort)
-// pokes their wake target. v0.1.1 extensions per spec rev3 §A.4 + §A.10:
+// pokes their wake target. Messaging extensions (AGENTCHUTE.md §6.2/§6.4 reply
+// obligations, §8 wake adapters):
 //   - --ask:        sets reply_required: true frontmatter and prepends a
 //     `## ASK` body heading if not already present.
 //   - --reply-to:   when the message_id matches a pending entry in OUR
@@ -30,7 +31,7 @@ import (
 //
 // Warns (to stderr) if the sender's OWN pending-reply ledger has any entries
 // from <to> and --reply-to is not provided — catches "agent forgot to clear
-// the ledger when replying" per the spec rev3 §A.4 [REV2] defense.
+// the ledger when replying" (the reply-obligation defense, AGENTCHUTE.md §6.4).
 func cmdSend(args []string) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -92,7 +93,7 @@ func cmdSend(args []string) error {
 	}
 	fromID, err = resolveAgentID(fromID, "", cfg)
 	if err != nil {
-		return fmt.Errorf("missing --from; pass explicitly, set AGENTCHUTE_AGENT_ID, or run from a registered tmux pane")
+		return fmt.Errorf("missing --from; pass explicitly, set AGENTCHUTE_AGENT_ID, or run from a registered herdr/tmux pane")
 	}
 	if err := loop.ValidateAgentID(fromID); err != nil {
 		return fmt.Errorf("--from: %w", err)
@@ -131,7 +132,7 @@ func cmdSend(args []string) error {
 
 	// Pre-send: warn if our own pending-reply ledger has entries from this
 	// recipient but --reply-to wasn't passed. Best-effort signal — does not
-	// block the send. Spec rev3 §A.4 [REV2].
+	// block the send (AGENTCHUTE.md §6.4).
 	ledgerWarning := ""
 	if strings.TrimSpace(replyTo) == "" {
 		if senderLedger, lerr := loop.LoadPendingLedger(cfg, fromID); lerr == nil {
@@ -309,14 +310,15 @@ func computeWakeReceipt(cfg *loop.Config, toID string, noWake bool) wakeReceipt 
 	if !reg.IsPokable() {
 		return wakeReceipt{method: reg.WakeMethod, attempted: false, result: "skipped (no method declared)"}
 	}
-	// Recipient-binding for runner sockets: refuse to dial a unix: socket whose
-	// path the recipient does not legitimately own (e.g. a hand-written
+	// Recipient-binding for a runner wake_target: refuse to dial a unix: socket
+	// whose path the recipient does not legitimately own (e.g. a hand-written
 	// registration naming unix:/tmp/evil.sock). The pure shape validator can't
-	// see the recipient id; this check can. We keep the explicit owned-check
-	// here (rather than relying solely on PokeRegistration's refusal) so the
-	// operator receipt can distinguish "refused" (attempted=false) from a
-	// dial "failed" (attempted=true); the poke itself still flows through the
-	// centralized recipient-bound helper.
+	// see the recipient id; this check can.
+	//
+	// We keep this explicit preflight purely so the operator receipt can
+	// distinguish "refused" (attempted=false) from a dial "failed"
+	// (attempted=true). PokeRegistration runs the same owned-check internally
+	// (see pokeEndpoint); this preflight only sharpens the receipt wording.
 	if reg.WakeMethod == loop.RunnerWakeMethod {
 		if err := cfg.RunnerWakeTargetOwnedBy(toID, reg.WakeTarget); err != nil {
 			return wakeReceipt{method: reg.WakeMethod, attempted: false, result: fmt.Sprintf("refused (%v)", err)}

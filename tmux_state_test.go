@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -46,6 +47,25 @@ func writePeerRegAt(t *testing.T, cfg *loop.Config, agentID, host, method, targe
 	}
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTmuxTargetReachableWithinHonorsTimeout(t *testing.T) {
+	old := tmuxProbeBinary
+	path := filepath.Join(t.TempDir(), "tmux")
+	script := "#!/bin/sh\nexec sleep 5\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmuxProbeBinary = path
+	t.Cleanup(func() { tmuxProbeBinary = old })
+
+	start := time.Now()
+	if tmuxTargetReachableWithin("%slow", 75*time.Millisecond) {
+		t.Fatal("slow tmux probe reported reachable; want timeout/unreachable")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("tmux probe ignored timeout; elapsed=%s", elapsed)
 	}
 }
 

@@ -17,7 +17,7 @@ import (
 // could trap legitimate work the agent has consciously decided not to
 // reply to right now.
 //
-// Spec: v0.1.1 rev3 §A.5.
+// Spec: AGENTCHUTE.md §6.4 (reply obligation).
 //
 // Behavior:
 //  1. Resolve cfg, validate message_id + reason.

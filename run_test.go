@@ -386,6 +386,166 @@ func TestRunnerWakeSatisfiesRecipientLiveness(t *testing.T) {
 	}
 }
 
+func TestClearStaleRunnerWakeTargetsDoesNotClearTransientPingMiss(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerID := "peer-runner"
+	socketPath := cfg.RunnerSocketPath(peerID)
+	target := loop.RunnerWakeTarget(socketPath)
+	reachableAt := time.Now().UTC()
+	lastSeen := reachableAt.Add(-time.Minute)
+	reg := &loop.Registration{
+		AgentID:            peerID,
+		Vendor:             "test",
+		ControlRepo:        cfg.ControlRepo,
+		Host:               localHostname(),
+		WakeMethod:         loop.RunnerWakeMethod,
+		WakeTarget:         target,
+		LastSeen:           lastSeen,
+		Status:             loop.StatusActive,
+		ReachableAt:        &reachableAt,
+		ReachabilityMethod: loop.RunnerWakeMethod,
+		ReachabilityTarget: target,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(peerID), reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.SaveRunnerState(cfg, loop.RunnerState{
+		AgentID:    peerID,
+		Host:       localHostname(),
+		RunnerPID:  os.Getpid(),
+		SocketPath: socketPath,
+		Status:     "active",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cleared, err := clearStaleRunnerWakeTargets(cfg, "self-runner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared) != 0 {
+		t.Fatalf("cleared = %v, want none for a live process with a transient ping miss", cleared)
+	}
+	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(peerID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WakeMethod != loop.RunnerWakeMethod || got.WakeTarget != target {
+		t.Fatalf("wake = %s/%s, want preserved %s/%s", got.WakeMethod, got.WakeTarget, loop.RunnerWakeMethod, target)
+	}
+	if got.Status != loop.StatusActive {
+		t.Fatalf("status = %s, want active", got.Status)
+	}
+	if got.ReachableAt == nil {
+		t.Fatal("ReachableAt cleared on transient miss; want preserved")
+	}
+}
+
+func TestClearStaleRunnerWakeTargetsClearsOfflineStateWithoutOffliningPeer(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerID := "peer-runner"
+	socketPath := cfg.RunnerSocketPath(peerID)
+	target := loop.RunnerWakeTarget(socketPath)
+	reachableAt := time.Now().UTC()
+	reg := &loop.Registration{
+		AgentID:            peerID,
+		Vendor:             "test",
+		ControlRepo:        cfg.ControlRepo,
+		Host:               localHostname(),
+		WakeMethod:         loop.RunnerWakeMethod,
+		WakeTarget:         target,
+		LastSeen:           reachableAt.Add(-time.Hour),
+		Status:             loop.StatusActive,
+		ReachableAt:        &reachableAt,
+		ReachabilityMethod: loop.RunnerWakeMethod,
+		ReachabilityTarget: target,
+		ReachabilityError:  "old success",
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(peerID), reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.SaveRunnerState(cfg, loop.RunnerState{
+		AgentID:    peerID,
+		Host:       localHostname(),
+		RunnerPID:  os.Getpid(),
+		SocketPath: socketPath,
+		Status:     "offline",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cleared, err := clearStaleRunnerWakeTargets(cfg, "self-runner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared) != 1 || cleared[0] != peerID {
+		t.Fatalf("cleared = %v, want [%s]", cleared, peerID)
+	}
+	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(peerID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WakeMethod != "" || got.WakeTarget != "" {
+		t.Fatalf("wake = %s/%s, want cleared", got.WakeMethod, got.WakeTarget)
+	}
+	if got.Status != loop.StatusActive {
+		t.Fatalf("status = %s, want preserved active (startup stale-clear must not offline peers)", got.Status)
+	}
+	if got.ReachableAt != nil || got.ReachabilityMethod != "" || got.ReachabilityTarget != "" || got.ReachabilityError != "" {
+		t.Fatalf("reachability cache not cleared: at=%v method=%q target=%q err=%q", got.ReachableAt, got.ReachabilityMethod, got.ReachabilityTarget, got.ReachabilityError)
+	}
+}
+
+func TestMarkRunnerOfflineClearsReachabilityCache(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentID := "runner-test"
+	target := loop.RunnerWakeTarget(cfg.RunnerSocketPath(agentID))
+	reachableAt := time.Now().UTC()
+	reg := &loop.Registration{
+		AgentID:            agentID,
+		Vendor:             "test",
+		ControlRepo:        cfg.ControlRepo,
+		Host:               localHostname(),
+		WakeMethod:         loop.RunnerWakeMethod,
+		WakeTarget:         target,
+		LastSeen:           reachableAt.Add(-time.Minute),
+		Status:             loop.StatusActive,
+		ReachableAt:        &reachableAt,
+		ReachabilityMethod: loop.RunnerWakeMethod,
+		ReachabilityTarget: target,
+		ReachabilityError:  "old success",
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := markRunnerOffline(cfg, agentID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != loop.StatusOffline {
+		t.Fatalf("status = %s, want offline", got.Status)
+	}
+	if got.ReachableAt != nil || got.ReachabilityMethod != "" || got.ReachabilityTarget != "" || got.ReachabilityError != "" {
+		t.Fatalf("reachability cache not cleared: at=%v method=%q target=%q err=%q", got.ReachableAt, got.ReachabilityMethod, got.ReachabilityTarget, got.ReachabilityError)
+	}
+}
+
 // newPollTestRuntime builds a minimal runnerRuntime sufficient to exercise
 // pollOnce in isolation (no PTY, no socket). It registers the agent so the
 // pollOnce UpdateLastSeen call has a registration to read, and seeds the
@@ -480,6 +640,65 @@ func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 	rt.pollOnce(true)
 	if !rt.drainWake() {
 		t.Fatal("runner did not wake on a valid back-dated inbox file")
+	}
+}
+
+// WI-E2: the runner's off-turn poll loop re-proves its OWN wake target each tick
+// and records a cached reachability fact (ReachableAt) in its registration.
+func TestRunnerPollLoop_WritesReachableAt(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentID := "runner-test"
+	if err := loop.EnsurePrivateDir(cfg.AgentInboxDir(agentID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.EnsurePrivateDir(cfg.AgentStateDir(agentID)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A live runner socket the recipient owns (so the owned-check passes and the
+	// dispatcher dials it).
+	socketPath := cfg.RunnerSocketPath(agentID)
+	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: agentID})
+	target := loop.RunnerWakeTarget(socketPath)
+
+	reg := &loop.Registration{
+		AgentID:     agentID,
+		Vendor:      "test",
+		ControlRepo: cfg.ControlRepo,
+		Host:        localHostname(),
+		WakeMethod:  loop.RunnerWakeMethod,
+		WakeTarget:  target,
+		LastSeen:    time.Now().UTC(),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := &runnerRuntime{
+		cfg:     cfg,
+		opts:    runnerOptions{AgentID: agentID, Vendor: "test", IntervalSeconds: 5},
+		started: time.Now().UTC(),
+		socket:  socketPath,
+		wakeCh:  make(chan struct{}, 1),
+		stopCh:  make(chan struct{}),
+	}
+
+	rt.pollOnce(false)
+
+	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReachableAt == nil {
+		t.Fatal("pollOnce did not write ReachableAt for a live owned runner socket")
+	}
+	if got.ReachabilityMethod != loop.RunnerWakeMethod || got.ReachabilityTarget != target {
+		t.Fatalf("reachability endpoint = %s/%s, want %s/%s", got.ReachabilityMethod, got.ReachabilityTarget, loop.RunnerWakeMethod, target)
 	}
 }
 

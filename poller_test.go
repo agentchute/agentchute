@@ -34,6 +34,52 @@ func TestPollerRunOnceWritesHeartbeat(t *testing.T) {
 	}
 }
 
+// WI-E2: a poller tick re-proves the agent's own wake target and records the
+// cached reachability fact, so a polling (non-runner) lane self-heals off-turn.
+func TestPollerTick_RecordsReachabilityFact(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentID := "poller-reach"
+	if err := loop.EnsurePrivateDir(cfg.AgentInboxDir(agentID)); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := cfg.RunnerSocketPath(agentID)
+	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: agentID})
+	target := loop.RunnerWakeTarget(socketPath)
+	reg := &loop.Registration{
+		AgentID:     agentID,
+		Vendor:      "test",
+		ControlRepo: cfg.ControlRepo,
+		Host:        localHostname(),
+		WakeMethod:  loop.RunnerWakeMethod,
+		WakeTarget:  target,
+		LastSeen:    time.Now().UTC(),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
+		t.Fatal(err)
+	}
+
+	params := serviceParams{AgentID: agentID, Vendor: "test", Interval: loop.DefaultPollerIntervalSeconds, Repo: root}
+	if err := pollerTick(cfg, params, nil, time.Now().UTC()); err != nil {
+		t.Fatalf("pollerTick err = %v", err)
+	}
+
+	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReachableAt == nil {
+		t.Fatal("pollerTick did not record ReachableAt for a live owned wake target")
+	}
+	if got.ReachabilityMethod != loop.RunnerWakeMethod || got.ReachabilityTarget != target {
+		t.Fatalf("reachability endpoint = %s/%s, want %s/%s", got.ReachabilityMethod, got.ReachabilityTarget, loop.RunnerWakeMethod, target)
+	}
+}
+
 func TestPollerStatusBlocksWhenHeartbeatMissing(t *testing.T) {
 	root, _ := setupSendFixture(t)
 	withCwd(t, root, func() {

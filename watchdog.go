@@ -161,17 +161,6 @@ func runLivenessSweep(ctx context.Context, cfg *loop.Config, opts watchdogOption
 			// Silent skip — this is expected steady-state in multi-host pools.
 			continue
 		}
-		// runner supervision probe (C lane): log unreachable runner sockets for
-		// observability and self-heal awareness. (Self-heal on next attended
-		// shim start; no auto poke here.)
-		if reg.WakeMethod == loop.RunnerWakeMethod && reg.WakeTarget != "" {
-			// Recipient-bound reachability: never dial a runner socket the peer
-			// does not own (a hostile reg could name unix:/tmp/evil.sock). An
-			// unowned target is reported unreachable without a dial.
-			if !runnerReachableForRecipient(cfg, reg, 300*time.Millisecond) {
-				logWatchdogEvent(cfg, now, "runner socket for %s unreachable (dead runner or stale reg); heals on next shim start", reg.AgentID)
-			}
-		}
 		if err := watchdogAgentCycle(ctx, cfg, reg, now, opts); err != nil {
 			logWatchdogEvent(cfg, now, "%s error: %v", reg.AgentID, err)
 		}

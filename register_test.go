@@ -268,7 +268,8 @@ func TestRegister_InboxExistsBeforeRegistrationVisible(t *testing.T) {
 func TestPerformRegisterConcurrentSameHerdrPaneReusesBase(t *testing.T) {
 	root := t.TempDir()
 	base := "claude-code-" + getFolderSlug(root)
-	withFakeHerdr(t, base, "w3:p7")
+	renameLog := filepath.Join(t.TempDir(), "rename.log")
+	withFakeHerdrList(t, renameLog, map[string]string{base: "w3:p7"})
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
@@ -1043,7 +1044,7 @@ func TestRegister_NilToExistingRaceDoesNotClobberWake(t *testing.T) {
 		// publish writes empty over a concurrent nil->existing create.
 		os.Unsetenv("TMUX_PANE")
 		opts := registerOpts{AgentID: agentID, Vendor: "anthropic"}
-		_, _, deferToExisting, _ := resolveWakeForRegistration(opts, nil)
+		_, _, deferToExisting, _ := resolveWakeForRegistration(cfg, opts, nil)
 		if !deferToExisting {
 			t.Fatalf("resolveWakeForRegistration(nil existing, no live context) deferToExisting=false, want true (else empty wake clobbers a concurrent nil->existing create)")
 		}

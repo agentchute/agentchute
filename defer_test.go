@@ -54,7 +54,7 @@ func setupDeferFixture(t *testing.T) (string, *loop.Config) {
 	return msgID, cfg
 }
 
-// Test 5 (spec rev3 Part 4): defer transitions the ledger entry to
+// defer transitions the ledger entry to
 // deferred, populates deferred_at + reason (+ optional deferred_until),
 // and gate --before finish exits 0 afterwards. Also: an automatic
 // deferral-ack message lands in the sender's inbox.

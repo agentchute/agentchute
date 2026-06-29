@@ -33,7 +33,10 @@ const (
 	tempFilePrefix = ".tmp_"
 )
 
-var removeFile = os.Remove
+var (
+	removeFile   = os.Remove
+	readInboxDir = os.ReadDir
+)
 
 // agentIDPattern matches the agent_id slug rules: lowercase, digits, hyphen.
 // Mirrors AGENTCHUTE.md §5: "Lowercase, hyphen-separated, no spaces."
@@ -282,7 +285,7 @@ var ErrInboxMissing = errors.New("agentchute: inbox directory missing")
 // Returns a wrapped ErrInboxMissing when inboxDir does not exist; use
 // errors.Is to detect it.
 func ListInboxMessagesWithSkipped(inboxDir string) ([]Message, []string, error) {
-	entries, err := os.ReadDir(inboxDir)
+	entries, err := readInboxDir(inboxDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil, fmt.Errorf("%w: %s", ErrInboxMissing, inboxDir)
@@ -336,6 +339,9 @@ func ListInboxMessagesWithSkipped(inboxDir string) ([]Message, []string, error) 
 func isRegularDirEntry(entry os.DirEntry) (bool, error) {
 	info, err := entry.Info()
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
 		return false, err
 	}
 	mode := info.Mode()
@@ -378,11 +384,38 @@ func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.T
 	dest := ArchiveMessageDest(msg, archiveDir, recipient, consumedAt)
 	if err := linkNoClobber(msg.Path, dest); err != nil {
 		if errors.Is(err, os.ErrExist) {
+			if ok, removeSource, completeErr := archiveAlreadyComplete(msg.Path, dest); completeErr != nil {
+				return "", completeErr
+			} else if ok {
+				if removeSource {
+					if err := os.Remove(msg.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+						return "", fmt.Errorf("remove archived source %s: %w", msg.Path, err)
+					}
+					if err := syncDir(filepath.Dir(msg.Path)); err != nil {
+						return "", err
+					}
+				}
+				if err := syncDir(archiveDir); err != nil {
+					return "", err
+				}
+				return dest, nil
+			}
 			return "", fmt.Errorf("archive destination %s already exists", dest)
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			if _, statErr := os.Stat(dest); statErr == nil {
+				return dest, nil
+			}
 		}
 		return "", fmt.Errorf("archive %s -> %s: %w", msg.Path, dest, err)
 	}
 	if err := os.Remove(msg.Path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if err := syncDir(archiveDir); err != nil {
+				return "", err
+			}
+			return dest, nil
+		}
 		return "", fmt.Errorf("remove archived source %s: %w", msg.Path, err)
 	}
 	if err := syncDir(filepath.Dir(msg.Path)); err != nil {
@@ -392,6 +425,24 @@ func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.T
 		return "", err
 	}
 	return dest, nil
+}
+
+func archiveAlreadyComplete(src, dest string) (ok, removeSource bool, err error) {
+	destInfo, destErr := os.Stat(dest)
+	if destErr != nil {
+		return false, false, nil
+	}
+	srcInfo, srcErr := os.Stat(src)
+	if srcErr != nil {
+		if errors.Is(srcErr, os.ErrNotExist) {
+			return true, false, nil
+		}
+		return false, false, fmt.Errorf("stat archived source %s: %w", src, srcErr)
+	}
+	if os.SameFile(srcInfo, destInfo) {
+		return true, true, nil
+	}
+	return false, false, nil
 }
 
 // writeAndSyncOpenFile writes content into an already-open temp file, fixes its

@@ -46,7 +46,7 @@ var (
 	hookEnvOnlyRE = regexp.MustCompile(`\$AGENTCHUTE_BIN[ \t]+[a-z]`)
 )
 
-// cmdDoctor is the diagnostic aggregator (spec rev3 §A.7). Walks an
+// cmdDoctor is the diagnostic aggregator. Walks an
 // ordered list of checks; each check returns a severity-tagged result.
 // Doctor diagnoses and exits nonzero on blockers; `gate` / `boot` own the
 // lifecycle blocking surface during normal wrapper operation.
@@ -187,6 +187,8 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 		checkHookFilePresence(cfg, agentID),
 		checkHookContentSanity(cfg),
 		checkWrapperShadowing(cfg, agentID, opts),
+		checkUnenrolledPresence(cfg),
+		checkLaunchProvenance(cfg, agentID, opts),
 	}
 	if agentID != "" {
 		checks = append(checks,
@@ -354,6 +356,106 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 		Name:     "wrapper_shadowing",
 		Severity: severityWarn,
 		Message:  fmt.Sprintf("shim dir %s is not on PATH; add it or rerun setup", shimDir),
+	}
+}
+
+// checkUnenrolledPresence is the WI-E1 read-only presence check. It runs
+// scanUnenrolledWrappers and reports OK when nothing is present-but-unenrolled,
+// or WARN listing the offenders. It is ADVISORY ONLY — never a BLOCKER: a raw
+// wrapper that skipped enrollment is an operator signal, not a reason to fail a
+// gate. The scan performs ZERO writes (it never repairs a registration; that is
+// WI-E4's job).
+func checkUnenrolledPresence(cfg *loop.Config) doctorCheck {
+	found, err := scanUnenrolledWrappers(cfg)
+	if err != nil {
+		return doctorCheck{Name: "unenrolled_presence", Severity: severitySkip, Message: fmt.Sprintf("presence scan unavailable: %v", err)}
+	}
+	if len(found) == 0 {
+		return doctorCheck{Name: "unenrolled_presence", Severity: severityOK, Message: "no unenrolled wrappers detected in this pool"}
+	}
+	parts := make([]string, 0, len(found))
+	for _, p := range found {
+		parts = append(parts, fmt.Sprintf("%s:%s", p.Kind, p.Hint))
+	}
+	return doctorCheck{
+		Name:     "unenrolled_presence",
+		Severity: severityWarn,
+		Message:  fmt.Sprintf("%d wrapper(s) present in this pool but not enrolled: %s — enroll via their `ac-<wrapper>` launcher or `agentchute boot --as <id>`", len(found), strings.Join(parts, ", ")),
+	}
+}
+
+// checkLaunchProvenance is the WI-E3 detect-and-warn launch-bypass check. When
+// the runner wake path IS configured (setup installed the ac-* launchers and the
+// expected launch is `ac-<wrapper>` -> runner), it WARNS — never BLOCKS — if a
+// wrapper is running raw:
+//
+//   - the agent's registration records launched_by=manual or has no provenance
+//     (a hand/raw launch, not via the runner), OR
+//   - a real wrapper binary shadows the launcher shim earlier on PATH
+//     (pathIsPrioritized==false while the shim dir IS on PATH).
+//
+// This is ADVISORY by design (codex guardrail): it NEVER returns a BLOCKER, it
+// does NOT flip the runner default (runner stays opt-in), and it installs no
+// same-name shadowing — it only points the operator at `ac-<wrapper>`. Managed
+// enrollments (runner/hook/poller) and non-runner setups do not warn.
+func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
+	const name = "launch_provenance"
+
+	wake := ""
+	if opts.PoolState != nil && opts.PoolState.Wake != "" {
+		wake = opts.PoolState.Wake
+	} else if opts.GlobalState != nil && opts.GlobalState.Wake != "" {
+		wake = opts.GlobalState.Wake
+	}
+	if wake == "" {
+		return doctorCheck{Name: name, Severity: severitySkip, Message: "agentchute setup not run; launch-bypass check not applicable"}
+	}
+	if !setupNeedsShims(wake) {
+		return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("%s wake does not include the runner; raw-launch bypass only applies to runner setups", wake)}
+	}
+
+	shimDir := ""
+	if opts.GlobalState != nil {
+		shimDir = opts.GlobalState.ShimDir
+	}
+	if shimDir == "" {
+		home, _ := os.UserHomeDir()
+		shimDir = filepath.Join(home, ".agentchute", "bin")
+	}
+	pathEnv := opts.PathEnv
+	if pathEnv == "" {
+		pathEnv = os.Getenv("PATH")
+	}
+
+	var reasons []string
+	// (1) Shadowing: a real wrapper binary appears before the shim dir on PATH.
+	// Gated on pathContains so "shim dir absent from PATH" (checkWrapperShadowing's
+	// domain) does not double-fire here.
+	candidates := wrapperCandidatesForAgent(agentID)
+	if pathContains(shimDir, pathEnv) && !pathIsPrioritized(shimDir, pathEnv, candidates) {
+		reasons = append(reasons, fmt.Sprintf("a real wrapper binary shadows the launcher shim in %s earlier on PATH", shimDir))
+	}
+	// (2) Provenance: the agent enrolled raw (manual / no provenance) rather than
+	// via the runner. Managed provenance (runner/hook/poller) is fine.
+	if agentID != "" {
+		if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID)); err == nil {
+			switch strings.TrimSpace(reg.LaunchedBy) {
+			case loop.LaunchedByRunner, loop.LaunchedByHook, loop.LaunchedByPoller:
+				// Managed enrollment — not a raw bypass.
+			default: // "" (legacy/unknown) or "manual"
+				reasons = append(reasons, fmt.Sprintf("registration launched_by=%q indicates a raw launch (not routed through the runner)", firstNonEmpty(reg.LaunchedBy, "unset")))
+			}
+		}
+	}
+
+	if len(reasons) == 0 {
+		return doctorCheck{Name: name, Severity: severityOK, Message: "no raw-launch bypass detected; this lane routes through the runner"}
+	}
+	fix := strings.Join(shimNamesForAgent(agentID), " / ")
+	return doctorCheck{
+		Name:     name,
+		Severity: severityWarn,
+		Message:  fmt.Sprintf("%s — relaunch via `%s` to route through the runner (advisory only; the runner stays opt-in and is never auto-activated)", strings.Join(reasons, "; "), fix),
 	}
 }
 
@@ -672,25 +774,25 @@ func checkWakeTargetValidity(cfg *loop.Config, agentID string) doctorCheck {
 	}
 	switch method {
 	case "tmux":
-		if _, err := exec.LookPath("tmux"); err != nil {
+		if _, err := exec.LookPath(tmuxProbeBinary); err != nil {
 			return doctorCheck{Name: "wake_target_validity", Severity: severityBlocker, Message: "wake_method=tmux but `tmux` not on PATH; senders will fail to wake this agent"}
 		}
-		// Lightweight: probe pane existence without sending keys. Tmux's
-		// has-session takes a session-qualified target; for bare pane IDs
-		// (%N) list-panes is the right verb.
-		probeArgs := []string{"list-panes", "-t", target}
-		if err := exec.Command("tmux", probeArgs...).Run(); err != nil {
+		// Lightweight: probe pane existence without sending keys. Routed through
+		// the shared timeout-aware helper (tmuxTargetReachableWithin) so this
+		// arm honors the tmuxProbeBinary test seam and the same list-panes verb
+		// instead of re-inlining a hardcoded "tmux" exec.
+		if !tmuxTargetReachableWithin(target, time.Second) {
 			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=tmux but target %q not currently addressable (`tmux list-panes -t %s` failed); pane may have closed", target, target)}
 		}
 		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=tmux, target=%s reachable", target)}
 	case "herdr":
-		if _, err := exec.LookPath("herdr"); err != nil {
+		if _, err := exec.LookPath(herdrProbeBinary); err != nil {
 			return doctorCheck{Name: "wake_target_validity", Severity: severityBlocker, Message: "wake_method=herdr but `herdr` not on PATH; senders will fail to wake this agent"}
 		}
 		// Read-only: resolve the stable agent name to a live pane without
 		// sending keys.
 		if !herdrAgentReachable(target) {
-			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=herdr but agent %q not currently addressable (`herdr agent get %s` failed); pane may have closed or the rename was lost", target, target)}
+			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=herdr but agent %q is not bound to a live pane (no matching `name` in `herdr agent list`); the pane may have closed or the herdr name was cleared/renamed", target)}
 		}
 		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=herdr, target=%s reachable", target)}
 	case loop.RunnerWakeMethod:

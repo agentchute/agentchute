@@ -515,14 +515,11 @@ func withFakeSetupHerdr(t *testing.T, root, logPath string) {
 		"if [ \"$cmd\" != agent ]; then exit 1; fi\n" +
 		"case \"$sub\" in\n" +
 		"  list)\n" +
-		"    printf '{\"result\":{\"agents\":[{\"name\":\"codex-agentchute\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"},{\"name\":\"claude-code-agentchute\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"},{\"name\":\"codex-other\",\"cwd\":\"/tmp/other\",\"foreground_cwd\":\"/tmp/other\"}]}}\\n'\n" +
+		"    printf '{\"result\":{\"agents\":[{\"name\":\"codex-agentchute\",\"pane_id\":\"w3:p1\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"},{\"name\":\"claude-code-agentchute\",\"pane_id\":\"w3:p2\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"},{\"name\":\"codex-other\",\"pane_id\":\"w3:p3\",\"cwd\":\"/tmp/other\",\"foreground_cwd\":\"/tmp/other\"}]}}\\n'\n" +
 		"    exit 0 ;;\n" +
 		"  get)\n" +
-		"    case \"$target\" in\n" +
-		"      codex-agentchute) printf '{\"result\":{\"agent\":{\"name\":\"codex-agentchute\",\"pane_id\":\"w3:p1\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"}}}\\n'; exit 0 ;;\n" +
-		"      claude-code-agentchute) printf '{\"result\":{\"agent\":{\"name\":\"claude-code-agentchute\",\"pane_id\":\"w3:p2\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"}}}\\n'; exit 0 ;;\n" +
-		"      *) printf '{\"error\":{\"code\":\"agent_not_found\"}}\\n'; exit 0 ;;\n" +
-		"    esac ;;\n" +
+		"    printf '{\"error\":{\"code\":\"agent_not_found\"}}\\n'\n" +
+		"    exit 0 ;;\n" +
 		"  rename)\n" +
 		"    printf 'rename %s %s\\n' \"$target\" \"$arg4\" >> '" + logPath + "'\n" +
 		"    exit 0 ;;\n" +
@@ -563,8 +560,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v14 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v14 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v15 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v15 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)

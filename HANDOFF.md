@@ -1,6 +1,6 @@
 # agentchute — current handoff
 
-Last updated: 2026-06-17.
+Last updated: 2026-06-29.
 
 Read this after `AGENTS.md` and before touching anything. This file should stay short and current; release history belongs in `CHANGELOG.md`, and protocol history belongs in `AGENTCHUTE.md`.
 
@@ -21,12 +21,12 @@ Per-version release notes and older verification history live in [`CHANGELOG.md`
 Recent shipped work:
 
 - v0.6.2 release: Writes-before-reset setup reordering (idempotent hook/shim writes land before destructive runtime resets) + `--no-resync` flag for binary-only updates without saved state.
-- Contextual identity defaults: explicit `--as`, then `AGENTCHUTE_AGENT_ID`, then current tmux pane registration, then `<wrapper>-<folder>`.
+- Contextual identity defaults: explicit `--as`, then `AGENTCHUTE_AGENT_ID`, then current herdr pane registration, then current tmux pane registration, then `<wrapper>-<folder>`.
 - Same-folder conflict handling with suffixes such as `codex-agentchute-2`.
-- v12 enrollment refresh for existing `AGENTS.md`, `CLAUDE.md`, `CODEX.md`, `GEMINI.md`, and `GROK.md` blocks.
+- v15 enrollment refresh (current enrollment-template version) for existing `AGENTS.md`, `CLAUDE.md`, `CODEX.md`, `GEMINI.md`, and `GROK.md` blocks.
 - Worktree/project pool guidance: agents communicate inside their discovered pool by default; cross-worktree/top-project pools require explicit pointer/env/flag setup.
 - v0.3.5 blog article and illustration for the improved tmux/worktree reference path.
-- Post-release repo cleanup: stale `V0.1.1-HANDOFF.md` removed, `HANDOFF.md` refreshed, Grok loop example added, scratch files ignored, and setup now clears stale live registrations before installing hooks/shims.
+- Post-release repo cleanup: stale `V0.1.1-HANDOFF.md` removed, `HANDOFF.md` refreshed, Grok loop example added, scratch files ignored, and setup runtime reset behavior documented.
 - v0.3.7 hotfix: same-pane contextual registration adoption, atomic exclusive registration publish, SessionStart self-check dedup, and first-class Grok runner/shim setup support.
 - v0.3.8 hotfix: tmux-mode setup now keeps launcher shims for hookless selected wrappers, especially Grok, so startup enrollment is automatic even without lifecycle hooks.
 - v0.3.9 hotfix: duplicate tmux pane registrations reconciled — same-pane re-enrollment no longer accumulates multiple live registrations (`identity.go`, `register.go`, `tmux_state.go`).
@@ -38,9 +38,9 @@ Recent shipped work:
 
 ## Restart Context
 
-Released (2026-06-17): `v0.6.1` is published and latest. The previously source-only herdr wake fix and `setup --wake` path combinations are now available through `agentchute update` and `install.sh`; no from-source binary is required. After updating, restart wrappers so they re-enroll with the new setup state. For herdr-native wake, launch a wrapper **bare** in a herdr pane (not via `ac-*`, which keeps the runner socket).
+Released: `v0.6.2` is published and latest. The herdr wake fix and `setup --wake` path combinations (v0.6.1), plus the writes-before-reset setup reordering and the `--no-resync` update flag (v0.6.2), are all available through `agentchute update` and `install.sh`; no from-source binary is required. After updating, restart wrappers so they re-enroll with the new setup state. For herdr-native wake, launch a wrapper **bare** in a herdr pane (not via `ac-*`, which keeps the runner socket).
 
-If you upgrade agentchute, remember to run `agentchute update` or re-run `agentchute setup` to sync the control repo. After reinstall or update, restart wrappers from this repo with `ac-claude`, `ac-codex`, `ac-gemini`, and `ac-grok`. Do not use custom `AGENTCHUTE_AGENT_ID` unless a named stable lane is required. The expected default identity path is `--as` > `AGENTCHUTE_AGENT_ID` > existing current herdr/tmux pane registration > contextual `<wrapper>-<folder>` with `-2`, `-3`, etc. for live conflicts.
+If you upgrade agentchute, remember to run `agentchute update` or re-run `agentchute setup` to sync the control repo. After reinstall or update, restart wrappers from this repo with `ac-claude`, `ac-codex`, `ac-gemini`, and `ac-grok`. Do not use custom `AGENTCHUTE_AGENT_ID` unless a named stable lane is required. The expected default identity path is `--as` > `AGENTCHUTE_AGENT_ID` > existing current herdr pane registration > existing current tmux pane registration > contextual `<wrapper>-<folder>` with `-2`, `-3`, etc. for live conflicts.
 
 If restart behavior looks wrong, first run:
 

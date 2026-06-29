@@ -160,6 +160,14 @@ func TestWithAgentLock_BoundedWaitDoesNotDeadlock(t *testing.T) {
 	cfg := newLockTestConfig(t)
 	const agentID = "claude-code"
 
+	// Lower the bounded-wait window so the competing acquisition gives up in
+	// ~100ms instead of the 5s production default — the assertion (a contended
+	// acquire returns a timeout error rather than blocking forever) is
+	// unchanged, it just no longer costs ~5s per test run. Restored after.
+	oldTimeout := agentLockTimeout
+	agentLockTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { agentLockTimeout = oldTimeout })
+
 	held := make(chan struct{})
 	release := make(chan struct{})
 	go func() {

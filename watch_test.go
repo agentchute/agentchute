@@ -114,10 +114,12 @@ func TestRunWatchLoopFiresOnlyOnNewArrivals(t *testing.T) {
 
 	var mu sync.Mutex
 	var firedKeys []string
+	ready := make(chan struct{})
 	opts := watchOptions{
 		Cfg:     cfg,
 		AgentID: "claude-code",
 		Print:   true,
+		Ready:   ready,
 		PrintFn: func(_, message string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -126,11 +128,13 @@ func TestRunWatchLoopFiresOnlyOnNewArrivals(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- runWatchLoop(ctx, opts, 50*time.Millisecond) }()
+	go func() { done <- runWatchLoop(ctx, opts, 10*time.Millisecond) }()
 
-	// Give the loop a tick to do its startup snapshot.
-	time.Sleep(120 * time.Millisecond)
+	// Deterministic: wait for the startup snapshot to capture the pre-existing
+	// message as "seen" before dropping a new one — no fixed sleep guess.
+	waitForReady(t, ready, done)
 
 	// Drop a new message AFTER the snapshot. Use a microsecond-distinct
 	// timestamp so the filename is unique.
@@ -139,8 +143,11 @@ func TestRunWatchLoopFiresOnlyOnNewArrivals(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Let the loop pick it up on the next tick.
-	time.Sleep(200 * time.Millisecond)
+	// Poll until the new message fires (bounded), instead of sleeping a fixed
+	// interval, then settle briefly to surface any erroneous second fire.
+	firedCount := func() int { mu.Lock(); defer mu.Unlock(); return len(firedKeys) }
+	waitForCount(firedCount, 1, 2*time.Second)
+	settleFireCount(t, firedCount, 1)
 	cancel()
 	<-done
 
@@ -164,10 +171,12 @@ func TestRunWatchLoopFiresOnBothFilesWithSharedMessageID(t *testing.T) {
 
 	var mu sync.Mutex
 	fires := 0
+	ready := make(chan struct{})
 	opts := watchOptions{
 		Cfg:     cfg,
 		AgentID: "claude-code",
 		Print:   true,
+		Ready:   ready,
 		PrintFn: func(_, _ string) {
 			mu.Lock()
 			fires++
@@ -176,10 +185,11 @@ func TestRunWatchLoopFiresOnBothFilesWithSharedMessageID(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- runWatchLoop(ctx, opts, 50*time.Millisecond) }()
+	go func() { done <- runWatchLoop(ctx, opts, 10*time.Millisecond) }()
 
-	time.Sleep(120 * time.Millisecond)
+	waitForReady(t, ready, done)
 	// Two distinct files (distinct filenames via separate WriteInboxMessage
 	// calls; each gets a fresh nonce + microsecond-distinct timestamp)
 	// that share a frontmatter message_id.
@@ -193,7 +203,11 @@ func TestRunWatchLoopFiresOnBothFilesWithSharedMessageID(t *testing.T) {
 	if _, err := loop.WriteInboxMessage(inbox, time.Now().UTC(), "codex", body); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond)
+	// Poll until both files have fired (bounded), then settle to confirm no
+	// extra fire, instead of sleeping a fixed interval.
+	fireCount := func() int { mu.Lock(); defer mu.Unlock(); return fires }
+	waitForCount(fireCount, 2, 2*time.Second)
+	settleFireCount(t, fireCount, 2)
 	cancel()
 	<-done
 
@@ -213,10 +227,12 @@ func TestRunWatchLoopDedupesBySameFile(t *testing.T) {
 
 	var mu sync.Mutex
 	fires := 0
+	ready := make(chan struct{})
 	opts := watchOptions{
 		Cfg:     cfg,
 		AgentID: "claude-code",
 		Print:   true,
+		Ready:   ready,
 		PrintFn: func(_, _ string) {
 			mu.Lock()
 			fires++
@@ -225,17 +241,20 @@ func TestRunWatchLoopDedupesBySameFile(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- runWatchLoop(ctx, opts, 50*time.Millisecond) }()
+	go func() { done <- runWatchLoop(ctx, opts, 10*time.Millisecond) }()
 
-	time.Sleep(120 * time.Millisecond)
+	waitForReady(t, ready, done)
 	if _, err := loop.WriteInboxMessage(inbox, time.Now().UTC(), "codex",
 		[]byte("---\nmessage_id: dedup-test\nfrom: codex\nto: claude-code\n---\n\nb\n")); err != nil {
 		t.Fatal(err)
 	}
-	// Let several ticks elapse — fires should remain at 1 (same file scanned
-	// repeatedly).
-	time.Sleep(300 * time.Millisecond)
+	// Poll until the file fires once, then let several more ticks elapse and
+	// confirm the count stays at 1 (same file scanned repeatedly must dedup).
+	fireCount := func() int { mu.Lock(); defer mu.Unlock(); return fires }
+	waitForCount(fireCount, 1, 2*time.Second)
+	settleFireCount(t, fireCount, 1)
 	cancel()
 	<-done
 
@@ -318,6 +337,52 @@ func TestCmdWatchRequiresAnAction(t *testing.T) {
 			t.Errorf("error should mention the action flags: %v", err)
 		}
 	})
+}
+
+// waitForReady blocks until the watch loop signals it finished its startup
+// inbox snapshot (ready is closed), with a safety deadline so a hung or
+// early-exiting loop fails the test fast instead of blocking it forever. This
+// replaces the old "sleep ~120ms and hope the snapshot ran" guess with a
+// deterministic handoff, eliminating the race where a message dropped before
+// the snapshot would be folded into the seen set and never fire.
+func waitForReady(t *testing.T, ready <-chan struct{}, done <-chan error) {
+	t.Helper()
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("watch loop exited before startup snapshot: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch loop did not signal startup snapshot within 2s")
+	}
+}
+
+// waitForCount polls count() until it reaches at least want or the deadline
+// elapses. It returns as soon as the watch loop has fired the expected number
+// of times, so a passing run is fast; only an under-fire regression spends the
+// full deadline, after which the caller's exact-count assertion reports the
+// shortfall. This replaces the old fixed "sleep 200-300ms for the tick to
+// fire" guess that flaked on a loaded CI box.
+func waitForCount(count func() int, want int, deadline time.Duration) {
+	end := time.Now().Add(deadline)
+	for count() < want && time.Now().Before(end) {
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// settleFireCount watches count() for a short bounded window after the expected
+// fires have landed and fails the moment it exceeds want. An over-fire
+// (re-dispatch of an already-seen file) would occur on the very next watch
+// tick, so polling a small window surfaces it deterministically and fast,
+// rather than relying on a fixed sleep happening to span the extra tick.
+func settleFireCount(t *testing.T, count func() int, want int) {
+	t.Helper()
+	end := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(end) {
+		if c := count(); c > want {
+			t.Fatalf("fired %d times, want %d (over-fire / double-dispatch regression)", c, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func contains(haystack, needle string) bool {

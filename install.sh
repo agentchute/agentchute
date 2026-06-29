@@ -542,16 +542,13 @@ EOF
 	fi
 	is_valid_install_dir "$shim_dir" || err "invalid shim dir: $shim_dir (must not contain quotes, dollar signs, backticks, or backslashes)"
 
-	# Tmux is the v0.1 reference peer-wake adapter. Not required to use the
-	# binary (CI, protocol-only, polling-only setups are valid), but without
-	# it senders cannot wake recipients. Inform once, do not fail.
+	# tmux is one peer-wake adapter. Missing tmux only removes that adapter:
+	# runner/herdr wake paths and polling-only setups remain valid.
 	if ! command -v tmux >/dev/null 2>&1; then
 		info ""
-		info "note: tmux not found on PATH. agentchute works without it, but the"
-		info "v0.1 peer-wake adapter (tmux send-keys) won't be available — recipients"
-		info "will need to poll their inbox via their wrapper's self-loop or a"
-		info "scheduler. See https://agentchute.dev/ \"Running without tmux\" for"
-		info "per-wrapper patterns."
+		info "note: tmux not found on PATH. The tmux wake adapter won't be"
+		info "available, but runner/herdr wake paths and polling-only setups still"
+		info "work. See https://agentchute.dev/ \"Running without tmux\" for patterns."
 	fi
 
 	if [ "$do_setup" = "auto" ]; then

@@ -40,6 +40,36 @@ func TestSelfCheckRegistersAndUpdatesLastSeen(t *testing.T) {
 	}
 }
 
+func TestSelfCheckUnderRunnerKeepsRunnerWakeInTmux(t *testing.T) {
+	withFakeTmuxTargets(t, "%7")
+	root := setupBootFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	socketPath := cfg.RunnerSocketPath("claude-code")
+	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: "claude-code"})
+	runnerTarget := loop.RunnerWakeTarget(socketPath)
+	withCwd(t, root, func() {
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--wake-method", loop.RunnerWakeMethod, "--wake-target", runnerTarget}); err != nil {
+			t.Fatalf("seed runner registration failed: %v", err)
+		}
+		t.Setenv("AGENTCHUTE_RUNNER", "1")
+		t.Setenv("AGENTCHUTE_RUNNER_PID", "4242")
+		t.Setenv("TMUX_PANE", "%7")
+		if _, err := captureStdout(t, func() error { return cmdSelfCheck(selfCheckArgs("--quiet")) }); err != nil {
+			t.Fatalf("self-check: %v", err)
+		}
+	})
+	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath("claude-code"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.WakeMethod != loop.RunnerWakeMethod || reg.WakeTarget != runnerTarget {
+		t.Fatalf("wake = %s/%s, want %s/%s (self-check under runner must not demote to tmux)", reg.WakeMethod, reg.WakeTarget, loop.RunnerWakeMethod, runnerTarget)
+	}
+}
+
 func TestSelfCheckRefreshesLastSeenAndClearsStaleTmuxWake(t *testing.T) {
 	withFakeTmuxTargets(t, "%1")
 	root := setupBootFixture(t)

@@ -212,6 +212,15 @@ func pollerTick(cfg *loop.Config, p serviceParams, rt *pollerRuntime, startedAt 
 		return err
 	}
 
+	// WI-E2: off-turn reprove (and, when this poller has HERDR_PANE_ID/$TMUX_PANE
+	// context, rebind) of our own wake target, caching the reachability fact. A
+	// context-less poller only probes — the rebind path is gated on pane context
+	// inside the helper (codex guardrail). Best-effort and advisory: a reprove
+	// failure must not change the heartbeat outcome or block mail handling.
+	if _, rerr := reproveAndRebindOwnWake(cfg, p.AgentID); rerr != nil {
+		fmt.Fprintf(os.Stderr, "agentchute poller: reprove wake reachability for %s: %v\n", p.AgentID, rerr)
+	}
+
 	// No-work or non-launch tick: nothing to launch, so a successful compute is
 	// sufficient liveness — refresh the heartbeat.
 	if !result.ShouldWake || !p.Launch {
@@ -576,7 +585,9 @@ process pending mail.
 
 Subcommands:
   run      long-lived poll loop; with --launch, launches the wrapper on work
-  ensure   no-op in a reachable tmux pane; otherwise start heartbeat poller
+  ensure   no-op when any reachable wake target exists (tmux, herdr, or the
+           agentchute-run socket), an active wrapper session, or a fresh
+           poller heartbeat is present; otherwise start a heartbeat poller
   status   report whether the poller heartbeat is fresh
 
 Common flags:

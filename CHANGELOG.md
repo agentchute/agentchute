@@ -4,6 +4,37 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.7.0 (2026-06-29)
+
+Enrollment-reliability + communication-quality release. Closes the gap where an agent could be "registered + active" yet unreachable, makes the wake path truthful under model/transport changes, and adds the agent-to-agent communication rules that keep recipients from mis-executing tasks written with a sender's wrong assumptions. All work was four-way reviewed (claude/codex/grok/gemini) and gated.
+
+**Enrollment reliability**
+- **Reachability-aware `status` / `doctor` + present-but-not-enrolled scan.** `status` shows live/cached reachability; `doctor` adds wake-target validity, launch provenance, and a read-only scan for local wrappers that are present but not enrolled. (WI-E1)
+- **Self-healing wake.** A recipient's off-turn loop re-proves and rebinds its OWN wake target each tick and caches an advisory `reachable_at` fact (endpoint-bound; never suppresses delivery). `IsPokable()` stays structural; reachability is a separate cached fact. (WI-E2)
+- **Truthful primary wake selection + runner-demotion fix.** `selectTruthfulPrimary` resolves the live primary with precedence runner > herdr > tmux; a boot/self-check under `agentchute run` no longer demotes the runner socket to tmux when `$TMUX_PANE` is also set. A moved live process (e.g. herdr → tmux) reselects its primary on its own tick — no sender-side multi-wake needed.
+- **Herdr resolves by name, everywhere.** Both the reachability probe and the wake poke resolve the stable agent name via `herdr agent list` + name match (robust to handle ≠ bound name, e.g. gemini's `agy`), fixing silent wake failures + spurious duplicate lanes.
+- **Launch provenance.** Registrations record `launched_by` (`runner`/`hook`/`manual`/`poller`/`presenced`), `shim_name`, `hook_event` for truthful verify views and a raw-launch warning. (WI-E3)
+- **Opt-in host presence daemon** (`agentchute presenced`) — discovers and enrolls/repairs high-confidence local wrappers with zero agent cooperation; off by default, never started by setup. (WI-E4)
+
+**Correctness fixes**
+- Inbox listing no longer hard-fails `check`/`gate` when a file vanishes mid-scan (tolerates `os.ErrNotExist` only).
+- Runner startup no longer marks a transiently-slow but live peer offline; it clears a stale wake target only on corroborating evidence, and `markRunnerOffline` clears the reachability cache.
+- tmux/herdr reachability probes honor their timeout (no hangs).
+- Message archive is idempotent under concurrent `check` (benign already-archived races no longer error; a genuine destination collision still fails).
+- `gate --help` states the real block/warn matrix and hook-mode exit codes; shipped Gemini hooks use BeforeAgent + `--json`.
+
+**Simplification**
+- **Deprecated `WakeEndpoints` multi-wake escalation** — it was inert (no producer) and added a hot-path fork. The wake path is primary-endpoint only; `wake_endpoints` is reserved in the spec, with the multi-wake design documented in `EXTENSIONS.md` as a future extension.
+- Removed dead herdr `agent get` fallback + the unused `herdrAgentLookup`; deduped boot-summary, doctor probe, and presence enumeration; dropped an observability-only watchdog runner probe; made the lock-timeout test injectable (~5s/run reclaimed) and the watch-loop tests deterministic.
+
+**Communication quality**
+- **Agent-to-agent Communication Rules** in `AGENTS.md`: a neutral task envelope (GOAL/CONTEXT/CONSTRAINTS/ACCEPTANCE/OUTPUT), ACTION MODE + authority, exact provenance (no deictic refs), OUTPUT-as-contract, and a clarify-before-acting / NEEDS-INFO rule — so recipients stop guessing through ambiguity.
+- **Per-wrapper communication profiles** (`CLAUDE.md`/`CODEX.md`/`GEMINI.md`/`GROK.md`): per-family reference + reminder blocks for adapting the neutral envelope to the live model.
+- **Enrollment template v15**: pin-identity-once guidance, `doctor --as` verify, finish via `gate --before finish`, and the full identity precedence (`--as` → `AGENTCHUTE_AGENT_ID` → herdr pane → tmux pane → contextual).
+
+**Docs**
+- README, the agentchute.dev landing page, and `AGENTCHUTE.md` synced to the shipped behavior (reachability diagnostics, self-heal, provenance, `presenced`, wake adapters, the watchdog-probe removal); CI/release preflight hardened with `go test -race` + `shellcheck`.
+
 ## v0.6.2 (2026-06-17)
 
 Hotfix release: setup/update now resets local runtime state so restarted agents re-enroll cleanly. Previously `setup` cleared live `agents/*.md` but left poller/runner runtime state and herdr names behind, so restarted agents re-enrolled inconsistently (Claude missing, Codex without herdr, suffix drift).

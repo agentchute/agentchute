@@ -267,6 +267,41 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 	}
 }
 
+// TestDoctorTmuxWakeValidityHonorsProbeSeam proves the tmux wake-validity arm
+// resolves through the tmuxProbeBinary seam end-to-end — both the PATH
+// availability check and the reachability probe — rather than a literal "tmux".
+// PATH is stripped of real tmux so the old hardcoded exec.LookPath("tmux") would
+// (incorrectly) BLOCKER; with the seam-aware lookup the fake (an absolute path)
+// resolves and the reachable target reports OK.
+func TestDoctorTmuxWakeValidityHonorsProbeSeam(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	withFakeTmuxTargets(t, "%7")  // sets tmuxProbeBinary to an executable fake answering %7
+	t.Setenv("PATH", t.TempDir()) // ensure literal "tmux" is NOT on PATH
+
+	regPath := cfg.AgentRegistrationPath("claude-code")
+	reg := &loop.Registration{
+		AgentID:     "claude-code",
+		Vendor:      "anthropic",
+		ControlRepo: cfg.ControlRepo,
+		Host:        "", // empty host avoids the cross-host SKIP short-circuit
+		WakeMethod:  "tmux",
+		WakeTarget:  "%7",
+		LastSeen:    time.Now().UTC().Truncate(time.Second),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(regPath, reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfg.AgentInboxDir("claude-code"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
+	if got := findCheck(t, r, "wake_target_validity"); got.Severity != severityOK {
+		t.Errorf("wake_target_validity severity = %q, want OK (resolved via tmuxProbeBinary seam); msg=%q", got.Severity, got.Message)
+	}
+}
+
 func TestDoctorAsBlocksWhenActingWrapperHookMissing(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	for _, dir := range []string{".claude", ".gemini"} {
@@ -358,6 +393,96 @@ func TestWrapperResolutionHandlesContextualIDs(t *testing.T) {
 			t.Errorf("shimNamesForAgent(%q) = %v, want [%s]", tc.id, names, tc.wantShim)
 		}
 	}
+}
+
+// WI-E3: the launch-bypass check WARNS (never BLOCKS) when a runner setup has a
+// wrapper that enrolled raw (launched_by=manual / unset), and stays OK for a
+// managed (runner) enrollment. It must never flip the runner default or block.
+func TestDoctor_WarnsOnRawWrapperBypass(t *testing.T) {
+	writeReg := func(t *testing.T, cfg *loop.Config, launchedBy string) {
+		t.Helper()
+		reg := &loop.Registration{
+			AgentID:     "gemini-cli",
+			Vendor:      "google",
+			ControlRepo: cfg.ControlRepo,
+			LastSeen:    time.Now().UTC(),
+			Status:      loop.StatusActive,
+			LaunchedBy:  launchedBy,
+		}
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("gemini-cli"), reg); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(cfg.AgentInboxDir("gemini-cli"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Runner is configured; an empty shim dir (not on PATH) keeps the shadowing
+	// probe quiet so the provenance signal is isolated.
+	t.Run("manual provenance warns, never blocks", func(t *testing.T) {
+		cfg := newDoctorCfg(t)
+		writeReg(t, cfg, loop.LaunchedByManual)
+		r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{
+			Now:       time.Now().UTC(),
+			PathEnv:   "/usr/bin",
+			PoolState: &setupPoolState{Wake: "runner"},
+		})
+		got := findCheck(t, r, "launch_provenance")
+		if got.Severity != severityWarn {
+			t.Fatalf("launch_provenance severity = %q, want WARN; msg=%q", got.Severity, got.Message)
+		}
+		// "never blocks": the bypass check is WARN at most — it must NEVER be a
+		// BLOCKER regardless of provenance (other unrelated checks may block in
+		// this minimal fixture; this one is what we assert on).
+		if got.Severity == severityBlocker {
+			t.Fatalf("launch-bypass check must never be a BLOCKER; got %q", got.Severity)
+		}
+		if !strings.Contains(got.Message, "ac-gemini") {
+			t.Fatalf("warn message should name the fix `ac-gemini`: %q", got.Message)
+		}
+	})
+
+	t.Run("absent provenance warns", func(t *testing.T) {
+		cfg := newDoctorCfg(t)
+		writeReg(t, cfg, "")
+		r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{
+			Now:       time.Now().UTC(),
+			PathEnv:   "/usr/bin",
+			PoolState: &setupPoolState{Wake: "runner"},
+		})
+		got := findCheck(t, r, "launch_provenance")
+		if got.Severity != severityWarn {
+			t.Fatalf("absent-provenance severity = %q, want WARN; msg=%q", got.Severity, got.Message)
+		}
+	})
+
+	t.Run("runner provenance is OK", func(t *testing.T) {
+		cfg := newDoctorCfg(t)
+		writeReg(t, cfg, loop.LaunchedByRunner)
+		r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{
+			Now:       time.Now().UTC(),
+			PathEnv:   "/usr/bin",
+			PoolState: &setupPoolState{Wake: "runner"},
+		})
+		got := findCheck(t, r, "launch_provenance")
+		if got.Severity != severityOK {
+			t.Fatalf("runner-provenance severity = %q, want OK; msg=%q", got.Severity, got.Message)
+		}
+	})
+
+	t.Run("non-runner setup skips", func(t *testing.T) {
+		cfg := newDoctorCfg(t)
+		writeReg(t, cfg, loop.LaunchedByManual)
+		r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{
+			Now:       time.Now().UTC(),
+			PathEnv:   "/usr/bin",
+			PoolState: &setupPoolState{Wake: "tmux"},
+		})
+		got := findCheck(t, r, "launch_provenance")
+		if got.Severity != severitySkip {
+			t.Fatalf("non-runner setup severity = %q, want SKIP; msg=%q", got.Severity, got.Message)
+		}
+	})
 }
 
 func TestDoctorWarnsOnStaleRegistration(t *testing.T) {

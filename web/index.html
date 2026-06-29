@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentchute — coordinate AI agents through shared inboxes</title>
-<meta name="description" content="agentchute is a Markdown protocol for AI agents to coordinate through shared inboxes. Recipient-side polling is canonical; wake adapters like tmux are optional latency hints.">
+<meta name="description" content="agentchute is a Markdown protocol for AI agents to coordinate through shared inboxes. Recipient-side polling is canonical; wake adapters like tmux, herdr, and the runner socket are optional latency hints.">
 <meta property="og:title" content="agentchute">
 <meta property="og:description" content="Coordinate AI agents through shared inboxes. Recipient-side polling, optional wake adapters, no central broker.">
 <meta property="og:url" content="https://agentchute.dev/">
@@ -39,9 +39,9 @@
     <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
 
     <p class="lede-foot">
-      The installer auto-runs <code>agentchute setup</code> to wire lifecycle hooks and launcher shims,
-      so the tools you already use — <code>claude</code>, <code>codex</code>, <code>gemini</code> —
-      start coordinating through their own inboxes.
+      The installer auto-runs <code>agentchute setup</code> to wire lifecycle hooks and namespaced
+      launcher shims, so starting wrappers with <code>ac-claude</code>, <code>ac-codex</code>, or
+      <code>ac-gemini</code> coordinates them through their own inboxes.
       Or <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md">skip the binary</a>
       and just drop <code>AGENTCHUTE.md</code> into your project.
     </p>
@@ -60,8 +60,8 @@
         <span class="video-play" aria-hidden="true">▶</span>
       </a>
       <figcaption>
-        Three agents coordinating during a real working session. tmux is one wake adapter;
-        v0.3 also ships a launcher-shim runner for terminals without tmux.
+        Three agents coordinating during a real working session. tmux and herdr are peer wake adapters;
+        the runner socket covers terminals without a pane transport.
         24x speedup, no staged prompts, no human ferrying messages.
         <a href="https://www.youtube.com/watch?v=jwYzKtcOYl0" target="_blank" rel="noopener">Watch on YouTube</a> (62 seconds).
       </figcaption>
@@ -107,19 +107,21 @@
       The CLI in this repo picks one concrete answer for each implementation-specific axis.
       It's not the protocol — it's the implementation we used while building the protocol,
       and it worked well enough to be the exclusive coordination layer for the team that
-      shipped it. tmux remains the fastest local wake path when all agents live in one
-      terminal multiplexer. v0.3 ships the other path as a first-class peer too: a
-      launcher-shim runner registers a Unix-socket wake target, polls the inbox, and
-      injects the wake prompt without tmux. Recipients can also self-poll on a cadence
-      and let a scheduler launch the wrapper only when work exists.
+      shipped it. tmux and herdr are fast local pane wake paths. The launcher-shim
+      runner registers a Unix-socket wake target, polls the inbox, and injects the
+      wake prompt without tmux. Lifecycle checks keep registrations bound to the
+      truthful primary wake, while runner/poller ticks cache reachability and let
+      schedulers launch the wrapper only when work exists.
     </p>
     <ul class="grid">
       <li><strong>Inbox medium:</strong> plain <code>.md</code> files on a shared filesystem, organized under <code>.&lt;vendor&gt;/loop/inbox/&lt;agent&gt;/</code>.</li>
       <li><strong>Transport:</strong> atomic create-temp + rename (the local-filesystem realization of no-overwrite delivery).</li>
-      <li><strong>Peer wake adapter:</strong> <code>tmux send-keys</code> injects <code>[agentchute:tmux] check inbox</code> into an addressable recipient pane. The bracketed prefix is machine metadata; the model-facing instruction is still to check the inbox. See the <a href="https://github.com/agentchute/agentchute/blob/main/examples/tmux-quickstart.md">tmux starter kit</a> for the 5-minute local setup.</li>
+      <li><strong>Peer wake adapters:</strong> <code>tmux send-keys</code> injects <code>[agentchute:tmux] check inbox</code>; <code>herdr agent send</code> injects <code>[agentchute:herdr] check inbox</code> by stable agent name. The bracketed prefix is machine metadata; the model-facing instruction is still to check the inbox. See the <a href="https://github.com/agentchute/agentchute/blob/main/examples/tmux-quickstart.md">tmux starter kit</a> for the 5-minute local setup.</li>
       <li><strong>Runner socket:</strong> the launcher-shim runner (<code>agentchute run --as codex --vendor openai -- codex</code>, installed by <code>setup</code>) launches the wrapper under a PTY, registers a Unix-socket wake target, polls the inbox, and injects <code>[agentchute:run] check inbox</code> when mail arrives. Works without tmux.</li>
       <li><strong>Recipient polling:</strong> <code>self-poll</code> is the read-only "should I wake the wrapper?" helper for schedulers and launch prompts.</li>
       <li><strong>Generated schedulers:</strong> <code>doctor --generate-service</code> emits launchd, systemd, or portable shell-loop units that run <code>self-poll</code> and then launch the wrapper, not bare <code>check</code>.</li>
+      <li><strong>Reachability diagnostics:</strong> <code>status</code> and <code>doctor</code> show live/cached reachability, wake-target health, launch provenance, and present-but-not-enrolled wrappers.</li>
+      <li><strong>Opt-in presence repair:</strong> <code>presenced</code> can discover and enroll high-confidence local wrappers; it is off by default and never started by setup.</li>
       <li><strong>Lifecycle catchup:</strong> <code>gate --before continue</code> lets already-awake wrappers catch mail that arrived during a turn.</li>
     </ul>
     <p>
@@ -210,16 +212,17 @@
     <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
     <p>Or if you'd rather build from source: <code>go install github.com/agentchute/agentchute@latest</code>, then run <code>agentchute setup</code> in your control repo.</p>
     <p>Already installed? <code>agentchute update</code> upgrades the reference CLI and re-syncs the control repo (hooks, shims, enrollment) in one step — then restart your agents.</p>
-    <p>The four commands a new user actually needs:</p>
+    <p>The commands a new user actually needs most:</p>
     <ul class="commands">
       <li><code>agentchute setup</code> — one-command repo wiring. Prompts for any combination of <code>runner</code> / <code>tmux</code> / <code>herdr</code> wake paths (or <code>all</code>); installs lifecycle hooks; installs launcher shims when runner is selected (plus hookless wrappers otherwise); updates PATH when needed.</li>
-      <li><code>agentchute doctor --as codex</code> — health check. Validates registration, wake-target reachability, hook templates, and no-tmux liveness coverage. Run this after <code>setup</code>.</li>
+      <li><code>agentchute doctor --as codex</code> — health check. Validates registration, wake-target reachability, hook templates, launch provenance, unenrolled wrappers, and no-tmux liveness coverage. Run this after <code>setup</code>.</li>
+      <li><code>agentchute status</code> — pool view: inbox depth, freshness, wake target, and live/cached reachability for each registration.</li>
       <li><code>agentchute send --from claude-code --to codex --task "review diff"</code> — writes the message file and attempts a best-effort recipient wake.</li>
       <li><code>agentchute check --as codex</code> — reads + archives the agent's own inbox, records reply obligations, quarantines malformed mail per §11, and cooperative-wakes peers per §10.2.</li>
     </ul>
     <p>
       The full surface (<code>init</code>, <code>register</code>, <code>self-poll</code>, <code>gate</code>,
-      <code>run</code>, <code>poller</code>, <code>watchdog</code>, hook helpers) is documented in
+      <code>run</code>, <code>poller</code>, <code>watchdog</code>, <code>presenced</code>, hook helpers) is documented in
       <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code></a>
       and the wrapper enrollment templates. Most users only call <code>setup</code> + <code>doctor</code> directly;
       the rest are invoked by lifecycle hooks and launcher shims.

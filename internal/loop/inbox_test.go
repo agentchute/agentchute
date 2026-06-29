@@ -130,6 +130,81 @@ func TestArchiveMessageRejectsExistingDestination(t *testing.T) {
 	}
 }
 
+func TestArchiveMessageIdempotentWhenSourceAlreadyArchived(t *testing.T) {
+	root := t.TempDir()
+	inbox := filepath.Join(root, "inbox", "claude-code")
+	archive := filepath.Join(root, "archive")
+	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
+	consumed := time.Date(2026, 5, 9, 16, 33, 0, 0, time.UTC)
+
+	if err := os.MkdirAll(inbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	msg, err := WriteInboxMessage(inbox, now, "codex", []byte("hello\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := ArchiveMessage(msg, archive, "claude-code", consumed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ArchiveMessage(msg, archive, "claude-code", consumed)
+	if err != nil {
+		t.Fatalf("re-archiving an already moved message should be idempotent: %v", err)
+	}
+	if second != first {
+		t.Fatalf("second archive path = %q, want %q", second, first)
+	}
+	if _, err := os.Stat(msg.Path); !os.IsNotExist(err) {
+		t.Fatalf("source should remain absent after idempotent archive, stat err=%v", err)
+	}
+	entries, err := os.ReadDir(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("archive entries = %d, want 1", len(entries))
+	}
+}
+
+func TestArchiveMessageIdempotentWhenDestinationIsSameFile(t *testing.T) {
+	root := t.TempDir()
+	inbox := filepath.Join(root, "inbox", "claude-code")
+	archive := filepath.Join(root, "archive")
+	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
+	consumed := time.Date(2026, 5, 9, 16, 33, 0, 0, time.UTC)
+
+	if err := os.MkdirAll(inbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(archive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	msg, err := WriteInboxMessage(inbox, now, "codex", []byte("hello\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := ArchiveMessageDest(msg, archive, "claude-code", consumed)
+	if err := os.Link(msg.Path, dest); err != nil {
+		t.Skipf("hardlink setup unavailable: %v", err)
+	}
+
+	got, err := ArchiveMessage(msg, archive, "claude-code", consumed)
+	if err != nil {
+		t.Fatalf("same-inode archive collision should be idempotent: %v", err)
+	}
+	if got != dest {
+		t.Fatalf("archive path = %q, want %q", got, dest)
+	}
+	if _, err := os.Stat(msg.Path); !os.IsNotExist(err) {
+		t.Fatalf("source should be removed after same-inode idempotent archive, stat err=%v", err)
+	}
+	if body, err := os.ReadFile(dest); err != nil || string(body) != "hello\n" {
+		t.Fatalf("archive body = %q err=%v, want hello", body, err)
+	}
+}
+
 func TestWriteInboxMessageIgnoresTempCleanupError(t *testing.T) {
 	oldRemoveFile := removeFile
 	t.Cleanup(func() {
@@ -320,6 +395,77 @@ func TestListInboxMessagesWithSkippedReportsMalformedNames(t *testing.T) {
 		}
 	}
 }
+
+func TestListInboxMessagesWithSkippedIgnoresVanishedEntries(t *testing.T) {
+	oldReadInboxDir := readInboxDir
+	t.Cleanup(func() { readInboxDir = oldReadInboxDir })
+
+	inbox := t.TempDir()
+	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
+	valid := formatInboxFilename(now, "codex", "abcd")
+	vanished := formatInboxFilename(now.Add(time.Second), "gemini-cli", "beef")
+	readInboxDir = func(string) ([]os.DirEntry, error) {
+		return []os.DirEntry{
+			fakeDirEntry{name: ".tmp_in-flight", infoErr: &os.PathError{Op: "lstat", Path: ".tmp_in-flight", Err: os.ErrNotExist}},
+			fakeDirEntry{name: vanished, infoErr: &os.PathError{Op: "lstat", Path: vanished, Err: os.ErrNotExist}},
+			fakeDirEntry{name: valid, mode: 0o600},
+		}, nil
+	}
+
+	msgs, skipped, err := ListInboxMessagesWithSkipped(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Filename != valid {
+		t.Fatalf("msgs = %#v, want one surviving message %s", msgs, valid)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %v, want empty; vanished files should be ignored", skipped)
+	}
+}
+
+func TestListInboxMessagesWithSkippedReturnsNonVanishedInfoError(t *testing.T) {
+	oldReadInboxDir := readInboxDir
+	t.Cleanup(func() { readInboxDir = oldReadInboxDir })
+
+	infoErr := &os.PathError{Op: "lstat", Path: "blocked", Err: os.ErrPermission}
+	readInboxDir = func(string) ([]os.DirEntry, error) {
+		return []os.DirEntry{fakeDirEntry{name: "blocked", infoErr: infoErr}}, nil
+	}
+
+	_, _, err := ListInboxMessagesWithSkipped(t.TempDir())
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("err = %v, want os.ErrPermission", err)
+	}
+}
+
+type fakeDirEntry struct {
+	name    string
+	mode    os.FileMode
+	infoErr error
+}
+
+func (e fakeDirEntry) Name() string      { return e.name }
+func (e fakeDirEntry) IsDir() bool       { return e.mode.IsDir() }
+func (e fakeDirEntry) Type() os.FileMode { return e.mode.Type() }
+func (e fakeDirEntry) Info() (os.FileInfo, error) {
+	if e.infoErr != nil {
+		return nil, e.infoErr
+	}
+	return fakeFileInfo{name: e.name, mode: e.mode}, nil
+}
+
+type fakeFileInfo struct {
+	name string
+	mode os.FileMode
+}
+
+func (i fakeFileInfo) Name() string       { return i.name }
+func (i fakeFileInfo) Size() int64        { return 0 }
+func (i fakeFileInfo) Mode() os.FileMode  { return i.mode }
+func (i fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (i fakeFileInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i fakeFileInfo) Sys() any           { return nil }
 
 // InferSenderFromFilename should recover the sender when the filename retains
 // §6.1 structural shape (`_from-<slug>_msg-...` + `.md`) but the timestamp or

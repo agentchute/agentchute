@@ -17,11 +17,11 @@ import (
 )
 
 // Default watch loop cadence. Configurable via --interval. 10s is short
-// enough for the no-tmux fallback (the spec's Test 4 motivation) and long
+// enough for the no-tmux fallback (the polling-recipient motivation) and long
 // enough that the polling cost is negligible.
 const defaultWatchInterval = 10 * time.Second
 
-// cmdWatch is the recipient-side persistent watcher (spec rev3 §A.6).
+// cmdWatch is the recipient-side persistent watcher (recipient-side polling, AGENTCHUTE.md §8.2).
 // Polls own inbox; emits configurable actions on each *new* message.
 // Non-consuming: never archives, quarantines, or pokes peers.
 //
@@ -131,6 +131,15 @@ type watchOptions struct {
 	NotifyFn func(title, message string) error
 	PrintFn  func(title, message string)
 	ExecFn   func(cmd string, env map[string]string) error
+
+	// Ready, when non-nil, is closed exactly once immediately after the
+	// startup inbox snapshot completes (before the first tick). This is a
+	// test-only synchronization hook so a test can deterministically drop a
+	// message that is guaranteed to arrive AFTER the snapshot (never folded
+	// into the seen set). Production callers leave it nil — the close is then
+	// skipped, mirroring the nil-guard on the other testing hooks above — so
+	// production behavior is unchanged.
+	Ready chan struct{}
 }
 
 func (o watchOptions) notify(title, message string) error {
@@ -176,6 +185,12 @@ func runWatchLoop(ctx context.Context, opts watchOptions, interval time.Duration
 	seen, err := snapshotInbox(inboxDir)
 	if err != nil {
 		return fmt.Errorf("initial inbox snapshot: %w", err)
+	}
+	// Test-only synchronization (nil in production, so a no-op there): signal
+	// that the startup snapshot has captured the pre-existing inbox as "seen",
+	// so a test can drop a NEW message with no race against the snapshot.
+	if opts.Ready != nil {
+		close(opts.Ready)
 	}
 
 	ticker := time.NewTicker(interval)

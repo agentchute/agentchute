@@ -11,8 +11,9 @@ import (
 // WakeAdapter dispatches a low-latency wake poke to a target.
 //
 // Adapters are registered in a process-global registry keyed by the
-// wake_method string (AGENTCHUTE.md §5). The reference CLI ships only the
-// "tmux" adapter (see AGENTCHUTE.md §8). Because this registry lives under
+// wake_method string (AGENTCHUTE.md §5). The reference CLI ships three
+// adapters: "tmux", "herdr", and the runner socket "agentchute-run"
+// (see AGENTCHUTE.md §8). Because this registry lives under
 // Go's internal/ visibility, third-party Go packages cannot import it
 // directly; the v0.1 extension model is "fork the binary, add your
 // adapter source, rebuild." See EXTENSIONS.md for the protocol-level
@@ -107,19 +108,32 @@ func PokeWakeTargetContext(ctx context.Context, method, target string) error {
 // be nil for them, though callers always have one).
 //
 // A nil reg returns nil (treated as a no-op, consistent with IsPokable).
+//
+// The poke targets the registration's PRIMARY WakeMethod/WakeTarget only; the
+// result (the same nil/error value pokeEndpoint returns) propagates verbatim.
 func PokeRegistration(ctx context.Context, cfg *Config, reg *Registration) error {
 	if reg == nil {
 		return nil
 	}
-	if strings.TrimSpace(reg.WakeMethod) == RunnerWakeMethod {
+	return pokeEndpoint(ctx, cfg, reg.AgentID, reg.WakeMethod, reg.WakeTarget)
+}
+
+// pokeEndpoint pokes the recipient's (method, target) wake endpoint on behalf of
+// recipientID, applying the WI-3 runner recipient-binding owned-check (the socket
+// must be one recipientID owns) BEFORE any dial for the agentchute-run method —
+// never dialing an unowned socket. recipientID is always the registration's
+// AgentID. For non-runner methods it is a straight PokeWakeTargetContext,
+// preserving prior behavior exactly.
+func pokeEndpoint(ctx context.Context, cfg *Config, recipientID, method, target string) error {
+	if strings.TrimSpace(method) == RunnerWakeMethod {
 		if cfg == nil {
 			return fmt.Errorf("refused: cannot verify runner socket ownership without config")
 		}
-		if err := cfg.RunnerWakeTargetOwnedBy(reg.AgentID, reg.WakeTarget); err != nil {
+		if err := cfg.RunnerWakeTargetOwnedBy(recipientID, target); err != nil {
 			return fmt.Errorf("refused: unowned runner socket: %w", err)
 		}
 	}
-	return PokeWakeTargetContext(ctx, reg.WakeMethod, reg.WakeTarget)
+	return PokeWakeTargetContext(ctx, method, target)
 }
 
 // RegistrationReachable is the single recipient-bound dispatcher for
@@ -135,7 +149,19 @@ func PokeRegistration(ctx context.Context, cfg *Config, reg *Registration) error
 // default arm and empty-target short-circuit exactly. For the runner method the
 // adapter performs cfg.RunnerWakeTargetOwnedBy BEFORE any dial, so an unowned
 // socket is reported unreachable without being touched (WI-3 invariant).
+// Reachability consults the registration's PRIMARY endpoint only.
 func RegistrationReachable(cfg *Config, reg *Registration, timeout time.Duration) bool {
+	if reg == nil {
+		return false
+	}
+	return registrationEndpointReachable(cfg, reg, timeout)
+}
+
+// registrationEndpointReachable is the single-endpoint reachability dispatch:
+// look up the adapter for reg.WakeMethod and ask whether reg's wake target is
+// reachable. A nil reg, empty wake_target, or unknown wake_method all report NOT
+// reachable.
+func registrationEndpointReachable(cfg *Config, reg *Registration, timeout time.Duration) bool {
 	if reg == nil {
 		return false
 	}
@@ -161,17 +187,28 @@ func RegistrationReachable(cfg *Config, reg *Registration, timeout time.Duration
 // no hook: its owned-check (cfg.RunnerWakeTargetOwnedBy) and dial
 // (RunnerSocketReachable) both already live in this package.
 var (
-	tmuxReachableHook  func(target string) bool
-	herdrReachableHook func(target string) bool
+	tmuxReachableHook     func(target string, timeout time.Duration) bool
+	herdrReachableHook    func(target string, timeout time.Duration) bool
+	herdrPaneResolverHook func(target string) (string, bool)
 )
 
 // SetTmuxReachableHook installs the tmux reachability probe. Called from the
 // root package's init(); idempotent.
-func SetTmuxReachableHook(fn func(target string) bool) { tmuxReachableHook = fn }
+func SetTmuxReachableHook(fn func(target string, timeout time.Duration) bool) {
+	tmuxReachableHook = fn
+}
 
 // SetHerdrReachableHook installs the herdr reachability probe. Called from the
 // root package's init(); idempotent.
-func SetHerdrReachableHook(fn func(target string) bool) { herdrReachableHook = fn }
+func SetHerdrReachableHook(fn func(target string, timeout time.Duration) bool) {
+	herdrReachableHook = fn
+}
+
+// SetHerdrPaneResolverHook installs the herdr wake pane resolver. Called from
+// the root package's init(); idempotent.
+func SetHerdrPaneResolverHook(fn func(target string) (string, bool)) {
+	herdrPaneResolverHook = fn
+}
 
 // tmuxAdapter wires the tmux wake convention (AGENTCHUTE.md §8) into the
 // registry. Backed by the existing PokeTargetContext implementation in
@@ -185,11 +222,11 @@ func (tmuxAdapter) Poke(ctx context.Context, target string) error {
 // Reachable probes the tmux pane via the injected root-package hook. Without
 // the hook (loop-only test linkage) the target cannot be probed, so it is
 // reported unreachable — identical to a failed tmux probe under the old switch.
-func (tmuxAdapter) Reachable(_ *Config, reg *Registration, _ time.Duration) bool {
+func (tmuxAdapter) Reachable(_ *Config, reg *Registration, timeout time.Duration) bool {
 	if reg == nil || tmuxReachableHook == nil {
 		return false
 	}
-	return tmuxReachableHook(reg.WakeTarget)
+	return tmuxReachableHook(reg.WakeTarget, timeout)
 }
 
 func init() {

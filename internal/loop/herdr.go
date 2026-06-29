@@ -2,7 +2,6 @@ package loop
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -35,7 +34,7 @@ const herdrWakePrompt = "[agentchute:herdr] check inbox"
 //
 // So we mirror the tmux adapter: send the text, wait pokeSleep, send Enter as a
 // separate key event. The stable agent name must be resolved to its CURRENT
-// pane id (panes can move) via `agent get`, because pane commands reject names.
+// pane id (panes can move), because pane commands reject names.
 //
 // The dispatcher in wake.go calls this via herdrAdapter when a peer declares
 // wake_method: herdr.
@@ -78,33 +77,28 @@ func PokeHerdrTargetContext(ctx context.Context, target string) error {
 }
 
 // herdrPaneIDForAgent resolves a stable herdr agent name to its current pane id
-// via `herdr agent get <name>`, whose JSON shape is {"result":{"agent":{...,
-// "pane_id":"w3:p4",...}}}.
+// via the resolver hook the root package wires in init()
+// (SetHerdrPaneResolverHook(herdrAgentPaneID)). That resolver uses `herdr agent
+// list` and matches the bound NAME, so wakeability and reachability agree even
+// when the herdr handle differs from the bound name.
+//
+// The hook is REQUIRED. It is the deliberate loop/main boundary: herdr probing
+// lives in the root package (loop must not import main), and the alternative
+// `herdr agent get <name>` resolver is intentionally NOT used because the herdr
+// handle can differ from the bound name (handle!=name), which `agent get` cannot
+// resolve. Loop-only tests (which never link the root package, so init() never
+// runs) must inject a stub via SetHerdrPaneResolverHook.
+//
+// ctx is retained in the signature for symmetry with the poke path and so the
+// resolver can grow a context-aware form without churning callers.
 func herdrPaneIDForAgent(ctx context.Context, target string) (string, error) {
-	out, err := exec.CommandContext(ctx, herdrBinary, "agent", "get", target).Output()
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			if trimmed := strings.TrimSpace(string(ee.Stderr)); trimmed != "" {
-				return "", fmt.Errorf("%w: %s", err, trimmed)
-			}
-		}
-		return "", err
+	if herdrPaneResolverHook == nil {
+		return "", fmt.Errorf("herdr pane resolver not wired")
 	}
-	var resp struct {
-		Result struct {
-			Agent struct {
-				PaneID string `json:"pane_id"`
-			} `json:"agent"`
-		} `json:"result"`
+	if paneID, ok := herdrPaneResolverHook(target); ok {
+		return paneID, nil
 	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return "", fmt.Errorf("parse `herdr agent get` output: %w", err)
-	}
-	paneID := strings.TrimSpace(resp.Result.Agent.PaneID)
-	if paneID == "" {
-		return "", fmt.Errorf("no pane_id reported for agent %q", target)
-	}
-	return paneID, nil
+	return "", fmt.Errorf("no pane_id reported for agent %q", target)
 }
 
 func runHerdr(ctx context.Context, args ...string) error {
@@ -127,14 +121,14 @@ func (herdrAdapter) Poke(ctx context.Context, target string) error {
 }
 
 // Reachable resolves the stable herdr agent name to a live pane via the
-// injected root-package hook (herdrAgentReachable). Without the hook (loop-only
+// injected root-package hook. Without the hook (loop-only
 // test linkage) the name cannot be resolved, so it is reported unreachable —
 // identical to a herdr lookup that found no pane under the old switch.
-func (herdrAdapter) Reachable(_ *Config, reg *Registration, _ time.Duration) bool {
+func (herdrAdapter) Reachable(_ *Config, reg *Registration, timeout time.Duration) bool {
 	if reg == nil || herdrReachableHook == nil {
 		return false
 	}
-	return herdrReachableHook(reg.WakeTarget)
+	return herdrReachableHook(reg.WakeTarget, timeout)
 }
 
 func init() {

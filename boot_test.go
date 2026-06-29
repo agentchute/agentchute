@@ -56,14 +56,14 @@ func bootArgs(extra ...string) []string {
 	return append(base, extra...)
 }
 
-// Test 8 (spec rev3 Part 4) line 1: fresh registration → exit 0, refreshed: true.
+// Fresh registration → exit 0, refreshed: true.
 //
-// Spec rev3 §A.1 semantics: `refreshed: true` means "boot wrote the
-// registration file on this call", which is true for every successful
+// Registration semantics (AGENTCHUTE.md §5): `refreshed: true` means "boot wrote
+// the registration file on this call", which is true for every successful
 // boot (fresh enrollment OR an update to an existing registration).
 // A separate internal field (ExistingFound, not serialized) preserves
 // the fresh-vs-existing distinction for UX output verbs without
-// diverging from the spec's wire shape.
+// diverging from the wire shape.
 func TestBootFreshRegistrationExitsZero(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
@@ -79,7 +79,7 @@ func TestBootFreshRegistrationExitsZero(t *testing.T) {
 			t.Fatalf("unmarshal output: %v\n%s", jerr, out)
 		}
 		if !got.Refreshed {
-			t.Errorf("Refreshed = false on fresh enrollment; spec rev3 §A.1 says true on every successful write")
+			t.Errorf("Refreshed = false on fresh enrollment; refreshed is true on every successful registration write")
 		}
 		if got.UnreadCount != 0 || got.RepliesPending != 0 || got.Blocked {
 			t.Errorf("status = %+v; want clean state", got)
@@ -233,6 +233,46 @@ func TestBootContextOnlyNeverBlocks(t *testing.T) {
 		}
 		if !strings.Contains(out, "unread") {
 			t.Errorf("--context-only output should mention unread: %q", out)
+		}
+		if !strings.Contains(out, `--reply-to <message-id> --body "..."`) {
+			t.Errorf("--context-only output missing runnable reply hint:\n%s", out)
+		}
+		if !strings.Contains(out, `--message <message-id> --reason "..."`) {
+			t.Errorf("--context-only output missing runnable defer hint:\n%s", out)
+		}
+	})
+}
+
+func TestBootCodexHookSessionStartGuidanceIsRunnable(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		mustMkdir(t, inboxDir)
+		msgContent := []byte("---\nmessage_id: 2026-05-19T17:53:59.561894Z\nfrom: codex\nto: claude-code\ntask: review\n---\n\nbody\n")
+		if _, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex", msgContent); err != nil {
+			t.Fatal(err)
+		}
+		out, err := captureStdout(t, func() error {
+			return cmdBoot(bootArgs("--codex-hook", "SessionStart"))
+		})
+		if err != nil {
+			t.Errorf("--codex-hook returned error = %v; want nil", err)
+		}
+		var wrap struct {
+			HookSpecificOutput struct {
+				AdditionalContext string `json:"additionalContext"`
+			} `json:"hookSpecificOutput"`
+		}
+		if jerr := json.Unmarshal([]byte(out), &wrap); jerr != nil {
+			t.Fatalf("unmarshal codex hook output: %v\n%s", jerr, out)
+		}
+		ctx := wrap.HookSpecificOutput.AdditionalContext
+		if !strings.Contains(ctx, `--reply-to <message-id> --body "..."`) {
+			t.Errorf("SessionStart context missing runnable reply hint:\n%s", ctx)
+		}
+		if !strings.Contains(ctx, `--message <message-id> --reason "..."`) {
+			t.Errorf("SessionStart context missing runnable defer hint:\n%s", ctx)
 		}
 	})
 }

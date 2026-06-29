@@ -20,6 +20,24 @@ func evaluateRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) 
 	if err != nil {
 		return recipientLiveness{OK: false, Via: "skip", Message: "registration unreadable"}
 	}
+	// WI-E2 advisory cache fast-path: a VALID cached reachability fact
+	// (endpoint-bound, within TTL) proves liveness without a live probe — this is
+	// what lets a self-healed lane read as live even if a transient live probe
+	// would currently miss. On a cache MISS (absent / expired / endpoint changed,
+	// including EVERY pre-upgrade registration with no ReachableAt) we FALL
+	// THROUGH to the live wake / session / poller checks below; a miss is NEVER
+	// treated as "unreachable" (codex backward-compat guardrail).
+	if reg.IsReachable(now, recipientReachabilityTTL) {
+		age := now.UTC().Sub(reg.ReachableAt.UTC())
+		if age < 0 {
+			age = 0
+		}
+		return recipientLiveness{
+			OK:      true,
+			Via:     "reachable-cache",
+			Message: fmt.Sprintf("cached reachability fact fresh: %s/%s (age %s, ttl %s)", reg.ReachabilityMethod, reg.ReachabilityTarget, age.Round(time.Second), recipientReachabilityTTL),
+		}
+	}
 	if registrationHasReachableWake(cfg, reg) {
 		return recipientLiveness{
 			OK:      true,

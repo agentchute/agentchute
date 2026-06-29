@@ -44,6 +44,7 @@ Commands:
   doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, wake target
   watch          recipient-side persistent watcher: fire OS notification / print / exec on new mail
   watchdog       run liveness daemon (§10.1); pokes peers with stale inboxes
+  presenced      OPT-IN host presence daemon: discover + auto-enroll high-confidence wrappers (off by default; never auto-started)
   hooks          install canonical hook templates into .claude/ / .codex/ / .gemini/ (v0.2.1)
 
 Run 'agentchute <command> --help' for command-specific flags.
@@ -113,6 +114,8 @@ func main() {
 		err = cmdWatch(args)
 	case "watchdog":
 		err = cmdWatchdog(args)
+	case "presenced":
+		err = cmdPresenced(args)
 	case "hooks":
 		err = cmdHooks(args)
 	case "-v", "--version", "version":
@@ -136,9 +139,10 @@ func main() {
 			fmt.Println(msg)
 			return
 		}
-		// Exit code 2 for the lifecycle-gate sentinels (canonical "blocked"
-		// signal honored by codex Stop hooks and gemini blocking surfaces).
-		// Exit code 1 reserved for actual command failures.
+		// Exit code 2 for lifecycle-gate sentinels in ordinary text/--json
+		// modes. Hook-envelope modes such as --codex-hook Stop return nil and
+		// carry block/allow in their JSON payload. Exit code 1 is reserved for
+		// actual command failures.
 		if err == errFailIfAny || err == errBlocked {
 			os.Exit(2)
 		}

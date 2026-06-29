@@ -24,7 +24,7 @@ The protocol is a small set of implementation-agnostic primitives. Conforming im
 The reference CLI maps these primitives onto local filesystem choices:
 - **Inbox medium**: `.md` files under a vendor loop directory (`.<vendor>/loop/inbox/`).
 - **Transport**: atomic create-temp + rename.
-- **Wake**: `tmux send-keys` injection of `[agentchute:tmux] check inbox` (peer-to-peer) or `agentchute-run` (PTY runner injection).
+- **Wake**: peer-to-peer pane injection — `tmux send-keys` of `[agentchute:tmux] check inbox`, `herdr` of `[agentchute:herdr] check inbox`, or the `agentchute-run` socket injecting `[agentchute:run] check inbox` (PTY runner).
 
 These are reference choices, not protocol requirements. Conforming implementations can swap any axis (see [`EXTENSIONS.md`](EXTENSIONS.md) for git-backed and HTTP-based sketches).
 
@@ -90,6 +90,17 @@ Every agent MUST publish a registration record for discovery and waking.
 - `status` (enum, optional): `active | exhausted | offline`.
 - `restart_at` (RFC 3339 UTC, optional): earliest future poke eligibility.
 - `last_active` (RFC 3339 UTC, optional): last successful inbox consumption.
+- `reachable_at` (RFC 3339 UTC, optional): last time the agent's OWN off-turn loop re-proved its own `wake_target` reachable. Advisory **self-healing reachability cache** (the recipient writes it for itself; senders never require it). Absent = no cached fact (every pre-upgrade registration); consumers MUST fall back to a live reachability / session / poller check and MUST NOT treat absence as "unreachable."
+- `reachability_method` / `reachability_target` (string, optional): the `wake_method` / `wake_target` the `reachable_at` fact was proven for. The cache is **endpoint-bound** — a change to `wake_method`/`wake_target` invalidates it (a stale fact for a different endpoint is never trusted).
+- `reachability_error` (string, optional): diagnostic from the most recent FAILED re-prove (empty on success). Informational only.
+- `launched_by` (string, optional): how this lane enrolled — one of `runner` (started under `agentchute run`), `hook` (a SessionStart-class lifecycle hook ran `boot`/`self-check`), `manual` (a hand-run `agentchute register`, i.e. a raw/passthrough enroll), `poller`, or `presenced` (the OPT-IN host presence daemon `agentchute presenced` discovered and enrolled/repaired this lane with zero agent cooperation). Advisory **launch provenance** for truthful verify views and the launch-bypass warning. Absent = pre-upgrade/unknown; a re-register that does not supply it PRESERVES the prior value.
+- `shim_name` (string, optional): the `ac-*` launcher shim that fronted this lane (e.g. `ac-gemini`), when known. Advisory.
+- `hook_event` (string, optional): the lifecycle event that enrolled via a hook (e.g. `boot`, `self-check`). Advisory.
+- `wake_endpoints` — **RESERVED** for a future multi-wake (ordered backup endpoints) extension. The reference CLI does **not** currently read or write it: the wake path is primary-endpoint only (`wake_method`/`wake_target`). See [`EXTENSIONS.md`](EXTENSIONS.md) for the deferred multi-wake design that would claim this field name.
+
+> The `reachable_at` cache is **ADVISORY**: it informs status/liveness/gate visibility but MUST NOT suppress inbox delivery (`send` always enqueues) or the structural wake poke (`PokeRegistration` always attempts the wake). `wake_method`/`wake_target` presence (pokability, §8.2) is structural and independent of this cache.
+
+> The `launched_by` / `shim_name` / `hook_event` provenance fields are **ADVISORY and backward-compatible** (absent = old behavior; emitted only when populated, so a plain registration is byte-identical to the pre-upgrade format). They are diagnostic only — they never gate delivery, the structural poke, or any lifecycle decision. They feed the read-only launch-bypass WARNING, which never blocks and never flips the opt-in runner default.
 
 The Markdown body is optional advisory prose. Do not route on capabilities (§12).
 
@@ -101,7 +112,7 @@ Encoded as YAML frontmatter in `.<vendor>/loop/agents/<agent_id>.md`.
 See **Appendix C** for a hand-registration walkthrough.
 
 ### 5.3 Enforced enrollment
-Implementations MUST refuse active operations (consume/send/gate) if the agent's registration is absent or unreadable. Mandatory on every session start (§5.3).
+Implementations MUST refuse active operations (consume/send/gate) if the agent's registration is absent or unreadable. Self-registration is mandatory on every session start (§7.2).
 
 ## 6. Messaging
 
@@ -130,11 +141,11 @@ Inbox messages MUST be presented oldest-first by timestamp. The reference encodi
 5. Perform cooperative waking for peers (§10.2).
 
 ### 6.4 Message envelope
-Encoded as optional YAML frontmatter (§6.4):
+Encoded as optional YAML frontmatter:
 - `message_id`: Sender-provided reference handle (recommended RFC 3339 UTC).
 - `from` / `to`: agent_id.
 - `in_reply_to`: parent `message_id`.
-- `reply_required` (boolean): when true, places a **reply obligation** (§6.4).
+- `reply_required` (boolean): when true, places a **reply obligation** on the recipient.
 - `task`: short descriptor.
 - `status`: `request | findings | signoff | request-changes | info`.
 
@@ -163,11 +174,12 @@ Identity is pool-scoped: `(pool_locator, agent_id)`. A physical process particip
 
 ## 8. Wake adapters
 
-Wake pokes are latency hints; recipient-side polling is the correctness baseline (§8.2). The reference adapters are `tmux`, `herdr`, and `runner` (the `agentchute-run` socket).
+Wake pokes are latency hints; recipient-side polling is the correctness baseline (§8.2). The three reference adapters are `tmux`, `herdr`, and `agentchute-run` (the runner socket). `agentchute-run` is the on-the-wire `wake_method` value; the launcher/feature that opens the socket is called the *runner*.
 
 ### 8.1 Reference wake patterns
 - **tmux**: `tmux send-keys -t <wake_target> '[agentchute:tmux] check inbox'` followed by `Enter`.
-- **herdr**: `herdr agent send <wake_target> '[agentchute:herdr] check inbox'` to write the prompt, then `herdr pane send-keys <pane_id> Enter` to submit — `agent send` writes literal text only, so a real Enter key event is required (resolve `<pane_id>` from the stable name via `herdr agent get <wake_target>`).
+- **herdr**: `herdr agent send <wake_target> '[agentchute:herdr] check inbox'` to write the prompt, then `herdr pane send-keys <pane_id> Enter` to submit — `agent send` writes literal text only, so a real Enter key event is required (resolve `<pane_id>` from the stable name via the reference CLI's herdr name resolver — `herdr agent list` + match on the bound `name`, robust to handle≠name).
+- **agentchute-run**: the PTY runner (`agentchute run`) supervises the wrapper behind a Unix-domain socket named in `wake_target` (`unix:<abs-path>`). A sender or the watchdog dials that socket and the runner injects `[agentchute:run] check inbox` into the wrapper's PTY. The target is recipient-bound — a runner socket the recipient does not own is refused without a dial.
 
 The leading bracket is machine metadata; the model-facing instruction is `check inbox`.
 
@@ -185,13 +197,22 @@ Agents update `last_seen` at turn start. For pools > 3 agents, use the watchdog 
 The watchdog is a liveness-only latency accelerator. It monitors agent inboxes and pokes stale recipients.
 
 ### 10.1 Watchdog algorithm
-1. Update own `last_seen`.
-2. Enumerate peer registrations.
-3. For each agent:
-   a. If unread message age > `POKE_THRESHOLD` (90s) AND `last_seen` > `FRESH_THRESHOLD` (5min):
-   b. Check `status` and `restart_at` (skip if exhausted/offline/deferred).
-   c. Poke via `wake_method`.
-4. Sleep `POLL_CADENCE` (60s).
+The cadence and thresholds are configurable flags; the values below are the reference defaults (`--interval` 60s, `--stale-threshold` 300s, `--message-age-threshold` 90s).
+
+1. Best-effort update own `last_seen`. If the watchdog's own registration is missing or unreadable (e.g. a setup-reset race), log it and continue the sweep rather than aborting the daemon.
+2. Enumerate peer registrations leniently; unreadable ones are logged and skipped.
+3. For each peer (skip self):
+   a. **Cross-host skip.** If the local host is known and the peer declares a different `host`, skip silently — wake adapters are machine-local (§10.2).
+   b. Read the peer's inbox **including malformed/skipped files**. If it is empty, skip (nothing to poke for).
+   c. Compute the oldest unread message's age from the filesystem **arrival time** (mtime), NOT the sender-encoded filename timestamp; a future/skewed time clamps to zero.
+   d. **Deferrals.** Skip if `restart_at` is in the future (defer until then); defer indefinitely if `status: exhausted` with no `restart_at`; skip if `status: offline` with no `restart_at`.
+   e. Skip if the `last_seen` **age** is below `--stale-threshold` (default 5min) — only peers that have gone stale are poked.
+   f. Skip if the oldest-arrival age is below `--message-age-threshold` (default 90s).
+   g. Skip if the peer is not pokable (no `wake_method`/`wake_target`, §8.2).
+   h. Poke via the registered `wake_method` adapter. An `agentchute-run` socket the recipient does not own is refused without dialing (recipient-binding).
+4. Sleep `--interval` (default 60s) and repeat (or run a single cycle with `--once`).
+
+Runner socket health is reported by `status` and `doctor` reachability checks and refreshed by the recipient's runner/poller reprove ticks; the watchdog does not run observability-only socket probes.
 
 ### 10.2 Cooperative waking
 The reference CLI performs §10.1 during every `check` cycle. Peer inspection is **metadata-only** (filenames/timestamps). Agents MUST NOT open peer inbox bodies. If a peer's `host` differs from the local host, skip the poke (cross-host pokes are not reachable).
@@ -203,7 +224,7 @@ Every agent participates in keeping the pool healthy.
 ### 11.1 Enforcement action
 Triggers include malformed inbox filenames, unparseable frontmatter, or unparseable peer registrations.
 1. **Quarantine**: Atomic rename to `<loop>/malformed/`.
-2. **Notify offender**: Send a corrective message (Task: `protocol correction`, Status: `findings`) to the inferred sender (§11.1).
+2. **Notify offender**: Send a corrective message (Task: `protocol correction`, Status: `findings`) to the inferred sender (§6.4).
 3. **Continue**: Do NOT block the sender or the turn.
 
 ## 12. Non-goals (v1)
@@ -256,7 +277,7 @@ status: active
 3. **Deliver**: `ln .tmp_<filename> <filename>` (ensures no-overwrite), then `rm .tmp_<filename>`.
 4. **Poke**:
    - tmux: `tmux send-keys -t <target> '[agentchute:tmux] check inbox' Enter`
-   - herdr: `herdr agent send <target> '[agentchute:herdr] check inbox'` then `herdr pane send-keys <pane_id> Enter` (pane resolved from the name via `herdr agent get <target>`).
+   - herdr: `herdr agent send <target> '[agentchute:herdr] check inbox'` then `herdr pane send-keys <pane_id> Enter` (pane resolved from the name via `herdr agent list` + `name` match).
 
 ### C.3 Checking inbox
 1. Update `last_seen` in registration.

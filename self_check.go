@@ -23,9 +23,9 @@ func cmdSelfCheck(args []string) error {
 	var agentID, vendor, host, wakeMethod, wakeTarget, controlRepo, loopDir, bio string
 	var quiet, jsonOut bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
-	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google, local)")
+	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google, xai, local)")
 	fs.StringVar(&host, "host", "", "host this agent runs on (defaults to OS hostname)")
-	fs.StringVar(&wakeMethod, "wake-method", "", "wake adapter; leave unset to reconcile from current tmux state")
+	fs.StringVar(&wakeMethod, "wake-method", "", "wake adapter; leave unset to reconcile from the current launch context (tmux/herdr pane or runner socket)")
 	fs.StringVar(&wakeTarget, "wake-target", "", "wake target; for tmux, defaults to current $TMUX_PANE when reachable")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
@@ -48,6 +48,9 @@ func cmdSelfCheck(args []string) error {
 		ClearStaleTmuxWake: true,
 		PruneStalePeerTmux: true,
 	}
+	// WI-E3 provenance: self-check is a lifecycle hook enroll. Under the runner
+	// (AGENTCHUTE_RUNNER=1) it records `runner` so the runner lane is not demoted.
+	opts.LaunchedBy, opts.HookEvent = hookLaunchProvenance("self-check")
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "host":
@@ -176,13 +179,14 @@ func selfCheckHelp() string {
 Usage: agentchute self-check --as <id> --vendor <vendor> [flags]
 
 Hook-safe active self check. Refreshes/creates this agent's registration,
-updates last_seen, reconciles wake_method/wake_target against current tmux
-state, and removes stale same-host peer tmux registrations. Does not read,
+updates last_seen, reconciles wake_method/wake_target against the current launch
+context (tmux pane, herdr pane, or runner socket), and removes stale
+same-host peer tmux registrations. Does not read,
 archive, quarantine, or send inbox messages.
 
 Flags:
   --as <id>              agent id (or $AGENTCHUTE_AGENT_ID)
-  --vendor <vendor>      vendor or origin (anthropic, openai, google, local)
+  --vendor <vendor>      vendor or origin (anthropic, openai, google, xai, local)
   --host <name>          host (defaults to OS hostname)
   --wake-method <m>      explicit wake adapter (empty clears)
   --wake-target <addr>   explicit wake target

@@ -54,6 +54,181 @@ func TestPrintStatusIncludesAgentsAndInboxDepth(t *testing.T) {
 	}
 }
 
+// WI-E1: the status table gains a live-probe REACHABLE column. A registration
+// whose wake target cannot be reached renders REACHABLE=no even though it
+// advertises a wake string (today the row only shows the wake string and looks
+// healthy).
+func TestStatus_ShowsReachableColumn(t *testing.T) {
+	root := t.TempDir()
+	cfg := &loop.Config{
+		ControlRepo: root,
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
+	}
+	mustMkdir(t, cfg.AgentsDir())
+
+	now := time.Now().UTC()
+	regs := map[string]*loop.Registration{
+		"codex": {
+			AgentID:     "codex",
+			Vendor:      "openai",
+			ControlRepo: root,
+			WakeMethod:  "tmux",
+			WakeTarget:  "%1",
+			LastSeen:    now.Add(-time.Minute),
+			Status:      loop.StatusActive,
+		},
+	}
+
+	// Deterministically report the live probe as unreachable.
+	old := statusReachableProbe
+	statusReachableProbe = func(_ *loop.Config, _ *loop.Registration) bool { return false }
+	t.Cleanup(func() { statusReachableProbe = old })
+
+	var out bytes.Buffer
+	printStatus(&out, cfg, regs, now)
+	text := out.String()
+	if !strings.Contains(text, "REACHABLE") {
+		t.Fatalf("status header missing REACHABLE column:\n%s", text)
+	}
+
+	if got := statusColumnValue(t, text, "REACHABLE", "codex"); got != "no" {
+		t.Fatalf("codex REACHABLE field = %q, want \"no\":\n%s", got, text)
+	}
+	// The wake string is still rendered (existing column preserved).
+	if !strings.Contains(text, "%1") {
+		t.Fatalf("codex wake string missing from row:\n%s", text)
+	}
+}
+
+// statusColumnValue extracts the value under the named header for the agent row,
+// robust to columns being added (it keys off the header position, not the last
+// field). Assumes every cell is a single whitespace-free token (true for the
+// status table).
+func statusColumnValue(t *testing.T, text, header, agentID string) string {
+	t.Helper()
+	var headerFields, row []string
+	for _, line := range strings.Split(text, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		if f[0] == "AGENT" {
+			headerFields = f
+		}
+		if f[0] == agentID {
+			row = f
+		}
+	}
+	if headerFields == nil {
+		t.Fatalf("no header row in status output:\n%s", text)
+	}
+	if row == nil {
+		t.Fatalf("no %s row in status output:\n%s", agentID, text)
+	}
+	idx := -1
+	for i, h := range headerFields {
+		if h == header {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("header %q not found in %v", header, headerFields)
+	}
+	if idx >= len(row) {
+		t.Fatalf("row %v has no column %d (%s)", row, idx, header)
+	}
+	return row[idx]
+}
+
+// WI-E2: the status table also surfaces the cached reachable_at age (a CACHED
+// column) so an operator sees the self-healed reachability fact, not just the
+// live probe.
+func TestStatus_ShowsCachedReachableAge(t *testing.T) {
+	root := t.TempDir()
+	cfg := &loop.Config{
+		ControlRepo: root,
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
+	}
+	mustMkdir(t, cfg.AgentsDir())
+
+	now := time.Now().UTC()
+	reachableAt := now.Add(-30 * time.Second)
+	regs := map[string]*loop.Registration{
+		"codex": {
+			AgentID:            "codex",
+			Vendor:             "openai",
+			ControlRepo:        root,
+			WakeMethod:         "herdr",
+			WakeTarget:         "codex-agentchute",
+			LastSeen:           now.Add(-time.Minute),
+			Status:             loop.StatusActive,
+			ReachableAt:        &reachableAt,
+			ReachabilityMethod: "herdr",
+			ReachabilityTarget: "codex-agentchute",
+		},
+		"grok": {
+			AgentID:     "grok",
+			Vendor:      "xai",
+			ControlRepo: root,
+			LastSeen:    now.Add(-time.Minute),
+			Status:      loop.StatusActive,
+		},
+	}
+
+	old := statusReachableProbe
+	statusReachableProbe = func(_ *loop.Config, _ *loop.Registration) bool { return false }
+	t.Cleanup(func() { statusReachableProbe = old })
+
+	var out bytes.Buffer
+	printStatus(&out, cfg, regs, now)
+	text := out.String()
+	if !strings.Contains(text, "CACHED") {
+		t.Fatalf("status header missing CACHED column:\n%s", text)
+	}
+	if got := statusColumnValue(t, text, "CACHED", "codex"); got != "30s" {
+		t.Fatalf("codex CACHED age = %q, want 30s:\n%s", got, text)
+	}
+	// No cached fact → dash.
+	if got := statusColumnValue(t, text, "CACHED", "grok"); got != "-" {
+		t.Fatalf("grok CACHED age = %q, want - (no cached fact):\n%s", got, text)
+	}
+}
+
+// WI-E1: status appends a "PRESENT BUT NOT ENROLLED" section listing wrappers in
+// this pool that have no live registration.
+func TestStatus_PresentButNotEnrolledSection(t *testing.T) {
+	cfg, root := presencePoolCfg(t)
+
+	stubPresenceListers(t)
+	listHerdrAgents = func() []herdrPresenceEntry {
+		return []herdrPresenceEntry{{Name: "ghost-agent", Cwd: root}}
+	}
+
+	var buf bytes.Buffer
+	printUnenrolledSection(&buf, cfg)
+	text := buf.String()
+	if !strings.Contains(text, "PRESENT BUT NOT ENROLLED") {
+		t.Fatalf("missing presence section:\n%s", text)
+	}
+	if !strings.Contains(text, "ghost-agent") {
+		t.Fatalf("presence section missing ghost-agent hint:\n%s", text)
+	}
+}
+
+// With no unenrolled wrappers, the section is quiet (no output).
+func TestStatus_PresentButNotEnrolledSectionQuietWhenClean(t *testing.T) {
+	cfg, _ := presencePoolCfg(t)
+	stubPresenceListers(t)
+
+	var buf bytes.Buffer
+	printUnenrolledSection(&buf, cfg)
+	if buf.Len() != 0 {
+		t.Fatalf("expected no output when nothing is unenrolled, got:\n%s", buf.String())
+	}
+}
+
 // v0.1.2 UX nit: status without --as / $AGENTCHUTE_AGENT_ID prints the
 // pool overview without claiming an agent identity and without touching
 // anyone's last_seen. Codex review aligned: diagnostic command, not a

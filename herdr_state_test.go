@@ -65,12 +65,33 @@ func readExampleReg(t *testing.T, root, agentID string) *loop.Registration {
 	return reg
 }
 
+func TestHerdrAgentReachableWithinHonorsTimeout(t *testing.T) {
+	old := herdrProbeBinary
+	path := filepath.Join(t.TempDir(), "herdr")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = agent ] && [ \"$2\" = list ]; then exec sleep 5; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	herdrProbeBinary = path
+	t.Cleanup(func() { herdrProbeBinary = old })
+
+	start := time.Now()
+	if herdrAgentReachableWithin("slow-agent", 75*time.Millisecond) {
+		t.Fatal("slow herdr probe reported reachable; want timeout/unreachable")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("herdr probe ignored timeout; elapsed=%s", elapsed)
+	}
+}
+
 func TestResolveWakeExplicitHerdrOutsidePaneWarns(t *testing.T) {
 	t.Setenv("HERDR_PANE_ID", "")
 	t.Setenv("HERDR_ENV", "")
 	t.Setenv("HERDR_SOCKET_PATH", "")
 
-	method, target, deferToExisting, warnings := resolveWakeForRegistration(registerOpts{
+	method, target, deferToExisting, warnings := resolveWakeForRegistration(nil, registerOpts{
 		AgentID:            "test-agent",
 		WakeMethod:         "herdr",
 		WakeMethodProvided: true,
@@ -158,12 +179,18 @@ func TestRegisterUnderRunnerKeepsRunnerWakeInHerdr(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustExampleRepo(t, root)
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
 		setupHerdrEnv(t, "w3:p7")
 		t.Setenv("AGENTCHUTE_RUNNER", "1")
 		t.Setenv("AGENTCHUTE_RUNNER_PID", "4242")
 
 		// Pre-existing runner registration (as run.go would have written).
-		runnerTarget := loop.RunnerWakeTarget("/tmp/runner-test.sock")
+		socketPath := cfg.RunnerSocketPath("test-agent")
+		startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: "test-agent"})
+		runnerTarget := loop.RunnerWakeTarget(socketPath)
 		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test-vendor", "--wake-method", loop.RunnerWakeMethod, "--wake-target", runnerTarget}); err != nil {
 			t.Fatalf("seed runner registration failed: %v", err)
 		}
@@ -182,11 +209,45 @@ func TestRegisterUnderRunnerKeepsRunnerWakeInHerdr(t *testing.T) {
 	})
 }
 
+func TestRegisterUnderRunnerKeepsRunnerWakeInTmux(t *testing.T) {
+	withFakeTmuxTargets(t, "%99")
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMUX_PANE", "%99")
+		t.Setenv("AGENTCHUTE_RUNNER", "1")
+		t.Setenv("AGENTCHUTE_RUNNER_PID", "4242")
+
+		socketPath := cfg.RunnerSocketPath("test-agent")
+		startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: "test-agent"})
+		runnerTarget := loop.RunnerWakeTarget(socketPath)
+		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test-vendor", "--wake-method", loop.RunnerWakeMethod, "--wake-target", runnerTarget}); err != nil {
+			t.Fatalf("seed runner registration failed: %v", err)
+		}
+
+		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test-vendor"}); err != nil {
+			t.Fatalf("cmdRegister failed: %v", err)
+		}
+		reg := readExampleReg(t, root, "test-agent")
+		if reg.WakeMethod != loop.RunnerWakeMethod {
+			t.Errorf("WakeMethod = %q, want runner wake preserved under the runner", reg.WakeMethod)
+		}
+		if reg.WakeTarget != runnerTarget {
+			t.Errorf("WakeTarget = %q, want %q", reg.WakeTarget, runnerTarget)
+		}
+	})
+}
+
 // A bare resolve (no --as / AGENTCHUTE_AGENT_ID) inside a herdr pane adopts the
 // agent id of the registration whose stable herdr name maps to this pane —
 // instead of falling through to the contextual default and splitting the inbox.
 func TestResolveAgentIDAdoptsHerdrPane(t *testing.T) {
-	withFakeHerdr(t, "claude-code-foo", "w3:p7")
+	renameLog := filepath.Join(t.TempDir(), "rename.log")
+	withFakeHerdrList(t, renameLog, map[string]string{"claude-code-foo": "w3:p7"})
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustExampleRepo(t, root)
@@ -216,7 +277,8 @@ func TestResolveAgentIDAdoptsHerdrPane(t *testing.T) {
 // If both herdr and tmux env are present, herdr identity adoption wins to match
 // wake auto-detection precedence for bare herdr launches.
 func TestResolveAgentIDHerdrWinsOverTmuxWhenBothEnvsPresent(t *testing.T) {
-	withFakeHerdr(t, "codex-herdr", "w3:p7")
+	renameLog := filepath.Join(t.TempDir(), "rename.log")
+	withFakeHerdrList(t, renameLog, map[string]string{"codex-herdr": "w3:p7"})
 	withFakeTmuxTargets(t, "%7")
 	root := t.TempDir()
 	withCwd(t, root, func() {
@@ -321,10 +383,40 @@ func TestRegisterHerdrEnvMissingBinaryIsNonPokable(t *testing.T) {
 	})
 }
 
+// WI-E2 follow-up: the LIVE reachability probe must resolve the herdr wake
+// target by its bound NAME (`agent list` + match `name`), not `agent get
+// <name>`. The herdr handle can differ from the bound name (gemini's handle
+// "agy" vs name "gemini-cli-agentchute"), so `agent get <name>` returns
+// agent_not_found while `agent list` still carries the binding. Before the fix
+// herdrAgentReachable resolved via `agent get` and returned false for
+// this case; after the fix it resolves via herdrAgentByName and returns true.
+func TestHerdrAgentReachable_ResolvesByNameWhenHandleDiffers(t *testing.T) {
+	renameLog := filepath.Join(t.TempDir(), "rename.log")
+	// `agent list` knows the name → a live pane; `agent get <name>` (fake) always
+	// returns agent_not_found (handle "agy" ≠ name).
+	withFakeHerdrList(t, renameLog, map[string]string{"gemini-cli-agentchute": "w3:p7"})
+
+	if !herdrAgentReachable("gemini-cli-agentchute") {
+		t.Fatal("herdrAgentReachable = false for a name bound in `agent list` but not resolvable via `agent get`; the live probe must resolve by name (handle≠name)")
+	}
+}
+
+// herdrAgentReachable stays false when the name is bound to NO live pane (so the
+// fix does not flip everything to reachable): `agent list` has no matching name.
+func TestHerdrAgentReachable_UnboundNameIsUnreachable(t *testing.T) {
+	renameLog := filepath.Join(t.TempDir(), "rename.log")
+	withFakeHerdrList(t, renameLog, map[string]string{"someone-else": "w9:pOther"})
+
+	if herdrAgentReachable("gemini-cli-agentchute") {
+		t.Fatal("herdrAgentReachable = true for a name absent from `agent list`; want false")
+	}
+}
+
 // An explicit identity whose herdr name is already bound to a different pane is
 // not hijacked: the herdr wake is skipped rather than registered ambiguously.
 func TestRegisterExplicitHerdrNameCollisionSkipsHerdrWake(t *testing.T) {
-	withFakeHerdr(t, "taken-agent", "w9:pOther")
+	renameLog := filepath.Join(t.TempDir(), "rename.log")
+	withFakeHerdrList(t, renameLog, map[string]string{"taken-agent": "w9:pOther"})
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustExampleRepo(t, root)
@@ -336,6 +428,9 @@ func TestRegisterExplicitHerdrNameCollisionSkipsHerdrWake(t *testing.T) {
 		reg := readExampleReg(t, root, "taken-agent")
 		if reg.WakeMethod == "herdr" {
 			t.Errorf("explicit identity colliding with another pane should NOT register herdr wake; got method=%q target=%q", reg.WakeMethod, reg.WakeTarget)
+		}
+		if got := renameLogContents(t, renameLog); got != "" {
+			t.Fatalf("rename log = %q, want no rename for a name already bound to another pane", got)
 		}
 	})
 }

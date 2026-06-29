@@ -83,7 +83,7 @@ func TestSendInfersSenderFromCurrentTmuxPane(t *testing.T) {
 	}
 }
 
-// Spec rev3 §A.4 + Test 11: --ask sets reply_required: true frontmatter
+// AGENTCHUTE.md §6.4: --ask sets reply_required: true frontmatter
 // AND prepends ## ASK to the body.
 func TestSendAskSetsReplyRequiredAndHeading(t *testing.T) {
 	root, cfg := setupSendFixture(t)
@@ -122,7 +122,7 @@ func TestSendAskPreservesExistingAskHeading(t *testing.T) {
 	}
 }
 
-// Spec rev3 §A.4: --reply-to clears a matching pending-reply ledger entry.
+// AGENTCHUTE.md §6.4: --reply-to clears a matching pending-reply ledger entry.
 func TestSendReplyToClearsPendingLedgerEntry(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 
@@ -528,7 +528,7 @@ func TestSendReplyToWithoutMatchingEntryIsSilent(t *testing.T) {
 	})
 }
 
-// Spec rev3 §A.10: send output emits wake_method, wake_attempted, wake_result.
+// Send output emits wake_method, wake_attempted, wake_result (AGENTCHUTE.md §8).
 func TestSendEmitsWakeReceipt(t *testing.T) {
 	root, _ := setupSendFixture(t)
 	withCwd(t, root, func() {
@@ -582,7 +582,7 @@ func TestSendJSONShape(t *testing.T) {
 	})
 }
 
-// Spec rev3 §A.4 [REV2]: warn if the sender's pending-reply ledger has
+// AGENTCHUTE.md §6.4: warn if the sender's pending-reply ledger has
 // entries from the recipient but --reply-to is not provided.
 func TestSendWarnsOnUnclearedLedgerForRecipient(t *testing.T) {
 	root, cfg := setupSendFixture(t)

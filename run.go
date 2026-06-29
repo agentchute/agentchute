@@ -53,6 +53,7 @@ type runnerOptions struct {
 	WrapperArgs     []string
 	ContextualID    bool
 	ContextualBase  string
+	ShimName        string // ac-* launcher shim that started this lane (provenance).
 }
 
 func cmdRun(args []string) error {
@@ -70,6 +71,7 @@ func cmdRun(args []string) error {
 	fs.StringVar(&opts.Prompt, "prompt", defaultRunnerPrompt, "prompt injected when mail arrives")
 	fs.DurationVar(&idleGrace, "idle-grace", defaultRunnerIdleGrace, "quiet period before a wrapper is considered idle")
 	fs.DurationVar(&busyGrace, "busy-grace", defaultRunnerBusyGrace, "busy period before after-grace sends Ctrl-C")
+	fs.StringVar(&opts.ShimName, "shim-name", "", "ac-* launcher shim that started this lane (provenance; set by the shim)")
 	if err := fs.Parse(args); err != nil {
 		return runUsage(err)
 	}
@@ -370,6 +372,10 @@ func registerRunner(cfg *loop.Config, opts runnerOptions, socketPath string, now
 		HostProvided:       true,
 		ContextualIdentity: opts.ContextualID,
 		ContextualBaseID:   opts.ContextualBase,
+		// WI-E3 provenance: the runner owns this lane. ShimName is threaded from
+		// the launcher shim (cmdShimsExec passes --shim-name) when present.
+		LaunchedBy: loop.LaunchedByRunner,
+		ShimName:   opts.ShimName,
 	}, now)
 	return err
 }
@@ -388,6 +394,7 @@ func markRunnerOffline(cfg *loop.Config, agentID string) error {
 		}
 		reg.Status = loop.StatusOffline
 		reg.LastSeen = time.Now().UTC()
+		clearReachabilityCache(reg)
 		return loop.WriteRegistration(regPath, reg)
 	})
 }
@@ -443,7 +450,7 @@ func clearStaleRunnerWakeTargets(cfg *loop.Config, selfID string) ([]string, err
 		if localHost != "" && strings.TrimSpace(reg.Host) != "" && reg.Host != localHost {
 			continue
 		}
-		if runnerRegistrationHealthy(cfg, reg, 300*time.Millisecond) {
+		if !runnerWakeTargetClearable(cfg, reg, 300*time.Millisecond) {
 			continue
 		}
 		// Mutate this peer's registration under ITS OWN lock (not selfID's), and
@@ -466,13 +473,12 @@ func clearStaleRunnerWakeTargets(cfg *loop.Config, selfID string) ([]string, err
 			if fresh.WakeMethod != loop.RunnerWakeMethod || strings.TrimSpace(fresh.WakeTarget) == "" {
 				return nil
 			}
-			if runnerRegistrationHealthy(cfg, fresh, 300*time.Millisecond) {
+			if !runnerWakeTargetClearable(cfg, fresh, 300*time.Millisecond) {
 				return nil
 			}
 			fresh.WakeMethod = ""
 			fresh.WakeTarget = ""
-			fresh.Status = loop.StatusOffline
-			fresh.LastSeen = time.Now().UTC()
+			clearReachabilityCache(fresh)
 			if err := loop.WriteRegistration(cfg.AgentRegistrationPath(peerID), fresh); err != nil {
 				return err
 			}
@@ -487,6 +493,43 @@ func clearStaleRunnerWakeTargets(cfg *loop.Config, selfID string) ([]string, err
 		}
 	}
 	return cleared, nil
+}
+
+func runnerWakeTargetClearable(cfg *loop.Config, reg *loop.Registration, timeout time.Duration) bool {
+	if reg == nil || reg.WakeMethod != loop.RunnerWakeMethod || strings.TrimSpace(reg.WakeTarget) == "" {
+		return false
+	}
+	if cfg.RunnerWakeTargetOwnedBy(reg.AgentID, reg.WakeTarget) != nil {
+		return true
+	}
+	if runnerRegistrationHealthy(cfg, reg, timeout) {
+		return false
+	}
+	state, err := loop.LoadRunnerState(cfg, reg.AgentID)
+	if err != nil {
+		return false
+	}
+	socketPath, err := loop.ParseRunnerWakeTarget(reg.WakeTarget)
+	if err != nil {
+		return true
+	}
+	if state.SocketPath != "" && state.SocketPath != socketPath {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(state.Status), "offline") {
+		return true
+	}
+	if state.RunnerPID > 0 && !processAlive(state.RunnerPID) {
+		return true
+	}
+	return false
+}
+
+func clearReachabilityCache(reg *loop.Registration) {
+	reg.ReachableAt = nil
+	reg.ReachabilityMethod = ""
+	reg.ReachabilityTarget = ""
+	reg.ReachabilityError = ""
 }
 
 func runnerRegistrationHealthy(cfg *loop.Config, reg *loop.Registration, timeout time.Duration) bool {
@@ -632,6 +675,15 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	now := time.Now().UTC()
 	if err := loop.UpdateLastSeen(r.cfg, r.opts.AgentID, now); err != nil {
 		fmt.Fprintf(os.Stderr, "agentchute run: update last_seen: %v\n", err)
+	}
+	// WI-E2: re-prove (and, since the runner owns its socket, this is probe-only)
+	// our OWN wake target each tick and cache the reachability fact. Sequential
+	// with UpdateLastSeen — NOT nested — so the per-agent lock is acquired twice
+	// in this call stack only after the first release (the no-nested-lock
+	// contract). Best-effort: a reprove failure is advisory and must not disturb
+	// the inbox-wake path below.
+	if _, err := reproveAndRebindOwnWake(r.cfg, r.opts.AgentID); err != nil {
+		fmt.Fprintf(os.Stderr, "agentchute run: reprove wake reachability: %v\n", err)
 	}
 	// Track a SEEN-filename snapshot across BOTH parsed messages and skipped
 	// (malformed/unparseable) files. Lexicographic-newest tracking misses two

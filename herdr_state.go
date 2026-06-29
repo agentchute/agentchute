@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // herdrProbeBinary is the executable name for read-only herdr CLI calls made
@@ -63,7 +65,8 @@ func renameCurrentHerdrAgent(agentID string) error {
 	return nil
 }
 
-// herdrAgentInfo is the subset of `herdr agent get` we consume.
+// herdrAgentInfo is the subset of a herdr agent record we consume (populated
+// from `herdr agent list` via herdrAgentByName).
 type herdrAgentInfo struct {
 	Name          string
 	PaneID        string
@@ -72,43 +75,60 @@ type herdrAgentInfo struct {
 	Found         bool
 }
 
-// herdrAgentLookup resolves a herdr agent target (name or pane id) to its
-// current pane via `herdr agent get`. Read-only; argv-only; used for doctor
-// reachability and explicit-identity collision detection. Returns Found=false
-// when the target is unbound or herdr is unavailable.
-func herdrAgentLookup(target string) herdrAgentInfo {
-	target = strings.TrimSpace(target)
-	if target == "" || !herdrAvailable() {
-		return herdrAgentInfo{}
+// herdrAgentByName resolves a herdr agent by its bound NAME via `herdr agent
+// list`, matching on the `name` field — NOT `herdr agent get <name>`. The herdr
+// *handle* can differ from the bound *name* (e.g. gemini's handle is `agy` while
+// its bound name is `gemini-cli-agentchute`), so `agent get <name>` returns
+// agent_not_found for a renamed/rebranded wrapper. List-and-match is robust to
+// that. Returns found=false when the name is unbound or herdr is unavailable.
+//
+// This is the resolver WI-E2's reprove/rebind path uses; the wake target IS the
+// stable name, so resolving it by name is what proves (or disproves) the binding.
+func herdrAgentByName(name string) (info herdrAgentInfo, found bool) {
+	return herdrAgentByNameWithin(name, time.Second)
+}
+
+func herdrAgentByNameWithin(name string, timeout time.Duration) (info herdrAgentInfo, found bool) {
+	name = strings.TrimSpace(name)
+	if name == "" || !herdrAvailable() {
+		return herdrAgentInfo{}, false
 	}
-	out, err := exec.Command(herdrProbeBinary, "agent", "get", target).Output()
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, herdrProbeBinary, "agent", "list").Output()
 	if err != nil {
-		return herdrAgentInfo{}
+		return herdrAgentInfo{}, false
 	}
 	var resp struct {
 		Result struct {
-			Agent struct {
+			Agents []struct {
 				Name          string `json:"name"`
 				PaneID        string `json:"pane_id"`
 				Cwd           string `json:"cwd"`
 				ForegroundCwd string `json:"foreground_cwd"`
-			} `json:"agent"`
+			} `json:"agents"`
 		} `json:"result"`
-		Error *struct {
-			Code string `json:"code"`
-		} `json:"error"`
 	}
-	if json.Unmarshal(out, &resp) != nil || resp.Error != nil {
-		return herdrAgentInfo{}
+	if json.Unmarshal(out, &resp) != nil {
+		return herdrAgentInfo{}, false
 	}
-	pane := strings.TrimSpace(resp.Result.Agent.PaneID)
-	return herdrAgentInfo{
-		Name:          strings.TrimSpace(resp.Result.Agent.Name),
-		PaneID:        pane,
-		Cwd:           strings.TrimSpace(resp.Result.Agent.Cwd),
-		ForegroundCwd: strings.TrimSpace(resp.Result.Agent.ForegroundCwd),
-		Found:         pane != "",
+	for _, a := range resp.Result.Agents {
+		if strings.TrimSpace(a.Name) != name {
+			continue
+		}
+		pane := strings.TrimSpace(a.PaneID)
+		return herdrAgentInfo{
+			Name:          name,
+			PaneID:        pane,
+			Cwd:           strings.TrimSpace(a.Cwd),
+			ForegroundCwd: strings.TrimSpace(a.ForegroundCwd),
+			Found:         pane != "",
+		}, pane != ""
 	}
+	return herdrAgentInfo{}, false
 }
 
 func clearHerdrAgentName(name string) error {
@@ -127,9 +147,25 @@ func clearHerdrAgentName(name string) error {
 }
 
 // herdrAgentReachable reports whether a herdr wake target currently resolves to
-// a live pane. Used by doctor and recipient-liveness checks.
+// a live pane. Used by doctor wake-validity, the status REACHABLE column, and
+// the recipient-liveness cache-miss live fallback (wired into
+// loop.RegistrationReachable via SetHerdrReachableHook).
+//
+// It resolves by the bound NAME via herdrAgentByName (`herdr agent list` + match
+// the `name` field), NOT by `herdr agent get <name>`: the wake
+// target IS the stable name, and a herdr *handle* can differ from the bound
+// *name* (gemini's handle "agy" vs name "gemini-cli-agentchute"), so `agent get
+// <name>` returns agent_not_found for a renamed/rebranded wrapper while the name
+// is still live in `agent list`. WI-E2's reprove path already resolves by name;
+// this aligns the LIVE probe so the cache-miss fallback, status, and doctor all
+// agree for the handle≠name case. Read-only; argv-only.
 func herdrAgentReachable(name string) bool {
-	return herdrAgentLookup(name).Found
+	return herdrAgentReachableWithin(name, time.Second)
+}
+
+func herdrAgentReachableWithin(name string, timeout time.Duration) bool {
+	_, found := herdrAgentByNameWithin(name, timeout)
+	return found
 }
 
 // herdrNameBoundToOtherPane reports whether name is already bound to a herdr
@@ -141,8 +177,8 @@ func herdrNameBoundToOtherPane(name, pane string) bool {
 	if pane == "" {
 		return false
 	}
-	info := herdrAgentLookup(name)
-	return info.Found && info.PaneID != pane
+	info, found := herdrAgentByName(name)
+	return found && info.PaneID != pane
 }
 
 // herdrWakeForRegistration binds the current herdr pane to the agent id and
