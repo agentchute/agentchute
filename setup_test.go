@@ -94,8 +94,8 @@ func TestNormalizeSetupWakeCombinations(t *testing.T) {
 		{in: "runner,tmux,herdr", wantErr: true},
 		{in: "", wantErr: true},
 		{in: ",", wantErr: true},
-		{in: "runner,", wantErr: true},   // trailing comma → empty token
-		{in: "runner,,", wantErr: true},  // doubled comma → empty token
+		{in: "runner,", wantErr: true},    // trailing comma → empty token
+		{in: "runner,,", wantErr: true},   // doubled comma → empty token
 		{in: "all, ,both", wantErr: true}, // whitespace-only token
 		{in: "bogus", wantErr: true},
 		{in: "runner,bogus", wantErr: true},

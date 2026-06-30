@@ -29,11 +29,11 @@ const (
 // at the current point: a record is durable+whole only once BOTH its contents
 // are fsync'd AND the dir entry is fsync'd.
 type fakeFS struct {
-	ops           []op
-	tmpWritten    bool
-	tmpFsynced    bool
-	linked        bool
-	dirFsynced    bool
+	ops        []op
+	tmpWritten bool
+	tmpFsynced bool
+	linked     bool
+	dirFsynced bool
 }
 
 func (f *fakeFS) do(o op) {

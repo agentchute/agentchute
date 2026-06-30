@@ -3,9 +3,9 @@
 //
 // It exercises the protocol at the wire level (no PTY here — that's the serve
 // spike). The point is to SHOW the three places the two models differ:
-//   1. cross-agent order  (advisory vs real)
-//   2. presence source    (.live file vs cursor advance)
-//   3. body privacy (B1)  (private vs shared)
+//  1. cross-agent order  (advisory vs real)
+//  2. presence source    (.live file vs cursor advance)
+//  3. body privacy (B1)  (private vs shared)
 package main
 
 import (

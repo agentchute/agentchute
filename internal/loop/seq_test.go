@@ -107,11 +107,11 @@ func TestMsgIDFilenameRoundTrip(t *testing.T) {
 
 func TestParseSeqFilenameRejectsNonCanonical(t *testing.T) {
 	bad := []string{
-		"from-alice_seq-42.md",                            // not zero-padded to 20
+		"from-alice_seq-42.md",                               // not zero-padded to 20
 		"2026-05-09T16-32-00-123456Z_from-alice_msg-ab12.md", // legacy nonce format
-		"from-alice_seq-00000000000000000042.txt",         // wrong suffix
-		"from-_seq-00000000000000000001.md",               // empty sender
-		"from-BAD_seq-00000000000000000001.md",            // invalid agent_id (uppercase)
+		"from-alice_seq-00000000000000000042.txt",            // wrong suffix
+		"from-_seq-00000000000000000001.md",                  // empty sender
+		"from-BAD_seq-00000000000000000001.md",               // invalid agent_id (uppercase)
 		"random.md",
 	}
 	for _, name := range bad {

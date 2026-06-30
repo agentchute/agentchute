@@ -16,17 +16,17 @@ import (
 //
 // WHY these fields and no others:
 //   - From          : normative. Who sent it. (Receiver MUST reject a message
-//                     with no From — an anonymous message has no accountability.)
+//     with no From — an anonymous message has no accountability.)
 //   - ReplyRequired : the ONE cross-agent coordination bit worth keeping. Under
-//                     the v2 deltas the *obligation* is owned by the asker; this
-//                     bit is only an advisory hint to the recipient.
+//     the v2 deltas the *obligation* is owned by the asker; this
+//     bit is only an advisory hint to the recipient.
 //   - InReplyTo     : optional thread link.
 //   - Key (msg_key) : optional idempotency key. No-overwrite stops DELIVERY
-//                     duplicates; it does nothing for CRASH-RETRY duplicates
-//                     (sender resends, unsure the first landed). Key lets the
-//                     receiver dedup the logical event.
+//     duplicates; it does nothing for CRASH-RETRY duplicates
+//     (sender resends, unsure the first landed). Key lets the
+//     receiver dedup the logical event.
 //   - Extra         : unknown/future fields. Carried, never required. Proves
-//                     forward-compat (E1): old receivers ignore new fields.
+//     forward-compat (E1): old receivers ignore new fields.
 //
 // What's deliberately ABSENT: `to` (addressing is structural — which inbox / the
 // record's recipient), and `message_id` (identity is whatever the binding

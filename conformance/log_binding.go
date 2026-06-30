@@ -8,10 +8,10 @@ import (
 
 // logBinding = the SHARED APPEND-ONLY LOG model (the §5 fork), as a spike.
 //
-//	  ┌──────────────────────────── one ordered stream ───────────────────────────┐
-//	  │ seq0 to=bob   seq1 to=alice  seq2 to=bob  seq3 to=carol  seq4 to=bob ...    │
-//	  └────────────────────────────────────────────────────────────────────────────┘
-//	      bob.cursor ─┘                          alice.cursor ─┘
+//	┌──────────────────────────── one ordered stream ───────────────────────────┐
+//	│ seq0 to=bob   seq1 to=alice  seq2 to=bob  seq3 to=carol  seq4 to=bob ...    │
+//	└────────────────────────────────────────────────────────────────────────────┘
+//	    bob.cursor ─┘                          alice.cursor ─┘
 //
 // Everyone APPENDS to the stream; each agent keeps a READ CURSOR and FILTERS for
 // records addressed to it. Reference storage: a single append file, a git
@@ -171,8 +171,12 @@ func (b *logBinding) PeekBodies(owner, reader string) []string {
 
 // --- test-only affordances (same-package) ---
 
-func (b *logBinding) crashAfterActOnce()                 { b.crash = true }
-func (b *logBinding) forceLastSeen(id string, t time.Time) { b.mu.Lock(); b.advanced[id] = t; b.mu.Unlock() }
+func (b *logBinding) crashAfterActOnce() { b.crash = true }
+func (b *logBinding) forceLastSeen(id string, t time.Time) {
+	b.mu.Lock()
+	b.advanced[id] = t
+	b.mu.Unlock()
+}
 
 func (b *logBinding) deliverSlow(to string, m Msg, staged chan<- struct{}, commit <-chan struct{}) error {
 	if m.From == "" {

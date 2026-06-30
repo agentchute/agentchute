@@ -145,8 +145,12 @@ func (b *inboxBinding) PeekBodies(owner, reader string) []string {
 
 // --- test-only affordances (same-package) ---
 
-func (b *inboxBinding) crashAfterActOnce()              { b.crash = true }
-func (b *inboxBinding) forceLastSeen(id string, t time.Time) { b.mu.Lock(); b.seen[id] = t; b.mu.Unlock() }
+func (b *inboxBinding) crashAfterActOnce() { b.crash = true }
+func (b *inboxBinding) forceLastSeen(id string, t time.Time) {
+	b.mu.Lock()
+	b.seen[id] = t
+	b.mu.Unlock()
+}
 
 // deliverSlow stages a message (invisible), signals, waits, then commits — the
 // hook the D1 test uses to prove a mid-flight message is never observable.
