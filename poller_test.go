@@ -77,11 +77,10 @@ func TestPollerEnsureNoopsWhenRunnerWakeReachable(t *testing.T) {
 		}
 
 		socketPath := cfg.RunnerSocketPath("codex")
-		startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{
-			OK:        true,
-			RunnerPID: os.Getpid(),
-			Status:    "active",
-		})
+		// Gate 6b (pull-only): runner-wake reachability is `.live` freshness, not a
+		// socket ping; a fresh `.live` makes the poller treat the runner as
+		// reachable and no-op.
+		mustWriteLiveAt(t, cfg, "codex", time.Now().UTC())
 
 		now := time.Now().UTC()
 		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), &loop.Registration{

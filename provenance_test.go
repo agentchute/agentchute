@@ -59,7 +59,9 @@ func TestBootUnderRunnerKeepsRunnerProvenance(t *testing.T) {
 			t.Fatal(err)
 		}
 		socketPath := cfg.RunnerSocketPath("claude-code")
-		startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: "claude-code"})
+		// Gate 6b (pull-only): runner reachability is `.live` freshness, not a
+		// socket ping.
+		mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC())
 		runnerTarget := loop.RunnerWakeTarget(socketPath)
 		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--wake-method", loop.RunnerWakeMethod, "--wake-target", runnerTarget}); err != nil {
 			t.Fatalf("seed runner registration failed: %v", err)

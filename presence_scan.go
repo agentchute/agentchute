@@ -357,9 +357,12 @@ func defaultListTmuxPanes() []tmuxPresenceEntry {
 	return entries
 }
 
-// defaultListRunnerSockets enumerates live agentchute-run sockets under this
-// pool's loop dir (state/<agent>/runner.sock) and pings each. Only sockets that
-// answer the ping are returned (a stale socket file is not a present process).
+// defaultListRunnerSockets enumerates live agentchute-run runners under this
+// pool's loop dir. Simple-again Gate 6b (pull-only): the runner no longer owns a
+// receive socket, so a live runner is detected from its runner STATE file
+// (state/<agent>/runner.json) — same-host, status != offline, and a live runner
+// pid — instead of a socket ping. A stale state file (dead pid / offline) is not
+// a present process.
 func defaultListRunnerSockets(cfg *loop.Config) []runnerPresenceEntry {
 	if cfg == nil {
 		return nil
@@ -369,6 +372,7 @@ func defaultListRunnerSockets(cfg *loop.Config) []runnerPresenceEntry {
 	if err != nil {
 		return nil
 	}
+	localHost := strings.TrimSpace(localHostname())
 	var out []runnerPresenceEntry
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -378,15 +382,20 @@ func defaultListRunnerSockets(cfg *loop.Config) []runnerPresenceEntry {
 		if loop.ValidateAgentID(agentID) != nil {
 			continue
 		}
-		sockPath := filepath.Join(stateDir, agentID, "runner.sock")
-		if _, err := os.Stat(sockPath); err != nil {
+		st, err := loop.LoadRunnerState(cfg, agentID)
+		if err != nil {
 			continue
 		}
-		target := loop.RunnerWakeTarget(sockPath)
-		if !loop.RunnerSocketReachable(target, presenceProbeTimeout) {
+		if localHost != "" && strings.TrimSpace(st.Host) != "" && st.Host != localHost {
+			continue // runner pid liveness is only provable same-host.
+		}
+		if strings.EqualFold(strings.TrimSpace(st.Status), "offline") {
 			continue
 		}
-		out = append(out, runnerPresenceEntry{AgentID: agentID, Target: target, Cwd: cfg.ControlRepo})
+		if st.RunnerPID <= 0 || !processAlive(st.RunnerPID) {
+			continue
+		}
+		out = append(out, runnerPresenceEntry{AgentID: agentID, Cwd: cfg.ControlRepo})
 	}
 	return out
 }

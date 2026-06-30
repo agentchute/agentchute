@@ -34,9 +34,16 @@ import (
 // seams the gate consults to confirm a discovered candidate is actually
 // reachable (not just present). Package-level vars so tests inject deterministic
 // results instead of dialing a real herdr server / runner socket.
+//
+// Simple-again Gate 6b (pull-only): the runner receive socket is gone, so there
+// is no socket to dial and a pull runner has no addressable wake_target to write
+// into a repaired registration. The default therefore reports "not reachable by
+// poke" (false); the runner-presence repair path is effectively retired under
+// pull (the live-runner DIAGNOSTIC still surfaces via the unenrolled scan, which
+// uses runner-state liveness, not this seam). Tests still override it.
 var (
 	presenceHerdrReachable  = herdrAgentReachable
-	presenceRunnerReachable = loop.RunnerSocketReachable
+	presenceRunnerReachable = func(string, time.Duration) bool { return false }
 )
 
 // presenceCandidate is a discovered wrapper presence the daemon has identified

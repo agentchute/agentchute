@@ -149,10 +149,12 @@ func cmdDefer(args []string) error {
 
 	sendWarning := ""
 	// Gate 4: land the ack under the canonical (to,from,seq) identity. Empty
-	// idempotencyKey/serveToken match send's transitional contract (at-most-once
-	// on a sender crash, unfenced). A missing sender inbox surfaces as
-	// os.ErrNotExist exactly as the legacy writer did.
-	ackID, err := loop.SendSeqMessage(cfg, agentID, pendingEntry.From, ackContent, "", "")
+	// idempotencyKey matches send's transitional contract (at-most-once on a
+	// sender crash). serveToken rides AGENTCHUTE_SERVE_TOKEN (Gate 6b) so the ack
+	// write is fenced under the serve lease just like a normal send; empty env =>
+	// unfenced. A missing sender inbox surfaces as os.ErrNotExist exactly as the
+	// legacy writer did.
+	ackID, err := loop.SendSeqMessage(cfg, agentID, pendingEntry.From, ackContent, "", os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
 	ackFilename := ""
 	switch {
 	case err == nil:

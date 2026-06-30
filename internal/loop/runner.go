@@ -3,8 +3,6 @@ package loop
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
 	"os"
 	"strings"
 	"time"
@@ -28,17 +26,6 @@ type RunnerState struct {
 	LastInjection time.Time `json:"last_injection,omitempty"`
 	PendingWake   bool      `json:"pending_wake"`
 	Status        string    `json:"status"`
-}
-
-// RunnerPingResponse is the runner socket health response. It proves the
-// socket is an agentchute runner, not just any process accepting connections.
-type RunnerPingResponse struct {
-	OK          bool   `json:"ok"`
-	AgentID     string `json:"agent_id,omitempty"`
-	RunnerPID   int    `json:"runner_pid"`
-	ChildPID    int    `json:"child_pid,omitempty"`
-	PendingWake bool   `json:"pending_wake"`
-	Status      string `json:"status,omitempty"`
 }
 
 // RunnerWakeTarget formats a local Unix socket target for registrations.
@@ -102,72 +89,21 @@ func LoadRunnerState(cfg *Config, agentID string) (*RunnerState, error) {
 	return &st, nil
 }
 
-// RunnerSocketReachable reports whether a local runner socket answers the
-// ping/ack protocol. It does not enqueue a wake.
-func RunnerSocketReachable(target string, timeout time.Duration) bool {
-	_, err := PingRunner(target, timeout)
-	return err == nil
-}
-
-// PingRunner asks an agentchute-run socket for its health payload.
-func PingRunner(target string, timeout time.Duration) (*RunnerPingResponse, error) {
-	path, err := ParseRunnerWakeTarget(target)
-	if err != nil {
-		return nil, err
-	}
-	if timeout <= 0 {
-		timeout = time.Second
-	}
-	conn, err := net.DialTimeout("unix", path, timeout)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	if err := json.NewEncoder(conn).Encode(map[string]any{"op": "ping"}); err != nil {
-		return nil, err
-	}
-	var resp RunnerPingResponse
-	if err := json.NewDecoder(io.LimitReader(conn, 4096)).Decode(&resp); err != nil {
-		return nil, err
-	}
-	if !resp.OK {
-		return nil, fmt.Errorf("runner ping returned ok=false")
-	}
-	return &resp, nil
-}
-
-// RegistrationReachable reports whether reg's wake target is currently reachable
-// from this host, WITHOUT ever dialing a socket the recipient does not
-// legitimately own.
+// RegistrationReachable reports whether reg's agent is reachable under pull-only
+// coordination.
 //
-// Simple-again Gate 6a (pull-only): the wake-adapter dispatch + the tmux/herdr
-// reachability probes were removed (senders no longer poke; those transports are
-// retiring). The only endpoint still probeable in-package is the runner RECEIVE
-// socket, which survives until Gate 6b — so this is now a runner-socket liveness
-// probe. The WI-3 recipient-binding invariant is preserved: the owned-check
-// (cfg.RunnerWakeTargetOwnedBy) runs FIRST and an unowned target is reported
-// unreachable WITHOUT a dial; only an owned target is dialed
-// (RunnerSocketReachable). Any non-runner method (or nil/empty/unknown) reports
-// unreachable. Vestigial callers (status REACHABLE column, register
-// runner-primary selection, poller ensure) keep compiling unchanged; their
-// wake-field reads are stripped in Gate 6c.
-func RegistrationReachable(cfg *Config, reg *Registration, timeout time.Duration) bool {
-	if reg == nil {
+// Simple-again Gate 6b (pull-only): the runner RECEIVE socket was removed (Gate
+// 6a retired every sender; 6b deletes the receive side), so there is no wake
+// endpoint to dial — "reachable by poke" no longer exists. Reachability now
+// means LIVENESS: the agent's `.live` presence fact is fresh (loop.IsLive, R1).
+// An absent/stale/unreadable `.live` reads not-reachable, which is the safe
+// direction. The timeout parameter is retained for signature compatibility with
+// the vestigial callers (status REACHABLE column, register runner-primary
+// selection, poller ensure) but is unused; those callers keep compiling and
+// their wake-field reads are stripped in Gate 6c.
+func RegistrationReachable(cfg *Config, reg *Registration, _ time.Duration) bool {
+	if cfg == nil || reg == nil {
 		return false
 	}
-	if strings.TrimSpace(reg.WakeTarget) == "" {
-		return false
-	}
-	if strings.TrimSpace(reg.WakeMethod) != RunnerWakeMethod {
-		return false
-	}
-	if cfg == nil {
-		return false
-	}
-	if err := cfg.RunnerWakeTargetOwnedBy(reg.AgentID, reg.WakeTarget); err != nil {
-		// Not a socket this recipient owns: never dial it.
-		return false
-	}
-	return RunnerSocketReachable(reg.WakeTarget, timeout)
+	return IsLive(cfg, reg.AgentID, liveWindow, time.Now())
 }

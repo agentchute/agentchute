@@ -189,7 +189,9 @@ func TestRegisterUnderRunnerKeepsRunnerWakeInHerdr(t *testing.T) {
 
 		// Pre-existing runner registration (as run.go would have written).
 		socketPath := cfg.RunnerSocketPath("test-agent")
-		startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: "test-agent"})
+		// Gate 6b (pull-only): runner reachability is `.live` freshness, not a
+		// socket ping.
+		mustWriteLiveAt(t, cfg, "test-agent", time.Now().UTC())
 		runnerTarget := loop.RunnerWakeTarget(socketPath)
 		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test-vendor", "--wake-method", loop.RunnerWakeMethod, "--wake-target", runnerTarget}); err != nil {
 			t.Fatalf("seed runner registration failed: %v", err)
@@ -223,7 +225,9 @@ func TestRegisterUnderRunnerKeepsRunnerWakeInTmux(t *testing.T) {
 		t.Setenv("AGENTCHUTE_RUNNER_PID", "4242")
 
 		socketPath := cfg.RunnerSocketPath("test-agent")
-		startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: "test-agent"})
+		// Gate 6b (pull-only): runner reachability is `.live` freshness, not a
+		// socket ping.
+		mustWriteLiveAt(t, cfg, "test-agent", time.Now().UTC())
 		runnerTarget := loop.RunnerWakeTarget(socketPath)
 		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test-vendor", "--wake-method", loop.RunnerWakeMethod, "--wake-target", runnerTarget}); err != nil {
 			t.Fatalf("seed runner registration failed: %v", err)

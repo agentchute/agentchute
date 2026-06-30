@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 // Simple-again Gate 6a (pull-only): TestComputeWakeReceipt_RefusesUnboundRunnerSocket
@@ -67,6 +70,49 @@ func TestSendNonFatalMissingRegistrationButExistingInbox(t *testing.T) {
 		}
 		if len(entries) != 1 {
 			t.Fatalf("expected 1 message in inbox, got %d", len(entries))
+		}
+	})
+}
+
+// Gate 6b fence end-to-end: a send carries AGENTCHUTE_SERVE_TOKEN; AllocateSeq
+// VerifyFences it against the sender's live serve lease. A matching token sends
+// normally; a mismatched token (the agent was reclaimed/fenced) fails CLOSED.
+func TestSendFencedByServeTokenMismatch(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		if err := cmdRegister([]string{"--as", "sender", "--vendor", "test"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmdRegister([]string{"--as", "recipient", "--vendor", "test", "--wake-target", ""}); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease, err := loop.AcquireServeLease(cfg, "sender")
+		if err != nil {
+			t.Fatalf("acquire sender lease: %v", err)
+		}
+		defer func() { _ = loop.ReleaseLease(lease) }()
+
+		// Matching fence token => the send passes VerifyFence and lands.
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", lease.Token)
+		if err := cmdSend([]string{"--from", "sender", "--to", "recipient", "--body", "ok"}); err != nil {
+			t.Fatalf("send with matching fence token should succeed: %v", err)
+		}
+
+		// Mismatched token => the agent was reclaimed; the write fails closed.
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "ffffffffffffffffffffffffffffffff")
+		err = cmdSend([]string{"--from", "sender", "--to", "recipient", "--body", "nope"})
+		if err == nil {
+			t.Fatal("expected a fenced send to fail closed")
+		}
+		if !errors.Is(err, loop.ErrFenced) {
+			t.Fatalf("fenced send error = %v, want ErrFenced", err)
 		}
 	})
 }

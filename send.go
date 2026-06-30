@@ -188,9 +188,12 @@ func cmdSend(args []string) error {
 	// idempotencyKey is "": send has no stable per-message content key, so a
 	// sender crash between the durable seq commit and the link loses the
 	// allocated seq as a legal gap (at-most-once for this message). Acceptable
-	// for the transition. serveToken is "": serve owns the lease fence in Gate 6
-	// and transitional sends are unfenced per spec §6b / AllocateSeq doc.
-	id, err := loop.SendSeqMessage(cfg, fromID, toID, content, "", "")
+	// for the transition. serveToken rides AGENTCHUTE_SERVE_TOKEN (Gate 6b): a
+	// send from a child launched under `agentchute run` carries the runner's
+	// active serve-lease fence, so a write from a fenced (reclaimed) agent fails
+	// closed (AllocateSeq VerifyFence -> ErrFenced). Empty env (no serve lease) =>
+	// unfenced, the transitional off-bus mode (unchanged behavior).
+	id, err := loop.SendSeqMessage(cfg, fromID, toID, content, "", os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("write inbox message: recipient %q is not registered; run agentchute register --as %s first (%w)", toID, toID, err)
