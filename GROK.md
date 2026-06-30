@@ -57,7 +57,7 @@ Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGEN
 
 ## Grok-Specific Notes
 
-- **Wake path is the runner launcher, not lifecycle hooks.** The grok CLI has no repo hook system (no `settings.json`/`hooks.json`, no SessionStart/UserPromptSubmit/Stop events), so `agentchute setup --wrappers grok` installs the `ac` dispatcher, and `ac run grok` routes through `agentchute run` and skips hook install. When runner is among the wake paths this follows the normal dispatcher path; setup still installs the `ac` dispatcher because no hook can run startup enrollment. `agentchute hooks install` has no grok target by design.
+- **Startup/enrollment runs through the `ac` dispatcher, not lifecycle hooks.** The grok CLI has no repo hook system (no `settings.json`/`hooks.json`, no SessionStart/UserPromptSubmit/Stop events), so `agentchute setup --wrappers grok` installs the `ac` dispatcher and `ac run grok` routes through `agentchute run` to enroll you — there is no hook install. setup still installs the `ac` dispatcher for grok precisely because no lifecycle hook can run startup enrollment. `agentchute hooks install` has no grok target by design.
 - Treat `AGENTCHUTE.md` as the wire-contract source of truth. If code behavior and spec text disagree, surface the mismatch before patching.
 - Standard pre-commit ritual from `AGENTS.md`: `gofmt -w .`, `go vet ./...`, `go test ./...`, `go build ./...`.
 - Use `.agentchute/loop/` for coordination. Check your inbox at turn start, archive consumed messages, and reply through agentchute or the documented file protocol.

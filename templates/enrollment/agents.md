@@ -59,7 +59,7 @@ agentchute doctor --as <your-id>
 ```
 
 **2. Lifecycle Hooks (Required for Context and Gates)**
-`agentchute setup` installs lifecycle hooks for hook-capable wrappers. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox/ledger context per turn and block finish while obligations remain. Hookless wrappers rely on `agentchute run` / launcher shims for startup enrollment.
+`agentchute setup` installs lifecycle hooks for hook-capable wrappers. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox/ledger context per turn and block finish while obligations remain. Hookless wrappers rely on the `ac` dispatcher (`ac run <wrapper>`) for startup enrollment.
 
 **3. Recipient Polling Fallback**
 Senders only deliver to your inbox (pull-only; nobody pokes you). If you are not launched through `agentchute run`, keep recipient polling alive so your `.live` presence stays fresh:
