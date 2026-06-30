@@ -4,9 +4,9 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
-## Unreleased — "simple again" + protocol-v2
+## v0.8.0 (2026-06-30) — "simple again" + protocol-v2
 
-A correctness-driven redesign to **pull-only** coordination. Senders only ever write files; nothing pokes a recipient. ~4,800 net lines of code removed (+6,640 / −11,422 across the branch). The protocol's invariants now ship as an executable conformance suite. Staged across eight compile-green gates (g0–g7).
+A correctness-driven redesign to **pull-only** coordination. Senders only ever write files; nothing pokes a recipient. ~4,800 net lines of code removed (+6,640 / −11,422 across the redesign). The protocol's invariants now ship as an executable conformance suite. The redesign was staged across eight compile-green gates (g0–g7); the release also folds in clean wipe-and-reinstall, prompting-profile overlays, and a conformance fix.
 
 **Pull-only coordination (the headline)**
 - **No wake, no push.** Deleted the entire push apparatus: the watchdog, cooperative/sender-side wake, the tmux/herdr wake adapters, the runner receive-socket, the reachability cache, cross-agent liveness tracking, and the `wake_method`/`wake_target`/`reachable_at`/`reachability_*`/`wake_endpoints` registration fields. A sender's only job is durable delivery.
@@ -33,6 +33,14 @@ A correctness-driven redesign to **pull-only** coordination. Senders only ever w
 
 **Conformance suite**
 - `conformance/` encodes the seven invariants (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`) as a Go test suite driven against two bindings (private inbox dir + shared log). Any substrate that passes is conformant; the suite is the executable spec.
+- The inbox binding now frees its dedup key at consume-commit, so a post-consume resend re-lands (matching real filesystem semantics) instead of being silently swallowed; regression test added.
+
+**Clean wipe & reinstall**
+- **`setup --reset --wipe-state`** — a guarded destructive wipe of runtime loop state (inbox/archive/`.claimed`/malformed/live/scratch/state contents), preserving the scaffold + `setup.json`. Requires both flags, refuses anything but the canonical loop dir, refuses a live bus, and is symlink-safe; never `RemoveAll`s the loop dir.
+- **`install.sh --fresh`** (and `AGENTCHUTE_FRESH=1`) — wipe-then-install for a clean upgrade; non-TTY runs fail closed before downloading unless `--yes` / `AGENTCHUTE_YES=1`.
+
+**Prompting profiles (presentation overlays, not a wire schema)**
+- Per-vendor prompting dialects are documented as **presentation overlays** over the one canonical message contract — never a per-vendor wire schema. `AGENTS.md` R8 codifies the anti-schema rule (an overlay never adds, drops, or renames the required sections); CLAUDE/CODEX/GEMINI/GROK.md carry per-wrapper presentation guidance under the same guard.
 
 **Compatibility (one release)**
 - Dual-read of legacy nonce filenames; `message_id` still emitted as a compat frontmatter field; the recipient-side pending-reply ledger remains the blocking authority at the finish gate (the `.owed` flip runs alongside as a non-blocking signal).
