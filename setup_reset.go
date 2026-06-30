@@ -319,8 +319,74 @@ func setupCommandMatchesPool(cmdline, subcommand string, cfg *loop.Config) bool 
 	default:
 		return false
 	}
-	if setupCommandContainsPath(cmdline, cfg.ControlRepo) || setupCommandContainsPath(cmdline, cfg.LoopDir) {
+	// EXACT --control-repo/--loop-dir VALUE match (not substring): a foreign
+	// `--control-repo /tmp/repo2` must NOT match this pool's `/tmp/repo`. For
+	// runners this is the SOLE pool proof (their cmdline carries no agent id), and
+	// it gates a SIGTERM, so loose substring matching here is unsafe.
+	if setupPathsEquivalent(setupCommandFlagValue(cmdline, "--control-repo"), cfg.ControlRepo) ||
+		setupPathsEquivalent(setupCommandFlagValue(cmdline, "--loop-dir"), cfg.LoopDir) {
 		return true
+	}
+	return false
+}
+
+// setupCommandFlagValue returns the value of `flag` in a process cmdline,
+// handling both `--flag value` and `--flag=value` forms; "" if absent.
+func setupCommandFlagValue(cmdline, flag string) string {
+	fields := strings.Fields(cmdline)
+	for i, f := range fields {
+		if f == flag && i+1 < len(fields) {
+			return fields[i+1]
+		}
+		if strings.HasPrefix(f, flag+"=") {
+			return strings.TrimPrefix(f, flag+"=")
+		}
+	}
+	return ""
+}
+
+// setupPathCandidates returns the equivalence set for a path: itself, its abs
+// form, EvalSymlinks resolution, and the /private/var <-> /var twins (macOS).
+func setupPathCandidates(path string) map[string]bool {
+	path = strings.TrimSpace(path)
+	out := map[string]bool{}
+	if path == "" {
+		return out
+	}
+	out[path] = true
+	if abs, err := filepath.Abs(path); err == nil {
+		out[abs] = true
+		if r, err := filepath.EvalSymlinks(abs); err == nil {
+			out[r] = true
+		}
+	}
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		out[r] = true
+	}
+	for c := range mapsClone(out) {
+		if strings.HasPrefix(c, "/private/var/") {
+			out["/var/"+strings.TrimPrefix(c, "/private/var/")] = true
+		}
+		if strings.HasPrefix(c, "/var/") {
+			out["/private/var/"+strings.TrimPrefix(c, "/var/")] = true
+		}
+	}
+	return out
+}
+
+// setupPathsEquivalent reports whether two paths refer to the same location,
+// comparing whole normalized paths exactly (no substring/prefix matching).
+func setupPathsEquivalent(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	ca := setupPathCandidates(a)
+	for c := range setupPathCandidates(b) {
+		if c != "" && ca[c] {
+			return true
+		}
 	}
 	return false
 }
@@ -342,37 +408,6 @@ func setupCommandHasAgentID(cmdline, agentID string) bool {
 		case strings.HasPrefix(field, "AGENTCHUTE_AGENT_ID=") && strings.TrimPrefix(field, "AGENTCHUTE_AGENT_ID=") == agentID:
 			return true
 		case (field == "--as" || field == "--agent-id") && i+1 < len(fields) && fields[i+1] == agentID:
-			return true
-		}
-	}
-	return false
-}
-
-func setupCommandContainsPath(cmdline, path string) bool {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return false
-	}
-	candidates := map[string]bool{path: true}
-	if abs, err := filepath.Abs(path); err == nil {
-		candidates[abs] = true
-		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-			candidates[resolved] = true
-		}
-	}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		candidates[resolved] = true
-	}
-	for candidate := range mapsClone(candidates) {
-		if strings.HasPrefix(candidate, "/private/var/") {
-			candidates["/var/"+strings.TrimPrefix(candidate, "/private/var/")] = true
-		}
-		if strings.HasPrefix(candidate, "/var/") {
-			candidates["/private/var/"+strings.TrimPrefix(candidate, "/var/")] = true
-		}
-	}
-	for candidate := range candidates {
-		if candidate != "" && strings.Contains(cmdline, candidate) {
 			return true
 		}
 	}

@@ -76,7 +76,7 @@ const processAncestryDepthLimit = 32
 // (agentchute run -> codex -> node -> vendor codex) is therefore NOT a raw,
 // unenrolled bypass — it is the runner's child. Best-effort + cheap: bounded
 // depth, cycle-guarded, and only invoked for an in-pool wrapper process.
-func processAncestryHasEnrolledRunner(pid int, runnerPIDs map[int]bool, cfg *loop.Config) bool {
+func processAncestryHasEnrolledRunner(pid int, cfg *loop.Config) bool {
 	if pid <= 0 {
 		return false
 	}
@@ -88,15 +88,42 @@ func processAncestryHasEnrolledRunner(pid int, runnerPIDs map[int]bool, cfg *loo
 			return false
 		}
 		seen[parent] = true
-		if runnerPIDs[parent] {
-			return true
-		}
-		if setupCommandMatchesRunnerPool(setupProcessCommandLine(parent), cfg) {
+		// Revalidate the ancestor DIRECTLY — never trust a recorded runner.json
+		// pid (it can be stale or reused as an unrelated process). The ancestor
+		// counts only if it is a LIVE, SAME-USER process whose cmdline is an
+		// `agentchute run` for THIS pool.
+		if setupProcessAlive(parent) && processSameUser(parent) &&
+			setupCommandMatchesRunnerPool(setupProcessCommandLine(parent), cfg) {
 			return true
 		}
 		cur = parent
 	}
 	return false
+}
+
+// processOwnerUID is a seam (overridable in tests) returning a pid's owner uid.
+var processOwnerUID = defaultProcessOwnerUID
+
+func defaultProcessOwnerUID(pid int) (int, bool) {
+	if pid <= 0 {
+		return 0, false
+	}
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "uid=").Output()
+	if err != nil {
+		return 0, false
+	}
+	uid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, false
+	}
+	return uid, true
+}
+
+// processSameUser reports whether pid is owned by the current user. Fails closed
+// (returns false) when ownership cannot be determined.
+func processSameUser(pid int) bool {
+	uid, ok := processOwnerUID(pid)
+	return ok && uid == os.Getuid()
 }
 
 // defaultProcessParentPID resolves the parent pid via `ps -p <pid> -o ppid=`.
@@ -149,10 +176,6 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 	// in-pool pane always surfaces as present-but-not-enrolled.
 	agentIDs := map[string]bool{}
 	enrolledPIDs := map[int]bool{}
-	// runnerPIDs are this pool's live local runner pids (state/<id>/runner.json
-	// RunnerPID). A wrapper process descended from one of these is the runner's
-	// child, not a raw bypass — see processAncestryHasEnrolledRunner.
-	runnerPIDs := map[int]bool{}
 	for id := range regs {
 		agentIDs[id] = true
 		// Best-effort: a wrapper PID recorded in a live agent's session/runner
@@ -163,9 +186,6 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 		if rs, e := loop.LoadRunnerState(cfg, id); e == nil {
 			if rs.RunnerPID > 0 {
 				enrolledPIDs[rs.RunnerPID] = true
-				if setupLocalHost(rs.Host) {
-					runnerPIDs[rs.RunnerPID] = true
-				}
 			}
 			if rs.ChildPID > 0 {
 				enrolledPIDs[rs.ChildPID] = true
@@ -253,7 +273,7 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 		// runner for this pool was launched BY the runner (agentchute run -> wrapper
 		// -> ... -> vendor binary); it is not a raw, unenrolled launch. Checked last
 		// so the ppid walk only runs for an in-pool wrapper process (cheapest).
-		if pr.PID > 0 && processAncestryHasEnrolledRunner(pr.PID, runnerPIDs, cfg) {
+		if pr.PID > 0 && processAncestryHasEnrolledRunner(pr.PID, cfg) {
 			continue
 		}
 		out = append(out, UnenrolledProcess{

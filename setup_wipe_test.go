@@ -278,8 +278,10 @@ func TestScanWipeLiveSignalsRefusesLiveRunner(t *testing.T) {
 	oldAlive := setupProcessAlive
 	oldCmd := setupProcessCommandLine
 	setupProcessAlive = func(pid int) bool { return pid == 4242 }
+	// Realistic runner cmdline: NO --as (runners use the contextual id), so the
+	// pool proof is the exact --control-repo/--loop-dir value match.
 	setupProcessCommandLine = func(pid int) string {
-		return "/usr/local/bin/agentchute run " + id + " --as " + id + " --control-repo " + cfg.LoopDir
+		return "/usr/local/bin/agentchute run --vendor openai --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir + " --shim-name ac -- /usr/bin/codex"
 	}
 	t.Cleanup(func() { setupProcessAlive = oldAlive; setupProcessCommandLine = oldCmd })
 
@@ -458,5 +460,23 @@ func TestSetupWipeStateDryRunMutatesNothing(t *testing.T) {
 	// dry-run must not delete anything.
 	for _, p := range append(append([]string{}, survive...), gone...) {
 		mustExist(t, p)
+	}
+}
+
+// Security (codex Gate-3 review): exact --control-repo/--loop-dir value matching —
+// a foreign sibling-prefix pool must NOT match (substring matching would, and it
+// gates a SIGTERM for runners that carry no agent id).
+func TestSetupCommandMatchesRunnerPool_SiblingPrefixRejected(t *testing.T) {
+	cfg := &loop.Config{ControlRepo: "/tmp/repo", LoopDir: "/tmp/repo/.agentchute/loop"}
+	foreign := "/usr/local/bin/agentchute run --control-repo /tmp/repo2 --loop-dir /tmp/repo2/.agentchute/loop"
+	if setupCommandMatchesRunnerPool(foreign, cfg) {
+		t.Fatal("sibling-prefix /tmp/repo2 must NOT match pool /tmp/repo")
+	}
+	ours := "/usr/local/bin/agentchute run --vendor openai --control-repo /tmp/repo --loop-dir /tmp/repo/.agentchute/loop --shim-name ac -- /usr/bin/codex"
+	if !setupCommandMatchesRunnerPool(ours, cfg) {
+		t.Fatal("this pool's runner (no --as) must match by exact path value")
+	}
+	if setupCommandMatchesRunnerPool("/usr/bin/node /tmp/repo/app.js", cfg) {
+		t.Fatal("a non-agentchute process must not match")
 	}
 }
