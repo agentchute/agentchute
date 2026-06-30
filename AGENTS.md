@@ -103,7 +103,7 @@ The pitch is intentionally narrow: agents sharing one inbox medium (typically ru
 3. `AGENTCHUTE.md` — the protocol spec. Source of truth for any reimplementation.
 4. `EXTENSIONS.md` — community-extension space (cross-folder enrollment, alternate wake adapters, cross-pool agents); informs which changes belong in the core spec vs. an extension.
 5. `CONTRIBUTING.md` — PR process, style details, scope criteria, bug-report template.
-6. `examples/` — annotated bash walkthroughs (`quickstart.sh`, `three-agents.sh`) and `examples/README.md` as an index. (Note: some example scripts still reference the removed watchdog / wake adapters and predate the pull-only redesign — pending a refresh.)
+6. `examples/` — start at [`examples/README.md`](examples/README.md) (the index) and `examples/hooks/` (the per-wrapper lifecycle hook templates the installer wires). The tmux/wake/watchdog-era walkthrough scripts were removed in the pull-only redesign; the runner (`ac-*`) flow lives in the root README quickstart.
 
 ## Working rules
 

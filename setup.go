@@ -363,7 +363,7 @@ func promptSetupWake(yes bool) (string, error) {
 	}
 	defer closeIn()
 	fmt.Fprintln(os.Stdout, "Wake path to install (runner is the only supported path):")
-	fmt.Fprintln(os.Stdout, "  runner  PTY launcher + local socket; works anywhere, incl. plain shells")
+	fmt.Fprintln(os.Stdout, "  runner  PTY launcher/supervisor; works anywhere, incl. plain shells")
 	fmt.Fprint(os.Stdout, "Press enter to install runner [runner]: ")
 	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
