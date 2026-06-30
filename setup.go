@@ -90,7 +90,7 @@ func cmdSetup(args []string) error {
 	fs.BoolVar(&opts.Yes, "yes", false, "skip confirmation prompts")
 	fs.BoolVar(&opts.DryRun, "dry-run", false, "print plan without writing files")
 	fs.BoolVar(&opts.NoProfile, "no-profile", false, "do not edit shell profile; print PATH hint instead")
-	fs.BoolVar(&opts.Aliases, "aliases", false, "also install legacy same-name wrapper aliases")
+	fs.BoolVar(&opts.Aliases, "aliases", false, "deprecated no-op (per-wrapper aliases are no longer installed)")
 	fs.BoolVar(&opts.InitNew, "init", false, "allow setup to initialize a non-project directory")
 	fs.BoolVar(&opts.Reset, "reset", false, "explicitly run the runtime reset (always performed); required alongside --wipe-state")
 	fs.BoolVar(&opts.WipeState, "wipe-state", false, "DESTRUCTIVE: after reset, wipe loop runtime state (inbox/archive/malformed/live/scratch/state); requires --reset")
@@ -527,7 +527,7 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 	if len(shimWrappers) > 0 {
 		fmt.Fprintf(w, "  shims:        %s\n", opts.ShimDir)
 		if opts.Aliases {
-			fmt.Fprintln(w, "  aliases:      legacy same-name wrapper aliases")
+			fmt.Fprintln(w, "  aliases:      deprecated no-op (per-wrapper aliases are no longer installed)")
 		}
 		if !setupNeedsShims(opts.Wake) {
 			fmt.Fprintf(w, "  shim wrappers: %s (hookless startup enrollment)\n", strings.Join(shimWrappers, ", "))

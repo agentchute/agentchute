@@ -445,8 +445,11 @@ func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions)
 // acRunHintForAgent renders the canonical launch command for an agent id, e.g.
 // "ac run codex". Falls back to a generic hint for an unrecognized id.
 func acRunHintForAgent(agentID string) string {
+	agentID = strings.TrimSpace(agentID)
 	for _, spec := range wrapperSpecs {
-		if spec.AgentID == agentID {
+		// Match contextual ids (codex-agentchute) to their canonical wrapper,
+		// not just exact base ids — mirrors shimNamesForAgent.
+		if registrationMatchesCanonical(agentID, spec.AgentID) {
 			return "ac run " + spec.Key
 		}
 	}

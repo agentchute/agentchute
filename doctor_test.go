@@ -670,3 +670,19 @@ func TestCmdDoctorDiscoveryFailureBlocks(t *testing.T) {
 		}
 	})
 }
+
+func TestAcRunHintForAgent_ContextualIDs(t *testing.T) {
+	cases := map[string]string{
+		"codex":                 "ac run codex",
+		"codex-agentchute":      "ac run codex",  // contextual id
+		"gemini-cli-agentchute": "ac run gemini", // contextual id, aliased wrapper
+		"claude-code":           "ac run claude",
+		"grok-agentchute":       "ac run grok",
+		"totally-unknown":       "ac run <wrapper>",
+	}
+	for id, want := range cases {
+		if got := acRunHintForAgent(id); got != want {
+			t.Errorf("acRunHintForAgent(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
