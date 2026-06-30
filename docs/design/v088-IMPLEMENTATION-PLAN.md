@@ -27,7 +27,7 @@ Plan committed; reviewed by the team before any code. Adopt edits, then start Ga
 ### Gate 1 — `wrapperSpec` + `ac` dispatcher parser (additive, no setup/install changes)
 - `shimSpec` → `wrapperSpec` (canonical wrapper key, aliases, vendor, agent id, executable candidates incl. `agy`). Still load-bearing for `ac run`, setup detection, vendor inference, real-wrapper resolution.
 - Add the `ac` dispatcher command path. Canonical `ac run <wrapper> [args…]`; `ac <agentchute-subcommand>` routes normal CLI commands.
-- **Bounded parser:** known command ⇒ command; known wrapper alias ⇒ run; unknown ⇒ error with suggestions; **no arbitrary-PATH-executable inference; command wins collisions.** Global flags before subcommand.
+- **Bounded parser (canonical-only for v0.8.8):** known command ⇒ command; `run <wrapper>` ⇒ wrapper launch; **bare known-wrapper alias ⇒ ERROR `use ac run <wrapper>`** (NO implicit `ac <wrapper>` this release — the bounded implicit form is kept as a FUTURE option only); unknown ⇒ error with suggestions; **no arbitrary-PATH-executable inference; command wins collisions.** Global flags before subcommand (`ac --as X run codex`).
 - Tests: command-wins, wrapper-alias-resolves, unknown→suggestions, no PATH inference, vendor/candidate resolution, command/wrapper collision.
 - **Risk:** parser ambiguity / future namespace collisions. Compile-green, additive.
 
@@ -44,7 +44,8 @@ Plan committed; reviewed by the team before any code. Adopt edits, then start Ga
 - **Pure audit planner first** (no mutation), then apply. Feeds `install.sh --fresh` / `setup --reset --wipe-state` — never an unguarded home sweep.
 - **Remove classes (owned + allowlisted-root + dry-run + confirm):** stale agentchute binary backups (basename `agentchute.pre-*` / `agentchute.*.bak` / classified repo-local `dev`), under `install_dir`/configured control repo only — regular file, no symlink, current-user, never arbitrary `*agentchute*`; old owned `ac-*`; exact-match live/orphan `agentchute run`/`poller run` processes for THIS control-repo/loop-dir (current user; refuse ambiguous, print pid/cmdline); loop runtime + legacy `_msg-*` residue (inbox/archive/malformed/live/agents-live/state-except-setup.json/loop logs+sockets+pids); stale temp socket/pid dirs if owned; `.rehumanlabs/loop` if sentinel passes; stale setup-state schema migration.
 - **Leave / report-only:** wrapper caches & sessions (`~/.gemini/*`, `~/.grok/*`, `.claude/projects/*`), herdr sessions, proposal/release packages, OTHER control repos' loops, shell-profile backups, hook `.bak` files, unknown `.*/loop` (manual report).
-- Fix the buggy process/cmdline matcher (the ambiguous-PID false negative) as part of this.
+- **Prerequisite:** fix the buggy process/cmdline matcher (the ambiguous-PID false negative) BEFORE any destructive process-stop ships — it is the acceptance spine (grok+codex).
+- **Explicit guard:** stale binaries OUTSIDE `install_dir` / configured control repo / canonical loop dirs are **report-only** unless the operator passes an exact explicit path/flag. No broad home cleanup (codex+gemini+grok).
 - `type -a agentchute` PATH-shadow detection: warn if an earlier PATH entry resolves to a different agentchute than installed.
 - **Guards:** dry-run always; apply needs `--fresh --yes` or interactive confirm; regular-file/no-symlink/current-user/allowlisted-root; **fail closed on ambiguous** process/path; refuse a live bus.
 - Tests: no mutation in dry-run; refuses live bus; exact orphan match; refuses ambiguous; removes only owned shims/binaries; preserves wrapper caches + other repos.
@@ -52,12 +53,12 @@ Plan committed; reviewed by the team before any code. Adopt edits, then start Ga
 
 ### Gate 4 — README upgrade box + docs/template v16 sweep
 - README: clean-upgrade box immediately below the new-install curl line. For ≤0.7.x: stop agents → fresh install → verify `ac` → setup/re-enroll → restart with `ac run <wrapper>` → doctor/status. Draft:
-  > **Upgrading from 0.7.x or earlier?** 0.8 is a breaking redesign (pull-only; new on-disk format). Stop your agents, then do a clean upgrade:
+  > **Upgrading from 0.7.x or earlier?** 0.8 is a breaking redesign (pull-only; new on-disk format). Stop your agents, then one clean-upgrade command:
   > ```sh
-  > curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh -s -- --fresh --yes
-  > agentchute setup --wake runner --wrappers all --yes
+  > curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh -s -- --fresh --yes --wake runner --wrappers all
   > ```
-  > Verify with `ac doctor`, then restart each agent: `ac run claude`, `ac run codex`, … See [CHANGELOG](CHANGELOG.md).
+  > Open a new shell (or `hash -r`) so the new `ac` resolves — it now lives at `~/.agentchute/bin/ac` and must precede the system `/usr/sbin/ac` on PATH. Verify with `ac doctor`, then restart each agent: `ac run claude`, `ac run codex`, … (Installed with `--no-setup`, or only re-syncing later? `agentchute setup --wake runner --wrappers all --yes`.) See [CHANGELOG](CHANGELOG.md).
+  - **Requires:** `install.sh --fresh` must pass `--wake`/`--wrappers` through to its setup step (Gate 2/3 scope) so the single command works.
 - Enrollment blocks/templates → **v16**; rewrite AGENTS/CLAUDE/CODEX/GEMINI/GROK.md + all user-facing docs/examples/web/spec from `ac-*` → `ac run <wrapper>`. Scrub residual stale prose (optional wake poke/watchdog/tmux-era).
 - Tests: template drift tests; `rg 'ac-'` allowlist only historical blog posts / explicit removal notes.
 
@@ -75,9 +76,13 @@ Plan committed; reviewed by the team before any code. Adopt edits, then start Ga
 ## Sequencing
 Gate 0 (review) → 1 (parser, additive) → 2 (install/removal, writes-before-reset) → 3 (clean, highest risk) → 4 (docs/v16) → 5 (scratch integration) → 6 (verify+release). One PR to main; gated commits; combined-tree CI green before final.
 
-## Open items for the 4-way plan review
-1. Confirm `ac run <wrapper>` canonical (claude+codex lean yes); implicit `ac <wrapper>` — ship or defer?
-2. Full `ac-*` removal in a 0.8.8 *patch* — Alex chose full-remove; codex's earlier one-release-compat concern: still object, or accept?
-3. Clean-all destructive scope: anything to move from auto-remove → warn-only (esp. binaries/paths outside our install dir)?
-4. Bundle `run`→`serve` now (`ac serve <wrapper>`) or defer? (Lean: defer; keep `run`.)
-5. Global-flags grammar: `ac --as X run codex` confirmed?
+## 4-way plan review — RESOLVED (unanimous LGTM: codex, gemini, grok; claude authored)
+1. **`ac run <wrapper>` canonical; implicit `ac <wrapper>` DEFERRED** (bare wrapper alias errors `use ac run <wrapper>`).
+2. **Full `ac-*` removal ACCEPTED** for 0.8.8 (codex's compat-window concern noted as a product tradeoff, not blocking, conditioned on Gate 2: dispatcher-first writes-before-reset, owned-marker cleanup, PATH-collision diagnostics, docs/template sweep).
+3. **Auto-remove only owned files in allowlisted roots** (`install_dir`, configured control repo, canonical loop dirs) with dry-run + confirm; everything else (wrapper caches, herdr/wrapper sessions, proposal/release packages, other repos, profile backups, hook `.bak`, unknown loops, binaries outside allowlisted roots) is **report-only**.
+4. **`run`→`serve` DEFERRED** — keep `run` for v0.8.8 (don't spend risk budget on a rename this release).
+5. **Global-flags grammar `ac --as X run codex` confirmed.**
+
+Added by review (folded into gates above): shell-hashing (`hash -r`/new shell) + PATH-precedence warn in README + doctor (gemini); fix the ambiguous-PID cmdline matcher BEFORE any destructive process-stop (grok+codex); v16 drift tests must catch ALL `ac-*` references (grok); Gate 5 must verify `command -v ac` precedence + refusal of a non-owned `ac` (grok).
+
+**Status: plan APPROVED — proceed to Gate 1.**
