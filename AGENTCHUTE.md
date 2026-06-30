@@ -178,7 +178,7 @@ Reply obligations are **owned by the asker**, not the recipient:
 - When the asker later consumes a reply whose `in_reply_to` references that `(to,from,seq)`, the obligation is cleared (idempotent).
 - The asker's gate surfaces **outstanding** and **expired** obligations as **non-blocking warnings**. An expired obligation is the asker-side dead-recipient signal: a dead recipient shows up twice over — the asker's expired `.owed` AND the recipient's stale `.live` — so the gate never deadlocks on a corpse.
 
-> **One-release compatibility (recipient ledger still blocks).** The recipient-side `pending-replies.json` ledger remains the *blocking* authority at the finish gate for one release (a `reply_required` message recorded on consume blocks the recipient's gate until replied or deferred). The asker-owned `.owed` flip runs alongside it as the non-blocking dead-recipient signal; making `.owed` the sole authority is a deferred follow-up.
+> **One-release compatibility (legacy recipient ledger still blocks).** The recipient-side `pending-replies.json` ledger is **legacy compat**: any entries *already on it* still block the recipient's finish gate for one release (until replied or deferred). But `check` no longer records a recipient-side obligation on consume — consuming a `reply_required` message records nothing on the recipient and merely **prints the reply-ref command** (`reply_required` is advisory on the wire; the binding obligation is the asker's `.owed`, §6.4/§6.6 above). So NEW `reply_required` consumes create no recipient-side blocker; only pre-existing ledger entries do. Making `.owed` the sole authority (and dropping the legacy recipient ledger) is a deferred follow-up.
 
 ## 7. Coordination defaults
 

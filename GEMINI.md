@@ -42,7 +42,7 @@ agentchute boot --as "$AGENTCHUTE_AGENT_ID" --vendor google
 agentchute poller ensure --as "$AGENTCHUTE_AGENT_ID" --vendor google
 ```
 
-**STOP / finish gate**: don't sign off, tag, or report completion until you PASS the finish gate (read-only; catches unread mail, pending required-replies, AND `.live` presence — `check` alone is consume-only and misses the last two):
+**STOP / finish gate**: don't sign off, tag, or report completion until you PASS the finish gate (read-only; catches unread mail and pending required-replies — `check` alone is consume-only and misses the latter; the finish gate does NOT check `.live`, which gates only `commit`/`release`):
 
 ```sh
 agentchute gate --before finish --as "$AGENTCHUTE_AGENT_ID"

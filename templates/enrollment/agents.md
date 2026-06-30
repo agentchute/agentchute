@@ -71,13 +71,13 @@ Senders only deliver to your inbox (pull-only; nobody pokes you). If you are not
 **4. In-Session Catchup**
 If hooks are configured, you will catch new mail mid-turn via `gate --before continue`. Consumption is two-phase: `agentchute check` CLAIMS each message (moves it to `inbox/<id>/.claimed/`) and displays it — it does NOT archive; `agentchute ack` commits (archives) the claimed mail. A crash between `check` and `ack` re-delivers (at-least-once), so handlers must be idempotent. You do NOT archive by hand (manual `mv` to `archive/` is only for the no-binary hand-protocol in §5).
 
-**STOP / finish gate**: do not declare consensus, sign off, tag a release, or report completion until the finish gate passes. Use the gate, not a bare `check` — `check` only claims mail and does not surface pending required-replies or `.live` presence gaps:
+**STOP / finish gate**: do not declare consensus, sign off, tag a release, or report completion until the finish gate passes. Use the gate, not a bare `check` — `check` only claims mail and does not surface pending required-replies:
 
 ```sh
 agentchute gate --before finish --as <your-id>
 ```
 
-The gate (read-only) blocks `finish` on unread direct mail, pending required-replies in your ledger, or an unregistered self; an unproven `.live` presence warns at `finish` only when no work is owed — with owed work it blocks too (and it always blocks the `commit`/`release` gates). Outstanding/expired asker-owned reply obligations (`.owed`) surface as non-blocking warnings. Clear the gate by consuming mail with `agentchute check --as <your-id>` (then `ack`) and either replying to each obligation or releasing it with `agentchute defer --as <your-id> --message <message-id> --reason "..."`.
+The gate (read-only) blocks `finish` on unread direct mail, pending required-replies in your ledger, or an unregistered self; it does NOT check `.live` at `finish`/`continue` (a stale/absent `.live` blocks only the `commit`/`release` gates). Outstanding/expired asker-owned reply obligations (`.owed`) surface as non-blocking warnings. Clear the gate by consuming mail with `agentchute check --as <your-id>` (then `ack`) and either replying to each obligation or releasing it with `agentchute defer --as <your-id> --message <message-id> --reason "..."`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
 <!-- agentchute-enrollment v15 end -->
