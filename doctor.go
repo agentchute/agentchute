@@ -693,12 +693,28 @@ func checkSelfRegistration(cfg *loop.Config, agentID string) doctorCheck {
 	return doctorCheck{Name: "self_registration", Severity: severityOK, Message: fmt.Sprintf("registration valid: %s (%s)", reg.AgentID, reg.Vendor)}
 }
 
+// checkRegistrationFreshness reports presence freshness. GATE 3: the freshness
+// SOURCE is the `.live` presence fact, not registration last_seen. The check
+// name ("registration_freshness"), the StaleRegThreshold, the severities, and
+// the "run `agentchute boot`" remediation are unchanged.
 func checkRegistrationFreshness(cfg *loop.Config, agentID string, now time.Time) doctorCheck {
-	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
-	if err != nil {
+	if _, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID)); err != nil {
 		return doctorCheck{Name: "registration_freshness", Severity: severitySkip, Message: "registration unreadable (see self_registration)"}
 	}
-	age := now.Sub(reg.LastSeen.UTC())
+	liveSeen, present := loop.LiveLastSeen(cfg, agentID)
+	if !present {
+		// Registered but no `.live` published (never booted under this gate, or
+		// presence expired) — surface as a warn with the same boot remediation.
+		return doctorCheck{
+			Name:     "registration_freshness",
+			Severity: severityWarn,
+			Message:  "no recent presence (`.live` absent); run `agentchute boot` to refresh",
+		}
+	}
+	age := now.Sub(liveSeen)
+	if age < 0 {
+		age = 0 // future-dated (clock skew) reads as fresh.
+	}
 	if age > StaleRegThreshold {
 		return doctorCheck{
 			Name:     "registration_freshness",

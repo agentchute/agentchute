@@ -117,3 +117,22 @@ func IsLive(cfg *Config, id string, window time.Duration, now time.Time) bool {
 // LiveWindow returns the default freshness window callers should pass to IsLive
 // when they have no reason to override it.
 func LiveWindow() time.Duration { return liveWindow }
+
+// LiveLastSeen returns id's last published presence timestamp (the `.live`
+// last_seen) and whether a readable `.live` exists. Absent or unreadable =>
+// (zero, false).
+//
+// GATE 3: this is the single source the own-liveness readers (gate/doctor/
+// status) use instead of registration last_seen. It deliberately surfaces the
+// raw timestamp (not just a bool like IsLive) so callers can render an age or a
+// timestamp, while keeping the `Live.LastSeen` field access localized to this
+// package — the readers compute age from the returned time and never touch
+// registration last_seen for freshness. `busy` is intentionally not returned:
+// it is advisory and never affects freshness.
+func LiveLastSeen(cfg *Config, id string) (time.Time, bool) {
+	live, err := ReadLive(cfg, id)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return live.LastSeen.UTC(), true
+}

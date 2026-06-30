@@ -54,6 +54,63 @@ func TestPrintStatusIncludesAgentsAndInboxDepth(t *testing.T) {
 	}
 }
 
+// GATE 3: the LAST_SEEN/AGE presence columns come from the `.live` fact, not
+// registration last_seen. An agent with a `.live` shows that timestamp/age even
+// when its registration last_seen differs; an agent with no `.live` shows "-".
+func TestStatus_PresenceFromLive(t *testing.T) {
+	root := t.TempDir()
+	cfg := &loop.Config{
+		ControlRepo: root,
+		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
+		Vendor:      "examplecorp",
+	}
+	mustMkdir(t, cfg.AgentsDir())
+
+	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
+	regs := map[string]*loop.Registration{
+		"codex": {
+			AgentID:     "codex",
+			Vendor:      "openai",
+			ControlRepo: root,
+			// Registration last_seen is wildly stale on purpose — presence must
+			// come from `.live`, not from here.
+			LastSeen: now.Add(-99 * time.Hour),
+			Status:   loop.StatusActive,
+		},
+		"grok": { // no `.live` written -> presence renders "-"
+			AgentID:     "grok",
+			Vendor:      "xai",
+			ControlRepo: root,
+			LastSeen:    now.Add(-time.Minute),
+			Status:      loop.StatusActive,
+		},
+	}
+
+	liveSeen := now.Add(-2 * time.Minute)
+	mustWriteLiveAt(t, cfg, "codex", liveSeen)
+
+	old := statusReachableProbe
+	statusReachableProbe = func(_ *loop.Config, _ *loop.Registration) bool { return false }
+	t.Cleanup(func() { statusReachableProbe = old })
+
+	var out bytes.Buffer
+	printStatus(&out, cfg, regs, now)
+	text := out.String()
+
+	if got := statusColumnValue(t, text, "AGE", "codex"); got != "2m0s" {
+		t.Errorf("codex AGE = %q, want 2m0s (from .live, not reg.LastSeen):\n%s", got, text)
+	}
+	if got, want := statusColumnValue(t, text, "LAST_SEEN", "codex"), liveSeen.UTC().Format(time.RFC3339); got != want {
+		t.Errorf("codex LAST_SEEN = %q, want %q (from .live):\n%s", got, want, text)
+	}
+	if got := statusColumnValue(t, text, "AGE", "grok"); got != "-" {
+		t.Errorf("grok AGE = %q, want - (no .live):\n%s", got, text)
+	}
+	if got := statusColumnValue(t, text, "LAST_SEEN", "grok"); got != "-" {
+		t.Errorf("grok LAST_SEEN = %q, want - (no .live):\n%s", got, text)
+	}
+}
+
 // WI-E1: the status table gains a live-probe REACHABLE column. A registration
 // whose wake target cannot be reached renders REACHABLE=no even though it
 // advertises a wake string (today the row only shows the wake string and looks

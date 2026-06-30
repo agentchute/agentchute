@@ -185,12 +185,15 @@ func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registrati
 		if registrationReachableForStatus(cfg, reg) {
 			reachable = "yes"
 		}
+		// GATE 3: presence (LAST_SEEN/AGE) comes from the `.live` fact, not
+		// registration last_seen. An absent `.live` renders "-" (zero time).
+		liveSeen, _ := loop.LiveLastSeen(cfg, reg.AgentID)
 		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			reg.AgentID,
 			reg.Status,
 			inboxDepth,
-			formatMaybeTime(reg.LastSeen),
-			formatAge(now, reg.LastSeen),
+			formatMaybeTime(liveSeen),
+			formatAge(now, liveSeen),
 			formatDash(reg.Host),
 			formatWake(reg.WakeMethod, reg.WakeTarget),
 			reachable,

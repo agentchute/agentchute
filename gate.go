@@ -143,9 +143,12 @@ func cmdGate(args []string) error {
 	// path creates both atomically.
 	staleReg := false
 	missingReg := inboxMissing
-	regAge := time.Duration(0)
+	staleRegAge := ""
 	regPath := cfg.AgentRegistrationPath(agentID)
-	reg, regErr := loop.ReadRegistration(regPath)
+	// The registration read still gates missing-vs-present (and surfaces a
+	// corrupt own-registration as a hard error); only the FRESHNESS source
+	// moves to `.live`.
+	_, regErr := loop.ReadRegistration(regPath)
 	if regErr != nil {
 		if os.IsNotExist(regErr) {
 			missingReg = true
@@ -153,9 +156,23 @@ func cmdGate(args []string) error {
 			return fmt.Errorf("read own registration: %w", regErr)
 		}
 	} else if phaseChecksStaleReg(phase) {
-		regAge = now.Sub(reg.LastSeen.UTC())
-		if regAge > StaleRegThreshold {
-			staleReg = true
+		// GATE 3: presence/freshness comes from `.live`, NOT registration
+		// last_seen. A fresh `.live` => not stale; a `.live` older than the
+		// threshold => stale; an absent `.live` for a registered agent (never
+		// published, or expired) => stale, same as an old registration would be.
+		// StaleRegThreshold and the staleReg/StaleRegAge JSON shape are kept.
+		liveSeen, present := loop.LiveLastSeen(cfg, agentID)
+		if !present {
+			staleReg = true // .live absent => stale (StaleRegAge stays empty).
+		} else {
+			age := now.Sub(liveSeen)
+			if age < 0 {
+				age = 0 // future-dated (clock skew) reads as fresh.
+			}
+			staleRegAge = age.String()
+			if age > StaleRegThreshold {
+				staleReg = true
+			}
 		}
 	}
 	// Wake-stale — release-phase warn surface (per the watchdog liveness model, AGENTCHUTE.md §10).
@@ -181,7 +198,7 @@ func cmdGate(args []string) error {
 		LedgerCorrupt:   ledgerCorrupt,
 		StaleReg:        staleReg,
 		MissingReg:      missingReg,
-		StaleRegAge:     regAge.String(),
+		StaleRegAge:     staleRegAge,
 		WakeStale:       wakeStaleCount > 0,
 		WakeStaleCount:  wakeStaleCount,
 	}
@@ -292,7 +309,14 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 	// this"); otherwise stale-reg always blocks per the spec default.
 	if phaseChecksStaleReg(phase) && s.StaleReg && !s.MissingReg {
 		if !(requireConfirm && ackStaleReg) {
-			reasons = append(reasons, fmt.Sprintf("registration is stale (last_seen age %s > %s)", s.StaleRegAge, StaleRegThreshold))
+			if s.StaleRegAge == "" {
+				// `.live` absent for a registered agent: no presence ever
+				// published (or it expired). Cite that distinctly rather than
+				// leaking a misleading "age 0s > threshold".
+				reasons = append(reasons, fmt.Sprintf("registration is stale (no recent presence; run `agentchute boot --as %s`)", s.Agent))
+			} else {
+				reasons = append(reasons, fmt.Sprintf("registration is stale (last_seen age %s > %s)", s.StaleRegAge, StaleRegThreshold))
+			}
 		}
 	}
 

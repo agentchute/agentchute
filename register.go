@@ -359,6 +359,20 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 		return nil, err
 	}
 
+	// GATE 3: publish an initial `.live` presence fact at the point enrollment
+	// is first established. Every enrollment path (boot, register) funnels
+	// through here, so this is the single place a freshly registered agent gets
+	// its first `.live` — letting it read LIVE immediately, before its first
+	// UpdateLastSeen heartbeat tick (runner tick / check / send / status).
+	// busy=false: busy is advisory and is set only by serve (Gate 6). WriteLive
+	// is a separate atomic file write and takes no agent lock, so emitting it
+	// here (after WithAgentLock has returned) is safe. Treated as fatal: with
+	// `.live` now the source of liveness, a registered agent with no initial
+	// `.live` would read stale at gate/doctor until its first tick.
+	if err := loop.WriteLive(cfg, opts.AgentID, false); err != nil {
+		return nil, fmt.Errorf("write initial .live presence: %w", err)
+	}
+
 	// The wake actually WRITTEN is reg.WakeMethod/reg.WakeTarget (the FINAL,
 	// in-lock value). The result's Resolved* fields report what was published.
 	writtenWakeMethod, writtenWakeTarget := reg.WakeMethod, reg.WakeTarget

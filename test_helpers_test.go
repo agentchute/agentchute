@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,29 @@ func mustWriteCanonicalHook(t *testing.T, root, wrapper string) {
 		return
 	}
 	t.Fatalf("unknown hook wrapper %q", wrapper)
+}
+
+// mustWriteLiveAt writes a `.live` presence fact for agentID with an explicit
+// last_seen, used by Gate 3 readers' tests to force a fresh OR stale presence
+// independently of registration last_seen (the freshness SOURCE is now `.live`).
+// It writes the same on-disk shape loop.WriteLive produces (the exported
+// loop.Live struct + the <loop>/live/<id>.live path), so loop.ReadLive /
+// loop.LiveLastSeen read it back.
+func mustWriteLiveAt(t *testing.T, cfg *loop.Config, agentID string, lastSeen time.Time) {
+	t.Helper()
+	live := loop.Live{
+		ID:       agentID,
+		LastSeen: lastSeen.UTC(),
+		Busy:     false,
+		PID:      os.Getpid(),
+		Host:     "test-host",
+	}
+	data, err := json.MarshalIndent(live, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	mustWrite(t, filepath.Join(cfg.LoopDir, "live", agentID+".live"), data)
 }
 
 func mustWriteFreshPollerHeartbeat(t *testing.T, cfg *loop.Config, agentID string) {

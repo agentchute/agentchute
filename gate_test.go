@@ -111,21 +111,14 @@ func TestGateConsensusIgnoresStaleReg(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Backdate the registration's last_seen so it would trigger stale_reg.
+		// Backdate the `.live` presence (GATE 3: the freshness SOURCE) so it
+		// would trigger stale_reg on a commit/release phase.
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
 		}
 		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
-		regPath := cfg.AgentRegistrationPath("claude-code")
-		reg, err := loop.ReadRegistration(regPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		reg.LastSeen = time.Now().UTC().Add(-2 * StaleRegThreshold)
-		if err := loop.WriteRegistration(regPath, reg); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC().Add(-2*StaleRegThreshold))
 
 		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("consensus")) })
 		if err != nil {
@@ -149,15 +142,11 @@ func TestGateCommitBlocksOnStaleRegAndUnblocksWithAck(t *testing.T) {
 			t.Fatal(err)
 		}
 		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
-		regPath := cfg.AgentRegistrationPath("claude-code")
-		reg, err := loop.ReadRegistration(regPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		reg.LastSeen = time.Now().UTC().Add(-2 * StaleRegThreshold)
-		if err := loop.WriteRegistration(regPath, reg); err != nil {
-			t.Fatal(err)
-		}
+		// GATE 3: freshness comes from `.live`, not registration last_seen. boot
+		// wrote a fresh `.live`; overwrite it with a stale one so commit blocks
+		// on stale presence. (The registration's own last_seen stays fresh,
+		// proving the SOURCE is `.live`.)
+		mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC().Add(-2*StaleRegThreshold))
 
 		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("commit")) })
 		if !errors.Is(err, errBlocked) {
@@ -177,6 +166,76 @@ func TestGateCommitBlocksOnStaleRegAndUnblocksWithAck(t *testing.T) {
 		})
 		if err != nil {
 			t.Errorf("commit with --require-confirm + --ack-stale-reg err = %v, want nil", err)
+		}
+	})
+}
+
+// GATE 3: the commit-phase StaleReg signal is driven by the `.live` presence
+// fact, NOT registration last_seen. A fresh `.live` => not stale even when the
+// registration's own last_seen is forced old; an old OR absent `.live` => stale.
+func TestGateStaleRegDrivenByLive(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
+
+		// Force the REGISTRATION last_seen old — this must NOT make commit stale,
+		// because `.live` is the source.
+		regPath := cfg.AgentRegistrationPath("claude-code")
+		reg, err := loop.ReadRegistration(regPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg.LastSeen = time.Now().UTC().Add(-10 * StaleRegThreshold)
+		if err := loop.WriteRegistration(regPath, reg); err != nil {
+			t.Fatal(err)
+		}
+
+		// Fresh `.live` => commit clear despite the stale registration last_seen.
+		mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC())
+		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("commit", "--json")) })
+		if err != nil {
+			t.Fatalf("commit with fresh .live (stale reg last_seen) err = %v; want nil; out=%s", err, out)
+		}
+		var got gateStatus
+		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
+			t.Fatalf("unmarshal: %v\n%s", jerr, out)
+		}
+		if got.StaleReg {
+			t.Errorf("StaleReg = true with a fresh .live; want false (source must be .live, not reg.LastSeen)")
+		}
+
+		// Old `.live` => commit blocks on stale presence.
+		mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC().Add(-2*StaleRegThreshold))
+		if _, err := captureStdout(t, func() error { return cmdGate(gateArgs("commit")) }); !errors.Is(err, errBlocked) {
+			t.Errorf("commit with old .live err = %v; want errBlocked", err)
+		}
+
+		// Absent `.live` (registered but no presence) => commit blocks on stale.
+		if err := os.Remove(filepath.Join(cfg.LoopDir, "live", "claude-code.live")); err != nil {
+			t.Fatal(err)
+		}
+		out, err = captureStdout(t, func() error { return cmdGate(gateArgs("commit", "--json")) })
+		if !errors.Is(err, errBlocked) {
+			t.Errorf("commit with absent .live err = %v; want errBlocked", err)
+		}
+		got = gateStatus{}
+		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
+			t.Fatalf("unmarshal: %v\n%s", jerr, out)
+		}
+		if !got.StaleReg {
+			t.Errorf("StaleReg = false with an absent .live; want true")
+		}
+		// Absent presence must NOT leak the misleading "age 0s > threshold".
+		if strings.Contains(strings.Join(got.Reasons, " | "), "age 0s") {
+			t.Errorf("absent-.live reason leaked \"age 0s\": %v", got.Reasons)
 		}
 	})
 }

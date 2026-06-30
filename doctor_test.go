@@ -246,6 +246,9 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 	if err := os.MkdirAll(cfg.AgentInboxDir("claude-code"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// GATE 3: registration_freshness reads `.live`; give this healthy agent a
+	// fresh presence fact so the check is OK rather than warning on absent .live.
+	mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC())
 
 	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 
@@ -485,6 +488,9 @@ func TestDoctor_WarnsOnRawWrapperBypass(t *testing.T) {
 	})
 }
 
+// GATE 3: registration_freshness diagnoses presence from the `.live` fact, NOT
+// registration last_seen. A stale OR absent `.live` warns even when the
+// registration's own last_seen is fresh; a fresh `.live` flips it back to OK.
 func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	regPath := cfg.AgentRegistrationPath("claude-code")
@@ -492,8 +498,10 @@ func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 		AgentID:     "claude-code",
 		Vendor:      "anthropic",
 		ControlRepo: cfg.ControlRepo,
-		LastSeen:    time.Now().UTC().Add(-2 * StaleRegThreshold).Truncate(time.Second),
-		Status:      loop.StatusActive,
+		// Registration last_seen is FRESH on purpose — staleness must come from
+		// `.live`, not here.
+		LastSeen: time.Now().UTC().Truncate(time.Second),
+		Status:   loop.StatusActive,
 	}
 	if err := loop.WriteRegistration(regPath, reg); err != nil {
 		t.Fatal(err)
@@ -502,10 +510,28 @@ func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Stale `.live` => WARN (despite the fresh registration last_seen).
+	mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC().Add(-2*StaleRegThreshold))
 	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "registration_freshness")
 	if got.Severity != severityWarn {
-		t.Errorf("stale-reg severity = %q, want WARN (not BLOCKER; doctor diagnoses, gate enforces)", got.Severity)
+		t.Errorf("stale .live severity = %q, want WARN (not BLOCKER; doctor diagnoses, gate enforces)", got.Severity)
+	}
+
+	// Absent `.live` => WARN too.
+	if err := os.Remove(filepath.Join(cfg.LoopDir, "live", "claude-code.live")); err != nil {
+		t.Fatal(err)
+	}
+	r = runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
+	if got := findCheck(t, r, "registration_freshness"); got.Severity != severityWarn {
+		t.Errorf("absent .live severity = %q, want WARN", got.Severity)
+	}
+
+	// Fresh `.live` => OK (freshness SOURCE is `.live`).
+	mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC())
+	r = runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
+	if got := findCheck(t, r, "registration_freshness"); got.Severity != severityOK {
+		t.Errorf("fresh .live severity = %q, want OK; msg=%q", got.Severity, got.Message)
 	}
 }
 

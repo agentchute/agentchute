@@ -283,6 +283,45 @@ status: active
 	}
 }
 
+// GATE 3: UpdateLastSeen is the shared heartbeat path (runner tick, check, send,
+// status). Besides refreshing registration last_seen it must publish a fresh
+// `.live` presence fact (busy=false; busy is advisory, set only by serve) so all
+// heartbeat sites yield fresh presence with no per-call-site edits.
+func TestUpdateLastSeenWritesLive(t *testing.T) {
+	cfg := newLockTestConfig(t)
+	path := cfg.AgentRegistrationPath("codex")
+	mustWrite(t, path, []byte(`---
+agent_id: codex
+vendor: openai
+control_repo: /tmp/repo
+wake_method: tmux
+wake_target: "%1"
+last_seen: 2026-05-09T16:08:36Z
+status: active
+---
+`))
+
+	// No `.live` exists before the heartbeat.
+	if _, err := ReadLive(cfg, "codex"); err == nil {
+		t.Fatal("expected no .live before UpdateLastSeen")
+	}
+
+	if err := UpdateLastSeen(cfg, "codex", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	if !IsLive(cfg, "codex", liveWindow, time.Now()) {
+		t.Fatal("UpdateLastSeen did not publish a fresh .live")
+	}
+	live, err := ReadLive(cfg, "codex")
+	if err != nil {
+		t.Fatalf("ReadLive: %v", err)
+	}
+	if live.Busy {
+		t.Error("UpdateLastSeen wrote busy=true; busy is advisory and must be false here")
+	}
+}
+
 func TestReadRegistrationRejectsDuplicateFrontmatterKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "codex.md")
 	mustWrite(t, path, []byte(`---

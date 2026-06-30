@@ -291,7 +291,18 @@ func UpdateLastSeen(cfg *Config, agentID string, t time.Time) error {
 			return err
 		}
 		reg.LastSeen = t.UTC()
-		return WriteRegistration(path, reg)
+		if err := WriteRegistration(path, reg); err != nil {
+			return err
+		}
+		// GATE 3: `.live` is the SOURCE of presence/liveness. Every heartbeat
+		// site that refreshes registration last_seen (the runner tick,
+		// check.go, send.go, status.go) calls UpdateLastSeen, so republishing
+		// `.live` here gives all of them fresh presence with no per-call-site
+		// edits. busy=false: busy is advisory and is set only by serve (Gate 6).
+		// WriteLive writes a separate file atomically and does NOT take
+		// withAgentLock, so this nested call is safe (withAgentLock is
+		// non-reentrant).
+		return WriteLive(cfg, agentID, false)
 	})
 }
 
