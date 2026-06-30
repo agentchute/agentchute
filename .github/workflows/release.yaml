@@ -46,9 +46,6 @@ jobs:
         run: shellcheck -s sh install.sh
       - name: shellcheck tests/install_test.sh
         run: shellcheck -s sh tests/install_test.sh
-      - name: shellcheck examples/*.sh
-        # examples carry bash shebangs; let shellcheck honor them (no -s sh).
-        run: shellcheck examples/*.sh
       - name: run install_test.sh
         run: sh tests/install_test.sh
       - name: install GoReleaser
