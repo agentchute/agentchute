@@ -36,49 +36,9 @@ func TestPollerRunOnceWritesHeartbeat(t *testing.T) {
 
 // WI-E2: a poller tick re-proves the agent's own wake target and records the
 // cached reachability fact, so a polling (non-runner) lane self-heals off-turn.
-func TestPollerTick_RecordsReachabilityFact(t *testing.T) {
-	root := setupShortRunFixture(t)
-	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	agentID := "poller-reach"
-	if err := loop.EnsurePrivateDir(cfg.AgentInboxDir(agentID)); err != nil {
-		t.Fatal(err)
-	}
-	socketPath := cfg.RunnerSocketPath(agentID)
-	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: agentID})
-	target := loop.RunnerWakeTarget(socketPath)
-	reg := &loop.Registration{
-		AgentID:     agentID,
-		Vendor:      "test",
-		ControlRepo: cfg.ControlRepo,
-		Host:        localHostname(),
-		WakeMethod:  loop.RunnerWakeMethod,
-		WakeTarget:  target,
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
-		t.Fatal(err)
-	}
-
-	params := serviceParams{AgentID: agentID, Vendor: "test", Interval: loop.DefaultPollerIntervalSeconds, Repo: root}
-	if err := pollerTick(cfg, params, nil, time.Now().UTC()); err != nil {
-		t.Fatalf("pollerTick err = %v", err)
-	}
-
-	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ReachableAt == nil {
-		t.Fatal("pollerTick did not record ReachableAt for a live owned wake target")
-	}
-	if got.ReachabilityMethod != loop.RunnerWakeMethod || got.ReachabilityTarget != target {
-		t.Fatalf("reachability endpoint = %s/%s, want %s/%s", got.ReachabilityMethod, got.ReachabilityTarget, loop.RunnerWakeMethod, target)
-	}
-}
+// Gate 6a (pull-only): TestPollerTick_RecordsReachabilityFact was removed.
+// pollerTick no longer reproves or records a reachability fact (the own-wake
+// reprove call was deleted), so there is nothing to assert.
 
 func TestPollerStatusBlocksWhenHeartbeatMissing(t *testing.T) {
 	root, _ := setupSendFixture(t)
@@ -95,18 +55,11 @@ func TestPollerStatusBlocksWhenHeartbeatMissing(t *testing.T) {
 	})
 }
 
-func TestPollerEnsureNoopsWhenRunnerWakeReachable(t *testing.T) {
+func TestPollerEnsureNoopsWhenRunnerLive(t *testing.T) {
 	root, _ := setupSendFixture(t)
 	withCwd(t, root, func() {
 		// Resolve the config exactly as the poller command does (cwd-relative,
-		// symlink-normalized). On macOS t.TempDir() returns /var/... while
-		// os.Getwd() returns /private/var/..., which yields a different
-		// runner-socket temp-path hash. The owned-check (RunnerWakeTargetOwnedBy)
-		// recomputes that path from LoopDir, so the registered wake_target MUST
-		// be built from the same normalized cfg the recipient resolves — exactly
-		// as production, where every party Discovers LoopDir from the shared
-		// control repo. Building it from the unnormalized fixture cfg made the
-		// owned-check (correctly) reject a target it could not match.
+		// symlink-normalized).
 		cwd, err := os.Getwd()
 		if err != nil {
 			t.Fatal(err)
@@ -116,12 +69,9 @@ func TestPollerEnsureNoopsWhenRunnerWakeReachable(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		socketPath := cfg.RunnerSocketPath("codex")
-		startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{
-			OK:        true,
-			RunnerPID: os.Getpid(),
-			Status:    "active",
-		})
+		// Gate 6c (pull-only): a poller is not required when the agent is already
+		// live; presence is `.live` freshness, not a runner-socket ping.
+		mustWriteLiveAt(t, cfg, "codex", time.Now().UTC())
 
 		now := time.Now().UTC()
 		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), &loop.Registration{
@@ -131,11 +81,9 @@ func TestPollerEnsureNoopsWhenRunnerWakeReachable(t *testing.T) {
 			WorkingRepos: []string{
 				cfg.ControlRepo,
 			},
-			Host:       localHostname(),
-			WakeMethod: loop.RunnerWakeMethod,
-			WakeTarget: loop.RunnerWakeTarget(socketPath),
-			LastSeen:   now,
-			Status:     loop.StatusActive,
+			Host:     localHostname(),
+			LastSeen: now,
+			Status:   loop.StatusActive,
 		}); err != nil {
 			t.Fatal(err)
 		}

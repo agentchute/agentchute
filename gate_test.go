@@ -26,7 +26,6 @@ func TestGateHelpDocumentsBlockersAndHookExitCodes(t *testing.T) {
 		"--codex-hook Stop",
 		"--gemini-hook AfterAgent",
 		"current Gemini templates use BeforeAgent + --json",
-		"pending replies, or a corrupt",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("gate help missing %q:\n%s", want, help)
@@ -88,7 +87,7 @@ func TestGateFinishBlocksOnUnreadMail(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 		if err != nil {
@@ -112,21 +111,14 @@ func TestGateConsensusIgnoresStaleReg(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Backdate the registration's last_seen so it would trigger stale_reg.
+		// Backdate the `.live` presence (GATE 3: the freshness SOURCE) so it
+		// would trigger stale_reg on a commit/release phase.
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
 		}
 		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
-		regPath := cfg.AgentRegistrationPath("claude-code")
-		reg, err := loop.ReadRegistration(regPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		reg.LastSeen = time.Now().UTC().Add(-2 * StaleRegThreshold)
-		if err := loop.WriteRegistration(regPath, reg); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC().Add(-2*StaleRegThreshold))
 
 		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("consensus")) })
 		if err != nil {
@@ -150,15 +142,11 @@ func TestGateCommitBlocksOnStaleRegAndUnblocksWithAck(t *testing.T) {
 			t.Fatal(err)
 		}
 		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
-		regPath := cfg.AgentRegistrationPath("claude-code")
-		reg, err := loop.ReadRegistration(regPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		reg.LastSeen = time.Now().UTC().Add(-2 * StaleRegThreshold)
-		if err := loop.WriteRegistration(regPath, reg); err != nil {
-			t.Fatal(err)
-		}
+		// GATE 3: freshness comes from `.live`, not registration last_seen. boot
+		// wrote a fresh `.live`; overwrite it with a stale one so commit blocks
+		// on stale presence. (The registration's own last_seen stays fresh,
+		// proving the SOURCE is `.live`.)
+		mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC().Add(-2*StaleRegThreshold))
 
 		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("commit")) })
 		if !errors.Is(err, errBlocked) {
@@ -182,6 +170,76 @@ func TestGateCommitBlocksOnStaleRegAndUnblocksWithAck(t *testing.T) {
 	})
 }
 
+// GATE 3: the commit-phase StaleReg signal is driven by the `.live` presence
+// fact, NOT registration last_seen. A fresh `.live` => not stale even when the
+// registration's own last_seen is forced old; an old OR absent `.live` => stale.
+func TestGateStaleRegDrivenByLive(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
+
+		// Force the REGISTRATION last_seen old — this must NOT make commit stale,
+		// because `.live` is the source.
+		regPath := cfg.AgentRegistrationPath("claude-code")
+		reg, err := loop.ReadRegistration(regPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg.LastSeen = time.Now().UTC().Add(-10 * StaleRegThreshold)
+		if err := loop.WriteRegistration(regPath, reg); err != nil {
+			t.Fatal(err)
+		}
+
+		// Fresh `.live` => commit clear despite the stale registration last_seen.
+		mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC())
+		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("commit", "--json")) })
+		if err != nil {
+			t.Fatalf("commit with fresh .live (stale reg last_seen) err = %v; want nil; out=%s", err, out)
+		}
+		var got gateStatus
+		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
+			t.Fatalf("unmarshal: %v\n%s", jerr, out)
+		}
+		if got.StaleReg {
+			t.Errorf("StaleReg = true with a fresh .live; want false (source must be .live, not reg.LastSeen)")
+		}
+
+		// Old `.live` => commit blocks on stale presence.
+		mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC().Add(-2*StaleRegThreshold))
+		if _, err := captureStdout(t, func() error { return cmdGate(gateArgs("commit")) }); !errors.Is(err, errBlocked) {
+			t.Errorf("commit with old .live err = %v; want errBlocked", err)
+		}
+
+		// Absent `.live` (registered but no presence) => commit blocks on stale.
+		if err := os.Remove(filepath.Join(cfg.LoopDir, "live", "claude-code.live")); err != nil {
+			t.Fatal(err)
+		}
+		out, err = captureStdout(t, func() error { return cmdGate(gateArgs("commit", "--json")) })
+		if !errors.Is(err, errBlocked) {
+			t.Errorf("commit with absent .live err = %v; want errBlocked", err)
+		}
+		got = gateStatus{}
+		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
+			t.Fatalf("unmarshal: %v\n%s", jerr, out)
+		}
+		if !got.StaleReg {
+			t.Errorf("StaleReg = false with an absent .live; want true")
+		}
+		// Absent presence must NOT leak the misleading "age 0s > threshold".
+		if strings.Contains(strings.Join(got.Reasons, " | "), "age 0s") {
+			t.Errorf("absent-.live reason leaked \"age 0s\": %v", got.Reasons)
+		}
+	})
+}
+
 // --codex-hook Stop on blocked: emits {"decision":"block","reason":"..."} to
 // stdout AND exits 0 (returned nil error). This is the codex-preferred shape.
 func TestGateCodexHookStopBlockedShape(t *testing.T) {
@@ -191,7 +249,7 @@ func TestGateCodexHookStopBlockedShape(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 		if err != nil {
@@ -354,7 +412,7 @@ func TestGateBlocksOnMalformedInbox(t *testing.T) {
 		}
 		// Drop a malformed file directly in the inbox (won't parse as a
 		// §6.1 reference filename — too few segments).
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		malformed := filepath.Join(inboxDir, "not-a-valid-message-name.md")
 		if err := os.WriteFile(malformed, []byte("---\nfrom: ??\n---\nbody\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -370,23 +428,22 @@ func TestGateBlocksOnMalformedInbox(t *testing.T) {
 	})
 }
 
-// Codex review (c17e310): `release` phase must warn on WAKE_STALE peer
-// registrations (AGENTCHUTE.md §10). Warn-only — does not block release.
-func TestGateReleaseWarnsOnWakeStalePeer(t *testing.T) {
-	withFakeTmuxTargets(t, "%1", "%2")
+// Pull-only (Gate 6c): there are no pokable peers, so `release` never raises a
+// WAKE_STALE warning. The wake_stale field stays in the gate JSON shape (always
+// false) for wire-shape stability; release must still clear (not block) even with
+// a backdated peer present.
+func TestGateReleaseNoWakeStaleUnderPullOnly(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "%1")
 		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("TMUX_PANE", "%2")
 		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
 			t.Fatal(err)
 		}
 
-		// Backdate codex's last_seen past the stale threshold (codex is pokable
-		// per the TMUX_PANE auto-detect, so it qualifies as wake_stale).
+		// Backdate codex's last_seen past the stale threshold — under pull-only it
+		// is not pokable, so this never produces a wake_stale signal.
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
@@ -403,15 +460,14 @@ func TestGateReleaseWarnsOnWakeStalePeer(t *testing.T) {
 
 		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("release", "--json")) })
 		if err != nil {
-			t.Errorf("err = %v, want nil (wake_stale is warn-only, must not block release)", err)
+			t.Errorf("err = %v, want nil (release must clear)", err)
 		}
-		// Output must surface the wake_stale signal as a non-zero count.
 		var got gateStatus
 		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
 			t.Fatalf("unmarshal: %v\n%s", jerr, out)
 		}
-		if !got.WakeStale {
-			t.Errorf("WakeStale = false; want true with a backdated pokable peer")
+		if got.WakeStale || got.WakeStaleCount != 0 {
+			t.Errorf("WakeStale=%v count=%d; want false/0 under pull-only", got.WakeStale, got.WakeStaleCount)
 		}
 	})
 }
@@ -451,197 +507,6 @@ func TestGateRequiresPhaseFlag(t *testing.T) {
 	})
 }
 
-func TestGateFinishRequiresRecipientLiveness(t *testing.T) {
-	root := setupBootFixture(t)
-	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "")
-		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Remove(cfg.ActiveSessionPath("claude-code")); err != nil && !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
-		// WI-4 Fix 1: liveness only BLOCKS finish when work is owed. Put an
-		// unread message in the inbox so the agent owes work and must stay
-		// reachable — that keeps dead liveness as a blocking reason.
-		// (The clean-inbox case is covered by
-		// TestGate_EmptyInboxDeadPoller_DoesNotBlockFinish.)
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
-		if _, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
-			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n")); err != nil {
-			t.Fatal(err)
-		}
-		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--json")) })
-		if !errors.Is(err, errBlocked) {
-			t.Fatalf("finish without wake or poller (owed work) err = %v, want errBlocked", err)
-		}
-		if !strings.Contains(out, "liveness") && !strings.Contains(out, "poller") {
-			t.Errorf("output should mention liveness/poller: %q", out)
-		}
-
-		// Consume the owed work, then a launch-enabled poller heartbeat clears.
-		if msgs, err := loop.ListInboxMessages(inboxDir); err == nil {
-			for _, m := range msgs {
-				_ = os.Remove(m.Path)
-			}
-		}
-		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
-		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
-		if err != nil {
-			t.Errorf("finish with launch-enabled poller heartbeat err = %v, want nil", err)
-		}
-	})
-}
-
-// WI-4 Fix 1: an agent with a clean inbox and zero obligations must NOT be
-// blocked from finishing just because its wake target / poller is dead. The
-// dead-liveness signal downgrades to a non-blocking warning (still surfaced).
-// This closes the documented dead-poller finish-gate deadlock.
-func TestGate_EmptyInboxDeadPoller_DoesNotBlockFinish(t *testing.T) {
-	root := setupBootFixture(t)
-	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "")
-		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Remove the active session so no liveness path proves reachability,
-		// and write no poller heartbeat: liveness is provably dead.
-		if err := os.Remove(cfg.ActiveSessionPath("claude-code")); err != nil && !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
-
-		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--json")) })
-		if err != nil {
-			t.Fatalf("finish with clean inbox + dead liveness err = %v, want nil (liveness is a warning when nothing owed); out=%q", err, out)
-		}
-		var got gateStatus
-		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
-			t.Fatalf("unmarshal: %v\n%s", jerr, out)
-		}
-		if got.Blocked {
-			t.Errorf("Blocked = true; want false with clean inbox + no obligations")
-		}
-		if got.LivenessOK {
-			t.Errorf("LivenessOK = true; expected dead liveness (this test asserts the warning downgrade)")
-		}
-		// The signal must still be surfaced — as a warning, not a blocking reason.
-		joinedReasons := strings.Join(got.Reasons, " | ")
-		if strings.Contains(joinedReasons, "liveness") {
-			t.Errorf("liveness leaked into blocking reasons: %v", got.Reasons)
-		}
-		joinedWarnings := strings.Join(got.Warnings, " | ")
-		if !strings.Contains(joinedWarnings, "liveness") {
-			t.Errorf("liveness not surfaced as a warning: %v", got.Warnings)
-		}
-	})
-	// Same for the continue phase (sibling predicate).
-	root2 := setupBootFixture(t)
-	withCwd(t, root2, func() {
-		t.Setenv("TMUX_PANE", "")
-		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root2})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Remove(cfg.ActiveSessionPath("claude-code")); err != nil && !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
-		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("continue")) })
-		if err != nil {
-			t.Errorf("continue with clean inbox + dead liveness err = %v, want nil", err)
-		}
-	})
-}
-
-// WI-4 Fix 1 regression guard: liveness MUST stay BLOCKING when the agent
-// owes work. An agent that owes a reply or has unread mail must remain
-// reachable, so dead liveness still blocks finish even though there is also
-// an unread/pending reason. This guards against the warning downgrade leaking
-// into the owed-work case.
-func TestGate_OwedWorkDeadPoller_StillBlocks(t *testing.T) {
-	// Case A: unread direct mail + dead liveness.
-	root := setupBootFixture(t)
-	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "")
-		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Remove(cfg.ActiveSessionPath("claude-code")); err != nil && !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
-		if _, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
-			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n")); err != nil {
-			t.Fatal(err)
-		}
-		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--json")) })
-		if !errors.Is(err, errBlocked) {
-			t.Fatalf("finish with unread mail + dead liveness err = %v, want errBlocked", err)
-		}
-		var got gateStatus
-		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
-			t.Fatalf("unmarshal: %v\n%s", jerr, out)
-		}
-		joined := strings.Join(got.Reasons, " | ")
-		if !strings.Contains(joined, "liveness") {
-			t.Errorf("owed-work case must keep liveness as a BLOCKING reason: %v", got.Reasons)
-		}
-	})
-
-	// Case B: pending-reply obligation + dead liveness.
-	root2 := setupBootFixture(t)
-	withCwd(t, root2, func() {
-		t.Setenv("TMUX_PANE", "")
-		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root2})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Remove(cfg.ActiveSessionPath("claude-code")); err != nil && !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
-		entry := loop.PendingReplyEntry{
-			MessageID:        "2026-06-18T10:00:00.000000Z",
-			From:             "codex",
-			To:               "claude-code",
-			Task:             "review",
-			OriginalFilename: "2026-06-18T10-00-00-000000Z_from-codex_msg-aaaa.md",
-			ArchivePath:      "archive/x.md",
-		}
-		if err := loop.RecordPendingReply(cfg, "claude-code", entry, time.Now().UTC()); err != nil {
-			t.Fatal(err)
-		}
-		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--json")) })
-		if !errors.Is(err, errBlocked) {
-			t.Fatalf("finish with pending reply + dead liveness err = %v, want errBlocked", err)
-		}
-		var got gateStatus
-		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
-			t.Fatalf("unmarshal: %v\n%s", jerr, out)
-		}
-		joined := strings.Join(got.Reasons, " | ")
-		if !strings.Contains(joined, "liveness") {
-			t.Errorf("owed-work (pending reply) case must keep liveness as a BLOCKING reason: %v", got.Reasons)
-		}
-	})
-}
-
 func TestGateFinishAcceptsActiveSessionHeartbeat(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
@@ -671,50 +536,6 @@ func TestGateFinishAcceptsActiveSessionHeartbeat(t *testing.T) {
 	})
 }
 
-func TestGateFinishRejectsHeartbeatOnlyPoller(t *testing.T) {
-	root := setupBootFixture(t)
-	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "")
-		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Remove(cfg.ActiveSessionPath("claude-code")); err != nil && !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
-		// WI-4 Fix 1: a heartbeat-only poller cannot consume mail, so its
-		// liveness is NOT proven. That only BLOCKS finish when work is owed —
-		// put an unread message in the inbox so the gate must keep the agent
-		// reachable and reject the insufficient heartbeat-only poller.
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
-		if _, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
-			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n")); err != nil {
-			t.Fatal(err)
-		}
-		if err := loop.SavePollerHeartbeat(cfg, loop.PollerHeartbeat{
-			AgentID:         "claude-code",
-			Method:          "poller-run",
-			Host:            localHostname(),
-			PID:             os.Getpid(),
-			IntervalSeconds: loop.DefaultPollerIntervalSeconds,
-			LastSeen:        time.Now().UTC(),
-		}); err != nil {
-			t.Fatal(err)
-		}
-
-		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--json")) })
-		if !errors.Is(err, errBlocked) {
-			t.Fatalf("finish with heartbeat-only poller (owed work) err = %v, want errBlocked; output=%q", err, out)
-		}
-		if !strings.Contains(out, "heartbeat-only") {
-			t.Errorf("output should explain heartbeat-only poller is insufficient: %q", out)
-		}
-	})
-}
-
 // v0.2: gate --before continue is a sibling of finish, identical
 // predicate (unread / malformed / pending-replies), different output
 // framing for in-session continuation hooks.
@@ -725,7 +546,7 @@ func TestGateContinuePhaseSamePredicateAsFinish(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 		if err != nil {
@@ -752,7 +573,7 @@ func TestGateGeminiHookAfterAgentBlockedShape(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 		if err != nil {

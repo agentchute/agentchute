@@ -13,6 +13,14 @@ import (
 const (
 	specFileName = "AGENTCHUTE.md"
 	loopDirName  = "loop"
+
+	// fixedNamespace is the single loop dotdir namespace. Vendor namespacing was
+	// removed (simple-again): auto-discovery resolves exactly
+	// <controlRepo>/.agentchute/loop — there is no .<vendor>/loop scanning and no
+	// --namespace override. Explicit --loop-dir / AGENTCHUTE_LOOP_DIR still accept
+	// an arbitrary dotdir for tests and bespoke layouts.
+	fixedNamespace = "agentchute"
+	fixedDotDir    = "." + fixedNamespace
 )
 
 var ErrNoControlRepo = errors.New("no agentchute control repo")
@@ -57,7 +65,7 @@ type DiscoverOpts struct {
 //  1. --control-repo flag (explicit)
 //  2. AGENTCHUTE_CONTROL_REPO env var
 //  3. .agentchute-control-repo pointer file (cwd or any ancestor; nearest wins)
-//  4. Walk up from cwd looking for AGENTCHUTE.md + vendor loop dir
+//  4. Walk up from cwd looking for AGENTCHUTE.md + the fixed .agentchute/loop dir
 //
 // First hit wins. The resulting Config records which step won via
 // ControlRepoOrigin for visibility.
@@ -100,6 +108,16 @@ func (c *Config) AgentsDir() string {
 // AgentInboxDir returns the inbox directory for agentID.
 func (c *Config) AgentInboxDir(agentID string) string {
 	return filepath.Join(c.LoopDir, "inbox", agentID)
+}
+
+// AgentClaimedDir returns the two-phase-consume CLAIM directory for agentID, a
+// dot-prefixed child of the inbox so the normal inbox lister never descends into
+// it. `check` moves a message here (phase 1, CLAIM) under its CANONICAL name (no
+// archive timestamp); `ack` archives it (phase 2, COMMIT). A crash between the
+// two re-delivers the residue (at-least-once). Same owner-only 0700 posture as
+// the inbox; created lazily via ensurePrivateDir on the first claim.
+func (c *Config) AgentClaimedDir(agentID string) string {
+	return filepath.Join(c.AgentInboxDir(agentID), ".claimed")
 }
 
 // ArchiveDir returns the consumed-message archive directory.
@@ -146,9 +164,8 @@ func (c *Config) ActiveSessionPath(agentID string) string {
 }
 
 // RunnerStatePath returns the per-agent runner state path. This is
-// recipient-owned local state for agentchute's PTY runner; peers may use the
-// registration wake_target to poke the runner socket, but this diagnostic file
-// is not part of the wire protocol.
+// recipient-owned local diagnostic/recovery state for agentchute's PTY runner;
+// it is not part of the wire protocol.
 func (c *Config) RunnerStatePath(agentID string) string {
 	return filepath.Join(c.AgentStateDir(agentID), "runner.json")
 }
@@ -182,38 +199,6 @@ func (c *Config) runnerSocketTempPath(agentID string) string {
 	sum := sha256.Sum256([]byte(c.LoopDir + "\x00" + agentID))
 	short := hex.EncodeToString(sum[:])[:16]
 	return filepath.Join(runnerSocketTempDir(), short+"-"+agentID+".sock")
-}
-
-// RunnerSocketPathsOwnedBy returns every socket path the named recipient could
-// legitimately own: the in-state path and the per-user temp fallback. A peer's
-// runner wake_target must name one of these; anything else is an attempt to
-// bind a foreign socket. Returned in no particular order.
-func (c *Config) RunnerSocketPathsOwnedBy(agentID string) []string {
-	return []string{
-		c.runnerSocketInStatePath(agentID),
-		c.runnerSocketTempPath(agentID),
-	}
-}
-
-// RunnerWakeTargetOwnedBy reports whether a runner wake_target's socket path is
-// one the recipient legitimately owns (RunnerSocketPathsOwnedBy). This is the
-// recipient-binding check that complements the pure shape validator: it refuses
-// a registration that names, e.g., unix:/tmp/evil.sock for a recipient whose
-// real socket lives elsewhere. Returns an error describing the mismatch.
-func (c *Config) RunnerWakeTargetOwnedBy(agentID, target string) error {
-	if err := ValidateWakeTarget(RunnerWakeMethod, target); err != nil {
-		return err
-	}
-	path, err := ParseRunnerWakeTarget(target)
-	if err != nil {
-		return err
-	}
-	for _, owned := range c.RunnerSocketPathsOwnedBy(agentID) {
-		if path == owned {
-			return nil
-		}
-	}
-	return fmt.Errorf("runner wake_target %q is not a socket owned by %q (expected one of %v)", target, agentID, c.RunnerSocketPathsOwnedBy(agentID))
 }
 
 // EnsureRunnerSocketDir creates the parent directory for socketPath and, when
@@ -266,25 +251,25 @@ func discoverControlRepo(opts DiscoverOpts) (controlRepo, origin string, shadowe
 				return "", "", nil, fmt.Errorf("pointer %s -> %q: target does not contain %s",
 					ptr.PointerFilePath, ptr.ResolvedTarget, specFileName)
 			}
-			if !hasVendorLoopDir(ptr.ResolvedTarget) {
-				return "", "", nil, fmt.Errorf("pointer %s -> %q: target has no vendor loop directory",
-					ptr.PointerFilePath, ptr.ResolvedTarget)
+			if !hasFixedLoopDir(ptr.ResolvedTarget) {
+				return "", "", nil, fmt.Errorf("pointer %s -> %q: target has no %s/%s directory",
+					ptr.PointerFilePath, ptr.ResolvedTarget, fixedDotDir, loopDirName)
 			}
 			return ptr.ResolvedTarget, "pointer:" + ptr.PointerFilePath, ptr.Shadowed, nil
 		}
 	}
 
-	// 4. Walk up from cwd looking for a control repo with a vendor loop dir.
+	// 4. Walk up from cwd looking for a control repo with the fixed loop dir.
 	if opts.Cwd != "" {
 		if repo, err := findControlRepo(opts.Cwd); err == nil {
-			if hasVendorLoopDir(repo) {
+			if hasFixedLoopDir(repo) {
 				return repo, "cwd", nil, nil
 			}
 		}
 	}
 
-	return "", "", nil, fmt.Errorf("%w: no --control-repo flag, no AGENTCHUTE_CONTROL_REPO env, no %s pointer in cwd ancestors, and no AGENTCHUTE.md + vendor loop dir found walking up from %q",
-		ErrNoControlRepo, PointerFileName, opts.Cwd)
+	return "", "", nil, fmt.Errorf("%w: no --control-repo flag, no AGENTCHUTE_CONTROL_REPO env, no %s pointer in cwd ancestors, and no AGENTCHUTE.md + %s/%s dir found walking up from %q",
+		ErrNoControlRepo, PointerFileName, fixedDotDir, loopDirName, opts.Cwd)
 }
 
 // validateExplicitControlRepo checks that a flag- or env-provided control
@@ -301,9 +286,10 @@ func validateExplicitControlRepo(candidate string) (string, error) {
 	return repo, nil
 }
 
-func hasVendorLoopDir(controlRepo string) bool {
-	loopDirs, err := findVendorLoopDirs(controlRepo)
-	return err == nil && len(loopDirs) > 0
+// hasFixedLoopDir reports whether controlRepo contains the fixed
+// .agentchute/loop directory.
+func hasFixedLoopDir(controlRepo string) bool {
+	return dirExists(filepath.Join(controlRepo, fixedDotDir, loopDirName))
 }
 
 func findControlRepo(start string) (string, error) {
@@ -342,19 +328,18 @@ func discoverLoopDir(controlRepo string, opts DiscoverOpts) (string, string, err
 		return loop, "env", nil
 	}
 
-	// 3. Auto-discover the single vendor loop dir under controlRepo.
-	loopDirs, err := findVendorLoopDirs(controlRepo)
+	// 3. The fixed .agentchute/loop directory under controlRepo. Vendor
+	// namespacing is gone (simple-again): there is exactly one loop dotdir, so no
+	// scanning and no multi-namespace ambiguity.
+	fixed := filepath.Join(controlRepo, fixedDotDir, loopDirName)
+	if !dirExists(fixed) {
+		return "", "", fmt.Errorf("no %s/%s directory found under %q", fixedDotDir, loopDirName, controlRepo)
+	}
+	abs, err := filepath.Abs(fixed)
 	if err != nil {
 		return "", "", err
 	}
-	switch len(loopDirs) {
-	case 0:
-		return "", "", fmt.Errorf("no vendor loop directories found under %q", controlRepo)
-	case 1:
-		return loopDirs[0], "auto", nil
-	default:
-		return "", "", fmt.Errorf("multiple vendor loop directories found under %q; set AGENTCHUTE_LOOP_DIR or pass --loop-dir", controlRepo)
-	}
+	return abs, "auto", nil
 }
 
 func resolveLoopDir(controlRepo, raw string) (string, error) {
@@ -372,33 +357,6 @@ func resolveLoopDir(controlRepo, raw string) (string, error) {
 		return "", err
 	}
 	return dir, nil
-}
-
-func findVendorLoopDirs(controlRepo string) ([]string, error) {
-	entries, err := os.ReadDir(controlRepo)
-	if err != nil {
-		return nil, err
-	}
-
-	var loopDirs []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasPrefix(name, ".") || name == "." || name == ".." {
-			continue
-		}
-		candidate := filepath.Join(controlRepo, name, loopDirName)
-		if dirExists(candidate) {
-			abs, err := filepath.Abs(candidate)
-			if err != nil {
-				return nil, err
-			}
-			loopDirs = append(loopDirs, abs)
-		}
-	}
-	return loopDirs, nil
 }
 
 func vendorFromLoopDir(loopDir string) (string, error) {

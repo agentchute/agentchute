@@ -1,64 +1,27 @@
 package loop
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
 	"os"
-	"strings"
 	"time"
-)
-
-const (
-	RunnerWakeMethod = "agentchute-run"
-	runnerTargetUnix = "unix:"
 )
 
 // RunnerState is local diagnostic/recovery state for `agentchute run`.
 // Registration last_seen remains the liveness source of truth.
+//
+// Pull-only (simple-again Gate 6c): the runner no longer owns a receive socket
+// and a registration publishes no wake target, so there is no SocketPath field.
 type RunnerState struct {
 	AgentID       string    `json:"agent_id"`
 	Host          string    `json:"host,omitempty"`
 	RunnerPID     int       `json:"runner_pid"`
 	ChildPID      int       `json:"child_pid,omitempty"`
-	SocketPath    string    `json:"socket_path"`
 	StartedAt     time.Time `json:"started_at"`
 	LastPoll      time.Time `json:"last_poll,omitempty"`
 	LastInjection time.Time `json:"last_injection,omitempty"`
 	PendingWake   bool      `json:"pending_wake"`
 	Status        string    `json:"status"`
-}
-
-// RunnerPingResponse is the runner socket health response. It proves the
-// socket is an agentchute runner, not just any process accepting connections.
-type RunnerPingResponse struct {
-	OK          bool   `json:"ok"`
-	AgentID     string `json:"agent_id,omitempty"`
-	RunnerPID   int    `json:"runner_pid"`
-	ChildPID    int    `json:"child_pid,omitempty"`
-	PendingWake bool   `json:"pending_wake"`
-	Status      string `json:"status,omitempty"`
-}
-
-// RunnerWakeTarget formats a local Unix socket target for registrations.
-func RunnerWakeTarget(socketPath string) string {
-	return runnerTargetUnix + socketPath
-}
-
-// ParseRunnerWakeTarget parses an agentchute-run wake target. It also enforces
-// the wake_target shape (unix: prefix, non-empty clean absolute path) so every
-// caller that dials the socket — the poke adapter AND the liveness pings — is
-// protected from a hand-written registration smuggling a relative path or a
-// path with embedded control characters.
-func ParseRunnerWakeTarget(target string) (string, error) {
-	if err := ValidateWakeTarget(RunnerWakeMethod, target); err != nil {
-		return "", err
-	}
-	target = strings.TrimSpace(target)
-	path := strings.TrimSpace(strings.TrimPrefix(target, runnerTargetUnix))
-	return path, nil
 }
 
 // SaveRunnerState writes runner state atomically under state/<agent>/.
@@ -103,87 +66,21 @@ func LoadRunnerState(cfg *Config, agentID string) (*RunnerState, error) {
 	return &st, nil
 }
 
-// RunnerSocketReachable reports whether a local runner socket answers the
-// ping/ack protocol. It does not enqueue a wake.
-func RunnerSocketReachable(target string, timeout time.Duration) bool {
-	_, err := PingRunner(target, timeout)
-	return err == nil
-}
-
-// PingRunner asks an agentchute-run socket for its health payload.
-func PingRunner(target string, timeout time.Duration) (*RunnerPingResponse, error) {
-	path, err := ParseRunnerWakeTarget(target)
-	if err != nil {
-		return nil, err
-	}
-	if timeout <= 0 {
-		timeout = time.Second
-	}
-	conn, err := net.DialTimeout("unix", path, timeout)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	if err := json.NewEncoder(conn).Encode(map[string]any{"op": "ping"}); err != nil {
-		return nil, err
-	}
-	var resp RunnerPingResponse
-	if err := json.NewDecoder(io.LimitReader(conn, 4096)).Decode(&resp); err != nil {
-		return nil, err
-	}
-	if !resp.OK {
-		return nil, fmt.Errorf("runner ping returned ok=false")
-	}
-	return &resp, nil
-}
-
-type runnerWakeAdapter struct{}
-
-// Reachable reports whether reg's runner socket answers the ping/ack protocol,
-// WITHOUT ever dialing a socket the recipient does not legitimately own. This is
-// the WI-3 recipient-binding invariant, now living behind the WakeAdapter
-// interface: the owned-check (cfg.RunnerWakeTargetOwnedBy) runs FIRST and an
-// unowned target is reported unreachable WITHOUT a dial; only an owned target is
-// dialed (RunnerSocketReachable). The root-package runnerReachableForRecipient
-// delegates here, so this is the one place the owned-check-before-dial rule
-// lives.
-func (runnerWakeAdapter) Reachable(cfg *Config, reg *Registration, timeout time.Duration) bool {
-	if reg == nil || reg.WakeMethod != RunnerWakeMethod {
+// RegistrationReachable reports whether reg's agent is reachable under pull-only
+// coordination.
+//
+// Simple-again Gate 6b (pull-only): the runner RECEIVE socket was removed (Gate
+// 6a retired every sender; 6b deletes the receive side), so there is no wake
+// endpoint to dial — "reachable by poke" no longer exists. Reachability now
+// means LIVENESS: the agent's `.live` presence fact is fresh (loop.IsLive, R1).
+// An absent/stale/unreadable `.live` reads not-reachable, which is the safe
+// direction. The timeout parameter is retained for signature compatibility with
+// the vestigial callers (status REACHABLE column, register runner-primary
+// selection, poller ensure) but is unused; those callers keep compiling and
+// their wake-field reads are stripped in Gate 6c.
+func RegistrationReachable(cfg *Config, reg *Registration, _ time.Duration) bool {
+	if cfg == nil || reg == nil {
 		return false
 	}
-	if cfg == nil {
-		return false
-	}
-	if err := cfg.RunnerWakeTargetOwnedBy(reg.AgentID, reg.WakeTarget); err != nil {
-		// Not a socket this recipient owns: never dial it.
-		return false
-	}
-	return RunnerSocketReachable(reg.WakeTarget, timeout)
-}
-
-func (runnerWakeAdapter) Poke(ctx context.Context, target string) error {
-	path, err := ParseRunnerWakeTarget(target)
-	if err != nil {
-		return err
-	}
-	d := net.Dialer{Timeout: time.Second}
-	conn, err := d.DialContext(ctx, "unix", path)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
-	req := map[string]any{
-		"op":     "wake",
-		"reason": "new_mail",
-	}
-	if err := json.NewEncoder(conn).Encode(req); err != nil {
-		return err
-	}
-	return nil
-}
-
-func init() {
-	RegisterWakeAdapter(RunnerWakeMethod, runnerWakeAdapter{})
+	return IsLive(cfg, reg.AgentID, liveWindow, time.Now())
 }

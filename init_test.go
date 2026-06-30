@@ -301,72 +301,26 @@ func TestInitCreatesGitignoreInGitWorktree(t *testing.T) {
 	}
 }
 
-// --namespace override changes both the loop dir and the gitignore stanza.
-func TestInitNamespaceOverride(t *testing.T) {
+// Vendor namespacing was removed (simple-again): init always scaffolds the fixed
+// .agentchute/loop, there is no --namespace override, and the multi-namespace
+// ambiguity guard / legacy migration are gone. Discovery resolves the one fixed
+// loop dir; coexisting foreign dotdirs are simply ignored rather than refused.
+func TestInitScaffoldsFixedAgentchuteLoopIgnoringForeignDotdir(t *testing.T) {
 	root := t.TempDir()
-	plan, err := computeInitPlan(root, "acmecorp", true)
+	if err := os.MkdirAll(filepath.Join(root, ".agentchute", "loop"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := computeInitPlan(root, "agentchute", false)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("init must not refuse on a coexisting foreign dotdir: %v", err)
 	}
-	expectAction(t, plan, ".acmecorp/loop/agents", "mkdir 0700")
-	expectAction(t, plan, ".acmecorp/loop/inbox", "mkdir 0700")
-	expectAction(t, plan, ".acmecorp/loop/archive", "mkdir 0700")
-	expectAction(t, plan, ".acmecorp/loop/malformed", "mkdir 0700")
-	if !strings.Contains(plan.GitignoreStanza, ".acmecorp/loop/") {
-		t.Errorf("gitignore stanza did not pick up override:\n%s", plan.GitignoreStanza)
+	for _, sub := range []string{"agents", "inbox", "archive", "malformed"} {
+		expectAction(t, plan, ".agentchute/loop/"+sub, "mkdir 0700")
 	}
-}
-
-func TestInitFailsBeforeCreatingSecondLoopNamespace(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".examplecorp", "loop"), 0o700); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(plan.GitignoreStanza, ".agentchute/loop/") {
+		t.Errorf("gitignore stanza missing fixed namespace:\n%s", plan.GitignoreStanza)
 	}
-
-	_, err := computeInitPlan(root, "agentchute", false)
-	if err == nil {
-		t.Fatal("expected conflicting loop namespace error, got nil")
-	}
-	for _, want := range []string{".examplecorp/loop", ".agentchute/loop", "multiple loop dirs"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q missing %q", err, want)
-		}
-	}
-}
-
-func TestInitFailsClearlyWhenTwoLoopNamespacesAlreadyExist(t *testing.T) {
-	root := t.TempDir()
-	for _, namespace := range []string{".agentchute", ".examplecorp"} {
-		if err := os.MkdirAll(filepath.Join(root, namespace, "loop"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	_, err := computeInitPlan(root, "agentchute", false)
-	if err == nil {
-		t.Fatal("expected existing multiple loop namespace error, got nil")
-	}
-	for _, want := range []string{".agentchute/loop", ".examplecorp/loop", "AGENTCHUTE_LOOP_DIR", "--loop-dir"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q missing %q", err, want)
-		}
-	}
-}
-
-func TestInitNamespaceOverrideCanManageExistingLoopNamespace(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".examplecorp", "loop"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	plan, err := computeInitPlan(root, "examplecorp", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expectAction(t, plan, ".examplecorp/loop/agents", "mkdir 0700")
-	expectAction(t, plan, ".examplecorp/loop/inbox", "mkdir 0700")
-	expectAction(t, plan, ".examplecorp/loop/archive", "mkdir 0700")
-	expectAction(t, plan, ".examplecorp/loop/malformed", "mkdir 0700")
 }
 
 // Symlinked namespace dir → hard fail at plan time. Otherwise os.MkdirAll

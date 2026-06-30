@@ -33,8 +33,8 @@ func newDoctorCfg(t *testing.T) *loop.Config {
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 	// Scaffold the same layout init produces.
 	for _, d := range []string{cfg.AgentsDir(), filepath.Join(cfg.LoopDir, "inbox")} {
@@ -53,8 +53,8 @@ func TestDoctorMissingScaffoldBlocks(t *testing.T) {
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "loop_dir_scaffold")
@@ -235,8 +235,6 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 		Vendor:      "anthropic",
 		ControlRepo: cfg.ControlRepo,
 		Host:        "doctor-test",
-		WakeMethod:  "",
-		WakeTarget:  "",
 		LastSeen:    time.Now().UTC().Truncate(time.Second),
 		Status:      loop.StatusActive,
 	}
@@ -246,10 +244,13 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 	if err := os.MkdirAll(cfg.AgentInboxDir("claude-code"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// GATE 3: registration_freshness reads `.live`; give this healthy agent a
+	// fresh presence fact so the check is OK rather than warning on absent .live.
+	mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC())
 
 	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 
-	for _, name := range []string{"self_registration", "registration_freshness", "inbox_state", "ledger_state", "wake_target_validity", "runner_socket_staleness"} {
+	for _, name := range []string{"self_registration", "registration_freshness", "inbox_state", "ledger_state"} {
 		c := findCheck(t, r, name)
 		if c.Severity == "" {
 			t.Errorf("%s has empty severity", name)
@@ -260,47 +261,12 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 	if got := findCheck(t, r, "self_registration"); got.Severity != severityOK {
 		t.Errorf("self_registration severity = %q, want OK", got.Severity)
 	}
-
-	// No wake target → WARN.
-	if got := findCheck(t, r, "wake_target_validity"); got.Severity != severityWarn {
-		t.Errorf("wake_target_validity severity = %q, want WARN (no method declared)", got.Severity)
-	}
+	// Gate 6a (pull-only): wake_target_validity / runner_socket_staleness checks
+	// were removed (sender-side wake reachability no longer exists).
 }
 
-// TestDoctorTmuxWakeValidityHonorsProbeSeam proves the tmux wake-validity arm
-// resolves through the tmuxProbeBinary seam end-to-end — both the PATH
-// availability check and the reachability probe — rather than a literal "tmux".
-// PATH is stripped of real tmux so the old hardcoded exec.LookPath("tmux") would
-// (incorrectly) BLOCKER; with the seam-aware lookup the fake (an absolute path)
-// resolves and the reachable target reports OK.
-func TestDoctorTmuxWakeValidityHonorsProbeSeam(t *testing.T) {
-	cfg := newDoctorCfg(t)
-	withFakeTmuxTargets(t, "%7")  // sets tmuxProbeBinary to an executable fake answering %7
-	t.Setenv("PATH", t.TempDir()) // ensure literal "tmux" is NOT on PATH
-
-	regPath := cfg.AgentRegistrationPath("claude-code")
-	reg := &loop.Registration{
-		AgentID:     "claude-code",
-		Vendor:      "anthropic",
-		ControlRepo: cfg.ControlRepo,
-		Host:        "", // empty host avoids the cross-host SKIP short-circuit
-		WakeMethod:  "tmux",
-		WakeTarget:  "%7",
-		LastSeen:    time.Now().UTC().Truncate(time.Second),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(regPath, reg); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(cfg.AgentInboxDir("claude-code"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
-	if got := findCheck(t, r, "wake_target_validity"); got.Severity != severityOK {
-		t.Errorf("wake_target_validity severity = %q, want OK (resolved via tmuxProbeBinary seam); msg=%q", got.Severity, got.Message)
-	}
-}
+// Gate 6a (pull-only): TestDoctorTmuxWakeValidityHonorsProbeSeam was removed
+// along with the checkWakeTargetValidity tmux arm it exercised.
 
 func TestDoctorAsBlocksWhenActingWrapperHookMissing(t *testing.T) {
 	cfg := newDoctorCfg(t)
@@ -485,6 +451,9 @@ func TestDoctor_WarnsOnRawWrapperBypass(t *testing.T) {
 	})
 }
 
+// GATE 3: registration_freshness diagnoses presence from the `.live` fact, NOT
+// registration last_seen. A stale OR absent `.live` warns even when the
+// registration's own last_seen is fresh; a fresh `.live` flips it back to OK.
 func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	regPath := cfg.AgentRegistrationPath("claude-code")
@@ -492,8 +461,10 @@ func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 		AgentID:     "claude-code",
 		Vendor:      "anthropic",
 		ControlRepo: cfg.ControlRepo,
-		LastSeen:    time.Now().UTC().Add(-2 * StaleRegThreshold).Truncate(time.Second),
-		Status:      loop.StatusActive,
+		// Registration last_seen is FRESH on purpose — staleness must come from
+		// `.live`, not here.
+		LastSeen: time.Now().UTC().Truncate(time.Second),
+		Status:   loop.StatusActive,
 	}
 	if err := loop.WriteRegistration(regPath, reg); err != nil {
 		t.Fatal(err)
@@ -502,10 +473,28 @@ func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Stale `.live` => WARN (despite the fresh registration last_seen).
+	mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC().Add(-2*StaleRegThreshold))
 	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "registration_freshness")
 	if got.Severity != severityWarn {
-		t.Errorf("stale-reg severity = %q, want WARN (not BLOCKER; doctor diagnoses, gate enforces)", got.Severity)
+		t.Errorf("stale .live severity = %q, want WARN (not BLOCKER; doctor diagnoses, gate enforces)", got.Severity)
+	}
+
+	// Absent `.live` => WARN too.
+	if err := os.Remove(filepath.Join(cfg.LoopDir, "live", "claude-code.live")); err != nil {
+		t.Fatal(err)
+	}
+	r = runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
+	if got := findCheck(t, r, "registration_freshness"); got.Severity != severityWarn {
+		t.Errorf("absent .live severity = %q, want WARN", got.Severity)
+	}
+
+	// Fresh `.live` => OK (freshness SOURCE is `.live`).
+	mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC())
+	r = runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
+	if got := findCheck(t, r, "registration_freshness"); got.Severity != severityOK {
+		t.Errorf("fresh .live severity = %q, want OK; msg=%q", got.Severity, got.Message)
 	}
 }
 
@@ -545,49 +534,6 @@ func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 	}
 	if r.Blockers != 0 {
 		t.Errorf("Blockers = %d, want 0 (unread mail is informational in doctor)", r.Blockers)
-	}
-}
-
-func TestDoctorRecipientLivenessBlocksWithoutWakeOrPoller(t *testing.T) {
-	cfg := newDoctorCfg(t)
-	reg := &loop.Registration{
-		AgentID:     "claude-code",
-		Vendor:      "anthropic",
-		ControlRepo: cfg.ControlRepo,
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code"), reg); err != nil {
-		t.Fatal(err)
-	}
-	got := checkRecipientLiveness(cfg, "claude-code", time.Now().UTC())
-	if got.Severity != severityBlocker {
-		t.Fatalf("recipient_liveness severity = %q, want BLOCKER", got.Severity)
-	}
-	if !strings.Contains(got.Message, "poller ensure") {
-		t.Errorf("message should include remediation command: %q", got.Message)
-	}
-}
-
-func TestDoctorRecipientLivenessAcceptsFreshLaunchEnabledPoller(t *testing.T) {
-	cfg := newDoctorCfg(t)
-	reg := &loop.Registration{
-		AgentID:     "claude-code",
-		Vendor:      "anthropic",
-		ControlRepo: cfg.ControlRepo,
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code"), reg); err != nil {
-		t.Fatal(err)
-	}
-	mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
-	got := checkRecipientLiveness(cfg, "claude-code", time.Now().UTC())
-	if got.Severity != severityOK {
-		t.Fatalf("recipient_liveness severity = %q, want OK (%s)", got.Severity, got.Message)
-	}
-	if !strings.Contains(got.Message, "fresh poller heartbeat") {
-		t.Errorf("message should mention fresh heartbeat: %q", got.Message)
 	}
 }
 
@@ -667,7 +613,7 @@ func TestCmdDoctorDiscoveryFailureBlocks(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
-	// No AGENTCHUTE.md, no .examplecorp/loop — discovery will fail.
+	// No AGENTCHUTE.md, no .agentchute/loop — discovery will fail.
 	withCwd(t, root, func() {
 		_, err := captureStdout(t, func() error { return cmdDoctor(nil) })
 		if err == nil {

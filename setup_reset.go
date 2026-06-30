@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,11 +49,10 @@ func resetSetupRuntimeState(root string, cfg *loop.Config, wrappers []string) se
 				result.Warnings = append(result.Warnings, fmt.Sprintf("remove runtime state %s: %v", path, err))
 			}
 		}
-		if cleared, warning := clearSetupHerdrName(cfg.ControlRepo, agentID); warning != "" {
-			result.Warnings = append(result.Warnings, warning)
-		} else if cleared {
-			result.HerdrNames = append(result.HerdrNames, agentID)
-		}
+		// Pull-only (Gate 6c): herdr is retired as a wake transport and a
+		// registration carries no herdr name binding, so there is no herdr-name
+		// binding to clear on reset. The HerdrNames result field stays for output
+		// stability but is no longer populated.
 	}
 	sort.Strings(result.Pollers)
 	sort.Strings(result.Runners)
@@ -255,28 +253,13 @@ func stopSetupRunner(cfg *loop.Config, agentID string) (bool, string) {
 	if !setupCommandMatchesPool(cmdline, "run", cfg) {
 		return false, fmt.Sprintf("not stopping runner for %s pid=%d; process command did not match this agentchute pool", agentID, st.RunnerPID)
 	}
-	pingMatched := false
-	if st.SocketPath != "" {
-		resp, err := loop.PingRunner(loop.RunnerWakeTarget(st.SocketPath), 300*time.Millisecond)
-		if err == nil {
-			if strings.TrimSpace(resp.AgentID) != "" && strings.TrimSpace(resp.AgentID) != agentID {
-				return false, fmt.Sprintf("not stopping runner for %s pid=%d; runner socket reports agent_id=%s", agentID, st.RunnerPID, resp.AgentID)
-			}
-			if resp.RunnerPID > 0 && resp.RunnerPID != st.RunnerPID {
-				return false, fmt.Sprintf("not stopping runner for %s pid=%d; runner socket reports pid=%d", agentID, st.RunnerPID, resp.RunnerPID)
-			}
-			pingMatched = true
-		}
-	}
-	if pingMatched {
-		_ = requestRunnerShutdown(loop.RunnerWakeTarget(st.SocketPath), 300*time.Millisecond)
-		waitSetupProcessExit(st.RunnerPID, 500*time.Millisecond)
-		if !setupProcessAlive(st.RunnerPID) {
-			return true, ""
-		}
-	}
-	if !pingMatched && !setupCommandHasAgentID(cmdline, agentID) {
-		return false, fmt.Sprintf("not stopping runner for %s pid=%d; runner socket was not verified and process command did not name this agent id", agentID, st.RunnerPID)
+	// Simple-again Gate 6b (pull-only): the runner no longer owns a receive
+	// socket, so there is no ping verification or graceful socket-shutdown step.
+	// Verify the process names THIS agent id from its command line, then SIGTERM
+	// it — the runner's signal handler marks the registration offline and releases
+	// its serve lease on exit.
+	if !setupCommandHasAgentID(cmdline, agentID) {
+		return false, fmt.Sprintf("not stopping runner for %s pid=%d; process command did not name this agent id", agentID, st.RunnerPID)
 	}
 	if err := setupSignalProcess(st.RunnerPID, syscall.SIGTERM); err != nil {
 		return false, fmt.Sprintf("stop runner for %s pid=%d: %v", agentID, st.RunnerPID, err)
@@ -293,20 +276,6 @@ func waitSetupProcessExit(pid int, timeout time.Duration) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-}
-
-func requestRunnerShutdown(target string, timeout time.Duration) error {
-	socketPath, err := loop.ParseRunnerWakeTarget(target)
-	if err != nil {
-		return err
-	}
-	conn, err := net.DialTimeout("unix", socketPath, timeout)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	return json.NewEncoder(conn).Encode(map[string]string{"op": "shutdown"})
 }
 
 func setupCommandMatches(cmdline, agentID, subcommand string, cfg *loop.Config) bool {
@@ -420,20 +389,6 @@ func signalProcess(pid int, sig os.Signal) error {
 		return err
 	}
 	return p.Signal(sig)
-}
-
-func clearSetupHerdrName(root, agentID string) (bool, string) {
-	info, found := herdrAgentByName(agentID)
-	if !found {
-		return false, ""
-	}
-	if !setupPathMatchesRoot(info.Cwd, root) && !setupPathMatchesRoot(info.ForegroundCwd, root) {
-		return false, ""
-	}
-	if err := clearHerdrAgentName(agentID); err != nil {
-		return false, fmt.Sprintf("clear herdr name %s: %v", agentID, err)
-	}
-	return true, ""
 }
 
 func setupLocalHost(host string) bool {

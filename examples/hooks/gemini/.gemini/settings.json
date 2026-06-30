@@ -37,6 +37,11 @@
             "command": "${AGENTCHUTE_BIN:-agentchute} pending --vendor google --json"
           },
           {
+            "name": "agentchute-ack",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} ack --vendor google --quiet"
+          },
+          {
             "name": "agentchute-gate",
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} gate --vendor google --before finish --json"

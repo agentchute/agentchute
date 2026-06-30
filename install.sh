@@ -5,8 +5,13 @@
 # available.
 #
 # Usage:
-#   sh install.sh [--version VERSION] [--to DIR] [--setup|--no-setup] [--wake MODE] [--dry-run]
+#   sh install.sh [--version VERSION] [--to DIR] [--setup|--no-setup] [--wake MODE] [--fresh] [--yes] [--dry-run]
 #   curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
+#
+# --fresh performs a DESTRUCTIVE clean reinstall: it installs the new binary and
+# then runs `agentchute setup --reset --wipe-state` to wipe loop runtime state
+# (the v0.7.0 -> v2 transition). In a non-interactive pipe it REFUSES unless you
+# explicitly confirm with --yes or AGENTCHUTE_YES=1.
 #
 # Equivalent env vars (flags win on conflict):
 #   AGENTCHUTE_VERSION       pin a specific tag (default: latest release)
@@ -15,8 +20,10 @@
 #   AGENTCHUTE_PROFILE       shell profile to update when PATH needs entries
 #   AGENTCHUTE_NO_PATH_UPDATE=1  do not update shell profile; print hints only
 #   AGENTCHUTE_SETUP=0       skip setup after install
-#   AGENTCHUTE_WAKE          pass --wake to setup (runner[,tmux][,herdr] | all)
+#   AGENTCHUTE_WAKE          pass --wake to setup (runner)
 #   AGENTCHUTE_WRAPPERS      pass --wrappers to setup (default: all)
+#   AGENTCHUTE_FRESH=1       DESTRUCTIVE clean reinstall (implies --setup, --wake runner)
+#   AGENTCHUTE_YES=1         confirm the destructive --fresh wipe non-interactively
 #   AGENTCHUTE_DRY_RUN=1     print the plan and exit; no mutation
 #
 # Security: this script verifies release checksums; piping the installer
@@ -374,12 +381,12 @@ print_setup_next_steps() {
 	info "next: run setup from the repo where your agents will coordinate:"
 	info "  agentchute setup"
 	info "then restart your agents; setup resets local agentchute runtime state"
-	info "and clears stale registrations/Herdr names so wrappers re-enroll cleanly"
+	info "and clears stale registrations so wrappers re-enroll cleanly"
 	info "optional check: agentchute doctor --as <agent-id>"
 	info "upgrading from an older release? re-run setup in each control repo to"
-	info "refresh ENROLLMENT blocks; setup also migrates a legacy .rehumanlabs/loop"
-	info "to .agentchute/loop automatically in safe cases and refuses to auto-merge"
-	info "if both hold live state."
+	info "refresh ENROLLMENT blocks. For a clean cutover to the pull-only protocol,"
+	info "'install.sh --fresh' (or 'agentchute setup --reset --wipe-state') wipes the"
+	info "old loop state and reinstalls fresh."
 }
 
 # ---------- main flow ----------
@@ -397,6 +404,10 @@ main() {
 	setup_wrappers="${AGENTCHUTE_WRAPPERS:-all}"
 	dry_run=0
 	[ "${AGENTCHUTE_DRY_RUN:-0}" = "1" ] && dry_run=1
+	fresh=0
+	[ "${AGENTCHUTE_FRESH:-0}" = "1" ] && fresh=1
+	assume_yes=0
+	[ "${AGENTCHUTE_YES:-0}" = "1" ] && assume_yes=1
 
 	# Flag parsing.
 	while [ $# -gt 0 ]; do
@@ -411,28 +422,35 @@ main() {
 			--wake=*)    setup_wake="${1#--wake=}" ;;
 			--wrappers)  shift; setup_wrappers="${1:-}"; [ -n "$setup_wrappers" ] || err "--wrappers requires a value" ;;
 			--wrappers=*) setup_wrappers="${1#--wrappers=}" ;;
+			--fresh)     fresh=1 ;;
+			--yes|-y)    assume_yes=1 ;;
 			--dry-run)   dry_run=1 ;;
 			-h|--help)
 				cat <<EOF
 agentchute install — fetches the latest release binary and installs it.
 
 usage:
-  sh install.sh [--version VERSION] [--to DIR] [--setup|--no-setup] [--wake MODE] [--wrappers SET] [--dry-run]
+  sh install.sh [--version VERSION] [--to DIR] [--setup|--no-setup] [--wake MODE] [--wrappers SET] [--fresh] [--yes] [--dry-run]
 
 flags:
   --version   pin a specific tag (default: latest release)
   --to DIR    install dir (default: ~/.local/bin)
   --setup     run \`agentchute setup\` after install (default when a tty exists)
   --no-setup  skip setup and print the command to run later
-  --wake MODE pass --wake to setup (runner[,tmux][,herdr] | all)
+  --wake MODE pass --wake to setup (runner)
   --wrappers  pass --wrappers to setup (default: all)
+  --fresh     DESTRUCTIVE clean reinstall: install, then run
+              \`agentchute setup --reset --wipe-state\` to wipe loop runtime
+              state. Implies --setup and --wake runner. Conflicts with
+              --no-setup. In a non-interactive pipe requires --yes/AGENTCHUTE_YES=1.
+  --yes, -y   confirm the destructive --fresh wipe (also via AGENTCHUTE_YES=1)
   --dry-run   print the plan and exit; no mutation
 
 env vars (flags override):
   AGENTCHUTE_VERSION, AGENTCHUTE_INSTALL_DIR, AGENTCHUTE_SHIM_DIR,
   AGENTCHUTE_PROFILE, AGENTCHUTE_NO_PATH_UPDATE=1,
   AGENTCHUTE_SETUP=0|1|auto, AGENTCHUTE_WAKE, AGENTCHUTE_WRAPPERS,
-  AGENTCHUTE_DRY_RUN=1
+  AGENTCHUTE_FRESH=1, AGENTCHUTE_YES=1, AGENTCHUTE_DRY_RUN=1
 EOF
 				return 0
 				;;
@@ -440,6 +458,34 @@ EOF
 		esac
 		shift
 	done
+
+	# Detect an interactive terminal once (used by the --fresh confirm gate and
+	# the setup invocation below).
+	have_tty=0
+	if ( : </dev/tty ) 2>/dev/null; then
+		have_tty=1
+	fi
+
+	# --fresh semantics: a DESTRUCTIVE clean reinstall. It implies --setup and
+	# defaults --wake to runner, and conflicts with --no-setup. In a
+	# non-interactive pipe it FAILS BEFORE any download unless the operator
+	# explicitly confirmed the wipe (--yes / AGENTCHUTE_YES=1) — --fresh alone is
+	# NOT enough in a pipe.
+	if [ "$fresh" = "1" ]; then
+		if [ "$do_setup" = "0" ]; then
+			err "--fresh conflicts with --no-setup: a fresh install must run setup to wipe state"
+		fi
+		do_setup=1
+		if [ -z "$setup_wake" ]; then
+			setup_wake="runner"
+		fi
+		if [ "$dry_run" != "1" ] && [ "$have_tty" != "1" ] && [ "$assume_yes" != "1" ]; then
+			err "--fresh performs a DESTRUCTIVE state wipe; refusing in a non-interactive pipe without explicit confirmation.
+  re-run with explicit confirmation, e.g.:
+    curl -fsSL https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/install.sh | AGENTCHUTE_FRESH=1 AGENTCHUTE_YES=1 sh
+    sh install.sh --fresh --yes"
+		fi
+	fi
 
 	probe_deps
 	sha_cmd=$(pick_sha256)
@@ -484,13 +530,23 @@ agentchute install
   setup:          $do_setup
   setup wake:     ${setup_wake:-prompt}
   setup wrappers: $setup_wrappers
+  fresh (wipe):   $fresh
 EOF
 
 	# --dry-run wins over setup (per codex). Still resolves version (network OK,
-	# just no mutation).
+	# just no mutation). For --fresh, also print the EXACT setup command that
+	# would run after the install — no install, no setup, no wipe in dry-run.
 	if [ "$dry_run" = "1" ]; then
 		info ""
 		info "(dry-run; no changes made)"
+		if [ "$fresh" = "1" ]; then
+			fresh_yes=""
+			[ "$assume_yes" = "1" ] && fresh_yes=" --yes"
+			info ""
+			info "--fresh would, after installing the new binary, run (DESTRUCTIVE):"
+			info "  agentchute setup --reset --wipe-state --shim-dir ${shim_dir:-${HOME:-}/.agentchute/bin} --wrappers $setup_wrappers --wake $setup_wake$fresh_yes"
+			info "  (wipes loop runtime state after stopping local processes; refuses a live bus)"
+		fi
 		return 0
 	fi
 
@@ -542,15 +598,6 @@ EOF
 	fi
 	is_valid_install_dir "$shim_dir" || err "invalid shim dir: $shim_dir (must not contain quotes, dollar signs, backticks, or backslashes)"
 
-	# tmux is one peer-wake adapter. Missing tmux only removes that adapter:
-	# runner/herdr wake paths and polling-only setups remain valid.
-	if ! command -v tmux >/dev/null 2>&1; then
-		info ""
-		info "note: tmux not found on PATH. The tmux wake adapter won't be"
-		info "available, but runner/herdr wake paths and polling-only setups still"
-		info "work. See https://agentchute.dev/ \"Running without tmux\" for patterns."
-	fi
-
 	if [ "$do_setup" = "auto" ]; then
 		if ( : </dev/tty ) 2>/dev/null; then
 			do_setup=1
@@ -560,14 +607,26 @@ EOF
 	fi
 
 	if [ "$do_setup" = "1" ]; then
-		set -- setup --shim-dir "$shim_dir" --wrappers "$setup_wrappers"
-		if [ -n "$setup_wake" ]; then
-			set -- "$@" --wake "$setup_wake" --yes
+		if [ "$fresh" = "1" ]; then
+			# Fresh path: the NEW binary is already installed above; now drive the
+			# DESTRUCTIVE wipe THROUGH it. --wake is always set (defaulted to
+			# runner). Do NOT auto-pass setup --yes just because --wake is set —
+			# only pass it when the operator explicitly confirmed (--yes /
+			# AGENTCHUTE_YES=1); otherwise setup prints the wipe plan and prompts.
+			set -- setup --reset --wipe-state --shim-dir "$shim_dir" --wrappers "$setup_wrappers" --wake "$setup_wake"
+			if [ "$assume_yes" = "1" ]; then
+				set -- "$@" --yes
+			fi
+		else
+			set -- setup --shim-dir "$shim_dir" --wrappers "$setup_wrappers"
+			if [ -n "$setup_wake" ]; then
+				set -- "$@" --wake "$setup_wake" --yes
+			fi
 		fi
 		if [ "${AGENTCHUTE_NO_PATH_UPDATE:-0}" = "1" ]; then
 			set -- "$@" --no-profile
 		fi
-		if ! ( : </dev/tty ) 2>/dev/null && [ -z "$setup_wake" ]; then
+		if [ "$have_tty" != "1" ] && [ -z "$setup_wake" ]; then
 			info ""
 			warn "setup needs a tty when --wake is not provided; skipping setup"
 			warn "  run \`agentchute setup\` from your control repo"

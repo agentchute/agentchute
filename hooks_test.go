@@ -21,7 +21,7 @@ func hooksRepoFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 	return root
 }
 
@@ -212,7 +212,7 @@ func TestHooksInstallUserScope(t *testing.T) {
 func TestHooksInstallDefaultsToAll(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 	withCwd(t, root, func() {
 		if _, err := captureStdout(t, func() error {
 			return cmdHooks([]string{"install"})
@@ -237,7 +237,7 @@ func TestHooksInstallDefaultsToAll(t *testing.T) {
 func TestHooksInstallRepoScopeAnchorsAtControlRepoRoot(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 	subdir := filepath.Join(root, "internal", "deep", "nested")
 	mustMkdir(t, subdir)
 	withCwd(t, subdir, func() {
@@ -263,7 +263,7 @@ func TestHooksInstallRepoScopeAnchorsAtControlRepoRoot(t *testing.T) {
 func TestHooksInstallTightensExistingParentDirPerms(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 	// Pre-create the .claude dir at 0755 (the default a user might have).
 	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
 		t.Fatal(err)

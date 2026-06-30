@@ -78,22 +78,25 @@ func TestNormalizeSetupWakeCombinations(t *testing.T) {
 		deprecate bool
 		wantErr   bool
 	}{
+		// Pull-only redesign: runner is the only installable wake path. tmux/herdr
+		// (alone or in a combo) are rejected; all/both are deprecated aliases that
+		// now resolve to runner only.
 		{in: "runner", want: "runner"},
-		{in: "tmux", want: "tmux"},
-		{in: "herdr", want: "herdr"},
-		{in: "runner,tmux", want: "runner,tmux"},
-		{in: "tmux,runner", want: "runner,tmux"},   // canonical order
-		{in: "herdr,runner", want: "runner,herdr"}, // canonical order
-		{in: "runner,tmux,herdr", want: "runner,tmux,herdr"},
-		{in: "RUNNER, TMUX", want: "runner,tmux"},       // case + spaces
-		{in: "runner,runner,tmux", want: "runner,tmux"}, // dedup
-		{in: "all", want: "runner,tmux,herdr"},          // keyword
-		{in: "both", want: "runner,tmux,herdr", deprecate: true},
+		{in: "RUNNER", want: "runner"}, // case-insensitive
+		{in: " runner ", want: "runner"},
+		{in: "runner,runner", want: "runner"},        // dedup
+		{in: "all", want: "runner", deprecate: true}, // legacy keyword → runner
+		{in: "both", want: "runner", deprecate: true},
+		{in: "tmux", wantErr: true},        // adapter removed
+		{in: "herdr", wantErr: true},       // adapter removed
+		{in: "runner,tmux", wantErr: true}, // combo with removed adapter
+		{in: "tmux,runner", wantErr: true},
+		{in: "runner,tmux,herdr", wantErr: true},
 		{in: "", wantErr: true},
 		{in: ",", wantErr: true},
-		{in: "runner,", wantErr: true},      // trailing comma → empty token
-		{in: "runner,,tmux", wantErr: true}, // doubled comma → empty token
-		{in: "tmux, ,herdr", wantErr: true}, // whitespace-only token
+		{in: "runner,", wantErr: true},    // trailing comma → empty token
+		{in: "runner,,", wantErr: true},   // doubled comma → empty token
+		{in: "all, ,both", wantErr: true}, // whitespace-only token
 		{in: "bogus", wantErr: true},
 		{in: "runner,bogus", wantErr: true},
 	}
@@ -212,12 +215,14 @@ func TestSetupShimWrappersForWakeCombinations(t *testing.T) {
 }
 
 // Legacy installs persisted Wake:"both" (a runner-equivalent that installed all
-// shims). Read-time canonicalization must expand it so previousSetupShimWrappers
-// reports the full shim set the old install actually wrote — not just the
-// detected wrapper list — otherwise a narrowing re-setup orphans shims.
+// shims). Read-time canonicalization must normalize it to a runner-equivalent so
+// previousSetupShimWrappers reports the full shim set the old install actually
+// wrote — not just the detected wrapper list — otherwise a re-setup orphans
+// shims. Post pull-only redesign "both" canonicalizes to "runner" (which still
+// resolves to all four shims because runner installs them all).
 func TestPersistedBothWakeCanonicalizedForShimCleanup(t *testing.T) {
-	if got := canonicalizePersistedWake("both"); got != "runner,tmux,herdr" {
-		t.Fatalf(`canonicalizePersistedWake("both") = %q, want "runner,tmux,herdr"`, got)
+	if got := canonicalizePersistedWake("both"); got != "runner" {
+		t.Fatalf(`canonicalizePersistedWake("both") = %q, want "runner"`, got)
 	}
 	canon := setupGlobalState{Wake: canonicalizePersistedWake("both"), Wrappers: []string{"codex"}, ShimsInstalled: true}
 	if got := previousSetupShimWrappers(canon); len(got) != 4 {
@@ -251,8 +256,8 @@ func TestReadSetupStateCanonicalizesLegacyBothWake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pool.Wake != "runner,tmux,herdr" {
-		t.Fatalf("readSetupPoolState legacy both Wake = %q, want canonical runner,tmux,herdr", pool.Wake)
+	if pool.Wake != "runner" {
+		t.Fatalf("readSetupPoolState legacy both Wake = %q, want canonical runner", pool.Wake)
 	}
 
 	// Global state reader (XDG path).
@@ -267,17 +272,17 @@ func TestReadSetupStateCanonicalizesLegacyBothWake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if global.Wake != "runner,tmux,herdr" {
-		t.Fatalf("readSetupGlobalState legacy both Wake = %q, want canonical runner,tmux,herdr", global.Wake)
+	if global.Wake != "runner" {
+		t.Fatalf("readSetupGlobalState legacy both Wake = %q, want canonical runner", global.Wake)
 	}
 }
 
-func TestSetupHelpAndInvalidWakeMentionHerdr(t *testing.T) {
+func TestSetupHelpAndInvalidWakeRunnerOnly(t *testing.T) {
 	help := setupHelp()
 	for _, want := range []string{
-		"--wake runner[,tmux][,herdr] | all",
-		"any comma-separated combination of runner, tmux, herdr",
-		"hookless wrappers when only tmux/herdr are selected",
+		"--wake runner",
+		"runner is the only supported wake path",
+		"tmux/herdr wake adapters",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("setup help missing %q:\n%s", want, help)
@@ -299,8 +304,8 @@ func TestSetupHelpAndInvalidWakeMentionHerdr(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected invalid wake error")
 		}
-		if !strings.Contains(err.Error(), "runner, tmux, herdr") {
-			t.Fatalf("invalid wake error should mention herdr, got %v", err)
+		if !strings.Contains(err.Error(), "the only supported wake path is runner") {
+			t.Fatalf("invalid wake error should name runner as the only supported path, got %v", err)
 		}
 	})
 }
@@ -317,34 +322,6 @@ func TestSetupHerdrPlanLabelsHooklessShim(t *testing.T) {
 	text := out.String()
 	if !strings.Contains(text, "shim wrappers: grok (hookless startup enrollment)") {
 		t.Fatalf("herdr plan should label hookless shim wrappers:\n%s", text)
-	}
-}
-
-func TestSetupTmuxDoesNotInstallShims(t *testing.T) {
-	root := t.TempDir()
-	mustMkdir(t, filepath.Join(root, ".git"))
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("SHELL", "/bin/zsh")
-	t.Setenv("PATH", "/usr/bin:/bin")
-	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
-	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
-
-	withCwd(t, root, func() {
-		if err := cmdSetup([]string{"--wake", "tmux", "--wrappers", "none", "--yes"}); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	if _, err := os.Stat(filepath.Join(root, "AGENTCHUTE.md")); err != nil {
-		t.Fatalf("AGENTCHUTE.md not written: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin")); !os.IsNotExist(err) {
-		t.Fatalf("shim dir should not exist for tmux-only setup: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(home, ".zshrc")); !os.IsNotExist(err) {
-		t.Fatalf("profile should not be written for tmux-only setup: %v", err)
 	}
 }
 
@@ -366,7 +343,7 @@ func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
 	mustWrite(t, filepath.Join(agentsDir, "README.md"), []byte("format reference\n"))
 
 	withCwd(t, root, func() {
-		if err := cmdSetup([]string{"--wake", "tmux", "--wrappers", "none", "--yes"}); err != nil {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -432,7 +409,7 @@ func TestSetupResetsRuntimeStateButPreservesPendingReplies(t *testing.T) {
 	})
 
 	withCwd(t, root, func() {
-		if err := cmdSetup([]string{"--wake", "tmux", "--wrappers", "none", "--yes"}); err != nil {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -467,71 +444,6 @@ func TestSetupCommandAgentIDMatchIsBounded(t *testing.T) {
 	}
 }
 
-func TestSetupClearsHerdrRepoNamesWithoutRegistrationFiles(t *testing.T) {
-	root := t.TempDir()
-	mustMkdir(t, filepath.Join(root, ".git"))
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("SHELL", "/bin/zsh")
-	t.Setenv("PATH", "/usr/bin:/bin")
-	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
-	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
-
-	logPath := filepath.Join(t.TempDir(), "herdr.log")
-	withFakeSetupHerdr(t, root, logPath)
-
-	withCwd(t, root, func() {
-		if err := cmdSetup([]string{"--wake", "herdr", "--wrappers", "codex", "--yes"}); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := string(data)
-	if !strings.Contains(got, "rename codex-agentchute --clear") {
-		t.Fatalf("setup did not clear repo herdr name; log:\n%s", got)
-	}
-	if !strings.Contains(got, "rename claude-code-agentchute --clear") {
-		t.Fatalf("setup did not clear other repo herdr name; log:\n%s", got)
-	}
-	if strings.Contains(got, "rename codex-other --clear") {
-		t.Fatalf("setup cleared unrelated repo herdr name; log:\n%s", got)
-	}
-}
-
-func withFakeSetupHerdr(t *testing.T, root, logPath string) {
-	t.Helper()
-	old := herdrProbeBinary
-	path := filepath.Join(t.TempDir(), "herdr")
-	script := "#!/bin/sh\n" +
-		"cmd=\"$1\"\n" +
-		"sub=\"$2\"\n" +
-		"target=\"$3\"\n" +
-		"arg4=\"$4\"\n" +
-		"if [ \"$cmd\" != agent ]; then exit 1; fi\n" +
-		"case \"$sub\" in\n" +
-		"  list)\n" +
-		"    printf '{\"result\":{\"agents\":[{\"name\":\"codex-agentchute\",\"pane_id\":\"w3:p1\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"},{\"name\":\"claude-code-agentchute\",\"pane_id\":\"w3:p2\",\"cwd\":\"" + root + "\",\"foreground_cwd\":\"" + root + "\"},{\"name\":\"codex-other\",\"pane_id\":\"w3:p3\",\"cwd\":\"/tmp/other\",\"foreground_cwd\":\"/tmp/other\"}]}}\\n'\n" +
-		"    exit 0 ;;\n" +
-		"  get)\n" +
-		"    printf '{\"error\":{\"code\":\"agent_not_found\"}}\\n'\n" +
-		"    exit 0 ;;\n" +
-		"  rename)\n" +
-		"    printf 'rename %s %s\\n' \"$target\" \"$arg4\" >> '" + logPath + "'\n" +
-		"    exit 0 ;;\n" +
-		"  *) exit 1 ;;\n" +
-		"esac\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	herdrProbeBinary = path
-	t.Cleanup(func() { herdrProbeBinary = old })
-}
-
 func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))
@@ -547,7 +459,7 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	mustWrite(t, filepath.Join(root, "CODEX.md"), []byte(stale))
 
 	withCwd(t, root, func() {
-		if err := cmdSetup([]string{"--wake", "tmux", "--wrappers", "none", "--yes"}); err != nil {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -565,51 +477,6 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)
-	}
-}
-
-func TestSetupModeSwitchToTmuxRemovesPriorSetupShimsAndProfileBlock(t *testing.T) {
-	root := t.TempDir()
-	mustMkdir(t, filepath.Join(root, ".git"))
-	home := t.TempDir()
-	realDir := filepath.Join(t.TempDir(), "real")
-	mustMkdir(t, realDir)
-	realCodex := filepath.Join(realDir, "codex")
-	mustWrite(t, realCodex, []byte("#!/bin/sh\nexit 0\n"))
-	if err := os.Chmod(realCodex, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("SHELL", "/bin/zsh")
-	t.Setenv("PATH", realDir)
-	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
-	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
-	profile := filepath.Join(home, ".zshrc")
-
-	withCwd(t, root, func() {
-		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "all", "--profile", profile, "--yes"}); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("PATH", filepath.Join(home, ".agentchute", "bin")+string(os.PathListSeparator)+realDir)
-		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "all", "--profile", profile, "--yes"}); err != nil {
-			t.Fatal(err)
-		}
-		if err := cmdSetup([]string{"--wake", "tmux", "--wrappers", "none", "--yes"}); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-codex")); !os.IsNotExist(err) {
-		t.Fatalf("ac-codex shim should be removed on tmux switch: %v", err)
-	}
-	data, err := os.ReadFile(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), setupPathBlockBegin) {
-		t.Fatalf("profile block should be removed on tmux switch:\n%s", data)
 	}
 }
 
@@ -671,7 +538,7 @@ func TestSetupRefusesNonProjectInitWithYes(t *testing.T) {
 	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
 
 	withCwd(t, root, func() {
-		err := cmdSetup([]string{"--wake", "tmux", "--wrappers", "none", "--yes"})
+		err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"})
 		if err == nil {
 			t.Fatal("expected non-project init guard")
 		}

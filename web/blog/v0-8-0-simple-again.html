@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0.8.0 — agentchute, simple again — agentchute</title>
+<meta name="description" content="We built a lot of machinery to solve a problem we created ourselves. Then we deleted it.">
+<meta property="og:title" content="0.8.0 — agentchute, simple again">
+<meta property="og:description" content="We built a lot of machinery to solve a problem we created ourselves. Then we deleted it.">
+<meta property="og:url" content="https://agentchute.dev/blog/v0-8-0-simple-again.html">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://agentchute.dev/images/blog/simple-deleted.svg">
+<meta property="og:image:alt" content="Before: an overbuilt tangle of watchdog, reachability, and pokes. After: one inbox and a Markdown file — most of it deleted.">
+<meta property="og:image:width" content="600">
+<meta property="og:image:height" content="160">
+<meta property="article:published_time" content="2026-06-30">
+<meta property="article:author" content="reHuman Labs">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="0.8.0 — agentchute, simple again">
+<meta name="twitter:description" content="We built a lot of machinery to solve a problem we created ourselves. Then we deleted it.">
+<meta name="twitter:image" content="https://agentchute.dev/images/blog/simple-deleted.svg">
+<link rel="canonical" href="https://agentchute.dev/blog/v0-8-0-simple-again.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">June 30, 2026 · reHuman Labs</p>
+    <h1>0.8.0 — agentchute, simple again</h1>
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      We built a lot of machinery to solve a problem we created ourselves. Then we
+      deleted it.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+
+    <p>
+      agentchute is one idea: an inbox per agent, and a small Markdown protocol around
+      it, so a mixed team of AI agents can hand off work without a human relaying
+      messages. That's the whole thing. It's a good idea, and the protocol around it was
+      sound.
+    </p>
+
+    <p>
+      Here's what happened.
+    </p>
+
+    <p>
+      As we ran agentchute with real teams — large and small, with genuinely good
+      results — the <em>implementation</em> drifted. Not the idea; the code around it. It
+      kept accumulating weight that had nothing to do with a shared inbox: machinery
+      built to solve problems the protocol never actually had.
+    </p>
+
+    <p>
+      The root mistake was right at the start: <strong>the sender poked the
+      recipient</strong> to come read its inbox. That one decision was the first wrong
+      step, and it snowballed. Once a sender is responsible for waking a recipient, it
+      has to know the recipient is reachable — so you add reachability tracking.
+      Reachability goes stale — so you add a watchdog. The watchdog races — so you add
+      liveness caches and gates to settle the races. Every addition was fixing a problem
+      that only existed because of the original wrong turn.
+    </p>
+
+    <p>
+      We ended up with an intricate liveness subsystem wrapped around a protocol whose
+      entire job is <em>drop a file in a directory</em>. The simple idea was still in
+      there — it was just buried under everything we'd built to prop up that first bad
+      decision.
+    </p>
+
+    <figure class="blog-image">
+      <img src="../images/blog/simple-deleted.svg" alt="Before: an overbuilt tangle of watchdog, reachability, and pokes. After: one inbox and a Markdown file — most of it deleted." loading="lazy">
+    </figure>
+
+    <p>
+      So we stopped, and we went back to the idea: <strong>a shared inbox, best-effort
+      delivery, and the recipient is responsible for reading its own inbox.</strong>
+      Pull, not push. The sender writes the message and walks away.
+    </p>
+
+    <p>
+      That one change collapsed almost everything we'd been fighting. No sender poke
+      means no reachability tracking, no watchdog, no liveness caches, no cross-agent
+      gates — all deleted. What's left is what we wanted from the beginning: one small,
+      universal way to run an agent — it watches its own inbox and reads it — that works
+      the same for any terminal-based agent, because the protocol depends on no vendor
+      behavior.
+    </p>
+
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>What changed</h2>
+
+    <p>
+      <strong>The sender no longer wakes anyone.</strong> Delivery is best-effort; the
+      message waits in the inbox until the recipient reads it.
+    </p>
+
+    <p>
+      <strong>Deleted:</strong> the watchdog, reachability caches, cooperative-wake,
+      cross-agent liveness gates, and the per-vendor wake adapters we'd built to prop
+      them up.
+    </p>
+
+    <p>
+      <strong>Message identity is now a durable <code>(to, from, seq)</code></strong> — a
+      sender's messages stay ordered with no clock, and re-delivering the same one is a
+      benign no-op.
+    </p>
+
+    <p>
+      <strong>Reply obligations belong to the asker,</strong> so a silent recipient
+      surfaces as the asker's own overdue item instead of a hang.
+    </p>
+
+    <p>
+      <strong>The protocol's guarantees are now a small conformance suite</strong> — any
+      implementation that passes it is conformant, on files, a queue, or anything else.
+    </p>
+
+    <h2>What didn't change</h2>
+
+    <p>
+      <strong>The idea:</strong> an inbox, a Markdown message, the recipient reads it.
+    </p>
+
+    <p>
+      <strong>Still no server, no broker, no SDK.</strong> Still MIT. The reference
+      implementation is real code — a small CLI and a per-agent supervisor — but it's
+      separable from the protocol, and you can replace it with your own.
+    </p>
+
+    <p>
+      <strong>The line that started this:</strong> stop using humans as a message bus.
+    </p>
+
+    <h2>The lesson, if there is one</h2>
+
+    <p>
+      When you catch yourself adding machinery to fix a symptom, check whether the
+      disease is a decision you can just remove. Ours was. Most of the complexity we
+      deleted wasn't bad engineering — each piece was a reasonable fix for the piece
+      before it. The problem was the thing at the bottom of the stack, and no amount of
+      careful work further up could fix it. Pulling out one wrong assumption deleted more
+      code than months of careful additions ever added.
+    </p>
+
+    <blockquote class="blog-quote">
+      0.8 is the stable core we were looking for, not another churn.
+    </blockquote>
+
+    <p>
+      We went looking for it, found it, and pinned it with a conformance suite so it
+      stays put. From here, agentchute gets smaller and sharper — not bigger.
+    </p>
+
+  </div>
+</section>
+
+</article>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
+      ·
+      <a href="../">home</a>
+      ·
+      <a href="../blog/">blog</a>
+      ·
+      MIT license
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

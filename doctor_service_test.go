@@ -299,7 +299,7 @@ func TestGenerateServiceExportsControlAndLoopToWrapper(t *testing.T) {
 		`AGENTCHUTE_AGENT_ID=codex`,
 		`AGENTCHUTE_SHIM_BYPASS=1`,
 		`AGENTCHUTE_CONTROL_REPO="` + root + `"`,
-		`AGENTCHUTE_LOOP_DIR="` + filepath.Join(root, ".examplecorp", "loop") + `"`,
+		`AGENTCHUTE_LOOP_DIR="` + filepath.Join(root, ".agentchute", "loop") + `"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("generated scheduler missing %q:\n%s", want, got)

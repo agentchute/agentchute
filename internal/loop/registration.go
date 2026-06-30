@@ -54,28 +54,21 @@ const (
 )
 
 // Registration is the parsed live agent registration frontmatter plus body.
+//
+// Pull-only (simple-again Gate 6c): a registration publishes NO wake state.
+// Delivery is inbox-directory + atomic write; presence/liveness is the
+// recipient's own `.live` file (loop.IsLive). There is no wake_method/wake_target
+// and no reachability cache — every consumer reads `.live` for presence.
 type Registration struct {
 	AgentID      string
 	Vendor       string
 	ControlRepo  string
 	WorkingRepos []string
 	Host         string
-	WakeMethod   string
-	WakeTarget   string
 	LastSeen     time.Time
 	Status       Status
 	RestartAt    *time.Time
 	LastActive   *time.Time
-
-	// WI-E2 self-healing reachability cache (AGENTCHUTE.md §5.1). Advisory and
-	// backward-compatible: an absent ReachableAt means "no cached fact" and
-	// callers MUST fall back to the live reachability / session / poller checks
-	// (never default to unreachable). The cache is endpoint-bound — see
-	// IsReachable — so a wake-target change invalidates it.
-	ReachableAt        *time.Time // last time OUR own wake target was re-proven reachable.
-	ReachabilityMethod string     // wake_method this fact was proven for.
-	ReachabilityTarget string     // wake_target this fact was proven for (endpoint binding).
-	ReachabilityError  string     // diagnostic from the most recent failed re-prove (empty on success).
 
 	// WI-E3 launch provenance (AGENTCHUTE.md §5.1). Advisory and
 	// backward-compatible: records HOW this lane enrolled so verify views (E1)
@@ -105,48 +98,6 @@ const (
 	LaunchedByPresenced = "presenced"
 )
 
-// IsPokable reports whether senders can dispatch a poke for this registration.
-// Both wake_method and wake_target must be present; either empty means the
-// recipient is responsible for its own polling cadence.
-//
-// IsPokable is STRUCTURAL only (non-empty wake strings). It deliberately does
-// NOT consult the WI-E2 reachability cache (ReachableAt/IsReachable): pokability
-// is about whether a wake CAN be dispatched, reachability is the separate cached
-// fact of whether it currently SUCCEEDS.
-func (r *Registration) IsPokable() bool {
-	if r == nil {
-		return false
-	}
-	return strings.TrimSpace(r.WakeMethod) != "" && strings.TrimSpace(r.WakeTarget) != ""
-}
-
-// IsReachable reports whether this registration carries a VALID cached
-// reachability fact: ReachableAt is set, the cache is within ttl of now, AND the
-// cached endpoint still matches the current wake endpoint
-// (ReachabilityMethod==WakeMethod, ReachabilityTarget==WakeTarget). Any
-// wake-target/method change invalidates the cache (endpoint-bound, codex
-// guardrail).
-//
-// This is an ADVISORY fast-path. A false result (absent / expired / endpoint
-// changed — including every pre-upgrade registration with no ReachableAt) does
-// NOT mean "unreachable"; callers MUST fall back to a live reachability /
-// session / poller check. IsReachable never replaces inbox delivery or the
-// structural poke.
-func (r *Registration) IsReachable(now time.Time, ttl time.Duration) bool {
-	if r == nil || r.ReachableAt == nil || ttl <= 0 {
-		return false
-	}
-	if strings.TrimSpace(r.ReachabilityMethod) != strings.TrimSpace(r.WakeMethod) ||
-		strings.TrimSpace(r.ReachabilityTarget) != strings.TrimSpace(r.WakeTarget) {
-		return false
-	}
-	age := now.Sub(r.ReachableAt.UTC())
-	if age < 0 || age > ttl {
-		return false
-	}
-	return true
-}
-
 // ReadRegistration parses an agentchute live registration file.
 func ReadRegistration(path string) (*Registration, error) {
 	data, err := ReadFileLimit(path, MaxRegistrationBytes)
@@ -165,8 +116,6 @@ func ReadRegistration(path string) (*Registration, error) {
 		ControlRepo:  fields.scalar("control_repo"),
 		WorkingRepos: fields.list("working_repos"),
 		Host:         fields.scalar("host"),
-		WakeMethod:   fields.scalar("wake_method"),
-		WakeTarget:   fields.scalar("wake_target"),
 		Status:       Status(fields.scalar("status")),
 		Body:         body,
 	}
@@ -198,18 +147,6 @@ func ReadRegistration(path string) (*Registration, error) {
 		reg.LastActive = &parsed
 	}
 
-	// WI-E2 reachability cache (backward-compatible: absent fields = old behavior).
-	if reachableAt := fields.scalar("reachable_at"); reachableAt != "" {
-		parsed, err := parseTimestamp(reachableAt)
-		if err != nil {
-			return nil, fmt.Errorf("reachable_at: %w", err)
-		}
-		reg.ReachableAt = &parsed
-	}
-	reg.ReachabilityMethod = fields.scalar("reachability_method")
-	reg.ReachabilityTarget = fields.scalar("reachability_target")
-	reg.ReachabilityError = fields.scalar("reachability_error")
-
 	// WI-E3 launch provenance (backward-compatible: absent fields = old behavior).
 	reg.LaunchedBy = fields.scalar("launched_by")
 	reg.ShimName = fields.scalar("shim_name")
@@ -238,8 +175,8 @@ func WriteRegistration(path string, r *Registration) error {
 // os.IsExist) when the target already exists, preserving exclusive semantics —
 // but unlike an O_EXCL create followed by a separate write, the visible file is
 // never observed empty. That matters under the SessionStart race: a losing
-// racer that reads the just-created same-pane registration must see its full
-// wake_target to adopt it instead of suffixing.
+// racer that reads the just-created registration must see its full record
+// before deciding whether to adopt it or suffix to a fresh id.
 func WriteRegistrationExclusive(path string, r *Registration) error {
 	if err := r.Validate(); err != nil {
 		return err
@@ -291,7 +228,18 @@ func UpdateLastSeen(cfg *Config, agentID string, t time.Time) error {
 			return err
 		}
 		reg.LastSeen = t.UTC()
-		return WriteRegistration(path, reg)
+		if err := WriteRegistration(path, reg); err != nil {
+			return err
+		}
+		// GATE 3: `.live` is the SOURCE of presence/liveness. Every heartbeat
+		// site that refreshes registration last_seen (the runner tick,
+		// check.go, send.go, status.go) calls UpdateLastSeen, so republishing
+		// `.live` here gives all of them fresh presence with no per-call-site
+		// edits. busy=false: busy is advisory and is set only by serve (Gate 6).
+		// WriteLive writes a separate file atomically and does NOT take
+		// withAgentLock, so this nested call is safe (withAgentLock is
+		// non-reentrant).
+		return WriteLive(cfg, agentID, false)
 	})
 }
 
@@ -338,25 +286,6 @@ func (r *Registration) Validate() error {
 	}
 	if !validStatus(r.Status) {
 		return fmt.Errorf("status must be one of %q, %q, %q", StatusActive, StatusExhausted, StatusOffline)
-	}
-	// AGENTCHUTE.md §5: wake_target is required when wake_method is set.
-	method := strings.TrimSpace(r.WakeMethod)
-	target := strings.TrimSpace(r.WakeTarget)
-	if method != "" && target == "" {
-		return fmt.Errorf("wake_target is required when wake_method=%q is set", method)
-	}
-	if method == "" && target != "" {
-		return fmt.Errorf("wake_target set without wake_method")
-	}
-	// Shape-validate the wake_target so a hand-written peer registration cannot
-	// smuggle an injection-shaped target (foreign pane, leading-dash flag
-	// confusion, newline) past the parser into a poke. The pure validator runs
-	// here; recipient-binding for unix: sockets is enforced separately in the
-	// poke path (it needs Config + recipientID).
-	if method != "" {
-		if err := ValidateWakeTarget(method, target); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -471,8 +400,6 @@ func formatRegistration(r *Registration) string {
 	if r.Host != "" {
 		writeScalar(&b, "host", r.Host)
 	}
-	writeScalar(&b, "wake_method", r.WakeMethod)
-	writeScalar(&b, "wake_target", r.WakeTarget)
 	writeScalar(&b, "last_seen", formatTimestamp(r.LastSeen))
 	writeScalar(&b, "status", string(status))
 	if r.RestartAt != nil {
@@ -480,20 +407,6 @@ func formatRegistration(r *Registration) string {
 	}
 	if r.LastActive != nil {
 		writeScalar(&b, "last_active", formatTimestamp(*r.LastActive))
-	}
-	// WI-E2 reachability cache: only emitted when populated, so a plain
-	// registration serializes byte-identically to the pre-upgrade format.
-	if r.ReachableAt != nil {
-		writeScalar(&b, "reachable_at", formatTimestamp(*r.ReachableAt))
-	}
-	if strings.TrimSpace(r.ReachabilityMethod) != "" {
-		writeScalar(&b, "reachability_method", r.ReachabilityMethod)
-	}
-	if strings.TrimSpace(r.ReachabilityTarget) != "" {
-		writeScalar(&b, "reachability_target", r.ReachabilityTarget)
-	}
-	if strings.TrimSpace(r.ReachabilityError) != "" {
-		writeScalar(&b, "reachability_error", r.ReachabilityError)
 	}
 	// WI-E3 launch provenance: only emitted when populated, so a plain
 	// registration serializes byte-identically to the pre-upgrade format.

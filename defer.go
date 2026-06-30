@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -149,17 +148,19 @@ func cmdDefer(args []string) error {
 	ackContent := loop.ComposeMessage(now, agentID, pendingEntry.From, "deferred-reply", "info", pendingEntry.MessageID, ackBody)
 
 	sendWarning := ""
-	senderInbox := cfg.AgentInboxDir(pendingEntry.From)
-	ackMsg, err := loop.WriteInboxMessage(senderInbox, now, agentID, ackContent)
+	// Gate 4: land the ack under the canonical (to,from,seq) identity. Empty
+	// idempotencyKey matches send's transitional contract (at-most-once on a
+	// sender crash). serveToken rides AGENTCHUTE_SERVE_TOKEN (Gate 6b) so the ack
+	// write is fenced under the serve lease just like a normal send; empty env =>
+	// unfenced. A missing sender inbox surfaces as os.ErrNotExist exactly as the
+	// legacy writer did.
+	ackID, err := loop.SendSeqMessage(cfg, agentID, pendingEntry.From, ackContent, "", os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
+	ackFilename := ""
 	switch {
 	case err == nil:
-		// Poke the sender if pokable; failures are non-fatal.
-		regPath := cfg.AgentRegistrationPath(pendingEntry.From)
-		if reg, regErr := loop.ReadRegistration(regPath); regErr == nil && reg.IsPokable() {
-			if pokeErr := loop.PokeRegistration(context.Background(), cfg, reg); pokeErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: wake poke to %s failed (%v); ack still delivered\n", pendingEntry.From, pokeErr)
-			}
-		}
+		ackFilename = ackID.Filename()
+		// Simple-again Gate 6a (pull-only): the ack is delivered by the file write
+		// alone; the deferred sender picks it up on its own poll. No wake poke.
 	case os.IsNotExist(err):
 		sendWarning = fmt.Sprintf("warning: sender %q has no inbox directory (unregistered?); deferral recorded locally, ack not delivered", pendingEntry.From)
 	default:
@@ -173,8 +174,8 @@ func cmdDefer(args []string) error {
 	if deferredUntil != "" {
 		fmt.Printf("  until:  %s\n", deferredUntil)
 	}
-	if ackMsg.Filename != "" {
-		fmt.Printf("  ack:    %s -> %s\n", ackMsg.Filename, pendingEntry.From)
+	if ackFilename != "" {
+		fmt.Printf("  ack:    %s -> %s\n", ackFilename, pendingEntry.From)
 	}
 	if sendWarning != "" {
 		fmt.Fprintln(os.Stderr, sendWarning)

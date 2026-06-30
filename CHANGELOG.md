@@ -4,6 +4,49 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.8.0 (2026-06-30) — "simple again" + protocol-v2
+
+A correctness-driven redesign to **pull-only** coordination. Senders only ever write files; nothing pokes a recipient. ~4,800 net lines of code removed (+6,640 / −11,422 across the redesign). The protocol's invariants now ship as an executable conformance suite. The redesign was staged across eight compile-green gates (g0–g7); the release also folds in clean wipe-and-reinstall, prompting-profile overlays, and a conformance fix.
+
+**Pull-only coordination (the headline)**
+- **No wake, no push.** Deleted the entire push apparatus: the watchdog, cooperative/sender-side wake, the tmux/herdr wake adapters, the runner receive-socket, the reachability cache, cross-agent liveness tracking, and the `wake_method`/`wake_target`/`reachable_at`/`reachability_*`/`wake_endpoints` registration fields. A sender's only job is durable delivery.
+- **The runner is the wake path.** A loopless wrapper runs under `agentchute run` (PTY supervisor): it polls the agent's OWN inbox and injects `[agentchute:run] check inbox` into the child. `setup --wake` installs the runner path only (`tmux`/`herdr` rejected; `all`/`both` are deprecated aliases for `runner`).
+
+**Identity & ordering (protocol-v2)**
+- **Durable per-`(sender,recipient)` `seq` replaces the random nonce as identity + sort key.** Canonical filename `from-<from>_seq-<020d>.md`; `to` is encoded by inbox location. The committed identity is `(to, from, seq)` — not a sender-asserted `message_id`. Write-ahead durable, so a crash gaps the counter, never reuses it.
+- **Exact per-sender FIFO with no clock** (plain lexicographic sort); cross-sender order is advisory arrival order. Fixes the live O1 violation where two same-microsecond messages sorted randomly.
+- **One-release dual-read drain.** Inbox listing still reads the legacy `<ts>_from-<s>_msg-<nonce>.md` format; `gate`/`doctor` surface a non-blocking gauge of remaining legacy-named messages.
+
+**Delivery & consume**
+- **Atomic `link()`-no-clobber** delivery; `EEXIST` = "this exact `(to,from,seq)` already landed" (a crash-uncertain resend is a no-op, NFS-safe).
+- **Act-then-archive, two-phase consume (at-least-once).** `check` CLAIMS (moves `inbox/<id>/<name>` → `inbox/<id>/.claimed/`) and displays, re-displaying any uncommitted residue with a `REDELIVERED` banner; `ack` COMMITS (archives). A crash between them re-delivers; handlers must be idempotent. The Stop hook runs `ack` then the read-only finish gate. (Replaces the old archive-on-display, which was at-most-once for the agent's work.)
+
+**Presence & obligations**
+- **`.live` presence with freshness** (`<loop>/live/<id>.live`, written every heartbeat): fresh ⇒ alive, stale/absent ⇒ not-alive. `busy` is advisory and never affects aliveness (avoids false-dead). `gate`/`doctor`/`status` read `.live`, not registration `last_seen`.
+- **Asker-owned `.owed` reply obligations.** `send --ask` records "I am owed a reply to `(to,from,seq)` by `<T>`" in the asker's own ledger; a reply with the matching `in_reply_to` clears it; the gate surfaces expired obligations as a non-blocking dead-recipient warning. Wire `reply_required` is now an advisory hint.
+
+**Id-uniqueness**
+- **Serve lease + fencing token.** The runner acquires a `state/<id>/serve.claim` lease (fails closed if a fresh claim is held) with a `serve_token` epoch verified on every heartbeat and every `seq` write, so a reclaimed zombie/paused holder is fenced and cannot become a dup-writer.
+
+**Registration & namespace**
+- Registration drops to a small no-wake record (`id`, `vendor`, `host`, `last_seen`, `status`, advisory provenance) plus the inbox dir + `.live`. Namespace is fixed at `.agentchute/loop` (vendor-namespacing and the legacy `migrate.go`/`.rehumanlabs` path removed).
+
+**Conformance suite**
+- `conformance/` encodes the seven invariants (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`) as a Go test suite driven against two bindings (private inbox dir + shared log). Any substrate that passes is conformant; the suite is the executable spec.
+- The inbox binding now frees its dedup key at consume-commit, so a post-consume resend re-lands (matching real filesystem semantics) instead of being silently swallowed; regression test added.
+
+**Clean wipe & reinstall**
+- **`setup --reset --wipe-state`** — a guarded destructive wipe of runtime loop state (inbox/archive/`.claimed`/malformed/live/scratch/state contents), preserving the scaffold + `setup.json`. Requires both flags, refuses anything but the canonical loop dir, refuses a live bus, and is symlink-safe; never `RemoveAll`s the loop dir.
+- **`install.sh --fresh`** (and `AGENTCHUTE_FRESH=1`) — wipe-then-install for a clean upgrade; non-TTY runs fail closed before downloading unless `--yes` / `AGENTCHUTE_YES=1`.
+
+**Prompting profiles (presentation overlays, not a wire schema)**
+- Per-vendor prompting dialects are documented as **presentation overlays** over the one canonical message contract — never a per-vendor wire schema. `AGENTS.md` R8 codifies the anti-schema rule (an overlay never adds, drops, or renames the required sections); CLAUDE/CODEX/GEMINI/GROK.md carry per-wrapper presentation guidance under the same guard.
+
+**Compatibility (one release)**
+- Dual-read of legacy nonce filenames; `message_id` still emitted as a compat frontmatter field; the recipient-side pending-reply ledger remains the blocking authority at the finish gate (the `.owed` flip runs alongside as a non-blocking signal).
+
+**Deferred follow-ups** (intentionally not in this change): rename the `run` verb to `serve`; cut `message_id` emission; remove the legacy nonce reader once every inbox reports zero; make `.owed` the sole reply-obligation authority (drop the recipient ledger block); finish residual setup/socket-helper cleanup.
+
 ## v0.7.0 (2026-06-29)
 
 Enrollment-reliability + communication-quality release. Closes the gap where an agent could be "registered + active" yet unreachable, makes the wake path truthful under model/transport changes, and adds the agent-to-agent communication rules that keep recipients from mis-executing tasks written with a sender's wrong assumptions. All work was four-way reviewed (claude/codex/grok/gemini) and gated.

@@ -15,8 +15,8 @@ func newLedgerTestConfig(t *testing.T) *Config {
 	root := t.TempDir()
 	return &Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 }
 
@@ -27,7 +27,7 @@ func newPendingEntry(messageID, from, to, task string) PendingReplyEntry {
 		To:               to,
 		Task:             task,
 		OriginalFilename: messageID + "_from-" + from + "_msg-aaaa.md",
-		ArchivePath:      ".examplecorp/loop/archive/example.md",
+		ArchivePath:      ".agentchute/loop/archive/example.md",
 	}
 }
 
@@ -331,7 +331,7 @@ func TestPendingLedgerJSONShape(t *testing.T) {
 	now := time.Date(2026, 5, 19, 17, 54, 30, 0, time.UTC)
 	entry := newPendingEntry("2026-05-19T17:53:59.561894Z", "codex", "claude-code", "R1 protocol improvements")
 	entry.OriginalFilename = "2026-05-19T17-53-59-561894Z_from-codex_msg-8cbd.md"
-	entry.ArchivePath = ".examplecorp/loop/archive/2026-05-19T17-54-30Z_to-claude-code_2026-05-19T17-53-59-561894Z_from-codex_msg-8cbd.md"
+	entry.ArchivePath = ".agentchute/loop/archive/2026-05-19T17-54-30Z_to-claude-code_2026-05-19T17-53-59-561894Z_from-codex_msg-8cbd.md"
 
 	if err := RecordPendingReply(cfg, "claude-code", entry, now); err != nil {
 		t.Fatal(err)

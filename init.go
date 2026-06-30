@@ -55,7 +55,7 @@ var enrollmentWrapperTemplate string
 var enrollmentAgentsTemplate string
 
 // gitignoreStanzaTemplate is appended to .gitignore in a git worktree. NAMESPACE
-// is substituted with the user's --namespace (or "agentchute" by default).
+// is substituted with the fixed "agentchute" loop namespace.
 const gitignoreStanzaTemplate = `# agentchute-gitignore v2 begin
 .{{NAMESPACE}}/loop/agents/*.md
 !.{{NAMESPACE}}/loop/agents/*.example.md
@@ -108,9 +108,7 @@ func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var namespace string
 	var dryRun, yes bool
-	fs.StringVar(&namespace, "namespace", defaultNamespace, "loop dotdir namespace (becomes `.<namespace>/loop/`)")
 	fs.BoolVar(&dryRun, "dry-run", false, "print plan and exit without making changes")
 	fs.BoolVar(&yes, "yes", false, "skip the confirmation prompt and apply the plan")
 
@@ -120,16 +118,15 @@ func cmdInit(args []string) error {
 	if fs.NArg() != 0 {
 		return initUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
-	if err := loop.ValidateAgentID(namespace); err != nil {
-		return fmt.Errorf("--namespace: %w", err)
-	}
 
 	root, inGit, err := resolveInitRoot()
 	if err != nil {
 		return fmt.Errorf("resolve init root: %w", err)
 	}
 
-	plan, err := computeInitPlan(root, namespace, inGit)
+	// Vendor namespacing was removed (simple-again): the loop dotdir is always
+	// the fixed .agentchute/loop. No --namespace override.
+	plan, err := computeInitPlan(root, defaultNamespace, inGit)
 	if err != nil {
 		return err
 	}
@@ -178,7 +175,7 @@ func cmdInit(args []string) error {
 }
 
 func initUsage(err error) error {
-	return fmt.Errorf("%w\nusage: agentchute init [--namespace <slug>] [--dry-run] [--yes]", err)
+	return fmt.Errorf("%w\nusage: agentchute init [--dry-run] [--yes]", err)
 }
 
 // resolveInitRoot prefers `git rev-parse --show-toplevel` when inside a git
@@ -219,22 +216,6 @@ func computeInitPlan(root, namespace string, inGit bool) (initPlan, error) {
 		Namespace:        namespace,
 		InGit:            inGit,
 		EnrollmentBlocks: make(map[string]string),
-	}
-
-	// 0. Legacy namespace migration (.rehumanlabs -> canonical). Must precede the
-	// ambiguity guard: a stranded legacy loop would otherwise trip the
-	// "multiple loop namespaces" refusal. Safe cases become an apply-time action
-	// (shown in dry-run); the unsafe both-live case errors here.
-	migrationAction, migratingRel, err := planLegacyMigration(root, namespace)
-	if err != nil {
-		return plan, err
-	}
-	if migrationAction != nil {
-		plan.Actions = append(plan.Actions, *migrationAction)
-	}
-
-	if err := guardInitLoopNamespace(root, namespace, migratingRel); err != nil {
-		return plan, err
 	}
 
 	// 1. AGENTCHUTE.md
@@ -292,75 +273,6 @@ func computeInitPlan(root, namespace string, inGit bool) (initPlan, error) {
 	}
 
 	return plan, nil
-}
-
-// guardInitLoopNamespace refuses to initialize when more than one loop namespace
-// would be discoverable (discovery would be ambiguous). ignoreRel, when non-empty,
-// is a loop rel path that a planned migration will remove before apply, so it is
-// not counted as a conflict.
-func guardInitLoopNamespace(root, namespace, ignoreRel string) error {
-	existing, err := findInitLoopDirs(root)
-	if err != nil {
-		return err
-	}
-	target := filepath.ToSlash(filepath.Join("."+namespace, "loop"))
-	targetExists := false
-	var conflicts []string
-	for _, rel := range existing {
-		if rel == target {
-			targetExists = true
-			continue
-		}
-		if ignoreRel != "" && rel == ignoreRel {
-			continue // a planned migration removes this loop before apply
-		}
-		conflicts = append(conflicts, rel)
-	}
-	if len(conflicts) == 0 {
-		return nil
-	}
-
-	if targetExists {
-		all := append([]string{target}, conflicts...)
-		sort.Strings(all)
-		return fmt.Errorf("multiple agentchute loop namespaces found under %q: %s; refusing to initialize %s while discovery is ambiguous. Consolidate to one loop namespace, or set AGENTCHUTE_LOOP_DIR/pass --loop-dir for commands until then", root, strings.Join(all, ", "), target)
-	}
-	if len(conflicts) == 1 {
-		existingNamespace := strings.TrimPrefix(strings.TrimSuffix(conflicts[0], "/loop"), ".")
-		return fmt.Errorf("existing agentchute loop namespace %s found under %q; refusing to initialize %s because multiple loop dirs make discovery ambiguous. Run `agentchute init --namespace %s` to manage the existing pool, or migrate/remove %s before initializing %s", conflicts[0], root, target, existingNamespace, conflicts[0], target)
-	}
-	return fmt.Errorf("existing agentchute loop namespaces found under %q: %s; refusing to initialize %s because multiple loop dirs make discovery ambiguous. Consolidate to one loop namespace or pass --namespace for the namespace you are keeping", root, strings.Join(conflicts, ", "), target)
-}
-
-func findInitLoopDirs(root string) ([]string, error) {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil, err
-	}
-
-	var loopDirs []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasPrefix(name, ".") || name == "." || name == ".." {
-			continue
-		}
-		loopDir := filepath.Join(root, name, "loop")
-		info, err := os.Stat(loopDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("%s: %w", loopDir, err)
-		}
-		if info.IsDir() {
-			loopDirs = append(loopDirs, filepath.ToSlash(filepath.Join(name, "loop")))
-		}
-	}
-	sort.Strings(loopDirs)
-	return loopDirs, nil
 }
 
 // rejectSymlinkAncestor verifies that path, if it exists, is a real directory

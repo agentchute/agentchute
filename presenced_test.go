@@ -10,34 +10,25 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// stubPresenceWakeReachable forces the daemon's wake-reachability seams to a
-// deterministic result so a unit test never dials a real herdr/runner socket.
-func stubPresenceWakeReachable(t *testing.T, herdr func(string) bool, runner func(string, time.Duration) bool) {
-	t.Helper()
-	oh, or := presenceHerdrReachable, presenceRunnerReachable
-	if herdr != nil {
-		presenceHerdrReachable = herdr
-	}
-	if runner != nil {
-		presenceRunnerReachable = runner
-	}
-	t.Cleanup(func() { presenceHerdrReachable, presenceRunnerReachable = oh, or })
-}
+// Pull-only (simple-again Gate 6c): the presence daemon no longer resolves or
+// verifies a reachable wake endpoint (there is no wake state to write), so the
+// stubPresenceWakeReachable seam and the REPAIR path it exercised are gone. A
+// high-confidence candidate is now just an in-pool presence whose id maps to one
+// known vendor; the daemon CREATEs a plain no-wake registration for it.
 
-// A high-confidence herdr candidate (derivable vendor + reachable wake) is
-// auto-enrolled in one pass; an ambiguous candidate (no resolvable wake) is
-// reported read-only and never written.
-func TestPresenced_RegistersOnlyHighConfidenceMatch(t *testing.T) {
+// A herdr presence whose id maps to a known vendor is auto-enrolled in one pass;
+// a presence whose name yields no derivable vendor is ambiguous and reported
+// read-only, never written.
+func TestPresenced_RegistersOnlyDerivableVendorMatch(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
 	stubPresenceListers(t)
 
 	listHerdrAgents = func() []herdrPresenceEntry {
 		return []herdrPresenceEntry{
-			{Name: "claude-code-foo", Cwd: root}, // vendor derivable + reachable -> register
-			{Name: "gemini-cli-bar", Cwd: root},  // vendor derivable but UNreachable -> report only
+			{Name: "claude-code-foo", Cwd: root}, // vendor derivable -> register
+			{Name: "mystery-agent", Cwd: root},   // no derivable vendor -> report only
 		}
 	}
-	stubPresenceWakeReachable(t, func(name string) bool { return name == "claude-code-foo" }, nil)
 
 	reports, err := presencedPass(cfg, false, time.Now().UTC())
 	if err != nil {
@@ -49,7 +40,7 @@ func TestPresenced_RegistersOnlyHighConfidenceMatch(t *testing.T) {
 		if r.Wrote {
 			wrote++
 			if r.AgentID != "claude-code-foo" {
-				t.Fatalf("unexpected write for %q; only the high-confidence claude-code-foo may be written", r.AgentID)
+				t.Fatalf("unexpected write for %q; only the derivable-vendor claude-code-foo may be written", r.AgentID)
 			}
 		}
 	}
@@ -58,9 +49,6 @@ func TestPresenced_RegistersOnlyHighConfidenceMatch(t *testing.T) {
 	}
 
 	reg := readExampleReg(t, root, "claude-code-foo")
-	if reg.WakeMethod != "herdr" || reg.WakeTarget != "claude-code-foo" {
-		t.Fatalf("registered wake = %q %q, want herdr claude-code-foo", reg.WakeMethod, reg.WakeTarget)
-	}
 	if reg.Vendor != "anthropic" {
 		t.Fatalf("registered vendor = %q, want anthropic", reg.Vendor)
 	}
@@ -68,9 +56,9 @@ func TestPresenced_RegistersOnlyHighConfidenceMatch(t *testing.T) {
 		t.Fatalf("launched_by = %q, want %q (daemon-discovered provenance)", reg.LaunchedBy, loop.LaunchedByPresenced)
 	}
 
-	// The ambiguous (unreachable) candidate must NOT have been registered.
-	if _, err := os.Stat(cfg.AgentRegistrationPath("gemini-cli-bar")); !os.IsNotExist(err) {
-		t.Fatalf("ambiguous candidate gemini-cli-bar should not be registered (stat err=%v)", err)
+	// The ambiguous (no-vendor) candidate must NOT have been registered.
+	if _, err := os.Stat(cfg.AgentRegistrationPath("mystery-agent")); !os.IsNotExist(err) {
+		t.Fatalf("ambiguous candidate mystery-agent should not be registered (stat err=%v)", err)
 	}
 }
 
@@ -86,10 +74,6 @@ func TestPresenced_AmbiguousDuplicateDerivedIdNotWritten(t *testing.T) {
 	listRunnerSockets = func(_ *loop.Config) []runnerPresenceEntry {
 		return []runnerPresenceEntry{{AgentID: "claude-code-foo", Cwd: root}}
 	}
-	stubPresenceWakeReachable(t,
-		func(string) bool { return true },
-		func(string, time.Duration) bool { return true },
-	)
 
 	reports, err := presencedPass(cfg, false, time.Now().UTC())
 	if err != nil {
@@ -114,7 +98,6 @@ func TestPresenced_DryRunNeverWrites(t *testing.T) {
 	listHerdrAgents = func() []herdrPresenceEntry {
 		return []herdrPresenceEntry{{Name: "claude-code-foo", Cwd: root}}
 	}
-	stubPresenceWakeReachable(t, func(string) bool { return true }, nil)
 
 	before := snapshotDir(t, cfg.AgentsDir())
 
@@ -190,53 +173,47 @@ func TestPresenced_DefaultOffNotAutoStarted(t *testing.T) {
 }
 
 // The identity-mis-attribution guardrail: an existing registration for the
-// derived id under a DIFFERENT vendor/identity is never overwritten.
-func TestPresenced_DoesNotClobberHealthyDifferentIdentity(t *testing.T) {
+// derived id under a DIFFERENT vendor/identity is never overwritten; a same-vendor
+// existing registration is already enrolled and left untouched.
+func TestPresenced_DoesNotClobberExistingIdentities(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
 
-	healthy := &loop.Registration{
+	existing := &loop.Registration{
 		AgentID:     "claude-code-foo",
 		Vendor:      "anthropic",
 		ControlRepo: root,
-		WakeMethod:  "tmux",
-		WakeTarget:  "%5",
 		LastSeen:    time.Now().UTC(),
 		Status:      loop.StatusActive,
 	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code-foo"), healthy); err != nil {
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code-foo"), existing); err != nil {
 		t.Fatal(err)
 	}
 	before := snapshotDir(t, cfg.AgentsDir())
 
 	// A candidate that derives the SAME id but a DIFFERENT vendor must be refused.
 	conflicting := presenceCandidate{
-		AgentID:    "claude-code-foo",
-		Vendor:     "openai",
-		WakeMethod: loop.RunnerWakeMethod,
-		WakeTarget: "unix:/tmp/x.sock",
-		Cwd:        root,
+		AgentID: "claude-code-foo",
+		Vendor:  "openai",
+		Cwd:     root,
 	}
 	action, reason := decidePresenceAction(cfg, conflicting)
 	if action != actionSkipConflict {
 		t.Fatalf("different-vendor existing reg: action = %v (%s), want actionSkipConflict", action, reason)
 	}
 
-	// A same-vendor candidate against a HEALTHY (already-pokable) reg is left
-	// untouched too — repair is reserved for a stale reg with no wake.
+	// A same-vendor candidate against an existing reg is already enrolled -> skip.
 	sameVendor := presenceCandidate{
-		AgentID:    "claude-code-foo",
-		Vendor:     "anthropic",
-		WakeMethod: "herdr",
-		WakeTarget: "claude-code-foo",
-		Cwd:        root,
+		AgentID: "claude-code-foo",
+		Vendor:  "anthropic",
+		Cwd:     root,
 	}
 	if action, reason := decidePresenceAction(cfg, sameVendor); action != actionSkipHealthy {
-		t.Fatalf("same-vendor healthy reg: action = %v (%s), want actionSkipHealthy", action, reason)
+		t.Fatalf("same-vendor existing reg: action = %v (%s), want actionSkipHealthy", action, reason)
 	}
 
 	after := snapshotDir(t, cfg.AgentsDir())
 	if before["claude-code-foo.md"] != after["claude-code-foo.md"] {
-		t.Fatalf("healthy registration was modified by the daemon decision path")
+		t.Fatalf("existing registration was modified by the daemon decision path")
 	}
 }
 
@@ -251,11 +228,9 @@ func TestPresenced_DecideWriteAtomicUnderLock(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
 
 	cand := presenceCandidate{
-		AgentID:    "claude-code-foo",
-		Vendor:     "anthropic",
-		WakeMethod: "herdr",
-		WakeTarget: "claude-code-foo",
-		Cwd:        root,
+		AgentID: "claude-code-foo",
+		Vendor:  "anthropic",
+		Cwd:     root,
 	}
 
 	// A concurrent create of a DIFFERENT-identity registration that becomes
@@ -264,8 +239,6 @@ func TestPresenced_DecideWriteAtomicUnderLock(t *testing.T) {
 		AgentID:     "claude-code-foo",
 		Vendor:      "openai",
 		ControlRepo: root,
-		WakeMethod:  "tmux",
-		WakeTarget:  "%9",
 		LastSeen:    time.Now().UTC(),
 		Status:      loop.StatusActive,
 	}
@@ -326,101 +299,19 @@ func TestPresenced_DecideWriteAtomicUnderLock(t *testing.T) {
 	}
 
 	got := readExampleReg(t, root, "claude-code-foo")
-	if got.Vendor != "openai" || got.WakeMethod != "tmux" || got.WakeTarget != "%9" {
-		t.Fatalf("conflicting reg was clobbered: vendor=%q wake=%q %q (want openai tmux %%9)", got.Vendor, got.WakeMethod, got.WakeTarget)
+	if got.Vendor != "openai" {
+		t.Fatalf("conflicting reg was clobbered: vendor=%q (want openai)", got.Vendor)
 	}
 }
 
-// BLOCKER 1 (codex WI-E4 gate, path A): the repair path must be reachable from a
-// FULL presencedPass, not just a direct decidePresenceAction call. A same-vendor
-// registration with NO wake (non-pokable) for which a high-confidence reachable
-// wake currently exists is repaired in one pass; a HEALTHY (already-pokable) reg
-// in the same pass is left byte-identical.
-func TestPresenced_PassLevelRepairsStaleSameVendorNoWake(t *testing.T) {
+// The create scan excludes already-registered ids, so a registered presence under
+// a DIFFERENT vendor than its id-derived vendor is never surfaced or written.
+func TestPresenced_ExcludesRegisteredDifferentVendor(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
 	stubPresenceListers(t)
 
-	// A same-vendor reg with NO wake -> repair candidate.
-	stale := &loop.Registration{
-		AgentID:     "claude-code-foo",
-		Vendor:      "anthropic",
-		ControlRepo: root,
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code-foo"), stale); err != nil {
-		t.Fatal(err)
-	}
-	// A HEALTHY same-vendor reg that already declares a wake -> must be untouched.
-	healthy := &loop.Registration{
-		AgentID:     "claude-code-bar",
-		Vendor:      "anthropic",
-		ControlRepo: root,
-		WakeMethod:  "herdr",
-		WakeTarget:  "claude-code-bar",
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code-bar"), healthy); err != nil {
-		t.Fatal(err)
-	}
-	healthyBefore := snapshotDir(t, cfg.AgentsDir())["claude-code-bar.md"]
-
-	// Both ids have a live, reachable herdr presence in this pool. The create
-	// scan excludes both (already registered); only the repair enumeration can
-	// surface the no-wake one.
-	listHerdrAgents = func() []herdrPresenceEntry {
-		return []herdrPresenceEntry{
-			{Name: "claude-code-foo", Cwd: root},
-			{Name: "claude-code-bar", Cwd: root},
-		}
-	}
-	stubPresenceWakeReachable(t, func(string) bool { return true }, nil)
-
-	reports, err := presencedPass(cfg, false, time.Now().UTC())
-	if err != nil {
-		t.Fatalf("presencedPass: %v", err)
-	}
-
-	wroteFoo := false
-	for _, r := range reports {
-		if r.Wrote {
-			if r.AgentID != "claude-code-foo" {
-				t.Fatalf("unexpected write for %q; only the no-wake claude-code-foo may be repaired", r.AgentID)
-			}
-			wroteFoo = true
-		}
-	}
-	if !wroteFoo {
-		t.Fatalf("expected pass-level repair of claude-code-foo: %+v", reports)
-	}
-
-	repaired := readExampleReg(t, root, "claude-code-foo")
-	if repaired.WakeMethod != "herdr" || repaired.WakeTarget != "claude-code-foo" {
-		t.Fatalf("repaired wake = %q %q, want herdr claude-code-foo", repaired.WakeMethod, repaired.WakeTarget)
-	}
-	if repaired.LaunchedBy != loop.LaunchedByPresenced {
-		t.Fatalf("repaired launched_by = %q, want %q", repaired.LaunchedBy, loop.LaunchedByPresenced)
-	}
-	if repaired.Vendor != "anthropic" {
-		t.Fatalf("repaired vendor = %q, want anthropic (same identity preserved)", repaired.Vendor)
-	}
-
-	healthyAfter := snapshotDir(t, cfg.AgentsDir())["claude-code-bar.md"]
-	if healthyBefore != healthyAfter {
-		t.Fatalf("healthy reg claude-code-bar was modified by the repair pass")
-	}
-}
-
-// The pass-level repair enumeration must still honor the identity guard: a
-// no-wake reg under a DIFFERENT vendor than the derived candidate is reported,
-// never repaired/clobbered.
-func TestPresenced_PassLevelRepairSkipsDifferentVendorNoWake(t *testing.T) {
-	cfg, root := presencePoolCfg(t)
-	stubPresenceListers(t)
-
-	// A no-wake reg whose stored vendor (openai) disagrees with the id-derived
-	// vendor (google) — a different identity squatting the derived id.
+	// A reg whose stored vendor (openai) disagrees with the id-derived vendor
+	// (google) — a different identity squatting the derived id.
 	mismatch := &loop.Registration{
 		AgentID:     "gemini-cli-zzz",
 		Vendor:      "openai",
@@ -436,7 +327,6 @@ func TestPresenced_PassLevelRepairSkipsDifferentVendorNoWake(t *testing.T) {
 	listHerdrAgents = func() []herdrPresenceEntry {
 		return []herdrPresenceEntry{{Name: "gemini-cli-zzz", Cwd: root}}
 	}
-	stubPresenceWakeReachable(t, func(string) bool { return true }, nil)
 
 	reports, err := presencedPass(cfg, false, time.Now().UTC())
 	if err != nil {
@@ -444,44 +334,39 @@ func TestPresenced_PassLevelRepairSkipsDifferentVendorNoWake(t *testing.T) {
 	}
 	for _, r := range reports {
 		if r.Wrote {
-			t.Fatalf("different-vendor no-wake reg must never be written: %+v", reports)
+			t.Fatalf("an already-registered id must never be written: %+v", reports)
 		}
 	}
 	after := snapshotDir(t, cfg.AgentsDir())["gemini-cli-zzz.md"]
 	if before != after {
-		t.Fatalf("different-vendor reg gemini-cli-zzz was modified")
+		t.Fatalf("registered reg gemini-cli-zzz was modified")
 	}
 }
 
-// A stale registration with NO wake (non-pokable) under the SAME vendor is
-// repairable: the daemon refreshes its wake target.
-func TestPresenced_RepairsStaleSameVendorReg(t *testing.T) {
+// A same-vendor existing registration is already enrolled; the daemon skips it
+// (pull-only has no wake to repair).
+func TestPresenced_SkipsExistingSameVendor(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
 	stubPresenceListers(t)
 
-	// Seed a non-pokable reg under a DIFFERENT id so the herdr scan still
-	// surfaces the candidate (the scan excludes already-registered ids).
-	stale := &loop.Registration{
+	existing := &loop.Registration{
 		AgentID:     "claude-code-foo",
 		Vendor:      "anthropic",
 		ControlRepo: root,
 		LastSeen:    time.Now().UTC(),
 		Status:      loop.StatusActive,
-		// no wake_method/wake_target -> not pokable -> repair candidate
 	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code-foo"), stale); err != nil {
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code-foo"), existing); err != nil {
 		t.Fatal(err)
 	}
 
 	cand := presenceCandidate{
-		AgentID:    "claude-code-foo",
-		Vendor:     "anthropic",
-		WakeMethod: "herdr",
-		WakeTarget: "claude-code-foo",
-		Cwd:        root,
+		AgentID: "claude-code-foo",
+		Vendor:  "anthropic",
+		Cwd:     root,
 	}
 	action, reason := decidePresenceAction(cfg, cand)
-	if action != actionRepair {
-		t.Fatalf("stale non-pokable same-vendor reg: action = %v (%s), want actionRepair", action, reason)
+	if action != actionSkipHealthy {
+		t.Fatalf("same-vendor existing reg: action = %v (%s), want actionSkipHealthy", action, reason)
 	}
 }

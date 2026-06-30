@@ -2,8 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,49 +12,13 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-func TestRunInjectsPromptOnSocketWake(t *testing.T) {
-	root := setupShortRunFixture(t)
-	script := filepath.Join(root, "fake-wrapper.sh")
-	mustWrite(t, script, []byte("#!/bin/sh\nprintf 'READY\\n'\nIFS= read line\nprintf 'GOT:%s\\n' \"$line\"\n"))
-	if err := os.Chmod(script, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	errCh := make(chan error, 1)
-	withCwd(t, root, func() {
-		go func() {
-			errCh <- cmdRun([]string{
-				"--as", "runner-test",
-				"--vendor", "test",
-				"--control-repo", root,
-				"--loop-dir", filepath.Join(root, ".examplecorp", "loop"),
-				"--interval", "5",
-				"--idle-grace", "100ms",
-				"--prompt", "check inbox",
-				"--", script,
-			})
-		}()
-
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		target := loop.RunnerWakeTarget(cfg.RunnerSocketPath("runner-test"))
-		waitForRunnerSocket(t, target, errCh)
-		if err := loop.PokeWakeTarget(loop.RunnerWakeMethod, target); err != nil {
-			t.Fatalf("poke runner: %v", err)
-		}
-	})
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("cmdRun err = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("runner did not inject prompt and exit fake wrapper")
-	}
-}
+// Simple-again Gate 6b (pull-only): the runner RECEIVE socket was removed.
+// TestRunInjectsPromptOnSocketWake (socket poke -> inject), TestRunnerSocketReachableRequiresPingAck,
+// TestRunShutdownSocketCleansUpRunner (socket "shutdown" op), TestRunnerPingReportsState,
+// and the two TestClearStaleRunnerWakeTargets* tests were deleted with their
+// subject. Injection-on-wake is now covered by the poll tests (pollOnce ->
+// enqueueWake) below; id-uniqueness moved to the serve lease (see the collision +
+// lease-lifecycle tests).
 
 func TestPromptInjectionBytesDefaultUsesCarriageReturn(t *testing.T) {
 	got := string(promptInjectionBytes(runnerOptions{
@@ -124,192 +86,118 @@ func TestRunRefusesLiveRunnerCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := loop.EnsurePrivateDir(cfg.AgentStateDir("codex")); err != nil {
+
+	// A FRESH valid serve lease owns "codex": a second runner must fail closed
+	// (id-uniqueness now rides the lease, not a socket ping).
+	lease, err := loop.AcquireServeLease(cfg, "codex")
+	if err != nil {
+		t.Fatalf("seed serve lease: %v", err)
+	}
+	if _, err := refuseLiveRunnerCollision(cfg, "codex"); err == nil {
+		t.Fatal("expected live runner collision while lease held")
+	} else if !strings.Contains(err.Error(), "already active") {
+		t.Fatalf("collision error = %v, want 'already active'", err)
+	}
+
+	// Once the held lease is released, a fresh runner may acquire it.
+	if err := loop.ReleaseLease(lease); err != nil {
+		t.Fatalf("release seed lease: %v", err)
+	}
+	got, err := refuseLiveRunnerCollision(cfg, "codex")
+	if err != nil {
+		t.Fatalf("acquire after release should succeed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("nil lease returned on successful acquire")
+	}
+	_ = loop.ReleaseLease(got)
+}
+
+// The runner lifecycle acquires, renews (fence verify), and releases the serve
+// lease. A renew while we still own the claim succeeds; a release removes it so
+// a later acquire is unobstructed.
+func TestRunnerLeaseAcquireRenewRelease(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
 		t.Fatal(err)
 	}
-	socketPath := cfg.RunnerSocketPath("codex")
-	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{
-		OK:        true,
-		RunnerPID: os.Getpid(),
-		Status:    "active",
-	})
+	lease, err := refuseLiveRunnerCollision(cfg, "runner-test")
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if err := loop.RenewLease(lease); err != nil {
+		t.Fatalf("renew held lease: %v", err)
+	}
+	if err := loop.ReleaseLease(lease); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	// Released => the claim is gone, so a new acquire wins immediately.
+	again, err := refuseLiveRunnerCollision(cfg, "runner-test")
+	if err != nil {
+		t.Fatalf("acquire after release: %v", err)
+	}
+	_ = loop.ReleaseLease(again)
+}
 
-	if err := loop.SaveRunnerState(cfg, loop.RunnerState{
-		AgentID:    "codex",
-		RunnerPID:  os.Getpid(),
-		SocketPath: socketPath,
+// A runner whose lease was RECLAIMED (the live claim now carries a different
+// serve_token) must detect the fence on its next poll tick and shut itself down
+// cleanly instead of continuing to inject — the dup-writer guard.
+func TestRunnerPollShutsDownWhenFenced(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	lease, err := loop.AcquireServeLease(cfg, "runner-test")
+	if err != nil {
+		t.Fatalf("acquire lease: %v", err)
+	}
+	rt.lease = lease
+
+	// Simulate a reclaim: overwrite the live claim with a different serve_token.
+	reclaimed := loop.ServeClaim{
+		ID:         "runner-test",
+		Host:       "other-host",
+		PID:        os.Getpid(),
+		ServeToken: "ffffffffffffffffffffffffffffffff",
 		StartedAt:  time.Now().UTC(),
-		Status:     "active",
-	}); err != nil {
+		LastSeen:   time.Now().UTC(),
+	}
+	data, err := json.Marshal(reclaimed)
+	if err != nil {
 		t.Fatal(err)
 	}
+	mustWrite(t, filepath.Join(cfg.AgentStateDir("runner-test"), "serve.claim"), data)
 
-	err = refuseLiveRunnerCollision(cfg, "codex")
-	if err == nil {
-		t.Fatal("expected live runner collision")
+	rt.pollOnce(true)
+
+	if !rt.shutdownRequested.Load() {
+		t.Fatal("fenced runner did not request shutdown on the next tick")
 	}
-	if !strings.Contains(err.Error(), "already active") {
-		t.Fatalf("collision error = %v", err)
+	if rt.drainWake() {
+		t.Fatal("fenced runner enqueued a wake instead of shutting down")
 	}
 }
 
-func TestRunnerSocketReachableRequiresPingAck(t *testing.T) {
+// The runner exports its active serve_token to the child via the environment so
+// the child's sends are fenced (send.go/defer.go read AGENTCHUTE_SERVE_TOKEN).
+func TestRunnerChildEnvCarriesServeToken(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	socketPath := cfg.RunnerSocketPath("codex")
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
-		t.Fatal(err)
+	env := runnerChildEnv(cfg, runnerOptions{AgentID: "runner-test", Vendor: "test"}, "tok-abc123")
+	found := ""
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "AGENTCHUTE_SERVE_TOKEN=") {
+			found = strings.TrimPrefix(kv, "AGENTCHUTE_SERVE_TOKEN=")
+		}
 	}
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-		_ = os.Remove(socketPath)
-	})
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
-
-	target := loop.RunnerWakeTarget(socketPath)
-	if loop.RunnerSocketReachable(target, 100*time.Millisecond) {
-		t.Fatal("bare socket accepted as reachable runner; want ping/ack failure")
-	}
-}
-
-func TestRunShutdownSocketCleansUpRunner(t *testing.T) {
-	root := setupShortRunFixture(t)
-	marker := filepath.Join(root, "terminated")
-	ready := filepath.Join(root, "ready")
-	script := filepath.Join(root, "fake-wrapper.sh")
-	mustWrite(t, script, []byte("#!/bin/sh\ntrap 'echo stopped > "+marker+"; exit 0' TERM HUP INT\nprintf 'READY\\n'\necho ready > "+ready+"\nwhile :; do sleep 1; done\n"))
-	if err := os.Chmod(script, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	errCh := make(chan error, 1)
-	withCwd(t, root, func() {
-		go func() {
-			errCh <- cmdRun([]string{
-				"--as", "codex",
-				"--vendor", "openai",
-				"--control-repo", root,
-				"--loop-dir", filepath.Join(root, ".examplecorp", "loop"),
-				"--interval", "5",
-				"--idle-grace", "100ms",
-				"--", script,
-			})
-		}()
-
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		socketPath := cfg.RunnerSocketPath("codex")
-		waitForRunnerSocket(t, loop.RunnerWakeTarget(socketPath), errCh)
-		waitForFile(t, ready)
-		if err := runnerSocketOp(socketPath, "shutdown"); err != nil {
-			t.Fatalf("shutdown runner: %v", err)
-		}
-	})
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("cmdRun err = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("runner did not exit after shutdown")
-	}
-
-	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath("codex"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reg.Status != loop.StatusOffline {
-		t.Fatalf("registration status = %s, want offline", reg.Status)
-	}
-	if _, err := os.Stat(cfg.RunnerSocketPath("codex")); !os.IsNotExist(err) {
-		t.Fatalf("socket stat err = %v, want missing socket", err)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("wrapper did not receive shutdown signal: %v", err)
-	}
-}
-
-func TestRunnerPingReportsState(t *testing.T) {
-	root := setupShortRunFixture(t)
-	ready := filepath.Join(root, "ready")
-	script := filepath.Join(root, "fake-wrapper.sh")
-	mustWrite(t, script, []byte("#!/bin/sh\ntrap 'exit 0' TERM HUP INT\nprintf 'READY\\n'\necho ready > "+shellQuote(ready)+"\nwhile :; do sleep 1; done\n"))
-	if err := os.Chmod(script, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	errCh := make(chan error, 1)
-	withCwd(t, root, func() {
-		go func() {
-			errCh <- cmdRun([]string{
-				"--as", "codex",
-				"--vendor", "openai",
-				"--control-repo", root,
-				"--loop-dir", filepath.Join(root, ".examplecorp", "loop"),
-				"--interval", "5",
-				"--idle-grace", "100ms",
-				"--", script,
-			})
-		}()
-
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		socketPath := cfg.RunnerSocketPath("codex")
-		target := loop.RunnerWakeTarget(socketPath)
-		waitForRunnerSocket(t, target, errCh)
-		waitForFile(t, ready)
-		resp, err := loop.PingRunner(target, time.Second)
-		if err != nil {
-			t.Fatalf("ping runner: %v", err)
-		}
-		if !resp.OK {
-			t.Fatal("ping response OK = false")
-		}
-		if resp.RunnerPID != os.Getpid() {
-			t.Fatalf("RunnerPID = %d, want %d", resp.RunnerPID, os.Getpid())
-		}
-		if resp.ChildPID <= 0 {
-			t.Fatalf("ChildPID = %d, want positive pid", resp.ChildPID)
-		}
-		if resp.Status != "active" {
-			t.Fatalf("Status = %q, want active", resp.Status)
-		}
-		if err := runnerSocketOp(socketPath, "shutdown"); err != nil {
-			t.Fatalf("shutdown runner: %v", err)
-		}
-	})
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("cmdRun err = %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("runner did not exit after shutdown")
+	if found != "tok-abc123" {
+		t.Fatalf("AGENTCHUTE_SERVE_TOKEN = %q, want tok-abc123", found)
 	}
 }
 
@@ -327,7 +215,7 @@ func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 			"--as", "codex",
 			"--vendor", "openai",
 			"--control-repo", root,
-			"--loop-dir", filepath.Join(root, ".examplecorp", "loop"),
+			"--loop-dir", filepath.Join(root, ".agentchute", "loop"),
 			"--interval", "5",
 			"--idle-grace", "100ms",
 			"--", script,
@@ -352,180 +240,22 @@ func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 	}
 }
 
-func TestRunnerWakeSatisfiesRecipientLiveness(t *testing.T) {
-	cfg := newDoctorCfg(t)
-	if err := loop.EnsurePrivateDir(cfg.AgentStateDir("codex")); err != nil {
-		t.Fatal(err)
-	}
-	socketPath := cfg.RunnerSocketPath("codex")
-	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{
-		OK:        true,
-		RunnerPID: os.Getpid(),
-		Status:    "active",
-	})
-
-	reg := &loop.Registration{
-		AgentID:     "codex",
-		Vendor:      "openai",
-		ControlRepo: cfg.ControlRepo,
-		Host:        localHostname(),
-		WakeMethod:  loop.RunnerWakeMethod,
-		WakeTarget:  loop.RunnerWakeTarget(socketPath),
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), reg); err != nil {
-		t.Fatal(err)
-	}
-	liveness := evaluateRecipientLiveness(cfg, "codex", time.Now().UTC())
-	if !liveness.OK {
-		t.Fatalf("liveness OK = false, message=%q", liveness.Message)
-	}
-	if liveness.Via != "wake" {
-		t.Fatalf("liveness Via = %q, want wake", liveness.Via)
-	}
-}
-
-func TestClearStaleRunnerWakeTargetsDoesNotClearTransientPingMiss(t *testing.T) {
-	root := setupShortRunFixture(t)
-	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	peerID := "peer-runner"
-	socketPath := cfg.RunnerSocketPath(peerID)
-	target := loop.RunnerWakeTarget(socketPath)
-	reachableAt := time.Now().UTC()
-	lastSeen := reachableAt.Add(-time.Minute)
-	reg := &loop.Registration{
-		AgentID:            peerID,
-		Vendor:             "test",
-		ControlRepo:        cfg.ControlRepo,
-		Host:               localHostname(),
-		WakeMethod:         loop.RunnerWakeMethod,
-		WakeTarget:         target,
-		LastSeen:           lastSeen,
-		Status:             loop.StatusActive,
-		ReachableAt:        &reachableAt,
-		ReachabilityMethod: loop.RunnerWakeMethod,
-		ReachabilityTarget: target,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(peerID), reg); err != nil {
-		t.Fatal(err)
-	}
-	if err := loop.SaveRunnerState(cfg, loop.RunnerState{
-		AgentID:    peerID,
-		Host:       localHostname(),
-		RunnerPID:  os.Getpid(),
-		SocketPath: socketPath,
-		Status:     "active",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	cleared, err := clearStaleRunnerWakeTargets(cfg, "self-runner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cleared) != 0 {
-		t.Fatalf("cleared = %v, want none for a live process with a transient ping miss", cleared)
-	}
-	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(peerID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.WakeMethod != loop.RunnerWakeMethod || got.WakeTarget != target {
-		t.Fatalf("wake = %s/%s, want preserved %s/%s", got.WakeMethod, got.WakeTarget, loop.RunnerWakeMethod, target)
-	}
-	if got.Status != loop.StatusActive {
-		t.Fatalf("status = %s, want active", got.Status)
-	}
-	if got.ReachableAt == nil {
-		t.Fatal("ReachableAt cleared on transient miss; want preserved")
-	}
-}
-
-func TestClearStaleRunnerWakeTargetsClearsOfflineStateWithoutOffliningPeer(t *testing.T) {
-	root := setupShortRunFixture(t)
-	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	peerID := "peer-runner"
-	socketPath := cfg.RunnerSocketPath(peerID)
-	target := loop.RunnerWakeTarget(socketPath)
-	reachableAt := time.Now().UTC()
-	reg := &loop.Registration{
-		AgentID:            peerID,
-		Vendor:             "test",
-		ControlRepo:        cfg.ControlRepo,
-		Host:               localHostname(),
-		WakeMethod:         loop.RunnerWakeMethod,
-		WakeTarget:         target,
-		LastSeen:           reachableAt.Add(-time.Hour),
-		Status:             loop.StatusActive,
-		ReachableAt:        &reachableAt,
-		ReachabilityMethod: loop.RunnerWakeMethod,
-		ReachabilityTarget: target,
-		ReachabilityError:  "old success",
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(peerID), reg); err != nil {
-		t.Fatal(err)
-	}
-	if err := loop.SaveRunnerState(cfg, loop.RunnerState{
-		AgentID:    peerID,
-		Host:       localHostname(),
-		RunnerPID:  os.Getpid(),
-		SocketPath: socketPath,
-		Status:     "offline",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	cleared, err := clearStaleRunnerWakeTargets(cfg, "self-runner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cleared) != 1 || cleared[0] != peerID {
-		t.Fatalf("cleared = %v, want [%s]", cleared, peerID)
-	}
-	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(peerID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.WakeMethod != "" || got.WakeTarget != "" {
-		t.Fatalf("wake = %s/%s, want cleared", got.WakeMethod, got.WakeTarget)
-	}
-	if got.Status != loop.StatusActive {
-		t.Fatalf("status = %s, want preserved active (startup stale-clear must not offline peers)", got.Status)
-	}
-	if got.ReachableAt != nil || got.ReachabilityMethod != "" || got.ReachabilityTarget != "" || got.ReachabilityError != "" {
-		t.Fatalf("reachability cache not cleared: at=%v method=%q target=%q err=%q", got.ReachableAt, got.ReachabilityMethod, got.ReachabilityTarget, got.ReachabilityError)
-	}
-}
-
-func TestMarkRunnerOfflineClearsReachabilityCache(t *testing.T) {
+// Pull-only (Gate 6c): markRunnerOffline sets Status=offline. The reachability
+// cache it used to clear no longer exists (registrations carry no wake state).
+func TestMarkRunnerOfflineSetsOfflineStatus(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 	if err != nil {
 		t.Fatal(err)
 	}
 	agentID := "runner-test"
-	target := loop.RunnerWakeTarget(cfg.RunnerSocketPath(agentID))
-	reachableAt := time.Now().UTC()
 	reg := &loop.Registration{
-		AgentID:            agentID,
-		Vendor:             "test",
-		ControlRepo:        cfg.ControlRepo,
-		Host:               localHostname(),
-		WakeMethod:         loop.RunnerWakeMethod,
-		WakeTarget:         target,
-		LastSeen:           reachableAt.Add(-time.Minute),
-		Status:             loop.StatusActive,
-		ReachableAt:        &reachableAt,
-		ReachabilityMethod: loop.RunnerWakeMethod,
-		ReachabilityTarget: target,
-		ReachabilityError:  "old success",
+		AgentID:     agentID,
+		Vendor:      "test",
+		ControlRepo: cfg.ControlRepo,
+		Host:        localHostname(),
+		LastSeen:    time.Now().UTC().Add(-time.Minute),
+		Status:      loop.StatusActive,
 	}
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
 		t.Fatal(err)
@@ -540,9 +270,6 @@ func TestMarkRunnerOfflineClearsReachabilityCache(t *testing.T) {
 	}
 	if got.Status != loop.StatusOffline {
 		t.Fatalf("status = %s, want offline", got.Status)
-	}
-	if got.ReachableAt != nil || got.ReachabilityMethod != "" || got.ReachabilityTarget != "" || got.ReachabilityError != "" {
-		t.Fatalf("reachability cache not cleared: at=%v method=%q target=%q err=%q", got.ReachableAt, got.ReachabilityMethod, got.ReachabilityTarget, got.ReachabilityError)
 	}
 }
 
@@ -645,126 +372,9 @@ func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 
 // WI-E2: the runner's off-turn poll loop re-proves its OWN wake target each tick
 // and records a cached reachability fact (ReachableAt) in its registration.
-func TestRunnerPollLoop_WritesReachableAt(t *testing.T) {
-	root := setupShortRunFixture(t)
-	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	agentID := "runner-test"
-	if err := loop.EnsurePrivateDir(cfg.AgentInboxDir(agentID)); err != nil {
-		t.Fatal(err)
-	}
-	if err := loop.EnsurePrivateDir(cfg.AgentStateDir(agentID)); err != nil {
-		t.Fatal(err)
-	}
-
-	// A live runner socket the recipient owns (so the owned-check passes and the
-	// dispatcher dials it).
-	socketPath := cfg.RunnerSocketPath(agentID)
-	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: agentID})
-	target := loop.RunnerWakeTarget(socketPath)
-
-	reg := &loop.Registration{
-		AgentID:     agentID,
-		Vendor:      "test",
-		ControlRepo: cfg.ControlRepo,
-		Host:        localHostname(),
-		WakeMethod:  loop.RunnerWakeMethod,
-		WakeTarget:  target,
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
-		t.Fatal(err)
-	}
-
-	rt := &runnerRuntime{
-		cfg:     cfg,
-		opts:    runnerOptions{AgentID: agentID, Vendor: "test", IntervalSeconds: 5},
-		started: time.Now().UTC(),
-		socket:  socketPath,
-		wakeCh:  make(chan struct{}, 1),
-		stopCh:  make(chan struct{}),
-	}
-
-	rt.pollOnce(false)
-
-	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ReachableAt == nil {
-		t.Fatal("pollOnce did not write ReachableAt for a live owned runner socket")
-	}
-	if got.ReachabilityMethod != loop.RunnerWakeMethod || got.ReachabilityTarget != target {
-		t.Fatalf("reachability endpoint = %s/%s, want %s/%s", got.ReachabilityMethod, got.ReachabilityTarget, loop.RunnerWakeMethod, target)
-	}
-}
-
-func runnerSocketOp(path, op string) error {
-	conn, err := net.DialTimeout("unix", path, time.Second)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	return json.NewEncoder(conn).Encode(map[string]string{"op": op})
-}
-
-func startFakeRunnerPingSocket(t *testing.T, path string, resp loop.RunnerPingResponse) net.Listener {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if !resp.OK {
-		resp.OK = true
-	}
-	if resp.Status == "" {
-		resp.Status = "active"
-	}
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = listener.Close()
-		_ = os.Remove(path)
-	})
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func(conn net.Conn) {
-				defer conn.Close()
-				var req struct {
-					Op string `json:"op"`
-				}
-				if err := json.NewDecoder(conn).Decode(&req); err != nil {
-					return
-				}
-				switch req.Op {
-				case "ping", "wake", "status", "shutdown":
-					_ = json.NewEncoder(conn).Encode(resp)
-				}
-			}(conn)
-		}
-	}()
-	return listener
-}
-
-func waitForFile(t *testing.T, path string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("%s did not appear", path)
-}
+// Gate 6a (pull-only): TestRunnerPollLoop_WritesReachableAt was removed.
+// pollOnce no longer reproves or records ReachableAt (the own-wake reprove call
+// at run.go's poll tick was deleted), so there is nothing to assert.
 
 func setupShortRunFixture(t *testing.T) string {
 	t.Helper()
@@ -774,28 +384,6 @@ func setupShortRunFixture(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 	return root
-}
-
-func waitForRunnerSocket(t *testing.T, target string, errCh <-chan error) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	var last error
-	for time.Now().Before(deadline) {
-		if loop.RunnerSocketReachable(target, 100*time.Millisecond) {
-			return
-		}
-		select {
-		case err := <-errCh:
-			t.Fatalf("runner exited before socket was reachable: %v", err)
-		default:
-		}
-		_, last = loop.ParseRunnerWakeTarget(target)
-		time.Sleep(50 * time.Millisecond)
-	}
-	if last != nil && !errors.Is(last, os.ErrNotExist) {
-		t.Fatalf("runner socket never became reachable: %v", last)
-	}
-	t.Fatal("runner socket never became reachable")
 }

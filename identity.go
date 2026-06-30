@@ -39,24 +39,11 @@ func resolveAgentIDRaw(flagID, vendor string, cfg *loop.Config) (string, error) 
 		return envID, nil
 	}
 
-	// 3. A tmux wake runs inside the target pane. If that pane already has
-	// one live registration in this pool, reuse it so bracketed wake prompts
-	// can simply say "check inbox" without an exported identity variable.
-	if cfg != nil {
-		// A herdr wake injects only "check inbox" (no identity env), so a
-		// re-launched / woken pane must map back to ITS registration by
-		// resolving the registered herdr name to the current HERDR_PANE_ID.
-		// Without this, a second same-wrapper pane (codex-agentchute-2) would
-		// fall through to the contextual default and split its inbox.
-		if id, ok := agentIDForCurrentHerdrPane(cfg, vendor); ok {
-			return id, nil
-		}
-		if id, ok := agentIDForCurrentTmuxPane(cfg, vendor); ok {
-			return id, nil
-		}
-	}
-
-	// 4. Contextual default: <canonical-wrapper-id>-<folder-slug>.
+	// 3. Contextual default: <canonical-wrapper-id>-<folder-slug>.
+	//
+	// Pull-only (Gate 6c): registrations carry no wake target, so there is no
+	// tmux/herdr pane to map back to a prior registration; identity comes from
+	// --as / $AGENTCHUTE_AGENT_ID or the contextual default below.
 	canon := canonicalAgentIDForVendor(vendor)
 	if canon == "" {
 		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, run from a registered tmux/herdr pane, or provide a recognized --vendor/--wrapper for a contextual default")
@@ -101,64 +88,6 @@ func contextualIdentityBase(flagID, vendor string) (string, bool, error) {
 		return "", false, err
 	}
 	return canon + "-" + getFolderSlug(cwd), true, nil
-}
-
-func agentIDForCurrentTmuxPane(cfg *loop.Config, vendor string) (string, bool) {
-	currentPane := strings.TrimSpace(os.Getenv("TMUX_PANE"))
-	if currentPane == "" {
-		return "", false
-	}
-	localHost, _ := os.Hostname()
-	localHost = strings.TrimSpace(localHost)
-	canon := canonicalAgentIDForVendor(vendor)
-	regs, _ := loop.ReadRegistrationsLenient(cfg.AgentsDir())
-	for _, reg := range regs {
-		if strings.TrimSpace(reg.WakeMethod) != "tmux" || strings.TrimSpace(reg.WakeTarget) != currentPane {
-			continue
-		}
-		if localHost != "" && strings.TrimSpace(reg.Host) != "" && reg.Host != localHost {
-			continue
-		}
-		if reg.Status == loop.StatusOffline || reg.Status == loop.StatusExhausted {
-			continue
-		}
-		if canon != "" && !registrationMatchesCanonical(reg.AgentID, canon) {
-			continue
-		}
-		return reg.AgentID, true
-	}
-	return "", false
-}
-
-func agentIDForCurrentHerdrPane(cfg *loop.Config, vendor string) (string, bool) {
-	if !herdrEnvActive() || !herdrAvailable() {
-		return "", false
-	}
-	pane := currentHerdrPane()
-	localHost, _ := os.Hostname()
-	localHost = strings.TrimSpace(localHost)
-	canon := canonicalAgentIDForVendor(vendor)
-	regs, _ := loop.ReadRegistrationsLenient(cfg.AgentsDir())
-	for _, reg := range regs {
-		if strings.TrimSpace(reg.WakeMethod) != "herdr" {
-			continue
-		}
-		if localHost != "" && strings.TrimSpace(reg.Host) != "" && reg.Host != localHost {
-			continue
-		}
-		if reg.Status == loop.StatusOffline || reg.Status == loop.StatusExhausted {
-			continue
-		}
-		if canon != "" && !registrationMatchesCanonical(reg.AgentID, canon) {
-			continue
-		}
-		// The wake_target is the stable herdr name; adopt this registration
-		// only if that name currently resolves to OUR pane.
-		if info, found := herdrAgentByName(strings.TrimSpace(reg.WakeTarget)); found && info.PaneID == pane {
-			return reg.AgentID, true
-		}
-	}
-	return "", false
 }
 
 func availableContextualAgentID(cfg *loop.Config, baseID string, now time.Time) (string, error) {
@@ -276,12 +205,6 @@ func registrationReservesIdentity(cfg *loop.Config, reg *loop.Registration, now 
 		return true
 	}
 	if reg.Status == loop.StatusOffline || reg.Status == loop.StatusExhausted {
-		return false
-	}
-	if !reg.IsPokable() {
-		// A poller heartbeat proves recipient liveness, but it does not identify a
-		// distinct interactive lane. Reserving poller-only registrations makes
-		// hook-managed no-tmux sessions suffix on every lifecycle command.
 		return false
 	}
 	if reg.LastSeen.IsZero() {

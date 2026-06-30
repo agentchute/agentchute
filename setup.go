@@ -46,6 +46,8 @@ type setupOptions struct {
 	NoProfile   bool
 	Aliases     bool
 	InitNew     bool
+	Reset       bool
+	WipeState   bool
 }
 
 type setupGlobalState struct {
@@ -76,7 +78,7 @@ func cmdSetup(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	var opts setupOptions
-	fs.StringVar(&opts.Wake, "wake", "", "wake paths to install: any comma-separated combination of runner, tmux, herdr (or all)")
+	fs.StringVar(&opts.Wake, "wake", "", "wake path to install: runner (the only supported value; all/both are deprecated aliases for runner)")
 	fs.StringVar(&opts.Wrappers, "wrappers", "all", "all (detected on PATH), none, or comma list: claude-code,codex,gemini-cli,grok")
 	fs.StringVar(&opts.ControlRepo, "control-repo", "", "control repo path (default: env or current git/cwd root)")
 	fs.StringVar(&opts.ShimDir, "shim-dir", "", "launcher shim directory (default: $HOME/.agentchute/bin)")
@@ -86,11 +88,18 @@ func cmdSetup(args []string) error {
 	fs.BoolVar(&opts.NoProfile, "no-profile", false, "do not edit shell profile; print PATH hint instead")
 	fs.BoolVar(&opts.Aliases, "aliases", false, "also install legacy same-name wrapper aliases")
 	fs.BoolVar(&opts.InitNew, "init", false, "allow setup to initialize a non-project directory")
+	fs.BoolVar(&opts.Reset, "reset", false, "explicitly run the runtime reset (always performed); required alongside --wipe-state")
+	fs.BoolVar(&opts.WipeState, "wipe-state", false, "DESTRUCTIVE: after reset, wipe loop runtime state (inbox/archive/malformed/live/scratch/state); requires --reset")
 	if err := fs.Parse(args); err != nil {
 		return setupUsage(err)
 	}
 	if fs.NArg() != 0 {
 		return setupUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
+	}
+	// --wipe-state is destructive; require the explicit --reset affirmation
+	// alongside it. Reject --wipe-state alone with a clear (non-help) error.
+	if opts.WipeState && !opts.Reset {
+		return fmt.Errorf("--wipe-state requires --reset: the destructive state wipe must be requested as `setup --reset --wipe-state`")
 	}
 
 	root, err := resolveSetupRoot(opts.ControlRepo)
@@ -141,6 +150,9 @@ func cmdSetup(args []string) error {
 
 	printSetupPlan(os.Stdout, root, opts, wrappers, detected)
 	if opts.DryRun {
+		if opts.WipeState {
+			printWipeStateDryRun(os.Stdout, root)
+		}
 		fmt.Println("\n(dry-run; no changes made)")
 		return nil
 	}
@@ -181,22 +193,22 @@ func setupHelpErr() error {
 func setupHelp() string {
 	return strings.TrimSpace(`
 Usage:
-  agentchute setup [--wake runner[,tmux][,herdr] | all] [--wrappers all|none|<list>] [--yes] [--dry-run]
+  agentchute setup [--wake runner] [--wrappers all|none|<list>] [--yes] [--dry-run]
 
 Scaffolds the control repo with agentchute init, stops local agentchute
 pollers/runners, clears stale live registrations and repo Herdr names so agents
-re-enroll, installs lifecycle hooks for the selected wrappers, and installs launcher
-shims when runner is among the wake paths plus hookless wrappers when only tmux/herdr are selected.
+re-enroll, installs lifecycle hooks for the selected wrappers, and installs the
+launcher shims (the ac-* launchers front the runner wake path).
 
-Wake paths combine freely: pick any of runner, tmux, herdr (comma-separated) or
-all. Each agent still wakes by a single method chosen at launch (runner shim,
-tmux pane, or herdr pane); the selection here decides which infrastructure to
-install for the pool.
+runner is the only supported wake path: the tmux/herdr wake adapters were
+removed in the pull-only redesign. Agents wake by being launched through the
+ac-* runner launcher; peers deliver by writing the inbox and never poke.
 
 Flags:
-  --wake <set>           any comma-separated combination of runner, tmux, herdr,
-                         or all (prompted when omitted). "both" is a deprecated
-                         alias for all.
+  --wake runner          install the runner wake path (the only supported value;
+                         prompted when omitted). "all"/"both" are deprecated
+                         aliases that now install runner only; tmux/herdr are
+                         rejected.
   --wrappers <set>       all (detected on PATH), none, or comma list
                          (claude-code,codex,gemini-cli,grok; default all)
   --control-repo <path>  repo to initialize (default env or current git/cwd root)
@@ -205,6 +217,15 @@ Flags:
   --no-profile           do not edit shell profile; print PATH hint instead
   --aliases              also install legacy same-name wrapper aliases
   --init                 allow initializing a non-project directory
+  --reset                explicitly run the runtime reset (always performed);
+                         required alongside --wipe-state
+  --wipe-state           DESTRUCTIVE: after reset, wipe loop runtime state
+                         (inbox/archive/malformed/live/scratch/state contents and
+                         live registrations) while preserving the committed
+                         scaffold and state/setup.json. Requires --reset; refuses
+                         a live bus. Use --dry-run to preview, --yes to skip the
+                         destructive confirm. Intended for the v0.7.0 -> v2
+                         transition.
   --dry-run              print plan without writing files
   --yes                  skip confirmation prompts
 `) + "\n"
@@ -235,15 +256,10 @@ func defaultSetupShimDir() (string, error) {
 	return filepath.Join(home, ".agentchute", "bin"), nil
 }
 
-// setupWakeMethods lists the real wake paths in canonical install order.
-var setupWakeMethods = []string{setupWakeRunner, setupWakeTmux, setupWakeHerdr}
-
-func validSetupWakeMethod(m string) bool {
-	return m == setupWakeRunner || m == setupWakeTmux || m == setupWakeHerdr
-}
-
 // wakeSetContains reports whether the canonical comma-joined wake set includes
-// method.
+// method. Retained for the legacy-persisted-state cleanup/diagnostic paths
+// (previousSetupShimWrappers, doctor's wake check), which still read older
+// setup.json records that named tmux/herdr.
 func wakeSetContains(wake, method string) bool {
 	for _, m := range strings.Split(wake, ",") {
 		if strings.TrimSpace(m) == method {
@@ -253,53 +269,41 @@ func wakeSetContains(wake, method string) bool {
 	return false
 }
 
-// normalizeSetupWake parses a raw --wake value — a comma-separated combination
-// of runner/tmux/herdr, the keyword "all", or the deprecated "both" — into a
-// canonical comma-joined set in install order. It returns the canonical value
-// and an optional deprecation note to surface to the user.
+// normalizeSetupWake parses a raw --wake value into the single supported wake
+// path. After the pull-only redesign (simple-again) the tmux/herdr wake adapters
+// were removed, so `runner` is the only installable wake path. `all`/`both`
+// (which historically meant runner+tmux+herdr) are accepted as DEPRECATED
+// aliases that now install runner only; `tmux`/`herdr` (alone or in a combo) are
+// rejected with a clear message. Returns the canonical value ("runner") and an
+// optional deprecation note to surface to the user.
 func normalizeSetupWake(raw string) (string, string, error) {
 	raw = strings.ToLower(strings.TrimSpace(raw))
-	invalid := func(tok string) error {
-		return fmt.Errorf("--wake %q is not recognized; choose any comma-separated combination of runner, tmux, herdr (or all)", tok)
+	unrecognized := func(tok string) error {
+		return fmt.Errorf("--wake %q is not recognized; the only supported wake path is runner", tok)
 	}
 	if raw == "" {
-		return "", "", invalid("")
+		return "", "", unrecognized("")
 	}
 	var deprecation string
-	selected := map[string]bool{}
 	for _, part := range strings.Split(raw, ",") {
 		tok := strings.TrimSpace(part)
 		switch tok {
 		case "":
-			// Reject empty tokens (stray/leading/trailing commas) for CLI typo
-			// safety rather than silently dropping them.
-			return "", "", invalid(raw)
-		case "all":
-			for _, m := range setupWakeMethods {
-				selected[m] = true
-			}
-		case setupWakeBoth:
-			for _, m := range setupWakeMethods {
-				selected[m] = true
-			}
-			deprecation = "note: --wake both is deprecated; use --wake all (installing runner + tmux + herdr infrastructure)"
+			// Reject empty tokens (stray/leading/trailing commas) for CLI typo safety.
+			return "", "", unrecognized(raw)
+		case setupWakeRunner:
+			// The one supported path.
+		case "all", setupWakeBoth:
+			// Legacy aliases: historically runner+tmux+herdr. The tmux/herdr
+			// adapters are gone, so they now install runner only.
+			deprecation = fmt.Sprintf("note: --wake %q is deprecated; the tmux/herdr wake adapters were removed — installing runner only", tok)
+		case setupWakeTmux, setupWakeHerdr:
+			return "", "", fmt.Errorf("--wake %q is no longer supported: the tmux/herdr wake adapters were removed in the pull-only redesign; use --wake runner", tok)
 		default:
-			if !validSetupWakeMethod(tok) {
-				return "", "", invalid(tok)
-			}
-			selected[tok] = true
+			return "", "", unrecognized(tok)
 		}
 	}
-	var ordered []string
-	for _, m := range setupWakeMethods {
-		if selected[m] {
-			ordered = append(ordered, m)
-		}
-	}
-	if len(ordered) == 0 {
-		return "", "", invalid(raw)
-	}
-	return strings.Join(ordered, ","), deprecation, nil
+	return setupWakeRunner, deprecation, nil
 }
 
 func guardSetupInitRoot(root string, opts setupOptions) error {
@@ -358,11 +362,9 @@ func promptSetupWake(yes bool) (string, error) {
 		return "", fmt.Errorf("--wake is required when no terminal is available")
 	}
 	defer closeIn()
-	fmt.Fprintln(os.Stdout, "Wake paths to install (each agent wakes by how it is launched):")
-	fmt.Fprintln(os.Stdout, "  runner  PTY launcher + local socket; works anywhere, incl. plain shells")
-	fmt.Fprintln(os.Stdout, "  tmux    peers send-keys into your tmux pane")
-	fmt.Fprintln(os.Stdout, "  herdr   peers send-keys into your herdr pane")
-	fmt.Fprint(os.Stdout, "Choose any combination (comma-separated) or 'all' [runner]: ")
+	fmt.Fprintln(os.Stdout, "Wake path to install (runner is the only supported path):")
+	fmt.Fprintln(os.Stdout, "  runner  PTY launcher/supervisor; works anywhere, incl. plain shells")
+	fmt.Fprint(os.Stdout, "Press enter to install runner [runner]: ")
 	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
@@ -508,7 +510,13 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 		fmt.Fprintf(w, "  wrappers:     %s\n", strings.Join(wrappers, ", "))
 	}
 	fmt.Fprintf(w, "  init:         %s\n", filepath.Join(root, "AGENTCHUTE.md"))
-	fmt.Fprintln(w, "  reset:        stop local agentchute pollers/runners, clear live agents/*.md, release repo Herdr names")
+	if opts.WipeState {
+		fmt.Fprintln(w, "  reset:        DESTRUCTIVE wipe-state — stop local pollers/runners, then WIPE loop runtime")
+		fmt.Fprintln(w, "                state (inbox/archive/malformed/live/scratch/state) + live registrations;")
+		fmt.Fprintln(w, "                preserves scaffold + state/setup.json; refuses a live bus (prompts before deleting)")
+	} else {
+		fmt.Fprintln(w, "  reset:        stop local agentchute pollers/runners, clear live agents/*.md, release repo Herdr names")
+	}
 	if len(hookWrappers) > 0 {
 		fmt.Fprintln(w, "  hooks:        repo scope, force/idempotent")
 	}
@@ -537,12 +545,6 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 			}
 		}
 	}
-	if wakeSetContains(opts.Wake, setupWakeTmux) && os.Getenv("TMUX") == "" {
-		fmt.Fprintln(w, "  warning:      TMUX is not set; start wrappers inside tmux for tmux wake")
-	}
-	if wakeSetContains(opts.Wake, setupWakeHerdr) && os.Getenv("HERDR_ENV") == "" {
-		fmt.Fprintln(w, "  warning:      HERDR_ENV is not set; start wrappers inside herdr for herdr wake")
-	}
 }
 
 func setupNeedsShims(wake string) bool {
@@ -563,32 +565,12 @@ func setupShimWrappers(wake string, wrappers []string) []string {
 	return nil
 }
 
-// printSetupCompletionGuidance prints how to restart wrappers for the selected
-// wake paths. A single path gets a one-line instruction; a combination lists
-// the launch style per path.
+// printSetupCompletionGuidance prints how to restart wrappers for the installed
+// wake path. runner is the only supported path (pull-only redesign), so this is
+// a single instruction.
 func printSetupCompletionGuidance(w io.Writer, wake string) {
-	if !strings.Contains(wake, ",") {
-		switch wake {
-		case setupWakeTmux:
-			fmt.Fprintln(w, "Restart selected wrappers from this repo inside tmux, then run `agentchute doctor --as <id>`.")
-		case setupWakeHerdr:
-			fmt.Fprintln(w, "Restart selected wrappers from this repo inside herdr, then run `agentchute doctor --as <id>`.")
-		default: // runner
-			fmt.Fprintln(w, "Open one new shell, restart selected wrappers from this repo, then run `agentchute doctor --as <id>`.")
-		}
-		return
-	}
-	fmt.Fprintln(w, "Restart wrappers per the path they use:")
-	if wakeSetContains(wake, setupWakeRunner) {
-		fmt.Fprintln(w, "  runner: open one new shell, then launch wrappers from this repo via the ac-* launcher.")
-	}
-	if wakeSetContains(wake, setupWakeTmux) {
-		fmt.Fprintln(w, "  tmux:   launch wrappers from this repo inside tmux.")
-	}
-	if wakeSetContains(wake, setupWakeHerdr) {
-		fmt.Fprintln(w, "  herdr:  launch wrappers from this repo inside herdr.")
-	}
-	fmt.Fprintln(w, "Then run `agentchute doctor --as <id>`.")
+	_ = wake // runner is the only installable wake path; retained for call-site stability.
+	fmt.Fprintln(w, "Open one new shell, restart selected wrappers from this repo via the ac-* launcher, then run `agentchute doctor --as <id>`.")
 }
 
 func setupHookableWrappers(wrappers []string) []string {
@@ -800,10 +782,20 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		}
 
 		// Phase 3 — destructive runtime reset, LAST. By the time we reach here
-		// every recoverable write above has landed, so even if the reset (or a
-		// crash during it) fails partway, the bus retains its wake infrastructure
-		// (hooks/shims/enrollment) and a `setup` re-run recovers cleanly.
-		if err := setupRunRuntimeReset(root, cfg, wrappers); err != nil {
+		// every recoverable write above has landed (including state/setup.json), so
+		// even if the reset (or a crash during it) fails partway, the bus retains its
+		// wake infrastructure (hooks/shims/enrollment) and a `setup` re-run recovers
+		// cleanly. With --wipe-state the soft reset is REPLACED by the hard wipe: the
+		// wipe subsumes the soft reset (it stops local processes, clears live
+		// registrations and per-agent state) AND additionally clears inbox/archive/
+		// malformed/live contents, scratch dirs, and root runtime logs — while
+		// preserving state/setup.json and the committed scaffold, and failing closed
+		// on any live local process or fresh foreign-host presence.
+		if opts.WipeState {
+			if err := setupRunWipeState(root, cfg, wrappers, opts); err != nil {
+				return err
+			}
+		} else if err := setupRunRuntimeReset(root, cfg, wrappers); err != nil {
 			return err
 		}
 

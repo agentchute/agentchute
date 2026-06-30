@@ -1,23 +1,136 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agentchute — coordinate AI agents through shared inboxes</title>
-<meta name="description" content="agentchute is a Markdown protocol for AI agents to coordinate through shared inboxes. Recipient-side polling is canonical; wake adapters like tmux, herdr, and the runner socket are optional latency hints.">
-<meta property="og:title" content="agentchute">
-<meta property="og:description" content="Coordinate AI agents through shared inboxes. Recipient-side polling, optional wake adapters, no central broker.">
+<title>agentchute — an inbox per agent</title>
+<meta name="description" content="agentchute is a small Markdown protocol for AI agents to coordinate through per-agent inboxes — pull-only, no broker, no SDK. Senders write a Markdown message; recipients read their own inbox.">
+<meta property="og:title" content="agentchute — an inbox per agent">
+<meta property="og:description" content="A small Markdown protocol for AI agents to hand off work through per-agent inboxes. Pull-only, no central broker, no SDK.">
 <meta property="og:url" content="https://agentchute.dev/">
 <meta property="og:type" content="website">
 <link rel="canonical" href="https://agentchute.dev/">
-<link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#FAF9F5; --ink:#17180F; --muted:#5C5E50; --faint:#8A8C7C;
+    --hair:#E6E4DA; --line:#E2E0D6;
+    --green:#1E6F57; --green-soft:#EAF1ED; --green-line:#CFE3D8;
+    --amber:#C8791A; --card:#FFFFFF;
+    --sans:'Inter',system-ui,sans-serif;
+    --disp:'Space Grotesk',system-ui,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --wrap:1080px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);font-size:16px;line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--green);text-decoration:none}
+  a:hover{text-decoration:underline}
+  :focus-visible{outline:2px solid var(--green);outline-offset:3px;border-radius:3px}
+  .wrap{max-width:var(--wrap);margin:0 auto;padding:0 28px}
+  .mono{font-family:var(--mono)}
+
+  /* top bar */
+  header{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--paper) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--hair)}
+  .bar{display:flex;align-items:center;justify-content:space-between;height:60px}
+  .brand{font-family:var(--mono);font-weight:600;font-size:15px;letter-spacing:.02em}
+  .brand .sq{display:inline-block;width:9px;height:9px;background:var(--green);border-radius:2px;margin-right:9px;vertical-align:middle}
+  nav a{font-family:var(--mono);font-size:13px;color:var(--muted);margin-left:22px}
+  nav a:hover{color:var(--ink);text-decoration:none}
+
+  /* hero */
+  .hero{display:grid;grid-template-columns:1.04fr .96fr;gap:54px;align-items:center;padding:74px 0 64px}
+  .eyebrow{font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.06em;text-transform:lowercase;margin:0 0 18px}
+  h1{font-family:var(--disp);font-weight:700;font-size:clamp(2.2rem,4.6vw,3.5rem);line-height:1.04;letter-spacing:-.02em;margin:0 0 20px}
+  h1 .b{display:block}
+  .sub{font-size:1.12rem;color:var(--muted);max-width:38ch;margin:0 0 26px}
+  .sub b{color:var(--ink);font-weight:600}
+
+  .term{background:var(--ink);border-radius:10px;padding:15px 16px;font-family:var(--mono);font-size:13.5px;color:#EDECE3;line-height:1.5;overflow-x:auto}
+  .term .p{color:#7FCBB2;user-select:none}
+  .term .c{color:#9A9C8C}
+  .or{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin:12px 2px 0}
+
+  .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:24px}
+  .btn{font-family:var(--mono);font-size:13.5px;font-weight:600;padding:11px 17px;border-radius:8px;border:1px solid transparent;cursor:pointer;display:inline-flex;align-items:center;gap:9px}
+  .btn.primary{background:var(--green);color:#F7FBF9}
+  .btn.primary:hover{background:#1A6050;text-decoration:none}
+  .btn.ghost{background:transparent;border-color:var(--line);color:var(--ink)}
+  .btn.ghost:hover{border-color:var(--ink);text-decoration:none}
+  .btn .tri{font-size:11px}
+
+  .diagram{width:100%}
+  .diagram svg{width:100%;height:auto;display:block}
+
+  /* in-flight drift */
+  @keyframes driftR{0%,100%{transform:translate(430px,96px)}50%{transform:translate(437px,93px)}}
+  @keyframes driftL{0%,100%{transform:translate(414px,392px)}50%{transform:translate(407px,395px)}}
+  .mflight-r{animation:driftR 4.6s ease-in-out infinite}
+  .mflight-l{animation:driftL 5.2s ease-in-out infinite}
+
+  /* thesis band */
+  .thesis{border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);background:#F4F3EE}
+  .thesis .wrap{padding:34px 28px}
+  .thesis p{font-family:var(--disp);font-weight:500;font-size:clamp(1.15rem,2.4vw,1.6rem);line-height:1.5;letter-spacing:-.01em;margin:0;max-width:60ch}
+  .thesis .k{color:var(--green)}
+
+  /* sections */
+  section{padding:64px 0}
+  .lbl{font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.05em;margin:0 0 8px}
+  h2{font-family:var(--disp);font-weight:600;font-size:1.7rem;letter-spacing:-.01em;margin:0 0 28px}
+
+  .prims{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .prim{background:var(--paper);padding:22px 22px}
+  .prim h3{font-family:var(--mono);font-size:14px;font-weight:600;margin:0 0 7px;color:var(--ink)}
+  .prim p{margin:0;font-size:14.5px;color:var(--muted)}
+  .prim .em{color:var(--faint);font-style:italic}
+
+  .isnt{display:grid;grid-template-columns:1.1fr 1fr;gap:40px;align-items:start}
+  .isnt .head p{color:var(--muted);max-width:34ch}
+  ul.clean{list-style:none;margin:0;padding:0}
+  ul.clean li{padding:13px 0;border-top:1px solid var(--hair);font-size:14.5px}
+  ul.clean li:first-child{border-top:0}
+  ul.clean b{font-weight:600}
+  ul.clean span{color:var(--muted)}
+
+  .start{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  .panel{border:1px solid var(--line);border-radius:12px;padding:22px;background:var(--card)}
+  .panel h3{font-family:var(--disp);font-weight:600;font-size:1.05rem;margin:0 0 6px}
+  .panel .d{color:var(--muted);font-size:14px;margin:0 0 16px}
+  .panel .term{font-size:12.5px}
+
+  footer{border-top:1px solid var(--hair);padding:40px 0 56px;color:var(--muted)}
+  footer .wrap{display:flex;gap:24px;justify-content:space-between;flex-wrap:wrap;align-items:baseline}
+  footer .thesisline{font-family:var(--disp);font-size:1.05rem;color:var(--ink);max-width:46ch;line-height:1.4}
+  footer .meta{font-family:var(--mono);font-size:12.5px;color:var(--faint)}
+  footer a{color:var(--muted)}
+
+  @media (max-width:880px){
+    .hero{grid-template-columns:1fr;gap:38px;padding:48px 0}
+    .diagram{order:2;max-width:560px}
+    .isnt{grid-template-columns:1fr;gap:24px}
+    .prims{grid-template-columns:1fr}
+    .start{grid-template-columns:1fr}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;scroll-behavior:auto}
+  }
+</style>
 </head>
 <body>
 
-<header class="site">
-  <div class="wrap">
-    <div class="logo">agentchute</div>
+<header>
+  <div class="wrap bar">
+    <a class="brand" href="#" style="color:inherit"><span class="sq"></span>agentchute</a>
     <nav>
+      <a href="#protocol">protocol</a>
       <a href="blog/">blog</a>
       <a href="spec.html">spec</a>
       <a href="https://github.com/agentchute/agentchute">github</a>
@@ -26,229 +139,195 @@
 </header>
 
 <main>
-
-<section class="hero">
   <div class="wrap">
-    <h1>Running multiple AI agents on a shared project is easy.<br><span class="dim">Coordinating them isn't.</span></h1>
+    <section class="hero">
+      <div class="copy">
+        <p class="eyebrow">a markdown protocol for agent teams</p>
+        <h1><span class="b">Running agents is easy.</span><span class="b">Coordinating them isn't.</span></h1>
+        <p class="sub">agentchute gives every AI agent an <b>inbox</b>. They hand off work, request review, and message each other — <b>no human relaying every step</b>, no broker, just plain files.</p>
 
-    <p class="lede">
-      <strong>agentchute is a small Markdown protocol that lets AI agents message each other,
-      request review, and hand off work without a human acting as the relay.</strong>
-    </p>
+        <div class="term" role="group" aria-label="install command">
+          <span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
+        </div>
+        <p class="or">That's our reference CLI. The protocol itself is just files — <a href="#refimpl">use your own implementation</a> if you'd rather.</p>
 
-    <pre class="install"><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
-
-    <p class="lede-foot">
-      The installer auto-runs <code>agentchute setup</code> to wire lifecycle hooks and namespaced
-      launcher shims, so starting wrappers with <code>ac-claude</code>, <code>ac-codex</code>, or
-      <code>ac-gemini</code> coordinates them through their own inboxes.
-      Or <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md">skip the binary</a>
-      and just drop <code>AGENTCHUTE.md</code> into your project.
-    </p>
-
-    <figure class="video">
-      <a
-        class="video-thumb"
-        href="https://www.youtube.com/watch?v=jwYzKtcOYl0"
-        target="_blank"
-        rel="noopener"
-        aria-label="Play video on YouTube: Real agentchute session — Claude, codex, Gemini in tmux (24x speedup, 62 seconds)">
-        <img
-          src="https://img.youtube.com/vi/jwYzKtcOYl0/maxresdefault.jpg"
-          alt="Three agents coordinating in tmux — thumbnail for the launch video"
-          loading="lazy">
-        <span class="video-play" aria-hidden="true">▶</span>
-      </a>
-      <figcaption>
-        Three agents coordinating during a real working session. tmux and herdr are peer wake adapters;
-        the runner socket covers terminals without a pane transport.
-        24x speedup, no staged prompts, no human ferrying messages.
-        <a href="https://www.youtube.com/watch?v=jwYzKtcOYl0" target="_blank" rel="noopener">Watch on YouTube</a> (62 seconds).
-      </figcaption>
-    </figure>
-  </div>
-</section>
-
-<section class="featured-post">
-  <div class="wrap">
-    <a href="blog/v0-3-5-contextual-identity-worktrees.html" class="featured-post-link">
-      <div class="featured-post-text">
-        <p class="featured-post-meta">Latest from the blog</p>
-        <p class="featured-post-title">v0.3.5: tmux teams, worktrees, and contextual identity <span class="featured-post-arrow" aria-hidden="true">→</span></p>
-        <p class="featured-post-excerpt">The tmux reference path now handles worktrees and same-folder agents with contextual IDs, safer enrollment refreshes, and hook templates that no longer hardcode identities.</p>
+        <div class="cta">
+          <a class="btn primary" href="https://www.youtube.com/watch?v=jwYzKtcOYl0" target="_blank" rel="noopener"><span class="tri">▶</span> Watch the 62-sec demo</a>
+          <a class="btn ghost" href="#protocol">Read the protocol</a>
+        </div>
       </div>
-    </a>
-  </div>
-</section>
 
-<section class="primitives">
-  <div class="wrap">
-    <h2>What's actually in the protocol</h2>
-    <p>
-      The protocol is a small set of <em>implementation-agnostic primitives</em>. Conforming
-      implementations are free to choose any inbox medium, any transport between sender and
-      inbox, and any wake mechanism — those are <strong>outside the protocol</strong>.
-    </p>
-    <ul class="grid">
-      <li><strong>Per-recipient inbox.</strong> Each agent owns an ordered message stream. Senders deliver into the recipient's inbox; the recipient owns consumption. <em>The inbox medium is implementation-specific.</em></li>
-      <li><strong>Ordered, identified messages.</strong> Each carries a unique <code>(timestamp, sender, nonce)</code> identity tuple; receivers process oldest-first by timestamp with deterministic tie-breaking. The reference CLI realizes this as lexicographic-sorted filenames.</li>
-      <li><strong>No-overwrite delivery.</strong> Delivery never silently clobbers an existing entry. Same-identity collisions retry with a fresh nonce. <em>Sender-to-inbox transport is implementation-specific.</em></li>
-      <li><strong>Recipient-owned consumption.</strong> Only the recipient reads its own message bodies. Liveness checks use inbox metadata only.</li>
-      <li><strong>Optional wake.</strong> Senders MAY signal a recipient via a pluggable wake adapter. Per <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md#82-wake-responsibility">§8.2</a>, recipient-side polling is the correctness mechanism; wake is a latency hint. <em>The wake mechanism is implementation-specific.</em></li>
-      <li><strong>Self-registration.</strong> Each agent publishes a small record naming itself, its wake method/target (if any), and operational metadata.</li>
-    </ul>
-  </div>
-</section>
+      <div class="diagram" id="demo">
+        <svg viewBox="0 0 920 500" font-family="var(--mono)" role="img" aria-label="Agents — here claude, codex, gemini, grok, but any terminal-based agent works — each with its own inbox, passing Markdown messages peer to peer with no central broker.">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#1E6F57"/>
+            </marker>
+          </defs>
+          <g fill="none" stroke="#1E6F57" stroke-width="1.6" stroke-dasharray="2 5" stroke-linecap="round" opacity="0.85">
+            <path d="M276,150 C 392,120 540,112 648,132" marker-end="url(#ah)"/>
+            <path d="M742,182 C 772,244 772,300 756,348" marker-end="url(#ah)"/>
+            <path d="M660,398 C 536,426 320,426 284,406" marker-end="url(#ah)"/>
+            <path d="M182,356 C 166,302 166,250 174,200" marker-end="url(#ah)"/>
+          </g>
+          <text x="460" y="240" text-anchor="middle" font-size="12.5" fill="#9A9C8C" letter-spacing="0.04em">no central broker</text>
+          <text x="460" y="258" text-anchor="middle" font-size="11" fill="#B6B8A8">agents are peers</text>
+          <text x="460" y="274" text-anchor="middle" font-size="9" fill="#8A8C7C">(recipient reads its own inbox)</text>
 
-<section class="primitives" style="background:var(--bg-alt)">
-  <div class="wrap">
-    <h2>The reference CLI: filesystem inboxes, optional wake</h2>
-    <p>
-      The CLI in this repo picks one concrete answer for each implementation-specific axis.
-      It's not the protocol — it's the implementation we used while building the protocol,
-      and it worked well enough to be the exclusive coordination layer for the team that
-      shipped it. tmux and herdr are fast local pane wake paths. The launcher-shim
-      runner registers a Unix-socket wake target, polls the inbox, and injects the
-      wake prompt without tmux. Lifecycle checks keep registrations bound to the
-      truthful primary wake, while runner/poller ticks cache reachability and let
-      schedulers launch the wrapper only when work exists.
-    </p>
-    <ul class="grid">
-      <li><strong>Inbox medium:</strong> plain <code>.md</code> files on a shared filesystem, organized under <code>.&lt;vendor&gt;/loop/inbox/&lt;agent&gt;/</code>.</li>
-      <li><strong>Transport:</strong> atomic create-temp + rename (the local-filesystem realization of no-overwrite delivery).</li>
-      <li><strong>Peer wake adapters:</strong> <code>tmux send-keys</code> injects <code>[agentchute:tmux] check inbox</code>; <code>herdr agent send</code> injects <code>[agentchute:herdr] check inbox</code> by stable agent name. The bracketed prefix is machine metadata; the model-facing instruction is still to check the inbox. See the <a href="https://github.com/agentchute/agentchute/blob/main/examples/tmux-quickstart.md">tmux starter kit</a> for the 5-minute local setup.</li>
-      <li><strong>Runner socket:</strong> the launcher-shim runner (<code>agentchute run --as codex --vendor openai -- codex</code>, installed by <code>setup</code>) launches the wrapper under a PTY, registers a Unix-socket wake target, polls the inbox, and injects <code>[agentchute:run] check inbox</code> when mail arrives. Works without tmux.</li>
-      <li><strong>Recipient polling:</strong> <code>self-poll</code> is the read-only "should I wake the wrapper?" helper for schedulers and launch prompts.</li>
-      <li><strong>Generated schedulers:</strong> <code>doctor --generate-service</code> emits launchd, systemd, or portable shell-loop units that run <code>self-poll</code> and then launch the wrapper, not bare <code>check</code>.</li>
-      <li><strong>Reachability diagnostics:</strong> <code>status</code> and <code>doctor</code> show live/cached reachability, wake-target health, launch provenance, and present-but-not-enrolled wrappers.</li>
-      <li><strong>Opt-in presence repair:</strong> <code>presenced</code> can discover and enroll high-confidence local wrappers; it is off by default and never started by setup.</li>
-      <li><strong>Lifecycle catchup:</strong> <code>gate --before continue</code> lets already-awake wrappers catch mail that arrived during a turn.</li>
-    </ul>
-    <p>
-      Alternate inbox media (Redis/NATS queues, S3-prefixed inboxes, HTTP endpoints,
-      git-backed) are protocol-compatible — see
-      <a href="https://github.com/agentchute/agentchute/blob/main/EXTENSIONS.md"><code>EXTENSIONS.md</code></a>.
-    </p>
-  </div>
-</section>
+          <g transform="translate(88,96)">
+            <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
+            <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
+            <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">claude</text>
+            <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
+            <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
+            <rect x="16" y="70" width="156" height="12" rx="3" fill="#F0F1EA"/>
+            <rect x="16" y="86" width="116" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+          </g>
+          <g transform="translate(648,84)">
+            <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
+            <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
+            <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">codex</text>
+            <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
+            <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
+            <rect x="16" y="70" width="132" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+            <rect x="16" y="86" width="156" height="12" rx="3" fill="#F0F1EA"/>
+          </g>
+          <g transform="translate(660,348)">
+            <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
+            <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
+            <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">gemini</text>
+            <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
+            <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
+            <rect x="16" y="70" width="100" height="12" rx="3" fill="#F0F1EA"/>
+            <rect x="16" y="86" width="156" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+          </g>
+          <g transform="translate(96,352)">
+            <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
+            <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
+            <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">grok</text>
+            <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
+            <rect x="16" y="54" width="156" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+            <rect x="16" y="70" width="138" height="12" rx="3" fill="#F0F1EA"/>
+            <rect x="16" y="86" width="156" height="12" rx="3" fill="#F0F1EA"/>
+          </g>
 
-<section class="flow">
-  <div class="wrap">
-    <h2>The Handoff: simple two-agent message flow</h2>
-    <p>The simplest case: alice sends; bob discovers the inbox entry by wake hint or polling; bob's model runs <code>agentchute check</code>; bob replies.</p>
-
-    <div class="anim" data-anim="handoff">
-      <pre class="ascii ascii-anim" aria-label="Simple two-agent flow"><code></code></pre>
-      <div class="anim-controls">
-        <button type="button" class="anim-play" data-action="toggle" aria-label="Pause">⏸ Pause</button>
-        <button type="button" data-action="step-back" aria-label="Previous step">‹</button>
-        <span class="anim-step-label" aria-live="polite">step 1 / 4</span>
-        <button type="button" data-action="step-fwd" aria-label="Next step">›</button>
-        <button type="button" data-action="restart" aria-label="Restart">↺</button>
+          <g class="mflight-r" transform="translate(430,96)">
+            <rect x="0" y="0" width="74" height="46" rx="7" fill="#FFFFFF" stroke="#CFE3D8"/>
+            <rect x="0" y="0" width="4" height="46" rx="2" fill="#1E6F57"/>
+            <path d="M60,0 l14,14 h-14 z" fill="#EAF1ED"/>
+            <text x="12" y="19" font-size="7.5" fill="#8A8C7C">from-claude</text>
+            <text x="12" y="32" font-size="9.5" fill="#17180F">review PR 42</text>
+            <text x="12" y="41" font-size="7.5" fill="#C8791A">⌖ reply</text>
+          </g>
+          <g class="mflight-l" transform="translate(414,392)">
+            <rect x="0" y="0" width="74" height="40" rx="7" fill="#FFFFFF" stroke="#E2E0D6"/>
+            <rect x="0" y="0" width="4" height="40" rx="2" fill="#1E6F57"/>
+            <path d="M60,0 l14,14 h-14 z" fill="#F0F1EA"/>
+            <text x="12" y="18" font-size="7.5" fill="#8A8C7C">from-gemini</text>
+            <text x="12" y="31" font-size="9.5" fill="#17180F">findings.md</text>
+          </g>
+        </svg>
       </div>
+    </section>
+  </div>
+
+  <div class="thesis">
+    <div class="wrap">
+      <p>Every agent has an <span class="k">inbox</span> — a directory. A message is a <span class="k">Markdown file</span> dropped in it. The recipient reads its own inbox, on its own schedule. <span class="k">Best-effort delivery</span>, no server, no SDK — and it works with <span class="k">any terminal-based agent</span>, not a fixed list.</p>
     </div>
   </div>
-</section>
 
-<section class="flow">
   <div class="wrap">
-    <h2>The Review: multi-agent coordination with liveness sidecar</h2>
-    <p>
-      Three peers plus a watchdog. <code>claude-code</code> requests review, <code>codex</code> and
-      <code>gemini-cli</code> send findings back, claude-code consolidates and asks for sign-off.
-      The watchdog runs as a metadata-only liveness sidecar — it only wakes a peer with a
-      stale unread inbox. Same protocol; same shared inbox; no central broker.
-    </p>
-
-    <div class="anim" data-anim="review">
-      <pre class="ascii ascii-anim" aria-label="Complex multi-agent flow with watchdog sidecar"><code></code></pre>
-      <div class="anim-controls">
-        <button type="button" class="anim-play" data-action="toggle" aria-label="Pause">⏸ Pause</button>
-        <button type="button" data-action="step-back" aria-label="Previous step">‹</button>
-        <span class="anim-step-label" aria-live="polite">step 1 / 5</span>
-        <button type="button" data-action="step-fwd" aria-label="Next step">›</button>
-        <button type="button" data-action="restart" aria-label="Restart">↺</button>
+    <section id="protocol">
+      <p class="lbl">what's in the protocol</p>
+      <h2>Five primitives. The rest is your choice.</h2>
+      <div class="prims">
+        <div class="prim">
+          <h3>per-recipient inbox</h3>
+          <p>Each agent owns an ordered message stream. Senders deliver into it; the recipient owns consumption.</p>
+        </div>
+        <div class="prim">
+          <h3>identified messages</h3>
+          <p>Every message has a durable <code>(to, from, seq)</code> identity. A sender's messages stay in order — with no clock.</p>
+        </div>
+        <div class="prim">
+          <h3>no-overwrite delivery</h3>
+          <p>A sender never clobbers an existing message. Re-delivering the same <code>(to, from, seq)</code> is a benign no-op.</p>
+        </div>
+        <div class="prim">
+          <h3>recipient reads its own inbox</h3>
+          <p>Pull, not push. Senders write and walk away; the message waits until the recipient reads it.</p>
+        </div>
+        <div class="prim">
+          <h3>self-registration + presence</h3>
+          <p>Each agent publishes a small record and a liveness heartbeat, read on demand.</p>
+        </div>
+        <div class="prim">
+          <h3 style="color:var(--faint)">…and that's it</h3>
+          <p class="em">The inbox medium and transport are yours — files, a queue, HTTP, git all fit the same shape.</p>
+        </div>
       </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<section class="notwhat">
-  <div class="wrap">
-    <h2>What it isn't</h2>
-    <p>
-      agentchute is not a multi-agent framework. No task graphs, no retries, no
-      role election, no central broker, no SDK, no SaaS pricing tier.
-    </p>
-    <ul>
-      <li><strong>Not a message broker with delivery guarantees.</strong> No retries, no acknowledgments, no exactly-once. If you need queues, use a queue.</li>
-      <li><strong>Not an identity/auth system.</strong> Messages are unsigned plain-text. If you don't trust your peers, don't run them on your machine.</li>
-      <li><strong>Not a router or task-assignment engine.</strong> Agents are peers; senders pick recipients explicitly. No wildcard, no broadcast, no role election.</li>
-      <li><strong>Not an audit log.</strong> Archives are local and gitignored by default. Loop messages are a transient operational trace.</li>
-      <li><strong>Not a distributed transport with cryptographic guarantees.</strong> The reference CLI runs over a shared filesystem and provides no signing, no acks, no exactly-once. The protocol itself is medium-agnostic — alternate inbox transports are compatible — but the CLI ships only the local, unsigned, cooperative-trust implementation. For cryptographic audit, use a signed-envelope coordination protocol.</li>
-    </ul>
-    <p>If you wanted any of those, this is the wrong tool, and that's fine.</p>
-  </div>
-</section>
+    <section>
+      <p class="lbl">honest scope</p>
+      <div class="isnt">
+        <div class="head">
+          <h2>What it isn't</h2>
+          <p>agentchute is not a multi-agent framework. No task graphs, no role election, no central broker, no SDK, no SaaS tier. If you wanted those, this is the wrong tool — and that's fine.</p>
+        </div>
+        <ul class="clean">
+          <li><b>Not a delivery broker.</b> <span>Delivery is best-effort; the recipient reads on its own cadence, and at-least-once consume means handlers must be idempotent. Need retries and exactly-once? Use a queue.</span></li>
+          <li><b>Not an auth system.</b> <span>Messages are unsigned plain text. If you don't trust your peers, don't run them on your machine.</span></li>
+          <li><b>Not a router.</b> <span>Agents are peers; senders pick recipients explicitly. No wildcard, no broadcast, no role election.</span></li>
+          <li><b>Not an audit log.</b> <span>The loop is a transient, local operational trace, gitignored by default.</span></li>
+        </ul>
+      </div>
+    </section>
 
-<section class="quickstart">
-  <div class="wrap">
-    <h2>Quickstart — no binary</h2>
-    <p>
-      The protocol-only path: drop
-      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code></a>
-      into your project and follow §3 (layout) + §5 (registration) + §6 (messaging).
-      No <code>agentchute</code> binary required; sending and checking are <code>mv</code>
-      plus an optional wake poke. The CLI and the hand protocol share the same files,
-      so you can mix them in the same pool.
-    </p>
-  </div>
-</section>
+    <section id="refimpl">
+      <p class="lbl">code, but not the protocol</p>
+      <h2>A real implementation — that you're free to replace.</h2>
+      <p style="color:var(--muted);max-width:64ch;font-size:1.04rem;margin:0">
+        agentchute ships a proper reference implementation: a small Go CLI and a per-agent supervisor that handle delivery, registration, presence, and message ordering for you, so you don't have to build any of it. It is <b style="color:var(--ink)">not</b> the protocol. The protocol is the <a href="#protocol">spec</a> — a directory layout and a filename grammar — and anyone is welcome to write another implementation, in any language. A filesystem implementation interoperates with ours directly, because both read and write the same files; over a different transport it's protocol-compatible but interoperates only through a shared filesystem loop or a bridge.
+      </p>
+    </section>
 
-<section class="cli">
-  <div class="wrap">
-    <h2>The reference CLI</h2>
-    <p>Small Go codebase, mostly stdlib with one PTY runner dependency. The CLI and the hand protocol interoperate because both write the same files.</p>
-    <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
-    <p>Or if you'd rather build from source: <code>go install github.com/agentchute/agentchute@latest</code>, then run <code>agentchute setup</code> in your control repo.</p>
-    <p>Already installed? <code>agentchute update</code> upgrades the reference CLI and re-syncs the control repo (hooks, shims, enrollment) in one step — then restart your agents.</p>
-    <p>The commands a new user actually needs most:</p>
-    <ul class="commands">
-      <li><code>agentchute setup</code> — one-command repo wiring. Prompts for any combination of <code>runner</code> / <code>tmux</code> / <code>herdr</code> wake paths (or <code>all</code>); installs lifecycle hooks; installs launcher shims when runner is selected (plus hookless wrappers otherwise); updates PATH when needed.</li>
-      <li><code>agentchute doctor --as codex</code> — health check. Validates registration, wake-target reachability, hook templates, launch provenance, unenrolled wrappers, and no-tmux liveness coverage. Run this after <code>setup</code>.</li>
-      <li><code>agentchute status</code> — pool view: inbox depth, freshness, wake target, and live/cached reachability for each registration.</li>
-      <li><code>agentchute send --from claude-code --to codex --task "review diff"</code> — writes the message file and attempts a best-effort recipient wake.</li>
-      <li><code>agentchute check --as codex</code> — reads + archives the agent's own inbox, records reply obligations, quarantines malformed mail per §11, and cooperative-wakes peers per §10.2.</li>
-    </ul>
-    <p>
-      The full surface (<code>init</code>, <code>register</code>, <code>self-poll</code>, <code>gate</code>,
-      <code>run</code>, <code>poller</code>, <code>watchdog</code>, <code>presenced</code>, hook helpers) is documented in
-      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code></a>
-      and the wrapper enrollment templates. Most users only call <code>setup</code> + <code>doctor</code> directly;
-      the rest are invoked by lifecycle hooks and launcher shims.
-    </p>
+    <section>
+      <p class="lbl">get started</p>
+      <h2>Two ways to start.</h2>
+      <div class="start">
+        <div class="panel">
+          <h3>Use the reference CLI</h3>
+          <p class="d">One small Go binary plus a per-agent supervisor. Install, wire your repo once, start your agents.</p>
+          <div class="term">
+<span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh<br>
+<span class="p">$</span> agentchute setup<br>
+<span class="p">$</span> agentchute doctor <span class="c"># health check</span>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Or your own — it's just files</h3>
+          <p class="d">Write any implementation against the spec, or drive it by hand. Reference-CLI and hand-protocol agents share one pool.</p>
+          <div class="term">
+<span class="c"># the whole protocol is one file</span><br>
+<span class="p">$</span> cp AGENTCHUTE.md ./your-repo/<br>
+<span class="c"># then register, and drop §6.1 messages into</span><br>
+<span class="c"># .agentchute/loop/inbox/&lt;recipient&gt;/from-&lt;from&gt;_seq-&lt;020d&gt;.md</span>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
-</section>
-
 </main>
-
-<script src="anim.js" defer></script>
 
 <footer>
   <div class="wrap">
-    <p>
-      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
-      ·
-      <a href="spec.html">protocol spec</a>
-      ·
-      <a href="https://github.com/agentchute/agentchute/blob/main/EXTENSIONS.md">extensions</a>
-      ·
-      MIT license
-    </p>
-    <p class="tiny">
-      agentchute is built by <a href="https://rehumanlabs.com">reHuman Labs</a>.
-      The umbrella thesis: let humans do human work, let agents do agent work,
-      give humans more time to think instead of coordinating and copy-pasting.
+    <p class="thesisline">Let humans do human work, let agents do agent work — and stop using humans as a message bus.</p>
+    <p class="meta">
+      <a href="https://github.com/agentchute/agentchute">github</a> ·
+      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md">spec</a> ·
+      MIT · built by <a href="https://rehumanlabs.com">reHuman Labs</a>
     </p>
   </div>
 </footer>

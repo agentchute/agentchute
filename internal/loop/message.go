@@ -1,7 +1,6 @@
 package loop
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,23 +9,28 @@ import (
 )
 
 // ComposeMessage builds an outbound message's bytes (frontmatter + body)
-// per AGENTCHUTE.md §6.4. Optional scalars (task, status, replyTo) may be
-// empty. Body is markdown; a trailing newline is normalized regardless of
-// the input.
+// per AGENTCHUTE.md §6.4. Body is markdown; a trailing newline is normalized
+// regardless of the input.
+//
+// protocol-v2 envelope cut (TEAM-DECISION §4): the emitted envelope is now
+// `from`, optional `in_reply_to`, plus `message_id` retained for the compat
+// window (the recipient pending-reply ledger + --reply-to threading still read
+// it). `to` is dropped — the inbox directory location encodes the recipient —
+// and the `task`/`status` workflow-vocabulary fields move to a body convention,
+// so neither is emitted. The `to`/`task`/`status` parameters are retained on the
+// signature for one release so callers (send, defer, announce, corrective) need
+// no change during the transition; the inbox parser still READS all of these
+// from any older message in flight.
 func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string) []byte {
+	_ = to     // recipient is encoded by the inbox directory; not emitted (compat param).
+	_ = task   // workflow vocabulary → body convention; not emitted (compat param).
+	_ = status // workflow vocabulary → body convention; not emitted (compat param).
 	var b strings.Builder
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "message_id: %s\n", FormatMessageID(now))
 	fmt.Fprintf(&b, "from: %s\n", from)
-	fmt.Fprintf(&b, "to: %s\n", to)
 	if replyTo != "" {
 		fmt.Fprintf(&b, "in_reply_to: %s\n", quoteIfNeeded(replyTo))
-	}
-	if task != "" {
-		fmt.Fprintf(&b, "task: %s\n", quoteIfNeeded(task))
-	}
-	if status != "" {
-		fmt.Fprintf(&b, "status: %s\n", quoteIfNeeded(status))
 	}
 	b.WriteString("---\n\n")
 	b.WriteString(strings.TrimRight(body, "\n"))
@@ -92,18 +96,15 @@ func AnnounceEnrollment(cfg *Config, self *Registration, now time.Time) (Announc
 		}
 		result.Total++
 		content := ComposeMessage(now, self.AgentID, peer.AgentID, "enrolled", "info", "", body)
-		if _, err := WriteInboxMessage(cfg.AgentInboxDir(peer.AgentID), now, self.AgentID, content); err != nil {
+		// Gate 4: deliver under the canonical (to,from,seq) identity (empty
+		// idempotencyKey/serveToken = transitional at-most-once, unfenced).
+		if _, err := SendSeqMessage(cfg, self.AgentID, peer.AgentID, content, "", ""); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("send to %s: %v", peer.AgentID, err))
 			continue
 		}
 		result.Sent++
-		if peer.IsPokable() {
-			// PokeRegistration refuses an unowned runner socket (recipient-binding)
-			// without dialing it; non-runner methods poke as before.
-			if err := PokeRegistration(context.Background(), cfg, peer); err != nil {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("poke %s: %v", peer.AgentID, err))
-			}
-		}
+		// Simple-again Gate 6a (pull-only): the announcement is delivered by the
+		// inbox file write alone; peers pick it up on their own poll. No wake poke.
 	}
 	return result, nil
 }
@@ -204,17 +205,20 @@ func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionR
 	body := CorrectiveBody(malformedItem, reason, sectionRef)
 	content := ComposeMessage(now, from, offender, "protocol correction", "findings", "", body)
 
-	msg, err := WriteInboxMessage(cfg.AgentInboxDir(offender), now, from, content)
+	// Gate 4: deliver under the canonical (to,from,seq) identity (empty
+	// idempotencyKey/serveToken = transitional at-most-once, unfenced).
+	id, err := SendSeqMessage(cfg, from, offender, content, "", "")
 	if err != nil {
 		return Message{}, err
 	}
-
-	// Best-effort poke (per §11.1 / §6.2). PokeRegistration refuses an unowned
-	// runner socket (recipient-binding) without dialing it.
-	reg, err := ReadRegistration(cfg.AgentRegistrationPath(offender))
-	if err == nil && reg.IsPokable() {
-		_ = PokeRegistration(context.Background(), cfg, reg)
+	msg := Message{
+		Filename: id.Filename(),
+		Path:     filepath.Join(cfg.AgentInboxDir(offender), id.Filename()),
+		Sender:   from,
 	}
+
+	// Simple-again Gate 6a (pull-only): the corrective is delivered by the inbox
+	// file write alone; the offender picks it up on its own poll. No wake poke.
 	return msg, nil
 }
 

@@ -49,6 +49,12 @@
           },
           {
             "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} ack --vendor openai --quiet",
+            "timeout": 30,
+            "statusMessage": "agentchute: ack"
+          },
+          {
+            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} gate --vendor openai --before finish --codex-hook Stop",
             "timeout": 30,
             "statusMessage": "agentchute: finish gate"

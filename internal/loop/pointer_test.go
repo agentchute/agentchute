@@ -179,7 +179,7 @@ func TestDiscoverIntegratesPointerFile(t *testing.T) {
 	parent := t.TempDir()
 	// Set up a valid control repo at parent/control with a vendor loop.
 	control := filepath.Join(parent, "control")
-	mustMkdir(t, filepath.Join(control, ".vendor", "loop"))
+	mustMkdir(t, filepath.Join(control, ".agentchute", "loop"))
 	mustWrite(t, filepath.Join(control, "AGENTCHUTE.md"), []byte("# spec\n"))
 
 	// repo-A has the pointer but no local loop or AGENTCHUTE.md.
@@ -200,8 +200,8 @@ func TestDiscoverIntegratesPointerFile(t *testing.T) {
 	if !strings.HasPrefix(cfg.ControlRepoOrigin, "pointer:") {
 		t.Fatalf("ControlRepoOrigin = %q, want pointer:...", cfg.ControlRepoOrigin)
 	}
-	if cfg.Vendor != "vendor" {
-		t.Fatalf("Vendor = %q, want vendor", cfg.Vendor)
+	if cfg.Vendor != "agentchute" {
+		t.Fatalf("Vendor = %q, want agentchute", cfg.Vendor)
 	}
 }
 
@@ -209,11 +209,11 @@ func TestDiscoverIntegratesPointerFile(t *testing.T) {
 func TestDiscoverFlagBeatsPointer(t *testing.T) {
 	parent := t.TempDir()
 	pointerTarget := filepath.Join(parent, "pointer-target")
-	mustMkdir(t, filepath.Join(pointerTarget, ".v1", "loop"))
+	mustMkdir(t, filepath.Join(pointerTarget, ".agentchute", "loop"))
 	mustWrite(t, filepath.Join(pointerTarget, "AGENTCHUTE.md"), []byte("# spec\n"))
 
 	flagTarget := filepath.Join(parent, "flag-target")
-	mustMkdir(t, filepath.Join(flagTarget, ".v2", "loop"))
+	mustMkdir(t, filepath.Join(flagTarget, ".agentchute", "loop"))
 	mustWrite(t, filepath.Join(flagTarget, "AGENTCHUTE.md"), []byte("# spec\n"))
 
 	repoA := filepath.Join(parent, "repo-A")

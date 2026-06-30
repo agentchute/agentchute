@@ -86,18 +86,15 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 		return nil, err
 	}
 
-	herdrTargets := map[string]bool{}
-	tmuxTargets := map[string]bool{}
+	// Pull-only (Gate 6c): registrations carry no wake target, so a herdr/tmux
+	// presence can no longer be matched to a registration BY wake target. herdr
+	// agents map to an enrolled lane only when the bound name is itself a
+	// registered agent id; tmux panes have no registration link at all, so an
+	// in-pool pane always surfaces as present-but-not-enrolled.
 	agentIDs := map[string]bool{}
 	enrolledPIDs := map[int]bool{}
-	for id, reg := range regs {
+	for id := range regs {
 		agentIDs[id] = true
-		switch strings.TrimSpace(reg.WakeMethod) {
-		case "herdr":
-			herdrTargets[strings.TrimSpace(reg.WakeTarget)] = true
-		case "tmux":
-			tmuxTargets[strings.TrimSpace(reg.WakeTarget)] = true
-		}
 		// Best-effort: a wrapper PID recorded in a live agent's session/runner
 		// state is "accounted for" — a raw process with that PID is NOT a bypass.
 		if sess, e := loop.LoadActiveSession(cfg, id); e == nil && sess.PID > 0 {
@@ -130,7 +127,7 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 			continue
 		}
 		name := p.Hint
-		if herdrTargets[name] || agentIDs[name] {
+		if agentIDs[name] {
 			continue
 		}
 		out = append(out, UnenrolledProcess{
@@ -144,7 +141,7 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 	// tmux panes: enrolled when the pane id is a registered tmux wake target.
 	for _, p := range listTmuxSafe() {
 		pane := strings.TrimSpace(p.PaneID)
-		if pane == "" || tmuxTargets[pane] {
+		if pane == "" {
 			continue
 		}
 		if !cwdMapsToPool(cfg, p.Cwd) {
@@ -357,9 +354,12 @@ func defaultListTmuxPanes() []tmuxPresenceEntry {
 	return entries
 }
 
-// defaultListRunnerSockets enumerates live agentchute-run sockets under this
-// pool's loop dir (state/<agent>/runner.sock) and pings each. Only sockets that
-// answer the ping are returned (a stale socket file is not a present process).
+// defaultListRunnerSockets enumerates live agentchute-run runners under this
+// pool's loop dir. Simple-again Gate 6b (pull-only): the runner no longer owns a
+// receive socket, so a live runner is detected from its runner STATE file
+// (state/<agent>/runner.json) — same-host, status != offline, and a live runner
+// pid — instead of a socket ping. A stale state file (dead pid / offline) is not
+// a present process.
 func defaultListRunnerSockets(cfg *loop.Config) []runnerPresenceEntry {
 	if cfg == nil {
 		return nil
@@ -369,6 +369,7 @@ func defaultListRunnerSockets(cfg *loop.Config) []runnerPresenceEntry {
 	if err != nil {
 		return nil
 	}
+	localHost := strings.TrimSpace(localHostname())
 	var out []runnerPresenceEntry
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -378,15 +379,20 @@ func defaultListRunnerSockets(cfg *loop.Config) []runnerPresenceEntry {
 		if loop.ValidateAgentID(agentID) != nil {
 			continue
 		}
-		sockPath := filepath.Join(stateDir, agentID, "runner.sock")
-		if _, err := os.Stat(sockPath); err != nil {
+		st, err := loop.LoadRunnerState(cfg, agentID)
+		if err != nil {
 			continue
 		}
-		target := loop.RunnerWakeTarget(sockPath)
-		if !loop.RunnerSocketReachable(target, presenceProbeTimeout) {
+		if localHost != "" && strings.TrimSpace(st.Host) != "" && st.Host != localHost {
+			continue // runner pid liveness is only provable same-host.
+		}
+		if strings.EqualFold(strings.TrimSpace(st.Status), "offline") {
 			continue
 		}
-		out = append(out, runnerPresenceEntry{AgentID: agentID, Target: target, Cwd: cfg.ControlRepo})
+		if st.RunnerPID <= 0 || !processAlive(st.RunnerPID) {
+			continue
+		}
+		out = append(out, runnerPresenceEntry{AgentID: agentID, Cwd: cfg.ControlRepo})
 	}
 	return out
 }

@@ -132,12 +132,10 @@ func TestResolveAgentID(t *testing.T) {
 
 		// Create an active registration for the base ID
 		reg := &loop.Registration{
-			AgentID:    "claude-code-my-project",
-			Vendor:     "anthropic",
-			LastSeen:   time.Now().UTC(),
-			WakeMethod: "tmux",
-			WakeTarget: "%1", // Different pane
-			Status:     loop.StatusActive,
+			AgentID:  "claude-code-my-project",
+			Vendor:   "anthropic",
+			LastSeen: time.Now().UTC(),
+			Status:   loop.StatusActive,
 		}
 		hostname, _ := os.Hostname()
 		reg.Host = hostname
@@ -149,11 +147,14 @@ func TestResolveAgentID(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got != "claude-code-my-project-2" {
-			t.Errorf("got %q, want 'claude-code-my-project-2' (collision with active different-pane ID)", got)
+			t.Errorf("got %q, want 'claude-code-my-project-2' (collision with active ID)", got)
 		}
 	})
 
-	t.Run("ReuseSamePaneID", func(t *testing.T) {
+	t.Run("CollidingActiveIDSuffixes", func(t *testing.T) {
+		// Pull-only (Gate 6c): there is no tmux/herdr pane-adoption. A fresh active
+		// registration for the base id always reserves it, so the contextual
+		// default suffixes to -2 rather than reusing the colliding id.
 		t.Setenv("AGENTCHUTE_AGENT_ID", "")
 		t.Setenv("TMUX_PANE", "%1")
 
@@ -163,14 +164,11 @@ func TestResolveAgentID(t *testing.T) {
 		agentsDir := cfg.AgentsDir()
 		_ = os.MkdirAll(agentsDir, 0700)
 
-		// Create an active registration for the base ID in the SAME pane
 		reg := &loop.Registration{
-			AgentID:    "claude-code-my-project",
-			Vendor:     "anthropic",
-			LastSeen:   time.Now().UTC(),
-			WakeMethod: "tmux",
-			WakeTarget: "%1", // SAME pane
-			Status:     loop.StatusActive,
+			AgentID:  "claude-code-my-project",
+			Vendor:   "anthropic",
+			LastSeen: time.Now().UTC(),
+			Status:   loop.StatusActive,
 		}
 		hostname, _ := os.Hostname()
 		reg.Host = hostname
@@ -181,8 +179,8 @@ func TestResolveAgentID(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != "claude-code-my-project" {
-			t.Errorf("got %q, want 'claude-code-my-project' (reused from same pane)", got)
+		if got != "claude-code-my-project-2" {
+			t.Errorf("got %q, want 'claude-code-my-project-2' (no pane reuse under pull-only)", got)
 		}
 	})
 
@@ -196,11 +194,12 @@ func TestResolveAgentID(t *testing.T) {
 		agentsDir := cfg.AgentsDir()
 		_ = os.MkdirAll(agentsDir, 0700)
 
-		// Create a STALE registration for the base ID
+		// Create a STALE registration for the base ID (older than StaleRegThreshold
+		// so it does not reserve the id; pull-only reserves any FRESH active reg).
 		reg := &loop.Registration{
 			AgentID:  "claude-code-my-project",
 			Vendor:   "anthropic",
-			LastSeen: time.Now().UTC().Add(-10 * time.Minute), // Stale
+			LastSeen: time.Now().UTC().Add(-2 * time.Hour), // genuinely stale
 			Status:   loop.StatusActive,
 		}
 		hostname, _ := os.Hostname()
@@ -217,7 +216,10 @@ func TestResolveAgentID(t *testing.T) {
 		}
 	})
 
-	t.Run("PollerOnlyRegistrationDoesNotReserveContextualID", func(t *testing.T) {
+	t.Run("FreshActiveRegistrationReservesContextualID", func(t *testing.T) {
+		// Pull-only (Gate 6c): with no wake state there is no "pokable vs
+		// poller-only" distinction — any fresh, active registration reserves its
+		// id, so a colliding contextual default suffixes to -2.
 		t.Setenv("AGENTCHUTE_AGENT_ID", "")
 		t.Setenv("TMUX_PANE", "")
 
@@ -242,8 +244,8 @@ func TestResolveAgentID(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != "claude-code-my-project" {
-			t.Errorf("got %q, want 'claude-code-my-project' (poller heartbeat is liveness, not a distinct lane)", got)
+		if got != "claude-code-my-project-2" {
+			t.Errorf("got %q, want 'claude-code-my-project-2' (fresh active reg reserves its id)", got)
 		}
 	})
 }
@@ -276,8 +278,6 @@ func TestAvailableContextualAgentID_ErrorsPastCap(t *testing.T) {
 			AgentID:     id,
 			Vendor:      "anthropic",
 			LastSeen:    now,
-			WakeMethod:  "tmux",
-			WakeTarget:  "%99",
 			Status:      loop.StatusActive,
 			Host:        hostname,
 			ControlRepo: root,

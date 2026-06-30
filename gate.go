@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,9 +15,6 @@ import (
 
 // StaleRegThreshold is the age beyond which `gate --before commit` (and
 // stronger phases that wrap it) flag the agent's own registration as stale.
-// Mirrors the watchdog default in check.go (cooperativeStaleThreshold uses
-// the same 5m for peer activity, but a registration is "stale" at a longer
-// 30m grace).
 const StaleRegThreshold = 30 * time.Minute
 
 // Lifecycle phases recognized by `gate --before <phase>`. Order matters
@@ -43,7 +39,7 @@ const (
 // signal) when an obligation remains. Wrapper-specific hook-envelope modes
 // return exit 0 and signal block/allow in their JSON payload.
 //
-// Spec: AGENTCHUTE.md §6 (messaging obligations), §9 (liveness), §10 (watchdog).
+// Spec: AGENTCHUTE.md §6 (messaging obligations).
 func cmdGate(args []string) error {
 	fs := flag.NewFlagSet("gate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -100,109 +96,10 @@ func cmdGate(args []string) error {
 	}
 
 	now := time.Now().UTC()
-
-	// Inbox peek — same path boot/pending use, no side effects. `skipped`
-	// is the §11 protocol-violation surface: files that look like inbox
-	// messages but fail the §6.1 reference filename encoding. They block
-	// consensus/finish because the agent owes a quarantine + corrective
-	// notify, which `check` runs.
-	//
-	// ErrInboxMissing is treated as "this agent never booted on this
-	// host" — folded into the missing-registration path below so the
-	// reason text is unified ("not registered; run boot first").
-	inboxDir := cfg.AgentInboxDir(agentID)
-	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
-	inboxMissing := false
+	status, err := evaluateGate(cfg, agentID, phase, requireConfirm, ackStaleReg, now)
 	if err != nil {
-		if errors.Is(err, loop.ErrInboxMissing) {
-			inboxMissing = true
-			msgs, skipped = nil, nil
-		} else {
-			return fmt.Errorf("list inbox: %w", err)
-		}
+		return err
 	}
-
-	// Pending-reply ledger — entries owed a reply. A corrupt / oversized /
-	// unparseable ledger must NOT be fatal: returning the parse error here would
-	// brick EVERY gate phase until a human edits pending-replies.json. It must
-	// also NOT be silently treated as "no obligations" — that would false-clear
-	// finish past a ledger we can no longer trust. Instead we BLOCK with an
-	// actionable, quarantine-style remediation (mirrors the malformed-inbox
-	// surface below) so the agent can't falsely finish but other diagnostics
-	// (unread mail, registration, liveness) still run.
-	var pendingReplies []loop.PendingReplyEntry
-	ledgerCorrupt := false
-	ledger, err := loop.LoadPendingLedger(cfg, agentID)
-	if err != nil {
-		ledgerCorrupt = true
-	} else {
-		pendingReplies = ledger.PendingEntries()
-	}
-
-	// Registration check — v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md
-	// §5.3): every phase blocks on missing registration; only commit/release
-	// additionally blocks on age-stale registration. An inbox dir that
-	// doesn't exist implies a missing registration too — the boot/register
-	// path creates both atomically.
-	staleReg := false
-	missingReg := inboxMissing
-	regAge := time.Duration(0)
-	regPath := cfg.AgentRegistrationPath(agentID)
-	reg, regErr := loop.ReadRegistration(regPath)
-	if regErr != nil {
-		if os.IsNotExist(regErr) {
-			missingReg = true
-		} else {
-			return fmt.Errorf("read own registration: %w", regErr)
-		}
-	} else if phaseChecksStaleReg(phase) {
-		regAge = now.Sub(reg.LastSeen.UTC())
-		if regAge > StaleRegThreshold {
-			staleReg = true
-		}
-	}
-	livenessOK := false
-	livenessMessage := ""
-	if !missingReg {
-		liveness := evaluateRecipientLiveness(cfg, agentID, now)
-		livenessOK = liveness.OK
-		livenessMessage = liveness.Message
-	}
-
-	// Wake-stale — release-phase warn surface (per the watchdog liveness model, AGENTCHUTE.md §10).
-	// Reads peer registrations and counts those that declare a wake_method
-	// (pokable) but whose last_seen exceeds StaleRegThreshold. A non-zero
-	// count populates the JSON shape and shows up in text output; it does
-	// NOT block release.
-	wakeStaleCount := 0
-	if phase == gatePhaseRelease {
-		c, err := countWakeStalePeers(cfg, agentID, now, StaleRegThreshold)
-		if err != nil {
-			return fmt.Errorf("scan peer registrations: %w", err)
-		}
-		wakeStaleCount = c
-	}
-
-	status := gateStatus{
-		Agent:           agentID,
-		Phase:           phase,
-		UnreadCount:     len(msgs),
-		MalformedCount:  len(skipped),
-		RepliesPending:  len(pendingReplies),
-		LedgerCorrupt:   ledgerCorrupt,
-		StaleReg:        staleReg,
-		MissingReg:      missingReg,
-		StaleRegAge:     regAge.String(),
-		WakeStale:       wakeStaleCount > 0,
-		WakeStaleCount:  wakeStaleCount,
-		LivenessOK:      livenessOK,
-		LivenessMessage: livenessMessage,
-	}
-
-	// Apply the phase predicates to build the blocking-reasons list and
-	// any non-blocking warnings (e.g., wake_stale on release).
-	status.Reasons, status.Warnings = evaluateGatePhase(phase, status, requireConfirm, ackStaleReg)
-	status.Blocked = len(status.Reasons) > 0
 
 	// Emit + exit.
 	switch {
@@ -230,6 +127,186 @@ func cmdGate(args []string) error {
 	return nil
 }
 
+// evaluateGate performs the full read-only gate evaluation for `phase` and
+// returns the populated status (Reasons/Warnings/Blocked all set). It is the
+// SINGLE source of the gate's blocking decision: cmdGate emits its result, and
+// finishGateClear (used by `ack`) reuses it for the finish phase, so the two can
+// never diverge. Read-only: never refreshes registration, archives, or pokes
+// peers. `now` is injected so callers share one clock for liveness/expiry.
+func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackStaleReg bool, now time.Time) (gateStatus, error) {
+	// Inbox peek — same path boot/pending use, no side effects. `skipped`
+	// is the §11 protocol-violation surface: files that look like inbox
+	// messages but fail the §6.1 reference filename encoding. They block
+	// consensus/finish because the agent owes a quarantine + corrective
+	// notify, which `check` runs.
+	//
+	// ErrInboxMissing is treated as "this agent never booted on this
+	// host" — folded into the missing-registration path below so the
+	// reason text is unified ("not registered; run boot first").
+	inboxDir := cfg.AgentInboxDir(agentID)
+	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
+	inboxMissing := false
+	if err != nil {
+		if errors.Is(err, loop.ErrInboxMissing) {
+			inboxMissing = true
+			msgs, skipped = nil, nil
+		} else {
+			return gateStatus{}, fmt.Errorf("list inbox: %w", err)
+		}
+	}
+
+	// Pending-reply ledger — entries owed a reply. A corrupt / oversized /
+	// unparseable ledger must NOT be fatal: returning the parse error here would
+	// brick EVERY gate phase until a human edits pending-replies.json. It must
+	// also NOT be silently treated as "no obligations" — that would false-clear
+	// finish past a ledger we can no longer trust. Instead we BLOCK with an
+	// actionable, quarantine-style remediation (mirrors the malformed-inbox
+	// surface below) so the agent can't falsely finish but other diagnostics
+	// (unread mail, registration, liveness) still run.
+	var pendingReplies []loop.PendingReplyEntry
+	ledgerCorrupt := false
+	ledger, err := loop.LoadPendingLedger(cfg, agentID)
+	if err != nil {
+		ledgerCorrupt = true
+	} else {
+		pendingReplies = ledger.PendingEntries()
+	}
+
+	// Asker-owned `.owed` ledger (protocol-v2 / Gate 5) — the NEW obligation
+	// surface. NON-BLOCKING for one release: RepliesPending (recipient-owned)
+	// stays the blocking authority for compat, while the asker's outstanding /
+	// expired obligations are surfaced as warnings (dead-recipient detection — an
+	// expired entry means the recipient may be dead). A corrupt `.owed` is a
+	// warning too, never fatal: gate stays read-only and must never deadlock.
+	owedOutstanding, owedExpired := 0, 0
+	owedCorrupt := false
+	if owed, oerr := loop.LoadOwedLedger(cfg, agentID); oerr != nil {
+		owedCorrupt = true
+	} else {
+		owedOutstanding = len(owed.OutstandingOwed())
+		owedExpired = len(owed.ExpiredOwed(now))
+	}
+
+	// Uncommitted two-phase-consume residue: messages CLAIMED by `check` but not
+	// yet COMMITTED by `ack`. NON-BLOCKING (gate is read-only; `ack` commits);
+	// surfaced so the operator knows work is mid-flight. A read error is ignored
+	// (best-effort, like the owed read).
+	claimedResidue := 0
+	if residue, rerr := loop.ListClaimedMessages(cfg.AgentClaimedDir(agentID)); rerr == nil {
+		claimedResidue = len(residue)
+	}
+
+	// Registration check — v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md
+	// §5.3): every phase blocks on missing registration; only commit/release
+	// additionally blocks on age-stale registration. An inbox dir that
+	// doesn't exist implies a missing registration too — the boot/register
+	// path creates both atomically.
+	staleReg := false
+	missingReg := inboxMissing
+	staleRegAge := ""
+	regPath := cfg.AgentRegistrationPath(agentID)
+	// The registration read still gates missing-vs-present (and surfaces a
+	// corrupt own-registration as a hard error); only the FRESHNESS source
+	// moves to `.live`.
+	_, regErr := loop.ReadRegistration(regPath)
+	if regErr != nil {
+		if os.IsNotExist(regErr) {
+			missingReg = true
+		} else {
+			return gateStatus{}, fmt.Errorf("read own registration: %w", regErr)
+		}
+	} else if phaseChecksStaleReg(phase) {
+		// GATE 3: presence/freshness comes from `.live`, NOT registration
+		// last_seen. A fresh `.live` => not stale; a `.live` older than the
+		// threshold => stale; an absent `.live` for a registered agent (never
+		// published, or expired) => stale, same as an old registration would be.
+		// StaleRegThreshold and the staleReg/StaleRegAge JSON shape are kept.
+		liveSeen, present := loop.LiveLastSeen(cfg, agentID)
+		if !present {
+			staleReg = true // .live absent => stale (StaleRegAge stays empty).
+		} else {
+			age := now.Sub(liveSeen)
+			if age < 0 {
+				age = 0 // future-dated (clock skew) reads as fresh.
+			}
+			staleRegAge = age.String()
+			if age > StaleRegThreshold {
+				staleReg = true
+			}
+		}
+	}
+	// Pull-only (Gate 6c): registrations carry no wake state, so there are no
+	// pokable peers to find stale. WakeStale/WakeStaleCount stay in the JSON
+	// shape (always 0) for wire-shape stability with downstream parsers.
+	wakeStaleCount := 0
+
+	status := gateStatus{
+		Agent:           agentID,
+		Phase:           phase,
+		UnreadCount:     len(msgs),
+		MalformedCount:  len(skipped),
+		RepliesPending:  len(pendingReplies),
+		LedgerCorrupt:   ledgerCorrupt,
+		StaleReg:        staleReg,
+		MissingReg:      missingReg,
+		StaleRegAge:     staleRegAge,
+		WakeStale:       wakeStaleCount > 0,
+		WakeStaleCount:  wakeStaleCount,
+		OwedOutstanding: owedOutstanding,
+		OwedExpired:     owedExpired,
+		OwedCorrupt:     owedCorrupt,
+		ClaimedResidue:  claimedResidue,
+	}
+
+	// Apply the phase predicates to build the blocking-reasons list and
+	// any non-blocking warnings (e.g., wake_stale on release).
+	status.Reasons, status.Warnings = evaluateGatePhase(phase, status, requireConfirm, ackStaleReg)
+	// Gate 4 drain gauge (ADVISORY only — never blocks): surface legacy
+	// nonce-named files still present so the one-release migration window is
+	// observable. They are valid deliverable mail (not malformed/unread
+	// obligations), so they are NOT added to Reasons.
+	if n := loop.CountLegacyNonce(msgs); n > 0 {
+		status.Warnings = append(status.Warnings, fmt.Sprintf("%d legacy nonce-named message(s) pending drain (one-release migration window)", n))
+	}
+	// Asker-owned `.owed` obligations (protocol-v2): NON-BLOCKING dead-recipient
+	// signal. RepliesPending stays the blocking authority for one release.
+	if status.OwedOutstanding > 0 {
+		w := fmt.Sprintf("%d outstanding owed reply obligation(s) awaiting a reply", status.OwedOutstanding)
+		if status.OwedExpired > 0 {
+			w += fmt.Sprintf(" (%d past deadline — recipient may be dead)", status.OwedExpired)
+		}
+		status.Warnings = append(status.Warnings, w)
+	}
+	if status.OwedCorrupt {
+		status.Warnings = append(status.Warnings, fmt.Sprintf("owed-reply ledger is corrupt or unreadable; inspect `state/%s/owed.json`", status.Agent))
+	}
+	// Uncommitted claimed residue (two-phase consume): NON-BLOCKING — `ack`
+	// commits it (gate is read-only).
+	if status.ClaimedResidue > 0 {
+		status.Warnings = append(status.Warnings, fmt.Sprintf("%d claimed-but-unacked message(s) in .claimed; run `agentchute ack --as %s` to commit", status.ClaimedResidue, status.Agent))
+	}
+	status.Blocked = len(status.Reasons) > 0
+	return status, nil
+}
+
+// finishGateClear reports whether `agentchute gate --before finish` would clear,
+// using the EXACT SAME predicate (evaluateGate over the finish phase): unread
+// inbox / malformed inbox / pending-reply ledger / corrupt pending-reply ledger /
+// missing registration. Read-only.
+//
+// By construction NON-BLOCKING here (so `ack` can always commit its OWN
+// just-claimed mail once real blockers clear): uncommitted `.claimed` residue and
+// outstanding/expired `.owed` obligations are gate WARNINGS, not Reasons, so they
+// never make this return clear=false. `ack` is the caller; gate.go drives its own
+// finish decision through the same evaluateGate path, so the two cannot diverge.
+func finishGateClear(cfg *loop.Config, agentID string, now time.Time) (clear bool, reasons []string, err error) {
+	status, err := evaluateGate(cfg, agentID, gatePhaseFinish, false, false, now)
+	if err != nil {
+		return false, nil, err
+	}
+	return !status.Blocked, status.Reasons, nil
+}
+
 // gateStatus is the cross-format result of a gate evaluation.
 type gateStatus struct {
 	Agent           string   `json:"agent"`
@@ -243,8 +320,10 @@ type gateStatus struct {
 	StaleRegAge     string   `json:"stale_reg_age,omitempty"`
 	WakeStale       bool     `json:"wake_stale"`
 	WakeStaleCount  int      `json:"wake_stale_count,omitempty"`
-	LivenessOK      bool     `json:"liveness_ok"`
-	LivenessMessage string   `json:"liveness_message,omitempty"`
+	OwedOutstanding int      `json:"owed_outstanding,omitempty"` // asker-owned obligations awaiting a reply (non-blocking)
+	OwedExpired     int      `json:"owed_expired,omitempty"`     // subset past deadline (dead-recipient signal; non-blocking)
+	OwedCorrupt     bool     `json:"owed_corrupt,omitempty"`     // .owed ledger unreadable (non-blocking warning)
+	ClaimedResidue  int      `json:"claimed_residue,omitempty"`  // messages claimed by check, not yet acked (non-blocking)
 	Blocked         bool     `json:"blocked"`
 	Reasons         []string `json:"reasons,omitempty"`
 	Warnings        []string `json:"warnings,omitempty"` // non-blocking signals (e.g., wake_stale on release)
@@ -300,27 +379,6 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 	if s.MissingReg {
 		reasons = append(reasons, "not registered (run `agentchute boot --as <id> --vendor <vendor>` first; §5.3)")
 	}
-	// WI-4 Fix 1: liveness blocks only when the agent OWES work. An agent
-	// owes work if it has unread direct mail, malformed inbox files (a §11
-	// quarantine obligation), or pending-reply ledger entries — in those
-	// cases it must stay reachable, so dead liveness is a hard block. When
-	// nothing is owed (clean inbox + no obligations + registered), a dead
-	// wake target/poller must NOT block finish/continue: it downgrades to a
-	// non-blocking warning (still surfaced in message/JSON). This closes the
-	// documented dead-poller finish-gate deadlock.
-	//
-	// commit/release/consensus keep the original always-block semantics so a
-	// publishing agent still proves reachability before it acts on the bus.
-	owedWork := s.UnreadCount > 0 || s.MalformedCount > 0 || s.RepliesPending > 0 || s.LedgerCorrupt
-	if !s.MissingReg && !s.LivenessOK {
-		livenessOwedOptional := (phase == gatePhaseFinish || phase == gatePhaseContinue) && !owedWork
-		msg := fmt.Sprintf("recipient liveness not proven (%s)", s.LivenessMessage)
-		if livenessOwedOptional {
-			warnings = append(warnings, msg)
-		} else {
-			reasons = append(reasons, msg)
-		}
-	}
 
 	// commit + release additionally block on age-stale registration unless
 	// the caller explicitly acknowledged. The acknowledgment only counts
@@ -328,52 +386,18 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 	// this"); otherwise stale-reg always blocks per the spec default.
 	if phaseChecksStaleReg(phase) && s.StaleReg && !s.MissingReg {
 		if !(requireConfirm && ackStaleReg) {
-			reasons = append(reasons, fmt.Sprintf("registration is stale (last_seen age %s > %s)", s.StaleRegAge, StaleRegThreshold))
+			if s.StaleRegAge == "" {
+				// `.live` absent for a registered agent: no presence ever
+				// published (or it expired). Cite that distinctly rather than
+				// leaking a misleading "age 0s > threshold".
+				reasons = append(reasons, fmt.Sprintf("registration is stale (no recent presence; run `agentchute boot --as %s`)", s.Agent))
+			} else {
+				reasons = append(reasons, fmt.Sprintf("registration is stale (last_seen age %s > %s)", s.StaleRegAge, StaleRegThreshold))
+			}
 		}
-	}
-
-	// release warns on wake_stale but does not block (per AGENTCHUTE.md §10).
-	if phase == gatePhaseRelease && s.WakeStaleCount > 0 {
-		warnings = append(warnings, fmt.Sprintf("%d peer registration(s) declare a wake_method but are stale (last_seen > %s); pokes may fail", s.WakeStaleCount, StaleRegThreshold))
 	}
 
 	return reasons, warnings
-}
-
-// countWakeStalePeers scans the registry and counts peers (excluding self)
-// that are pokable but whose last_seen is older than threshold. Used by
-// release to surface the WAKE_STALE warning. Best-effort: peers with
-// unreadable registrations are silently skipped (they are status's concern,
-// not gate's).
-func countWakeStalePeers(cfg *loop.Config, selfID string, now time.Time, threshold time.Duration) (int, error) {
-	entries, err := os.ReadDir(cfg.AgentsDir())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	stale := 0
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || strings.HasPrefix(name, ".") {
-			continue
-		}
-		if !strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".example.md") || name == "README.md" {
-			continue
-		}
-		reg, err := loop.ReadRegistration(filepath.Join(cfg.AgentsDir(), name))
-		if err != nil {
-			continue
-		}
-		if reg.AgentID == selfID || !reg.IsPokable() {
-			continue
-		}
-		if now.Sub(reg.LastSeen.UTC()) > threshold {
-			stale++
-		}
-	}
-	return stale, nil
 }
 
 func emitGateText(s gateStatus) {
@@ -459,7 +483,7 @@ named phase. Read-only: never refreshes registration, never archives,
 never pokes peers.
 
 Phases:
-  consensus  blocks on outstanding work + unproven recipient liveness
+  consensus  blocks on outstanding work
   commit     same as consensus + flags stale registration (> 30m)
   release    same as commit + warns on wake_stale peer registrations
   finish     blocks on outstanding work
@@ -474,11 +498,7 @@ Outstanding work / trust blockers (all phases):
   - corrupt or unreadable pending-reply ledger state
   - missing self-registration
 
-All phases block if this agent is not registered. Unproven recipient liveness
-(no reachable wake target, active session heartbeat, or launch-enabled poller
-heartbeat) blocks consensus/commit/release; on finish/continue it blocks only
-when work is owed (unread mail, malformed files, pending replies, or a corrupt
-ledger) and otherwise only WARNS (does not block).
+All phases block if this agent is not registered.
 
 Exit codes:
   0  clear to proceed; also used by hook-envelope modes whose JSON is the signal

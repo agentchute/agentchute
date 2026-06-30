@@ -1,11 +1,13 @@
-// agentchute — inbox-based agent coordination via markdown files + pluggable
-// wake adapters. Reference adapters include tmux and the local runner socket
+// agentchute — pull-only, inbox-based agent coordination via markdown files.
+// Senders only write a recipient's inbox; nobody pokes a recipient. A loopless
+// wrapper is supervised by the runner (`agentchute run`), a per-agent PTY
+// supervisor that polls the agent's own inbox and injects a `check inbox` cue
 // (see AGENTCHUTE.md §8).
 //
 // See AGENTCHUTE.md (at repo root) for the full spec. This binary is the
 // reference implementation of the optional CLI sketched in the spec. The
-// protocol itself does not require this CLI; two agents can coordinate
-// using nothing more than `mv` and a wake poke if they follow the spec.
+// protocol itself does not require this CLI; two agents can coordinate using
+// nothing more than `ln`/`mv` over a shared inbox if they follow the spec.
 package main
 
 import (
@@ -16,7 +18,7 @@ import (
 	"strings"
 )
 
-const usage = `agentchute — inbox-based agent coordination via markdown files + pluggable wake adapters.
+const usage = `agentchute — pull-only, inbox-based agent coordination via markdown files (senders write inboxes; nobody pokes).
 
 Usage:
   agentchute <command> [flags]
@@ -29,21 +31,21 @@ Commands:
   gate           lifecycle gate: block declaring done while inbox/replies are outstanding
   defer          explicitly defer a pending-reply obligation (clears the gate; notifies sender)
   send           send a message from one agent to another
-  check          consume and archive messages addressed to me
+  check          claim + display messages addressed to me (at-least-once; run ack to commit)
+  ack            commit messages claimed by check (archive the .claimed residue)
   pending        peek unread messages (read-only; safe for lifecycle hooks)
   default-id     print the contextual default agent id for a wrapper/vendor
-  run            launch a wrapper under the PTY runner and local wake socket
-  setup          one-command control-repo setup for any combination of runner/tmux/herdr wake paths
+  run            launch a wrapper under the PTY runner (serve lease + inbox polling + check-inbox injection; pull-only, no wake socket)
+  setup          one-command control-repo setup; installs the runner wake path (the only supported path)
   update         self-update the binary to a release, then re-sync this repo's setup
-  self-check     refresh own registration/last_seen and reconcile wake target
+  self-check     refresh own registration/last_seen and .live presence (pull-only: no wake target to reconcile)
   self-poll      "should I wake the wrapper?" — read-only by default; optional poller heartbeat
-  poller         recipient-side poller heartbeat/run/status for non-tmux agents
+  poller         recipient-side poller heartbeat/run/status that keeps .live fresh
   identity       resolve and print the contextual agent identity (alias of default-id)
   shims          install/pass-through launcher shims for known wrappers
-  status         print registry overview, inbox depths, and last_seen freshness
-  doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, wake target
+  status         print registry overview, inbox depths, and .live presence freshness
+  doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, .live presence
   watch          recipient-side persistent watcher: fire OS notification / print / exec on new mail
-  watchdog       run liveness daemon (§10.1); pokes peers with stale inboxes
   presenced      OPT-IN host presence daemon: discover + auto-enroll high-confidence wrappers (off by default; never auto-started)
   hooks          install canonical hook templates into .claude/ / .codex/ / .gemini/ (v0.2.1)
 
@@ -86,6 +88,8 @@ func main() {
 		err = cmdSend(args)
 	case "check":
 		err = cmdCheck(args)
+	case "ack":
+		err = cmdAck(args)
 	case "pending":
 		err = cmdPending(args)
 	case "run":
@@ -112,8 +116,6 @@ func main() {
 		err = cmdDoctor(args)
 	case "watch":
 		err = cmdWatch(args)
-	case "watchdog":
-		err = cmdWatchdog(args)
 	case "presenced":
 		err = cmdPresenced(args)
 	case "hooks":

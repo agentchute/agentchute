@@ -20,13 +20,21 @@ func TestComposeMessageQuotesOptionalScalars(t *testing.T) {
 		"body",
 	))
 
-	for _, want := range []string{
-		`in_reply_to: "2026-05-09T16:00:00.000000Z\nforged: true"`,
-		`task: "review README: API"`,
-		`status: "info # note"`,
-	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("message missing %q:\n%s", want, msg)
+	// in_reply_to is the surviving optional scalar and must still be quoted when
+	// its value contains a newline/colon (injection-safety).
+	if want := `in_reply_to: "2026-05-09T16:00:00.000000Z\nforged: true"`; !strings.Contains(msg, want) {
+		t.Fatalf("message missing %q:\n%s", want, msg)
+	}
+
+	// protocol-v2 envelope cut (TEAM-DECISION §4): `to`, `task`, and `status` are
+	// no longer EMITTED even when passed (the parser still reads them off the wire
+	// for older messages). Assert no frontmatter line carries those bare keys
+	// (line-scoped so it does not false-match `in_reply_to:`).
+	for _, line := range strings.Split(msg, "\n") {
+		key, _, _ := strings.Cut(strings.TrimSpace(line), ":")
+		switch key {
+		case "to", "task", "status":
+			t.Fatalf("message unexpectedly still emits %q line:\n%s", key, msg)
 		}
 	}
 }
@@ -130,11 +138,9 @@ func TestSendCorrectiveWritesMessageAndSkipsPokeForEmptyTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	// `task: "protocol correction"` is quoted because the value contains a space
-	// (ComposeMessage runs quoteIfNeeded on optional scalars).
+	// protocol-v2 envelope cut: the corrective no longer emits task/status; its
+	// content carries the §11.1 corrective body (CorrectiveBody) instead.
 	for _, want := range []string{
-		`task: "protocol correction"`,
-		"status: findings",
 		"malformed item: .agentchute/loop/malformed/bad.md",
 		"reason: filename does not match §6.1",
 		"action: re-send per AGENTCHUTE.md §6.1",
@@ -255,101 +261,21 @@ func TestAnnouncementBodyEmbedsBio(t *testing.T) {
 	}
 }
 
-// newRunnerReg writes a registration whose wake_method is agentchute-run with
-// the given runner wake_target, returning it. Used to exercise the
-// recipient-binding refusal at the registration-driven poke sites.
-func newRunnerReg(t *testing.T, cfg *Config, agentID, wakeTarget string) *Registration {
-	t.Helper()
-	reg := &Registration{
-		AgentID:     agentID,
-		Vendor:      "openai",
-		ControlRepo: cfg.ControlRepo,
-		WakeMethod:  RunnerWakeMethod,
-		WakeTarget:  wakeTarget,
-		LastSeen:    time.Now().UTC(),
-		Status:      StatusActive,
-	}
-	if err := WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensurePrivateDir(cfg.AgentInboxDir(agentID)); err != nil {
-		t.Fatal(err)
-	}
-	return reg
-}
-
-func TestAnnounceEnrollment_RefusesUnownedRunnerSocket(t *testing.T) {
-	cfg := setupAnnounceFixture(t)
-	self := newReg(t, cfg, "claude-code", "anthropic", "", "synthesis")
-	dialed := installCountingRunnerAdapter(t)
-
-	// Peer advertises a runner socket it does not own.
-	newRunnerReg(t, cfg, "codex", "unix:/tmp/evil.sock")
-
-	result, err := AnnounceEnrollment(cfg, self, time.Now().UTC())
-	if err != nil {
-		t.Fatalf("announce should not be fatal: %v", err)
-	}
-	// Message still lands in the inbox (delivery is independent of poke).
-	if result.Sent != 1 {
-		t.Fatalf("Sent=%d, want 1 (delivery succeeds, only poke is refused)", result.Sent)
-	}
-	if dialed.calls != 0 {
-		t.Fatalf("unowned runner socket dialed %d times, want 0 (refused)", dialed.calls)
-	}
-	if len(result.Warnings) == 0 {
-		t.Fatal("expected a refusal warning for the unowned runner socket")
-	}
-	joined := strings.Join(result.Warnings, "|")
-	if !strings.Contains(joined, "refused") {
-		t.Fatalf("warnings %q should mention the refusal", joined)
-	}
-}
-
-func TestSendCorrective_RefusesUnownedRunnerSocket(t *testing.T) {
-	cfg := setupAnnounceFixture(t)
-	newReg(t, cfg, "claude-code", "anthropic", "", "")
-	dialed := installCountingRunnerAdapter(t)
-
-	offender := newRunnerReg(t, cfg, "codex", "unix:/tmp/evil.sock")
-
-	now := time.Date(2026, 5, 12, 4, 0, 0, 0, time.UTC)
-	if _, err := SendCorrective(cfg, "claude-code", offender.AgentID,
-		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1", now); err != nil {
-		t.Fatalf("corrective send should still deliver: %v", err)
-	}
-	if dialed.calls != 0 {
-		t.Fatalf("unowned runner socket dialed %d times, want 0 (refused)", dialed.calls)
-	}
-}
-
-func TestAnnounceEnrollment_OwnedRunnerSocketPokes(t *testing.T) {
-	cfg := setupAnnounceFixture(t)
-	self := newReg(t, cfg, "claude-code", "anthropic", "", "synthesis")
-	dialed := installCountingRunnerAdapter(t)
-
-	owned := RunnerWakeTarget(cfg.RunnerSocketPath("codex"))
-	newRunnerReg(t, cfg, "codex", owned)
-
-	result, err := AnnounceEnrollment(cfg, self, time.Now().UTC())
-	if err != nil {
-		t.Fatalf("announce failed: %v", err)
-	}
-	if result.Sent != 1 {
-		t.Fatalf("Sent=%d, want 1", result.Sent)
-	}
-	if dialed.calls != 1 {
-		t.Fatalf("owned runner socket dialed %d times, want 1", dialed.calls)
-	}
-}
+// Simple-again Gate 6a (pull-only): newRunnerReg and the three poke tests
+// (TestAnnounceEnrollment_RefusesUnownedRunnerSocket,
+// TestSendCorrective_RefusesUnownedRunnerSocket,
+// TestAnnounceEnrollment_OwnedRunnerSocketPokes) were removed. Their subject —
+// the registration-driven wake poke (and its recipient-binding refusal) inside
+// AnnounceEnrollment / SendCorrective — no longer exists: both now deliver by
+// the inbox file write alone and never poke.
 
 func setupAnnounceFixture(t *testing.T) *Config {
 	t.Helper()
 	root := t.TempDir()
 	cfg := &Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 	if err := ensurePrivateDir(cfg.AgentsDir()); err != nil {
 		t.Fatal(err)
@@ -359,16 +285,11 @@ func setupAnnounceFixture(t *testing.T) *Config {
 
 func newReg(t *testing.T, cfg *Config, agentID, vendor, wakeTarget, body string) *Registration {
 	t.Helper()
-	method := ""
-	if wakeTarget != "" {
-		method = "tmux"
-	}
+	_ = wakeTarget // pull-only (Gate 6c): registrations carry no wake target
 	reg := &Registration{
 		AgentID:     agentID,
 		Vendor:      vendor,
 		ControlRepo: cfg.ControlRepo,
-		WakeMethod:  method,
-		WakeTarget:  wakeTarget,
 		LastSeen:    time.Now().UTC(),
 		Status:      StatusActive,
 		Body:        body,

@@ -17,8 +17,8 @@ func newLockTestConfig(t *testing.T) *Config {
 	root := t.TempDir()
 	return &Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 }
 
@@ -28,7 +28,7 @@ func writeTestRegistration(t *testing.T, cfg *Config, agentID string, status Sta
 	t.Helper()
 	reg := &Registration{
 		AgentID:     agentID,
-		Vendor:      "examplecorp",
+		Vendor:      "agentchute",
 		ControlRepo: "/tmp/repo",
 		LastSeen:    time.Date(2026, 5, 9, 16, 8, 36, 0, time.UTC),
 		Status:      status,
@@ -60,7 +60,7 @@ func TestWithAgentLock_SerializesConcurrentLedgerAppends(t *testing.T) {
 				To:               agentID,
 				Task:             "R1 protocol",
 				OriginalFilename: fmt.Sprintf("msg-%04d_from-codex.md", i),
-				ArchivePath:      ".examplecorp/loop/archive/example.md",
+				ArchivePath:      ".agentchute/loop/archive/example.md",
 			}
 			if err := RecordPendingReply(cfg, agentID, entry, now); err != nil {
 				errs <- err

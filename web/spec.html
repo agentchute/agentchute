@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentchute spec — AGENTCHUTE.md</title>
-<meta name="description" content="The agentchute protocol spec. Working draft v1. Inbox-based agent coordination with recipient-side polling and optional wake adapters.">
+<meta name="description" content="The agentchute protocol spec. Working draft v1. Pull-only, inbox-based agent coordination — senders write a Markdown message; recipients read their own inbox.">
 <meta property="og:title" content="agentchute spec">
-<meta property="og:description" content="The agentchute protocol spec. Inbox-based agent coordination with recipient-side polling and optional wake adapters.">
+<meta property="og:description" content="The agentchute protocol spec. Pull-only, inbox-based agent coordination — senders write; recipients read their own inbox.">
 <meta property="og:url" content="https://agentchute.dev/spec.html">
 <meta property="og:type" content="article">
 <link rel="canonical" href="https://agentchute.dev/spec.html">
@@ -45,21 +45,19 @@
     <h2>The TL;DR</h2>
     <p>
       <strong>Protocol primitives</strong> (medium-agnostic):
-      per-recipient inbox · ordered identified messages · no-overwrite delivery ·
-      recipient-owned consumption · recipient-side polling · optional wake · self-registration.
+      per-recipient inbox · identified messages with a durable <code>(to, from, seq)</code> identity ·
+      no-overwrite delivery · recipient reads its own inbox (pull, not push) · self-registration + presence.
     </p>
     <p>
       <strong>Reference implementation</strong>:
-      markdown files on a shared filesystem · atomic create + rename ·
-      vendor-namespaced dotdir at repo root · tmux, herdr, or runner-PTY socket as wake adapter ·
-      <code>agentchute run -- &lt;wrapper&gt;</code> for no-tmux workflows ·
-      <code>self-poll</code> / generated schedulers for headless recipients.
+      Markdown files on a shared filesystem · unique-temp + atomic <code>link()</code>-no-clobber delivery ·
+      fixed <code>.agentchute/loop</code> directory · two-phase consume (<code>check</code> claims, <code>ack</code> commits) ·
+      the runner (<code>agentchute run</code> / the <code>ac-*</code> launchers) polls the agent's own inbox and injects a <code>check inbox</code> cue — no wake adapters, no central process.
     </p>
     <p>
-      Alternate inbox transports (Redis/NATS queues, S3-prefixed inboxes, HTTP
-      endpoints, git-backed) are protocol-compatible — see
-      <a href="https://github.com/agentchute/agentchute/blob/main/EXTENSIONS.md"><code>EXTENSIONS.md</code></a>
-      — but no non-filesystem implementation ships in the reference CLI.
+      Alternate inbox transports (queues, S3-prefixed inboxes, HTTP endpoints, git-backed)
+      are protocol-compatible but don't ship in the reference CLI; a filesystem implementation
+      of your own interoperates directly, while another transport needs a shared loop or a bridge.
     </p>
   </div>
 </section>
@@ -74,9 +72,12 @@
     <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/AGENTCHUTE.md -O</code></pre>
     <p>
       If you're implementing agentchute in another language or with a non-filesystem
-      inbox transport, the protocol primitives in §1 are the contract. The filesystem
-      sections (§3–§6) are how the reference CLI maps those primitives to disk. §8.2 is
-      the important liveness boundary: inbox delivery is durable; wake adapters are not.
+      inbox transport, the protocol primitives in §1 are the contract, and the
+      <a href="https://github.com/agentchute/agentchute/tree/main/conformance">conformance suite</a>
+      is the executable spec — any implementation that passes it is conformant. The filesystem
+      sections show how the reference CLI maps those primitives to disk. Coordination is
+      pull-only: inbox delivery is durable; the recipient discovers messages by polling its
+      own inbox, and presence is a published <code>.live</code> fact (no wake adapters).
     </p>
   </div>
 </section>
