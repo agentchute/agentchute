@@ -26,14 +26,14 @@
 **Reviewer focus:** relocation is a pure move (no semantic change); confirm no other refs.
 **Risk:** trivial.
 
-## Gate 1 — Clean-delete the push cluster (~2,792 LOC)
-**Goal:** remove the entire push/wake/reachability apparatus; pull-poll delivery is unaffected (it is already redundant — `computeSelfPollResult` survives as serve's inbox scan).
-**Scope — DELETE:** `watchdog.go`; `recipient_liveness.go`; `reachability.go`; `migrate.go` + `guardInitLoopNamespace`; `internal/loop/herdr.go`; `internal/loop/tmux.go`; `doctor_service.go`; the detached-poller loop in `poller.go` + the detached half of `self_poll.go`; `run.go` socket server (`run.go:584-657`) + peer-heal cluster (`run.go:435-570`); the tmux/herdr probe halves of `tmux_state.go`/`herdr_state.go`; the setup wake-combo apparatus (~250 LOC in `setup.go`).
-**Scope — CO-TRIM (else won't compile):** the OMITTED callers `gate.go:167` (`checkRecipientLiveness`) and `doctor.go:817`; `main.go` command dispatch for deleted verbs; orphaned `context` and other imports. Delete the push-cluster tests with their code.
-**KEEP:** the pull-poll path; `computeSelfPollResult`; `wake.go` CORE + the runner adapter (still used until Gate 6); `wake_method`/`wake_target` fields (survive until Gate 6).
-**Acceptance:** `go build/vet/test ./...` green; a real bus handoff (alice→bob via pull) still works.
-**Reviewer focus (codex):** did any NON-push code depend on a deleted symbol? Is `wake.go`/runner adapter correctly retained? Is the pull path intact?
-**Risk:** medium — large co-deletion; mechanical but wide. Compiler + tests are the guardrail.
+## Gate 1 — Clean-delete the LEAST-ENTANGLED push files (codex-co-authored narrowing)
+**Goal:** remove cross-agent liveness/reachability; pull-poll delivery unaffected (already redundant — `computeSelfPollResult` survives as serve's inbox scan). Deliberately NARROW — only what deletes without touching run.go, register.go autodetect, or generated hooks.
+**Scope — DELETE:** `watchdog.go`; `recipient_liveness.go`; `reachability.go` (+ their `_test.go`).
+**Scope — CO-TRIM (intended behavior deletions, not regressions):** `main.go` `watchdog` dispatch/help; the cooperative-waking/liveness-sweep block in `check.go`; `gate.go:167` `checkRecipientLiveness` (gate keeps own-obligation checks only); `doctor.go:817` recipient-liveness; the `reproveAndRebindOwnWake` call in `poller.go`; orphaned imports. If deleting `reachability.go` forces edits to `register.go` wake-autodetect or `run.go`, STOP and defer it to Gate 6 (do not touch those files here).
+**DEFERRED (NOT Gate 1 — codex):** `migrate.go`/`guardInitLoopNamespace` → **Gate 7** (namespace/init safety, not push; `init.go:224-236`/`:297-332`). `internal/loop/herdr.go`+`tmux.go`, `wake.go` adapter registry, `runner_reachable.go` init hooks, `register.go` autodetect, run socket(`584-657`)/peer-heal(`435-570`) → **Gate 6**. detached poller / `self_poll` detached half / `doctor_service.go` → **Gate 7** (blocked until generated hooks/setup/doctor stop emitting `poller`/`self-poll`, else new installs emit dead commands).
+**KEEP:** pull-poll path; `computeSelfPollResult`; `wake.go` CORE + runner adapter (until Gate 6); `wake_method`/`wake_target` fields (until Gate 6).
+**Acceptance:** `go build/vet/test ./...` green; pull bus handoff works. **Compile gate:** no `cmdWatchdog`, `checkRecipientLiveness`, `recipient_liveness`, or `Reachability*` runtime refs remain.
+**Risk:** medium — co-deletion is wide but compiler+tests guard it.
 
 ## Gate 2 — New protocol core (greenfield, off-bus, proven on conformance)
 **Goal:** build the genuinely-new spec core and prove it on the conformance suite WITHOUT touching live paths.
@@ -63,9 +63,10 @@
 ## Gate 5 — consume flip + obligation flip
 **Goal:** at-least-once + idempotent consume; asker-owned obligations.
 **Scope — EVOLVE `check.go` + `internal/loop/ledger.go`:** consume archive-at-display (`check.go:197-223`) → **act-then-archive** + `.consumed` high-water + idempotent-handler contract + sender-crash-resume/EEXIST. Ledger ownership recipient→**asker `.owed`** + timeout (machinery/locking kept); recipient `reply_required` becomes advisory.
-**Acceptance:** `conformance` C1 (incl. sender-crash-resume) green; `go build/vet/test ./...` green; reply-required bus handoff via asker `.owed` works; dead-recipient surfaces as asker's expired obligation.
-**Reviewer focus:** crash window re-acts in-flight mail → handlers idempotent (contract surfaced loudly); gate reads asker `.owed`, not recipient ledger, for the asker side.
-**Risk:** medium-high — semantic flip; conformance C1 is the guard.
+**⚠️ THE COMMIT-BOUNDARY TRAP (codex, load-bearing):** the CLI `check` prints and EXITS; the agent acts AFTER `check` returns. So archiving *during* `check` (today's behavior) is at-most-once for the WORK no matter what the in-memory conformance C1 says. Gate 5 MUST define the real cross-turn boundary: `check` **claims/displays** (move to a `claimed/` or mark in-place, NOT archive); **commit (archive) happens only after** the controlled finish/ack path confirms the message was acted on (e.g. the Stop/gate hook, or an explicit `ack`). A crash between claim and commit re-delivers (at-least-once). Designing this boundary is the gate's real work — in-memory C1 green is necessary but NOT sufficient; prove the live cross-turn path too.
+**Acceptance:** `conformance` C1 (incl. sender-crash-resume) green; `go build/vet/test ./...` green; reply-required bus handoff via asker `.owed` works; dead-recipient surfaces as asker's expired obligation; **live cross-turn claim→commit demonstrated** (a message survives a crash between `check` and finish). **Compile gate:** no display-path `ArchiveMessage` before the explicit consume commit; no recipient-owned pending-ledger authority for new messages.
+**Reviewer focus:** the claim/commit boundary is real (not in-memory-only); crash window re-acts in-flight mail → handlers idempotent (contract surfaced loudly); gate reads asker `.owed` for the asker side.
+**Risk:** HIGH — semantic flip with a cross-process commit boundary the conformance harness can't fully model.
 
 ## Gate 6 — run→serve + collision-guard rebase + strip remaining push
 **Goal:** finish serve; remove the last push surfaces now that serve owns launch.
@@ -100,6 +101,13 @@
 ## Biggest risk (carry it explicitly)
 nonce→seq (Gate 4): the filename schema IS wire identity → sort + ledger keys + archive + sender-inference. Botch = O1 + dedup break at once, untestable on the live bus. Mitigation: prove off-bus on O1/D1/D2/C1; dual-read drain; ship as its own gate.
 
-## Open implementation question for codex (co-author)
-- Package boundary for the new core: a single `internal/loop` set of files (seq/lease/live/owed) vs a dedicated `internal/protocol` sub-package. Lean: `internal/loop` (avoids a new module boundary; the substrate it extends lives there). Confirm.
-- Compat window length for old envelope fields + dual-read drain (one release vs explicit drain-complete signal). Lean: one release + drain-empty check.
+## Resolved with codex (co-author, 2026-06-30)
+- **Package boundary:** `internal/loop/{seq,lease,live,owed}.go` — NOT a new `internal/protocol` package (the substrate/config/locks/registration/inbox/atomic helpers already live in `internal/loop`; a new package duplicates FS concepts or creates import pressure). Keep the boundary by file/API discipline; conformance stays the independent harness.
+- **Compat window:** one release + drain-empty, no operator signal. Stop EMITTING old envelope fields at the cutover gate but compat-READ for one release; dual-read nonce+seq filenames for one release; don't remove the legacy reader until a drain check scans all live inboxes and reports zero nonce-named files (archives may stay old-format — only live streams block removal); add a visible doctor/gate warning for legacy live files so drain state is observable.
+
+## Compile-time verification gates (codex; run as grep gates at each gate's close)
+- **After Gate 1:** no `cmdWatchdog` / `checkRecipientLiveness` / `recipient_liveness` / `Reachability*` runtime refs.
+- **After Gate 3:** gate/doctor/status liveness reads `.live`, not registration `last_seen`.
+- **After Gate 4:** no nonce writer path (`generateNonce`, `_msg-`) except legacy parser/tests; all identity call sites use `(to,from,seq)`.
+- **After Gate 5:** no display-path `ArchiveMessage` before the explicit consume commit; no recipient-owned pending-ledger authority for new messages.
+- **After Gate 6/7:** no runtime `wake_method` / `wake_target` / `PokeWakeTarget` / tmux/herdr/runner wake-adapter refs except compat docs/tests explicitly marked for removal.
