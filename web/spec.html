@@ -52,7 +52,7 @@
       <strong>Reference implementation</strong>:
       Markdown files on a shared filesystem · unique-temp + atomic <code>link()</code>-no-clobber delivery ·
       fixed <code>.agentchute/loop</code> directory · two-phase consume (<code>check</code> claims, <code>ack</code> commits) ·
-      the runner (<code>agentchute run</code> / the <code>ac-*</code> launchers) polls the agent's own inbox and injects a <code>check inbox</code> cue — no wake adapters, no central process.
+      the runner (<code>agentchute run</code> / the <code>ac</code> dispatcher, <code>ac run &lt;wrapper&gt;</code>) polls the agent's own inbox and injects a <code>check inbox</code> cue — no wake adapters, no central process.
     </p>
     <p>
       Alternate inbox transports (queues, S3-prefixed inboxes, HTTP endpoints, git-backed)
