@@ -49,8 +49,8 @@ var (
 //
 // Unknown method: returns nil after the universal guard. This is a deliberate
 // permissive-with-comment choice so a forked binary adding e.g. a wezterm or
-// kitty adapter is not blocked by the core validator; the adapter itself is
-// still expected to use argv (never shell-eval) per WakeAdapter's contract.
+// kitty wake mechanism is not blocked by the core validator; any such mechanism
+// is still expected to use argv (never shell-eval) for its target.
 func ValidateWakeTarget(method, target string) error {
 	method = strings.TrimSpace(method)
 	target = strings.TrimSpace(target)

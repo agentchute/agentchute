@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -332,43 +331,14 @@ type wakeReceipt struct {
 	result    string // "ok" | "failed" | "skipped (no method declared)" | "skipped (--no-wake)" | "skipped (recipient unregistered)"
 }
 
-// computeWakeReceipt looks up the recipient's wake_method/target and
-// (unless --no-wake) attempts the poke. Returns the receipt describing
-// what was attempted and the outcome. Never returns an error — failures
-// are recorded in the receipt and surfaced to the operator.
-func computeWakeReceipt(cfg *loop.Config, toID string, noWake bool) wakeReceipt {
-	if noWake {
-		return wakeReceipt{method: "none", attempted: false, result: "skipped (--no-wake)"}
-	}
-	regPath := cfg.AgentRegistrationPath(toID)
-	reg, err := loop.ReadRegistration(regPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return wakeReceipt{method: "none", attempted: false, result: "skipped (recipient unregistered)"}
-		}
-		return wakeReceipt{method: "none", attempted: false, result: fmt.Sprintf("skipped (registration read error: %v)", err)}
-	}
-	if !reg.IsPokable() {
-		return wakeReceipt{method: reg.WakeMethod, attempted: false, result: "skipped (no method declared)"}
-	}
-	// Recipient-binding for a runner wake_target: refuse to dial a unix: socket
-	// whose path the recipient does not legitimately own (e.g. a hand-written
-	// registration naming unix:/tmp/evil.sock). The pure shape validator can't
-	// see the recipient id; this check can.
-	//
-	// We keep this explicit preflight purely so the operator receipt can
-	// distinguish "refused" (attempted=false) from a dial "failed"
-	// (attempted=true). PokeRegistration runs the same owned-check internally
-	// (see pokeEndpoint); this preflight only sharpens the receipt wording.
-	if reg.WakeMethod == loop.RunnerWakeMethod {
-		if err := cfg.RunnerWakeTargetOwnedBy(toID, reg.WakeTarget); err != nil {
-			return wakeReceipt{method: reg.WakeMethod, attempted: false, result: fmt.Sprintf("refused (%v)", err)}
-		}
-	}
-	if err := loop.PokeRegistration(context.Background(), cfg, reg); err != nil {
-		return wakeReceipt{method: reg.WakeMethod, attempted: true, result: fmt.Sprintf("failed (%v)", err)}
-	}
-	return wakeReceipt{method: reg.WakeMethod, attempted: true, result: "ok"}
+// computeWakeReceipt returns the wake receipt for a send.
+//
+// Simple-again Gate 6a (pull-only): senders deliver by writing the recipient's
+// inbox file and NEVER poke a wake target. The receipt is retained only so the
+// send result / JSON shape stays stable; it always reports no wake attempted.
+// cfg, toID and noWake are unused now that there is no poke to compute.
+func computeWakeReceipt(_ *loop.Config, _ string, _ bool) wakeReceipt {
+	return wakeReceipt{method: "none", attempted: false, result: "none (pull)"}
 }
 
 func emitSendText(r sendResult) {

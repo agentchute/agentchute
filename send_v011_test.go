@@ -544,8 +544,10 @@ func TestSendEmitsWakeReceipt(t *testing.T) {
 				t.Errorf("output missing %q:\n%s", want, out)
 			}
 		}
-		if !strings.Contains(out, "skipped (--no-wake)") {
-			t.Errorf("output missing --no-wake skip indication:\n%s", out)
+		// Gate 6a (pull-only): senders never poke; the receipt is always
+		// "none (pull)" regardless of --no-wake.
+		if !strings.Contains(out, "none (pull)") {
+			t.Errorf("output missing pull-only wake receipt:\n%s", out)
 		}
 	})
 }
@@ -570,14 +572,16 @@ func TestSendJSONShape(t *testing.T) {
 		if got.MessageID == "" {
 			t.Error("MessageID empty")
 		}
+		// Gate 6a (pull-only): the wake fields persist in the JSON shape but always
+		// report no poke ("none (pull)").
 		if got.WakeMethod != "none" {
-			t.Errorf("WakeMethod = %q, want none (--no-wake)", got.WakeMethod)
+			t.Errorf("WakeMethod = %q, want none (pull-only)", got.WakeMethod)
 		}
 		if got.WakeAttempted {
-			t.Error("WakeAttempted = true under --no-wake")
+			t.Error("WakeAttempted = true; pull-only senders never poke")
 		}
-		if got.WakeResult != "skipped (--no-wake)" {
-			t.Errorf("WakeResult = %q, want \"skipped (--no-wake)\"", got.WakeResult)
+		if got.WakeResult != "none (pull)" {
+			t.Errorf("WakeResult = %q, want \"none (pull)\"", got.WakeResult)
 		}
 	})
 }

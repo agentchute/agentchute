@@ -147,9 +147,9 @@ func clearHerdrAgentName(name string) error {
 }
 
 // herdrAgentReachable reports whether a herdr wake target currently resolves to
-// a live pane. Used by doctor wake-validity, the status REACHABLE column, and
-// the recipient-liveness cache-miss live fallback (wired into
-// loop.RegistrationReachable via SetHerdrReachableHook).
+// a live pane. Simple-again Gate 6a (pull-only) removed its callers (the deleted
+// doctor wake-validity check and the loop-package reachability hook seam); it is
+// now vestigial, pending removal with herdr_state.go in Gate 6c.
 //
 // It resolves by the bound NAME via herdrAgentByName (`herdr agent list` + match
 // the `name` field), NOT by `herdr agent get <name>`: the wake

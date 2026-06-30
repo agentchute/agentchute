@@ -252,7 +252,7 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 
 	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 
-	for _, name := range []string{"self_registration", "registration_freshness", "inbox_state", "ledger_state", "wake_target_validity", "runner_socket_staleness"} {
+	for _, name := range []string{"self_registration", "registration_freshness", "inbox_state", "ledger_state"} {
 		c := findCheck(t, r, name)
 		if c.Severity == "" {
 			t.Errorf("%s has empty severity", name)
@@ -263,47 +263,12 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 	if got := findCheck(t, r, "self_registration"); got.Severity != severityOK {
 		t.Errorf("self_registration severity = %q, want OK", got.Severity)
 	}
-
-	// No wake target → WARN.
-	if got := findCheck(t, r, "wake_target_validity"); got.Severity != severityWarn {
-		t.Errorf("wake_target_validity severity = %q, want WARN (no method declared)", got.Severity)
-	}
+	// Gate 6a (pull-only): wake_target_validity / runner_socket_staleness checks
+	// were removed (sender-side wake reachability no longer exists).
 }
 
-// TestDoctorTmuxWakeValidityHonorsProbeSeam proves the tmux wake-validity arm
-// resolves through the tmuxProbeBinary seam end-to-end — both the PATH
-// availability check and the reachability probe — rather than a literal "tmux".
-// PATH is stripped of real tmux so the old hardcoded exec.LookPath("tmux") would
-// (incorrectly) BLOCKER; with the seam-aware lookup the fake (an absolute path)
-// resolves and the reachable target reports OK.
-func TestDoctorTmuxWakeValidityHonorsProbeSeam(t *testing.T) {
-	cfg := newDoctorCfg(t)
-	withFakeTmuxTargets(t, "%7")  // sets tmuxProbeBinary to an executable fake answering %7
-	t.Setenv("PATH", t.TempDir()) // ensure literal "tmux" is NOT on PATH
-
-	regPath := cfg.AgentRegistrationPath("claude-code")
-	reg := &loop.Registration{
-		AgentID:     "claude-code",
-		Vendor:      "anthropic",
-		ControlRepo: cfg.ControlRepo,
-		Host:        "", // empty host avoids the cross-host SKIP short-circuit
-		WakeMethod:  "tmux",
-		WakeTarget:  "%7",
-		LastSeen:    time.Now().UTC().Truncate(time.Second),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(regPath, reg); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(cfg.AgentInboxDir("claude-code"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
-	if got := findCheck(t, r, "wake_target_validity"); got.Severity != severityOK {
-		t.Errorf("wake_target_validity severity = %q, want OK (resolved via tmuxProbeBinary seam); msg=%q", got.Severity, got.Message)
-	}
-}
+// Gate 6a (pull-only): TestDoctorTmuxWakeValidityHonorsProbeSeam was removed
+// along with the checkWakeTargetValidity tmux arm it exercised.
 
 func TestDoctorAsBlocksWhenActingWrapperHookMissing(t *testing.T) {
 	cfg := newDoctorCfg(t)

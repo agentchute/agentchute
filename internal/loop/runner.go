@@ -1,7 +1,6 @@
 package loop
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -138,18 +137,29 @@ func PingRunner(target string, timeout time.Duration) (*RunnerPingResponse, erro
 	return &resp, nil
 }
 
-type runnerWakeAdapter struct{}
-
-// Reachable reports whether reg's runner socket answers the ping/ack protocol,
-// WITHOUT ever dialing a socket the recipient does not legitimately own. This is
-// the WI-3 recipient-binding invariant, now living behind the WakeAdapter
-// interface: the owned-check (cfg.RunnerWakeTargetOwnedBy) runs FIRST and an
-// unowned target is reported unreachable WITHOUT a dial; only an owned target is
-// dialed (RunnerSocketReachable). The root-package runnerReachableForRecipient
-// delegates here, so this is the one place the owned-check-before-dial rule
-// lives.
-func (runnerWakeAdapter) Reachable(cfg *Config, reg *Registration, timeout time.Duration) bool {
-	if reg == nil || reg.WakeMethod != RunnerWakeMethod {
+// RegistrationReachable reports whether reg's wake target is currently reachable
+// from this host, WITHOUT ever dialing a socket the recipient does not
+// legitimately own.
+//
+// Simple-again Gate 6a (pull-only): the wake-adapter dispatch + the tmux/herdr
+// reachability probes were removed (senders no longer poke; those transports are
+// retiring). The only endpoint still probeable in-package is the runner RECEIVE
+// socket, which survives until Gate 6b — so this is now a runner-socket liveness
+// probe. The WI-3 recipient-binding invariant is preserved: the owned-check
+// (cfg.RunnerWakeTargetOwnedBy) runs FIRST and an unowned target is reported
+// unreachable WITHOUT a dial; only an owned target is dialed
+// (RunnerSocketReachable). Any non-runner method (or nil/empty/unknown) reports
+// unreachable. Vestigial callers (status REACHABLE column, register
+// runner-primary selection, poller ensure) keep compiling unchanged; their
+// wake-field reads are stripped in Gate 6c.
+func RegistrationReachable(cfg *Config, reg *Registration, timeout time.Duration) bool {
+	if reg == nil {
+		return false
+	}
+	if strings.TrimSpace(reg.WakeTarget) == "" {
+		return false
+	}
+	if strings.TrimSpace(reg.WakeMethod) != RunnerWakeMethod {
 		return false
 	}
 	if cfg == nil {
@@ -160,30 +170,4 @@ func (runnerWakeAdapter) Reachable(cfg *Config, reg *Registration, timeout time.
 		return false
 	}
 	return RunnerSocketReachable(reg.WakeTarget, timeout)
-}
-
-func (runnerWakeAdapter) Poke(ctx context.Context, target string) error {
-	path, err := ParseRunnerWakeTarget(target)
-	if err != nil {
-		return err
-	}
-	d := net.Dialer{Timeout: time.Second}
-	conn, err := d.DialContext(ctx, "unix", path)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
-	req := map[string]any{
-		"op":     "wake",
-		"reason": "new_mail",
-	}
-	if err := json.NewEncoder(conn).Encode(req); err != nil {
-		return err
-	}
-	return nil
-}
-
-func init() {
-	RegisterWakeAdapter(RunnerWakeMethod, runnerWakeAdapter{})
 }

@@ -43,9 +43,22 @@ func TestRunInjectsPromptOnSocketWake(t *testing.T) {
 		}
 		target := loop.RunnerWakeTarget(cfg.RunnerSocketPath("runner-test"))
 		waitForRunnerSocket(t, target, errCh)
-		if err := loop.PokeWakeTarget(loop.RunnerWakeMethod, target); err != nil {
+		// Gate 6a (pull-only): the wake-poke dispatch was removed, but the runner
+		// RECEIVE socket survives (Gate 6b). Dial it directly to deliver the same
+		// {"op":"wake"} the deleted runner adapter used to send.
+		sockPath, err := loop.ParseRunnerWakeTarget(target)
+		if err != nil {
+			t.Fatalf("parse runner target: %v", err)
+		}
+		conn, err := net.DialTimeout("unix", sockPath, time.Second)
+		if err != nil {
 			t.Fatalf("poke runner: %v", err)
 		}
+		if err := json.NewEncoder(conn).Encode(map[string]any{"op": "wake", "reason": "new_mail"}); err != nil {
+			_ = conn.Close()
+			t.Fatalf("poke runner: %v", err)
+		}
+		_ = conn.Close()
 	})
 
 	select {
@@ -611,62 +624,9 @@ func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 
 // WI-E2: the runner's off-turn poll loop re-proves its OWN wake target each tick
 // and records a cached reachability fact (ReachableAt) in its registration.
-func TestRunnerPollLoop_WritesReachableAt(t *testing.T) {
-	root := setupShortRunFixture(t)
-	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	agentID := "runner-test"
-	if err := loop.EnsurePrivateDir(cfg.AgentInboxDir(agentID)); err != nil {
-		t.Fatal(err)
-	}
-	if err := loop.EnsurePrivateDir(cfg.AgentStateDir(agentID)); err != nil {
-		t.Fatal(err)
-	}
-
-	// A live runner socket the recipient owns (so the owned-check passes and the
-	// dispatcher dials it).
-	socketPath := cfg.RunnerSocketPath(agentID)
-	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{AgentID: agentID})
-	target := loop.RunnerWakeTarget(socketPath)
-
-	reg := &loop.Registration{
-		AgentID:     agentID,
-		Vendor:      "test",
-		ControlRepo: cfg.ControlRepo,
-		Host:        localHostname(),
-		WakeMethod:  loop.RunnerWakeMethod,
-		WakeTarget:  target,
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
-		t.Fatal(err)
-	}
-
-	rt := &runnerRuntime{
-		cfg:     cfg,
-		opts:    runnerOptions{AgentID: agentID, Vendor: "test", IntervalSeconds: 5},
-		started: time.Now().UTC(),
-		socket:  socketPath,
-		wakeCh:  make(chan struct{}, 1),
-		stopCh:  make(chan struct{}),
-	}
-
-	rt.pollOnce(false)
-
-	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ReachableAt == nil {
-		t.Fatal("pollOnce did not write ReachableAt for a live owned runner socket")
-	}
-	if got.ReachabilityMethod != loop.RunnerWakeMethod || got.ReachabilityTarget != target {
-		t.Fatalf("reachability endpoint = %s/%s, want %s/%s", got.ReachabilityMethod, got.ReachabilityTarget, loop.RunnerWakeMethod, target)
-	}
-}
+// Gate 6a (pull-only): TestRunnerPollLoop_WritesReachableAt was removed.
+// pollOnce no longer reproves or records ReachableAt (the own-wake reprove call
+// at run.go's poll tick was deleted), so there is nothing to assert.
 
 func runnerSocketOp(path, op string) error {
 	conn, err := net.DialTimeout("unix", path, time.Second)

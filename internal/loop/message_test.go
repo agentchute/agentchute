@@ -255,93 +255,13 @@ func TestAnnouncementBodyEmbedsBio(t *testing.T) {
 	}
 }
 
-// newRunnerReg writes a registration whose wake_method is agentchute-run with
-// the given runner wake_target, returning it. Used to exercise the
-// recipient-binding refusal at the registration-driven poke sites.
-func newRunnerReg(t *testing.T, cfg *Config, agentID, wakeTarget string) *Registration {
-	t.Helper()
-	reg := &Registration{
-		AgentID:     agentID,
-		Vendor:      "openai",
-		ControlRepo: cfg.ControlRepo,
-		WakeMethod:  RunnerWakeMethod,
-		WakeTarget:  wakeTarget,
-		LastSeen:    time.Now().UTC(),
-		Status:      StatusActive,
-	}
-	if err := WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensurePrivateDir(cfg.AgentInboxDir(agentID)); err != nil {
-		t.Fatal(err)
-	}
-	return reg
-}
-
-func TestAnnounceEnrollment_RefusesUnownedRunnerSocket(t *testing.T) {
-	cfg := setupAnnounceFixture(t)
-	self := newReg(t, cfg, "claude-code", "anthropic", "", "synthesis")
-	dialed := installCountingRunnerAdapter(t)
-
-	// Peer advertises a runner socket it does not own.
-	newRunnerReg(t, cfg, "codex", "unix:/tmp/evil.sock")
-
-	result, err := AnnounceEnrollment(cfg, self, time.Now().UTC())
-	if err != nil {
-		t.Fatalf("announce should not be fatal: %v", err)
-	}
-	// Message still lands in the inbox (delivery is independent of poke).
-	if result.Sent != 1 {
-		t.Fatalf("Sent=%d, want 1 (delivery succeeds, only poke is refused)", result.Sent)
-	}
-	if dialed.calls != 0 {
-		t.Fatalf("unowned runner socket dialed %d times, want 0 (refused)", dialed.calls)
-	}
-	if len(result.Warnings) == 0 {
-		t.Fatal("expected a refusal warning for the unowned runner socket")
-	}
-	joined := strings.Join(result.Warnings, "|")
-	if !strings.Contains(joined, "refused") {
-		t.Fatalf("warnings %q should mention the refusal", joined)
-	}
-}
-
-func TestSendCorrective_RefusesUnownedRunnerSocket(t *testing.T) {
-	cfg := setupAnnounceFixture(t)
-	newReg(t, cfg, "claude-code", "anthropic", "", "")
-	dialed := installCountingRunnerAdapter(t)
-
-	offender := newRunnerReg(t, cfg, "codex", "unix:/tmp/evil.sock")
-
-	now := time.Date(2026, 5, 12, 4, 0, 0, 0, time.UTC)
-	if _, err := SendCorrective(cfg, "claude-code", offender.AgentID,
-		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1", now); err != nil {
-		t.Fatalf("corrective send should still deliver: %v", err)
-	}
-	if dialed.calls != 0 {
-		t.Fatalf("unowned runner socket dialed %d times, want 0 (refused)", dialed.calls)
-	}
-}
-
-func TestAnnounceEnrollment_OwnedRunnerSocketPokes(t *testing.T) {
-	cfg := setupAnnounceFixture(t)
-	self := newReg(t, cfg, "claude-code", "anthropic", "", "synthesis")
-	dialed := installCountingRunnerAdapter(t)
-
-	owned := RunnerWakeTarget(cfg.RunnerSocketPath("codex"))
-	newRunnerReg(t, cfg, "codex", owned)
-
-	result, err := AnnounceEnrollment(cfg, self, time.Now().UTC())
-	if err != nil {
-		t.Fatalf("announce failed: %v", err)
-	}
-	if result.Sent != 1 {
-		t.Fatalf("Sent=%d, want 1", result.Sent)
-	}
-	if dialed.calls != 1 {
-		t.Fatalf("owned runner socket dialed %d times, want 1", dialed.calls)
-	}
-}
+// Simple-again Gate 6a (pull-only): newRunnerReg and the three poke tests
+// (TestAnnounceEnrollment_RefusesUnownedRunnerSocket,
+// TestSendCorrective_RefusesUnownedRunnerSocket,
+// TestAnnounceEnrollment_OwnedRunnerSocketPokes) were removed. Their subject —
+// the registration-driven wake poke (and its recipient-binding refusal) inside
+// AnnounceEnrollment / SendCorrective — no longer exists: both now deliver by
+// the inbox file write alone and never poke.
 
 func setupAnnounceFixture(t *testing.T) *Config {
 	t.Helper()

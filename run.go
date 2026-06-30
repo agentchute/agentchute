@@ -676,15 +676,6 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	if err := loop.UpdateLastSeen(r.cfg, r.opts.AgentID, now); err != nil {
 		fmt.Fprintf(os.Stderr, "agentchute run: update last_seen: %v\n", err)
 	}
-	// WI-E2: re-prove (and, since the runner owns its socket, this is probe-only)
-	// our OWN wake target each tick and cache the reachability fact. Sequential
-	// with UpdateLastSeen — NOT nested — so the per-agent lock is acquired twice
-	// in this call stack only after the first release (the no-nested-lock
-	// contract). Best-effort: a reprove failure is advisory and must not disturb
-	// the inbox-wake path below.
-	if _, err := reproveAndRebindOwnWake(r.cfg, r.opts.AgentID); err != nil {
-		fmt.Fprintf(os.Stderr, "agentchute run: reprove wake reachability: %v\n", err)
-	}
 	// Track a SEEN-filename snapshot across BOTH parsed messages and skipped
 	// (malformed/unparseable) files. Lexicographic-newest tracking misses two
 	// real cases: (1) malformed files never matched a Message at all yet gate

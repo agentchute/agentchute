@@ -5,99 +5,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// TestComputeWakeReceipt_RefusesUnboundRunnerSocket asserts that a recipient
-// registration declaring a runner wake_target pointing at a socket the
-// recipient does not own (e.g. unix:/tmp/evil.sock) is refused — the poke is
-// never attempted, so a hand-written registration cannot make the sender dial
-// an attacker-controlled socket.
-func TestComputeWakeReceipt_RefusesUnboundRunnerSocket(t *testing.T) {
-	root := t.TempDir()
-	cfg := &loop.Config{
-		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
-	}
-	if err := loop.EnsurePrivateDir(cfg.AgentsDir()); err != nil {
-		t.Fatal(err)
-	}
-	if err := loop.EnsurePrivateDir(cfg.AgentInboxDir("victim")); err != nil {
-		t.Fatal(err)
-	}
-
-	evilSock := filepath.Join(t.TempDir(), "evil.sock")
-	reg := &loop.Registration{
-		AgentID:     "victim",
-		Vendor:      "examplecorp",
-		ControlRepo: root,
-		WakeMethod:  loop.RunnerWakeMethod,
-		WakeTarget:  loop.RunnerWakeTarget(evilSock), // unix:/abs/evil.sock — shape-valid, NOT owned
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("victim"), reg); err != nil {
-		t.Fatal(err)
-	}
-
-	got := computeWakeReceipt(cfg, "victim", false)
-	if got.attempted {
-		t.Fatalf("poke was attempted for an unowned runner socket; receipt=%+v", got)
-	}
-	if !strings.HasPrefix(got.result, "refused") {
-		t.Fatalf("wake_result = %q, want a refused(...) result", got.result)
-	}
-
-	// Sanity: the socket the recipient DOES own passes the binding check.
-	ownedTarget := loop.RunnerWakeTarget(cfg.RunnerSocketPath("victim"))
-	if err := cfg.RunnerWakeTargetOwnedBy("victim", ownedTarget); err != nil {
-		t.Fatalf("owned runner socket rejected by binding check: %v", err)
-	}
-}
-
-// TestComputeWakeReceipt_UnownedRunnerPrimary_NoBackup_StillRefused pins the
-// primary-only path: an unowned runner primary is short-circuit-refused
-// (attempted=false, "refused (...)"), preserving the receipt's
-// refused-vs-failed distinction for operators. The poke is never attempted.
-func TestComputeWakeReceipt_UnownedRunnerPrimary_NoBackup_StillRefused(t *testing.T) {
-	root := t.TempDir()
-	cfg := &loop.Config{
-		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
-	}
-	if err := loop.EnsurePrivateDir(cfg.AgentsDir()); err != nil {
-		t.Fatal(err)
-	}
-	if err := loop.EnsurePrivateDir(cfg.AgentInboxDir("victim")); err != nil {
-		t.Fatal(err)
-	}
-
-	evilSock := shortSocketPath(t, "evil.sock")
-	reg := &loop.Registration{
-		AgentID:     "victim",
-		Vendor:      "examplecorp",
-		ControlRepo: root,
-		WakeMethod:  loop.RunnerWakeMethod,
-		WakeTarget:  loop.RunnerWakeTarget(evilSock), // unowned primary
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("victim"), reg); err != nil {
-		t.Fatal(err)
-	}
-
-	got := computeWakeReceipt(cfg, "victim", false)
-	if got.attempted {
-		t.Fatalf("poke was attempted for an unowned runner primary; receipt=%+v", got)
-	}
-	if !strings.HasPrefix(got.result, "refused") {
-		t.Fatalf("wake_result = %q, want a refused(...) result", got.result)
-	}
-}
+// Simple-again Gate 6a (pull-only): TestComputeWakeReceipt_RefusesUnboundRunnerSocket
+// and TestComputeWakeReceipt_UnownedRunnerPrimary_NoBackup_StillRefused were
+// removed. Their subject — the sender-side wake-poke owned-check refusal — no
+// longer exists: senders deliver by writing the inbox file and never poke, so
+// computeWakeReceipt always reports "none (pull)".
 
 func TestSendFailsForUnregisteredRecipient(t *testing.T) {
 	root := t.TempDir()

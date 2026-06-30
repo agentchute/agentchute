@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,51 @@ import (
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
+
+// withFakeHerdrList installs a fake `herdr` binary that answers `agent list`
+// with the given name->pane bindings, logs `rename` invocations to renameLog,
+// and reports `agent get` as not-found. Relocated verbatim (simple-again Gate
+// 6a) from the deleted reachability_test.go into this shared test-helper file
+// because register_test.go and herdr_state_test.go (both Gate 6c, untouched
+// here) still depend on it.
+func withFakeHerdrList(t *testing.T, renameLog string, bindings map[string]string) {
+	t.Helper()
+	old := herdrProbeBinary
+	var items []string
+	for name, pane := range bindings {
+		items = append(items, fmt.Sprintf(`{"name":"%s","pane_id":"%s"}`, name, pane))
+	}
+	listJSON := fmt.Sprintf(`{"result":{"agents":[%s]}}`, strings.Join(items, ","))
+	path := filepath.Join(t.TempDir(), "herdr")
+	script := "#!/bin/sh\n" +
+		"sub=\"$2\"\n" +
+		"case \"$sub\" in\n" +
+		"  list) printf '%s\\n' '" + listJSON + "' ; exit 0 ;;\n" +
+		"  rename) printf '%s %s\\n' \"$3\" \"$4\" >> '" + renameLog + "' ; exit 0 ;;\n" +
+		"  get) printf '{\"error\":{\"code\":\"agent_not_found\"}}\\n' ; exit 0 ;;\n" +
+		"  *) exit 1 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	herdrProbeBinary = path
+	t.Cleanup(func() { herdrProbeBinary = old })
+}
+
+// renameLogContents reads a herdr rename log written by withFakeHerdrList,
+// returning "" when the log was never written. Relocated verbatim (simple-again
+// Gate 6a) from the deleted reachability_test.go for herdr_state_test.go.
+func renameLogContents(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
+		}
+		t.Fatal(err)
+	}
+	return string(data)
+}
 
 func mustMkdir(t *testing.T, path string) {
 	t.Helper()

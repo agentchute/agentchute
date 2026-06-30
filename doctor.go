@@ -196,8 +196,6 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 			checkRegistrationFreshness(cfg, agentID, opts.Now),
 			checkInboxState(cfg, agentID),
 			checkLedgerState(cfg, agentID),
-			checkWakeTargetValidity(cfg, agentID),
-			checkRunnerSocketStaleness(cfg, agentID),
 		)
 	} else {
 		checks = append(checks, doctorCheck{
@@ -779,81 +777,13 @@ func checkLedgerState(cfg *loop.Config, agentID string) doctorCheck {
 	return doctorCheck{Name: "ledger_state", Severity: severityOK, Message: "no pending reply obligations"}
 }
 
-func checkWakeTargetValidity(cfg *loop.Config, agentID string) doctorCheck {
-	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
-	if err != nil {
-		return doctorCheck{Name: "wake_target_validity", Severity: severitySkip, Message: "registration unreadable"}
-	}
-	method := strings.TrimSpace(reg.WakeMethod)
-	target := strings.TrimSpace(reg.WakeTarget)
-	if method == "" && target == "" {
-		return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: "no wake method declared; senders will skip wake pokes; recipient must poll its own inbox"}
-	}
-	// Cross-host or non-local hosts: we have no way to probe the adapter
-	// from here. Surface as SKIP rather than fail.
-	localHost, _ := os.Hostname()
-	if reg.Host != "" && reg.Host != localHost {
-		return doctorCheck{Name: "wake_target_validity", Severity: severitySkip, Message: fmt.Sprintf("registered host %q != local %q; cross-host wake validity not checked here", reg.Host, localHost)}
-	}
-	switch method {
-	case "tmux":
-		if _, err := exec.LookPath(tmuxProbeBinary); err != nil {
-			return doctorCheck{Name: "wake_target_validity", Severity: severityBlocker, Message: "wake_method=tmux but `tmux` not on PATH; senders will fail to wake this agent"}
-		}
-		// Lightweight: probe pane existence without sending keys. Routed through
-		// the shared timeout-aware helper (tmuxTargetReachableWithin) so this
-		// arm honors the tmuxProbeBinary test seam and the same list-panes verb
-		// instead of re-inlining a hardcoded "tmux" exec.
-		if !tmuxTargetReachableWithin(target, time.Second) {
-			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=tmux but target %q not currently addressable (`tmux list-panes -t %s` failed); pane may have closed", target, target)}
-		}
-		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=tmux, target=%s reachable", target)}
-	case "herdr":
-		if _, err := exec.LookPath(herdrProbeBinary); err != nil {
-			return doctorCheck{Name: "wake_target_validity", Severity: severityBlocker, Message: "wake_method=herdr but `herdr` not on PATH; senders will fail to wake this agent"}
-		}
-		// Read-only: resolve the stable agent name to a live pane without
-		// sending keys.
-		if !herdrAgentReachable(target) {
-			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=herdr but agent %q is not bound to a live pane (no matching `name` in `herdr agent list`); the pane may have closed or the herdr name was cleared/renamed", target)}
-		}
-		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=herdr, target=%s reachable", target)}
-	case loop.RunnerWakeMethod:
-		// Recipient-bound: never dial a runner socket the recipient does not
-		// own. A registration naming a foreign socket is reported unreachable
-		// without a dial (the owned-check short-circuits).
-		if !runnerReachableForRecipient(cfg, reg, time.Second) {
-			return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=%s but socket target %q is not reachable; runner may have exited", method, target)}
-		}
-		return doctorCheck{Name: "wake_target_validity", Severity: severityOK, Message: fmt.Sprintf("wake_method=%s, target reachable", method)}
-	default:
-		return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=%s unknown to v0.1 reference CLI; senders cannot poke this agent unless an adapter is provided externally", method)}
-	}
-}
-
-// checkRunnerSocketStaleness is the append-only new check for C lane
-// (runner supervision). Only reports for agents with runner wake_method;
-// does not touch checkWrapperShadowing or other shadowing logic.
-func checkRunnerSocketStaleness(cfg *loop.Config, agentID string) doctorCheck {
-	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
-	if err != nil {
-		return doctorCheck{Name: "runner_socket_staleness", Severity: severitySkip, Message: "registration unreadable (see self_registration)"}
-	}
-	if reg.WakeMethod != loop.RunnerWakeMethod {
-		return doctorCheck{Name: "runner_socket_staleness", Severity: severitySkip, Message: "not using runner wake"}
-	}
-	// Recipient-bound: never dial a runner socket the recipient does not own.
-	// Operator diagnostics; the owned-check is defense-in-depth (harmless for a
-	// legit self socket, protective if the reg was tampered).
-	if runnerReachableForRecipient(cfg, reg, time.Second) {
-		return doctorCheck{Name: "runner_socket_staleness", Severity: severityOK, Message: fmt.Sprintf("runner socket %s reachable", reg.WakeTarget)}
-	}
-	return doctorCheck{
-		Name:     "runner_socket_staleness",
-		Severity: severityWarn,
-		Message:  fmt.Sprintf("runner socket target %q not reachable; runner may have exited (self-heals on next shim start)", reg.WakeTarget),
-	}
-}
+// Simple-again Gate 6a (pull-only): checkWakeTargetValidity and
+// checkRunnerSocketStaleness were removed. Both probed a recipient's wake target
+// for reachability — a push-era concern that no longer exists once senders stop
+// poking. They depended on the deleted runnerReachableForRecipient / tmux+herdr
+// reachability helpers. The doctor framework and all other (subsystem-free)
+// checks are unchanged. Remaining wake_method/wake_target field readers are
+// stripped in Gate 6c.
 
 // ---------- output ----------
 

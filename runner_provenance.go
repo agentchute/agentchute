@@ -3,7 +3,15 @@ package main
 import (
 	"os"
 	"strings"
+	"time"
 )
+
+// reproveProbeTimeout bounds the runner reachability probe used by register's
+// runner-primary selection (wakeEndpointReachable). Relocated here verbatim from
+// the deleted reachability.go (simple-again Gate 6a) so register.go's sole
+// reference keeps compiling without an edit to the autodetect path (deferred to
+// Gate 6c). The name is preserved because register.go references it.
+const reproveProbeTimeout = time.Second
 
 // underAgentchuteRunner reports whether this process was launched by the
 // agentchute PTY supervisor (the runner, evolving into `serve`). When true, the

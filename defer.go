@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -158,13 +157,8 @@ func cmdDefer(args []string) error {
 	switch {
 	case err == nil:
 		ackFilename = ackID.Filename()
-		// Poke the sender if pokable; failures are non-fatal.
-		regPath := cfg.AgentRegistrationPath(pendingEntry.From)
-		if reg, regErr := loop.ReadRegistration(regPath); regErr == nil && reg.IsPokable() {
-			if pokeErr := loop.PokeRegistration(context.Background(), cfg, reg); pokeErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: wake poke to %s failed (%v); ack still delivered\n", pendingEntry.From, pokeErr)
-			}
-		}
+		// Simple-again Gate 6a (pull-only): the ack is delivered by the file write
+		// alone; the deferred sender picks it up on its own poll. No wake poke.
 	case os.IsNotExist(err):
 		sendWarning = fmt.Sprintf("warning: sender %q has no inbox directory (unregistered?); deferral recorded locally, ack not delivered", pendingEntry.From)
 	default:

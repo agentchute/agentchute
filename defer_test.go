@@ -163,11 +163,18 @@ func captureStderr(t *testing.T, fn func() error) (string, error) {
 // poke is REFUSED (recipient-binding) without dialing. The defer still succeeds
 // and the ack still lands; only the poke is skipped, with a stderr warning
 // whose "refused" wording proves the refusal short-circuited ahead of any dial.
-func TestDeferAck_RefusesUnownedRunnerSocket(t *testing.T) {
+// Gate 6a (pull-only): defer delivers the deferral-ack by writing the sender's
+// inbox file and NEVER pokes a wake target. Even when the ack recipient
+// advertises a junk runner socket, defer ignores the wake fields entirely — no
+// poke, no "refused" warning — and still transitions the ledger and lands the
+// ack. (Adjusted from TestDeferAck_RefusesUnownedRunnerSocket, whose subject —
+// the sender-side poke refusal — was removed.)
+func TestDeferAck_DeliversByFileWriteNoPoke(t *testing.T) {
 	msgID, cfg := setupDeferFixture(t)
 	root := os.Getenv("TEST_DEFER_ROOT")
 
-	// Rewrite codex (the ack recipient) to advertise an unowned runner socket.
+	// Rewrite codex (the ack recipient) to advertise an unowned runner socket;
+	// pull-only defer must ignore it (no dial, no poke).
 	evil := &loop.Registration{
 		AgentID:     "codex",
 		Vendor:      "openai",
@@ -191,29 +198,30 @@ func TestDeferAck_RefusesUnownedRunnerSocket(t *testing.T) {
 			return e
 		})
 		if err != nil {
-			t.Fatalf("defer should succeed despite refused poke: %v", err)
+			t.Fatalf("defer should succeed without poking: %v", err)
 		}
 	})
 
-	if !strings.Contains(stderr, "refused") {
-		t.Fatalf("stderr should warn that the unowned runner poke was refused, got: %q", stderr)
+	// No poke is attempted, so there is no "refused" (or any poke) warning.
+	if strings.Contains(stderr, "refused") || strings.Contains(stderr, "poke") {
+		t.Fatalf("pull-only defer must not poke; stderr should mention no poke, got: %q", stderr)
 	}
 
-	// Ledger still transitioned and ack still delivered.
+	// Ledger still transitioned and ack still delivered (by file write alone).
 	ledger, err := loop.LoadPendingLedger(cfg, "claude-code")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, ok := ledger.FindByMessageID(msgID)
 	if !ok || got.Status != loop.PendingReplyStatusDeferred {
-		t.Fatalf("ledger entry not deferred despite refused poke: ok=%v status=%v", ok, got.Status)
+		t.Fatalf("ledger entry not deferred: ok=%v status=%v", ok, got.Status)
 	}
 	entries, err := os.ReadDir(cfg.AgentInboxDir("codex"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) == 0 {
-		t.Fatal("deferral-ack should still land in codex inbox even when poke is refused")
+		t.Fatal("deferral-ack should land in codex inbox (delivery is by file write)")
 	}
 }
 

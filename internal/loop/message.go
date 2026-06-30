@@ -1,7 +1,6 @@
 package loop
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -99,13 +98,8 @@ func AnnounceEnrollment(cfg *Config, self *Registration, now time.Time) (Announc
 			continue
 		}
 		result.Sent++
-		if peer.IsPokable() {
-			// PokeRegistration refuses an unowned runner socket (recipient-binding)
-			// without dialing it; non-runner methods poke as before.
-			if err := PokeRegistration(context.Background(), cfg, peer); err != nil {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("poke %s: %v", peer.AgentID, err))
-			}
-		}
+		// Simple-again Gate 6a (pull-only): the announcement is delivered by the
+		// inbox file write alone; peers pick it up on their own poll. No wake poke.
 	}
 	return result, nil
 }
@@ -218,12 +212,8 @@ func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionR
 		Sender:   from,
 	}
 
-	// Best-effort poke (per §11.1 / §6.2). PokeRegistration refuses an unowned
-	// runner socket (recipient-binding) without dialing it.
-	reg, err := ReadRegistration(cfg.AgentRegistrationPath(offender))
-	if err == nil && reg.IsPokable() {
-		_ = PokeRegistration(context.Background(), cfg, reg)
-	}
+	// Simple-again Gate 6a (pull-only): the corrective is delivered by the inbox
+	// file write alone; the offender picks it up on its own poll. No wake poke.
 	return msg, nil
 }
 

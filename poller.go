@@ -212,15 +212,6 @@ func pollerTick(cfg *loop.Config, p serviceParams, rt *pollerRuntime, startedAt 
 		return err
 	}
 
-	// WI-E2: off-turn reprove (and, when this poller has HERDR_PANE_ID/$TMUX_PANE
-	// context, rebind) of our own wake target, caching the reachability fact. A
-	// context-less poller only probes — the rebind path is gated on pane context
-	// inside the helper (codex guardrail). Best-effort and advisory: a reprove
-	// failure must not change the heartbeat outcome or block mail handling.
-	if _, rerr := reproveAndRebindOwnWake(cfg, p.AgentID); rerr != nil {
-		fmt.Fprintf(os.Stderr, "agentchute poller: reprove wake reachability for %s: %v\n", p.AgentID, rerr)
-	}
-
 	// No-work or non-launch tick: nothing to launch, so a successful compute is
 	// sufficient liveness — refresh the heartbeat.
 	if !result.ShouldWake || !p.Launch {
@@ -347,6 +338,27 @@ func withoutEnv(env []string, keys ...string) []string {
 		filtered = append(filtered, kv)
 	}
 	return filtered
+}
+
+// registrationHasReachableWake reports whether reg declares a wake target that
+// is reachable from THIS host. Relocated verbatim (behavior-preserving) from the
+// deleted reachability.go (simple-again Gate 6a) into its sole caller. It rides
+// loop.RegistrationReachable, which in pull-only is the runner receive-socket
+// liveness probe (the owned-check runs before any dial; non-runner methods report
+// unreachable). Cross-host registrations are short-circuited unreachable. The
+// whole poller is slated for removal in a later gate.
+func registrationHasReachableWake(cfg *loop.Config, reg *loop.Registration) bool {
+	if reg == nil {
+		return false
+	}
+	if strings.TrimSpace(reg.WakeTarget) == "" {
+		return false
+	}
+	localHost, _ := os.Hostname()
+	if strings.TrimSpace(reg.Host) != "" && strings.TrimSpace(localHost) != "" && reg.Host != localHost {
+		return false
+	}
+	return loop.RegistrationReachable(cfg, reg, time.Second)
 }
 
 func cmdPollerEnsure(args []string) error {
