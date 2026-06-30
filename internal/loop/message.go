@@ -92,7 +92,9 @@ func AnnounceEnrollment(cfg *Config, self *Registration, now time.Time) (Announc
 		}
 		result.Total++
 		content := ComposeMessage(now, self.AgentID, peer.AgentID, "enrolled", "info", "", body)
-		if _, err := WriteInboxMessage(cfg.AgentInboxDir(peer.AgentID), now, self.AgentID, content); err != nil {
+		// Gate 4: deliver under the canonical (to,from,seq) identity (empty
+		// idempotencyKey/serveToken = transitional at-most-once, unfenced).
+		if _, err := SendSeqMessage(cfg, self.AgentID, peer.AgentID, content, "", ""); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("send to %s: %v", peer.AgentID, err))
 			continue
 		}
@@ -204,9 +206,16 @@ func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionR
 	body := CorrectiveBody(malformedItem, reason, sectionRef)
 	content := ComposeMessage(now, from, offender, "protocol correction", "findings", "", body)
 
-	msg, err := WriteInboxMessage(cfg.AgentInboxDir(offender), now, from, content)
+	// Gate 4: deliver under the canonical (to,from,seq) identity (empty
+	// idempotencyKey/serveToken = transitional at-most-once, unfenced).
+	id, err := SendSeqMessage(cfg, from, offender, content, "", "")
 	if err != nil {
 		return Message{}, err
+	}
+	msg := Message{
+		Filename: id.Filename(),
+		Path:     filepath.Join(cfg.AgentInboxDir(offender), id.Filename()),
+		Sender:   from,
 	}
 
 	// Best-effort poke (per §11.1 / §6.2). PokeRegistration refuses an unowned

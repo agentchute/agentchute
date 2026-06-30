@@ -149,10 +149,15 @@ func cmdDefer(args []string) error {
 	ackContent := loop.ComposeMessage(now, agentID, pendingEntry.From, "deferred-reply", "info", pendingEntry.MessageID, ackBody)
 
 	sendWarning := ""
-	senderInbox := cfg.AgentInboxDir(pendingEntry.From)
-	ackMsg, err := loop.WriteInboxMessage(senderInbox, now, agentID, ackContent)
+	// Gate 4: land the ack under the canonical (to,from,seq) identity. Empty
+	// idempotencyKey/serveToken match send's transitional contract (at-most-once
+	// on a sender crash, unfenced). A missing sender inbox surfaces as
+	// os.ErrNotExist exactly as the legacy writer did.
+	ackID, err := loop.SendSeqMessage(cfg, agentID, pendingEntry.From, ackContent, "", "")
+	ackFilename := ""
 	switch {
 	case err == nil:
+		ackFilename = ackID.Filename()
 		// Poke the sender if pokable; failures are non-fatal.
 		regPath := cfg.AgentRegistrationPath(pendingEntry.From)
 		if reg, regErr := loop.ReadRegistration(regPath); regErr == nil && reg.IsPokable() {
@@ -173,8 +178,8 @@ func cmdDefer(args []string) error {
 	if deferredUntil != "" {
 		fmt.Printf("  until:  %s\n", deferredUntil)
 	}
-	if ackMsg.Filename != "" {
-		fmt.Printf("  ack:    %s -> %s\n", ackMsg.Filename, pendingEntry.From)
+	if ackFilename != "" {
+		fmt.Printf("  ack:    %s -> %s\n", ackFilename, pendingEntry.From)
 	}
 	if sendWarning != "" {
 		fmt.Fprintln(os.Stderr, sendWarning)

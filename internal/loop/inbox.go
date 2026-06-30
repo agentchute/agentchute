@@ -15,14 +15,22 @@ import (
 )
 
 // Message is a parsed inbox or archive message file. The 4-character hex
-// collision-resistance nonce embedded in the filename is recoverable via
+// collision-resistance nonce embedded in a LEGACY filename is recoverable via
 // ParseInboxFilename if a consumer needs it; we no longer carry it on the
 // struct because no caller reads it.
+//
+// Gate 4 dual-read: a Message may originate from EITHER the legacy nonce format
+// (`<ts>_from-<sender>_msg-<nonce>.md`) or the canonical seq format
+// (`from-<sender>_seq-<020d>.md`). LegacyNonce distinguishes them. For seq files
+// there is NO timestamp embedded in the name, so Timestamp is populated from the
+// file mtime as an ADVISORY display/staleness value ONLY — it is NEVER an
+// ordering key (ordering stays filename-lexicographic; identity is (to,from,seq)).
 type Message struct {
-	Path      string    // absolute path to the file
-	Filename  string    // basename (just the file name, no directory)
-	Sender    string    // sender agent_id parsed from the filename
-	Timestamp time.Time // sender-side timestamp parsed from the filename (UTC, microsecond precision)
+	Path        string    // absolute path to the file
+	Filename    string    // basename (just the file name, no directory)
+	Sender      string    // sender agent_id parsed from the filename
+	Timestamp   time.Time // legacy: sender-side ts parsed from filename (UTC, µs). seq: file mtime (advisory only).
+	LegacyNonce bool      // true if parsed from the legacy nonce format; false for canonical seq files.
 }
 
 const (
@@ -73,6 +81,14 @@ var inboxFilenameShapeRE = regexp.MustCompile(
 // `.md` markers are dropped without inference. The returned slug MUST pass
 // ValidateAgentID; otherwise ok=false (inferred ids must be valid).
 func InferSenderFromFilename(filename string) (string, bool) {
+	// Gate 4 dual-read: a canonical seq name carries the sender in `from-<from>_`.
+	// Try it first so sender-inference is total over BOTH formats. After the
+	// dual-read lister fix a well-formed seq file never reaches the skipped /
+	// quarantine path, so this is mostly belt-and-suspenders — but it keeps a
+	// stray seq-shaped file from being mis-attributed to a wrong peer.
+	if from, _, ok := ParseSeqFilename(filename); ok {
+		return from, true
+	}
 	if m := inboxFilenameRE.FindStringSubmatch(filename); m != nil {
 		return m[2], true
 	}
@@ -296,7 +312,7 @@ func ListInboxMessagesWithSkipped(inboxDir string) ([]Message, []string, error) 
 	var msgs []Message
 	var skipped []string
 	for _, entry := range entries {
-		regular, err := isRegularDirEntry(entry)
+		regular, modTime, err := isRegularDirEntry(entry)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -310,11 +326,15 @@ func ListInboxMessagesWithSkipped(inboxDir string) ([]Message, []string, error) 
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		t, sender, _, err := ParseInboxFilename(name)
-		if err != nil {
-			// Looks like a message but doesn't parse: record so cmdCheck can
-			// surface it. Hand-written files with invalid nonces / timestamps
-			// land here and would otherwise be silently invisible.
+		// Gate 4 dual-read: accept BOTH the legacy nonce format and the
+		// canonical seq format. A file that parses as EITHER is a real message;
+		// only a genuinely-unrecognized name is `skipped` (and thus subject to
+		// the §11 quarantine + corrective). THIS is the load-bearing fix: before
+		// dual-read a seq file failed ParseInboxFilename, landed in `skipped`,
+		// and `check` would quarantine it and fire a spurious corrective at the
+		// sender.
+		msg, ok := parseAnyInboxName(name, modTime)
+		if !ok {
 			skipped = append(skipped, name)
 			continue
 		}
@@ -322,30 +342,74 @@ func ListInboxMessagesWithSkipped(inboxDir string) ([]Message, []string, error) 
 		if err != nil {
 			return nil, nil, err
 		}
-		msgs = append(msgs, Message{
-			Path:      abs,
-			Filename:  name,
-			Sender:    sender,
-			Timestamp: t,
-		})
+		msg.Path = abs
+		msg.Filename = name
+		msgs = append(msgs, msg)
 	}
 
-	// Filename is timestamp-prefixed in lexicographic-friendly form.
+	// Filename-lexicographic sort yields exact per-sender FIFO for BOTH formats:
+	// legacy names start with a digit (year) and seq names start with 'f'
+	// ("from-"), so every legacy file sorts before every seq file (correct
+	// across the cutover: legacy residue predates any seq write); within a
+	// sender, the zero-padded %020d seq compares numerically; legacy keeps its
+	// timestamp order. Cross-sender order is advisory (O1), satisfied by the
+	// sender-slug grouping the names already impose.
 	sort.Slice(msgs, func(i, j int) bool { return msgs[i].Filename < msgs[j].Filename })
 	sort.Strings(skipped)
 	return msgs, skipped, nil
 }
 
-func isRegularDirEntry(entry os.DirEntry) (bool, error) {
+// isRegularDirEntry reports whether entry is a plain regular file (not a
+// symlink/dir/socket) and returns its mtime in the SAME Info() stat — so the
+// dual-read lister can populate a seq Message's advisory Timestamp without a
+// second filesystem stat. The returned time is the zero value when the entry is
+// not a regular file (callers ignore it in that case).
+func isRegularDirEntry(entry os.DirEntry) (bool, time.Time, error) {
 	info, err := entry.Info()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return false, time.Time{}, nil
 		}
-		return false, err
+		return false, time.Time{}, err
 	}
 	mode := info.Mode()
-	return mode&os.ModeSymlink == 0 && mode.IsRegular(), nil
+	return mode&os.ModeSymlink == 0 && mode.IsRegular(), info.ModTime(), nil
+}
+
+// parseAnyInboxName recognizes BOTH inbox filename formats and returns a partly
+// populated Message (Sender, Timestamp, LegacyNonce set; Path/Filename left for
+// the caller). It reuses ParseInboxFilename (legacy) and ParseSeqFilename (seq)
+// — no parsing duplicated. The two regexes are DISJOINT by first byte (legacy
+// `^\d`, seq `^from-`), so attempt order is irrelevant and no name matches both.
+//
+// For a legacy name the embedded sender-side timestamp is the Timestamp. A seq
+// name has NO embedded timestamp, so modTime (the file mtime) is used as the
+// ADVISORY Timestamp — load-bearing for staleness (pending) and display
+// (self_poll/boot/watch); never an ordering key. A zero/forgotten Timestamp
+// would render every seq message ancient and print 0001-01-01.
+func parseAnyInboxName(name string, modTime time.Time) (Message, bool) {
+	if t, sender, _, err := ParseInboxFilename(name); err == nil {
+		return Message{Sender: sender, Timestamp: t, LegacyNonce: true}, true
+	}
+	if from, _, ok := ParseSeqFilename(name); ok {
+		return Message{Sender: from, Timestamp: modTime, LegacyNonce: false}, true
+	}
+	return Message{}, false
+}
+
+// CountLegacyNonce returns how many messages in msgs were parsed from the legacy
+// nonce filename format. It powers the drain-observability gauge (doctor / gate):
+// the one-release dual-read window is fully drained — and the legacy reader
+// becomes removable — only when every live inbox reports zero. It reads the
+// already-listed slice, so it needs NO extra filesystem scan.
+func CountLegacyNonce(msgs []Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.LegacyNonce {
+			n++
+		}
+	}
+	return n
 }
 
 // ArchiveMessage moves a consumed message to archiveDir using the spec'd

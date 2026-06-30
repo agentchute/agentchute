@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -168,15 +169,36 @@ func cmdSend(args []string) error {
 		content = applyReplyRequiredFrontmatter(content)
 	}
 
-	// Write to recipient's inbox via atomic temp+rename.
+	// Land the message under the canonical (to,from,seq) identity (Gate 4):
+	// `to` is encoded by the inbox directory, (from,seq) by the filename. The
+	// durable per-(from,to) seq replaces the legacy crypto/rand nonce — it makes
+	// the lexicographic inbox sort exact per-sender FIFO (the live O1 fix) and
+	// folds delivery-dedup into the substrate (link-EEXIST on a resend).
 	inboxDir := cfg.AgentInboxDir(toID)
-	msg, err := loop.WriteInboxMessage(inboxDir, now, fromID, content)
+	// Preflight the recipient inbox BEFORE allocating a seq. AllocateSeq durably
+	// bumps the sender's (from,to) counter before writeSeqMessage checks the
+	// inbox, so a send to a missing/unregistered recipient would otherwise burn
+	// a seq (a legal gap) and persist sender state before the os.ErrNotExist
+	// surfaces. This stat keeps the old no-side-effect-on-bad-recipient behavior
+	// and the same remediation message.
+	if fi, statErr := os.Stat(inboxDir); statErr != nil || !fi.IsDir() {
+		return fmt.Errorf("write inbox message: recipient %q is not registered; run agentchute register --as %s first (%w)", toID, toID, os.ErrNotExist)
+	}
+	// idempotencyKey is "": send has no stable per-message content key, so a
+	// sender crash between the durable seq commit and the link loses the
+	// allocated seq as a legal gap (at-most-once for this message). Acceptable
+	// for the transition. serveToken is "": serve owns the lease fence in Gate 6
+	// and transitional sends are unfenced per spec §6b / AllocateSeq doc.
+	id, err := loop.SendSeqMessage(cfg, fromID, toID, content, "", "")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("write inbox message: recipient %q is not registered; run agentchute register --as %s first (%w)", toID, toID, err)
 		}
 		return fmt.Errorf("write inbox message: %w", err)
 	}
+	// message_id stays emitted as a COMPAT frontmatter field (ComposeMessage)
+	// for one release; the on-wire identity is now (to,from,seq).
+	msg := loop.Message{Filename: id.Filename(), Path: filepath.Join(inboxDir, id.Filename())}
 
 	// Wake the recipient (or explicitly skip via --no-wake). Capture the
 	// outcome for the sender-side receipt regardless of success.

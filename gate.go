@@ -206,6 +206,13 @@ func cmdGate(args []string) error {
 	// Apply the phase predicates to build the blocking-reasons list and
 	// any non-blocking warnings (e.g., wake_stale on release).
 	status.Reasons, status.Warnings = evaluateGatePhase(phase, status, requireConfirm, ackStaleReg)
+	// Gate 4 drain gauge (ADVISORY only — never blocks): surface legacy
+	// nonce-named files still present so the one-release migration window is
+	// observable. They are valid deliverable mail (not malformed/unread
+	// obligations), so they are NOT added to Reasons.
+	if n := loop.CountLegacyNonce(msgs); n > 0 {
+		status.Warnings = append(status.Warnings, fmt.Sprintf("%d legacy nonce-named message(s) pending drain (one-release migration window)", n))
+	}
 	status.Blocked = len(status.Reasons) > 0
 
 	// Emit + exit.
