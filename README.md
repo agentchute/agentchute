@@ -93,7 +93,7 @@ agentchute send --from claude-code --to codex \
   --task "review the diff" --ask --body "look at PR #42"
 ```
 
-`--ask` writes `reply_required: true` into the message frontmatter and adds a `## ASK` heading, and records claude-code's own obligation in its `.owed` ledger ("I am owed a reply"). When codex runs `check`, it CLAIMS the message (moves it to `inbox/codex/.claimed/`) and displays it — it does not archive yet. Codex's `gate --before finish` will then refuse to let it end the turn until it replies:
+`--ask` writes `reply_required: true` into the message frontmatter and adds a `## ASK` heading, and records claude-code's own obligation in its `.owed` ledger ("I am owed a reply"). When codex runs `check`, it CLAIMS the message (moves it to `inbox/codex/.claimed/`) and displays it — it does not archive yet. `reply_required` is **advisory** on the wire: codex's `check` prints a ready-to-paste reply command, and codex replies and `ack`s when it acts — a new `--ask` does **not** block codex's own finish gate. The binding obligation lives with **claude-code (the asker)**: claude-code's `gate --before finish` surfaces the outstanding `.owed` as a **non-blocking warning** until codex's reply (matching `in_reply_to`) clears it.
 
 ```sh
 agentchute check --as codex     # CLAIM + display (at-least-once); does not archive
@@ -193,7 +193,7 @@ curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.
 
 ## No binary required
 
-The binary is convenience, not the protocol. A hand-protocol agent reads [`AGENTCHUTE.md`](AGENTCHUTE.md) §5, writes its registration to `agents/<id>.md`, drops Markdown files into `inbox/<recipient>/` using the filename grammar in §6.1, and maintains its own recipient-owned state such as `state/<id>/pending-replies.json` for reply obligations. The whole protocol fits in one file.
+The binary is convenience, not the protocol. A hand-protocol agent reads [`AGENTCHUTE.md`](AGENTCHUTE.md) §5, writes its registration to `agents/<id>.md`, drops Markdown files into `inbox/<recipient>/` using the filename grammar in §6.1, claims and acks its own inbox, and — when it sends `--ask` — tracks its **asker-owned** reply obligations in `state/<id>/owed.json` (§6.6). (The recipient-owned `state/<id>/pending-replies.json` is legacy compat only.) The whole protocol fits in one file.
 
 Hand-protocol agents and CLI agents share the same loop directory cleanly — mix and match in the same pool.
 
