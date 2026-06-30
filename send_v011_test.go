@@ -68,20 +68,9 @@ func readMostRecentInboxMessage(t *testing.T, cfg *loop.Config, agent string) st
 	return string(data)
 }
 
-func TestSendInfersSenderFromCurrentTmuxPane(t *testing.T) {
-	root, cfg := setupSendFixture(t)
-	withCwd(t, root, func() {
-		t.Setenv("AGENTCHUTE_AGENT_ID", "")
-		t.Setenv("TMUX_PANE", "%2")
-		if err := cmdSend([]string{"--to", "claude-code", "--task", "tmux inferred sender", "--body", "hello", "--no-wake"}); err != nil {
-			t.Fatal(err)
-		}
-	})
-	body := readMostRecentInboxMessage(t, cfg, "claude-code")
-	if !strings.Contains(body, "from: codex") {
-		t.Fatalf("message did not infer sender from current tmux pane:\n%s", body)
-	}
-}
+// Pull-only (Gate 6c): TestSendInfersSenderFromCurrentTmuxPane was removed.
+// Sender inference from a tmux/herdr pane is gone (registrations carry no wake
+// target to map a pane back to an id); --from comes from --as / $AGENTCHUTE_AGENT_ID.
 
 // AGENTCHUTE.md §6.4: --ask sets reply_required: true frontmatter
 // AND prepends ## ASK to the body.
@@ -528,7 +517,8 @@ func TestSendReplyToWithoutMatchingEntryIsSilent(t *testing.T) {
 	})
 }
 
-// Send output emits wake_method, wake_attempted, wake_result (AGENTCHUTE.md §8).
+// Send output emits the wake receipt (wake_attempted, wake_result). Pull-only
+// (Gate 6c): the wake_method line was dropped; senders never poke.
 func TestSendEmitsWakeReceipt(t *testing.T) {
 	root, _ := setupSendFixture(t)
 	withCwd(t, root, func() {
@@ -539,13 +529,12 @@ func TestSendEmitsWakeReceipt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"wake_method:", "wake_attempted:", "wake_result:"} {
+		for _, want := range []string{"wake_attempted:", "wake_result:"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("output missing %q:\n%s", want, out)
 			}
 		}
-		// Gate 6a (pull-only): senders never poke; the receipt is always
-		// "none (pull)" regardless of --no-wake.
+		// Senders never poke; the receipt is always "none (pull)".
 		if !strings.Contains(out, "none (pull)") {
 			t.Errorf("output missing pull-only wake receipt:\n%s", out)
 		}
@@ -572,11 +561,8 @@ func TestSendJSONShape(t *testing.T) {
 		if got.MessageID == "" {
 			t.Error("MessageID empty")
 		}
-		// Gate 6a (pull-only): the wake fields persist in the JSON shape but always
-		// report no poke ("none (pull)").
-		if got.WakeMethod != "none" {
-			t.Errorf("WakeMethod = %q, want none (pull-only)", got.WakeMethod)
-		}
+		// Pull-only (Gate 6c): the wake_method JSON field was dropped; the receipt
+		// reports no poke.
 		if got.WakeAttempted {
 			t.Error("WakeAttempted = true; pull-only senders never poke")
 		}

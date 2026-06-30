@@ -58,12 +58,10 @@ func TestBootUnderRunnerKeepsRunnerProvenance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		socketPath := cfg.RunnerSocketPath("claude-code")
-		// Gate 6b (pull-only): runner reachability is `.live` freshness, not a
-		// socket ping.
+		// Gate 6c (pull-only): the registration carries no wake target; runner
+		// presence is `.live` freshness.
 		mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC())
-		runnerTarget := loop.RunnerWakeTarget(socketPath)
-		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--wake-method", loop.RunnerWakeMethod, "--wake-target", runnerTarget}); err != nil {
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
 			t.Fatalf("seed runner registration failed: %v", err)
 		}
 		if err := cmdBoot([]string{"--as", "claude-code", "--vendor", "anthropic", "--quiet"}); err != nil {
@@ -76,9 +74,6 @@ func TestBootUnderRunnerKeepsRunnerProvenance(t *testing.T) {
 		if reg.LaunchedBy != loop.LaunchedByRunner {
 			t.Fatalf("LaunchedBy = %q, want %q (boot under runner must not demote)", reg.LaunchedBy, loop.LaunchedByRunner)
 		}
-		if reg.WakeMethod != loop.RunnerWakeMethod || reg.WakeTarget != runnerTarget {
-			t.Fatalf("wake = %s/%s, want %s/%s (boot under runner must not demote to tmux)", reg.WakeMethod, reg.WakeTarget, loop.RunnerWakeMethod, runnerTarget)
-		}
 	})
 }
 
@@ -90,8 +85,7 @@ func TestRunnerSetsRunnerProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := runnerOptions{AgentID: "claude-code", Vendor: "anthropic", ShimName: "ac-claude"}
-	socketPath := cfg.RunnerSocketPath(opts.AgentID)
-	if err := registerRunner(cfg, opts, socketPath, time.Now().UTC()); err != nil {
+	if err := registerRunner(cfg, opts, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(opts.AgentID))
@@ -103,9 +97,6 @@ func TestRunnerSetsRunnerProvenance(t *testing.T) {
 	}
 	if reg.ShimName != "ac-claude" {
 		t.Fatalf("ShimName = %q, want ac-claude", reg.ShimName)
-	}
-	if reg.WakeMethod != loop.RunnerWakeMethod {
-		t.Fatalf("WakeMethod = %q, want %q", reg.WakeMethod, loop.RunnerWakeMethod)
 	}
 }
 

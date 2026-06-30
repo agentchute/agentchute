@@ -778,12 +778,12 @@ func checkLedgerState(cfg *loop.Config, agentID string) doctorCheck {
 }
 
 // Simple-again Gate 6a (pull-only): checkWakeTargetValidity and
-// checkRunnerSocketStaleness were removed. Both probed a recipient's wake target
-// for reachability — a push-era concern that no longer exists once senders stop
-// poking. They depended on the deleted runnerReachableForRecipient / tmux+herdr
-// reachability helpers. The doctor framework and all other (subsystem-free)
-// checks are unchanged. Remaining wake_method/wake_target field readers are
-// stripped in Gate 6c.
+// checkRunnerSocketStaleness were removed. Both probed a recipient's wake
+// endpoint for reachability — a push-era concern that no longer exists once
+// senders stop poking. They depended on the deleted runner / tmux + herdr
+// reachability helpers. Gate 6c then removed the registration wake fields
+// entirely, so no doctor check reads them. The doctor framework and all other
+// (subsystem-free) checks are unchanged.
 
 // ---------- output ----------
 

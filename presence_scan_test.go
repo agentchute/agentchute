@@ -45,13 +45,11 @@ func presencePoolCfg(t *testing.T) (*loop.Config, string) {
 func TestScanUnenrolledWrappers_FindsUnregisteredPaneInPool(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
 
-	// Enroll codex on tmux pane %1.
+	// A plain registration for codex (pull-only: it carries no tmux wake target).
 	enrolled := &loop.Registration{
 		AgentID:     "codex",
 		Vendor:      "openai",
 		ControlRepo: root,
-		WakeMethod:  "tmux",
-		WakeTarget:  "%1",
 		LastSeen:    time.Now().UTC(),
 		Status:      loop.StatusActive,
 	}
@@ -62,8 +60,8 @@ func TestScanUnenrolledWrappers_FindsUnregisteredPaneInPool(t *testing.T) {
 	stubPresenceListers(t)
 	listTmuxPanes = func() []tmuxPresenceEntry {
 		return []tmuxPresenceEntry{
-			{PaneID: "%1", Cwd: root}, // enrolled -> excluded
-			{PaneID: "%2", Cwd: root}, // unenrolled -> included
+			{PaneID: "%1", Cwd: root},
+			{PaneID: "%2", Cwd: root},
 		}
 	}
 
@@ -71,27 +69,33 @@ func TestScanUnenrolledWrappers_FindsUnregisteredPaneInPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scanUnenrolledWrappers: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("want exactly 1 unenrolled wrapper, got %d: %+v", len(got), got)
+	// Pull-only (Gate 6c): registrations carry no tmux wake target, so a tmux pane
+	// can no longer be matched to a registration — BOTH in-pool panes surface as
+	// present-but-not-enrolled.
+	if len(got) != 2 {
+		t.Fatalf("want 2 unenrolled tmux panes, got %d: %+v", len(got), got)
 	}
-	if got[0].Kind != "tmux" || got[0].Hint != "%2" {
-		t.Fatalf("unexpected entry: %+v", got[0])
+	panes := map[string]bool{}
+	for _, p := range got {
+		if p.Kind != "tmux" || p.Suggestion == "" {
+			t.Fatalf("unexpected entry: %+v", p)
+		}
+		panes[p.Hint] = true
 	}
-	if got[0].Suggestion == "" {
-		t.Fatalf("entry missing Suggestion: %+v", got[0])
+	if !panes["%1"] || !panes["%2"] {
+		t.Fatalf("expected panes %%1 and %%2, got %+v", got)
 	}
 }
 
 func TestScanUnenrolledWrappers_HerdrAndProcessSources(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
 
-	// Enroll a herdr agent named "claude-code".
+	// Enroll a herdr agent named "claude-code". Pull-only: a herdr presence is
+	// matched to a registration by NAME==agent id (no wake target).
 	enrolled := &loop.Registration{
 		AgentID:     "claude-code",
 		Vendor:      "anthropic",
 		ControlRepo: root,
-		WakeMethod:  "herdr",
-		WakeTarget:  "claude-code",
 		LastSeen:    time.Now().UTC(),
 		Status:      loop.StatusActive,
 	}
@@ -187,8 +191,6 @@ func TestScanUnenrolledWrappers_PerformsNoWrites(t *testing.T) {
 		AgentID:     "codex",
 		Vendor:      "openai",
 		ControlRepo: root,
-		WakeMethod:  "tmux",
-		WakeTarget:  "%1",
 		LastSeen:    time.Now().UTC(),
 		Status:      loop.StatusActive,
 	}

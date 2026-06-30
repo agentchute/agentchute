@@ -87,34 +87,6 @@ func cmdStatus(args []string) error {
 	return nil
 }
 
-// statusReachableTimeout bounds the per-registration LIVE reachability probe
-// rendered in the REACHABLE column. Short so `status` stays responsive even when
-// a peer is a black hole (declares a wake target nobody can reach).
-const statusReachableTimeout = 750 * time.Millisecond
-
-// statusReachableProbe is the reachability probe behind the REACHABLE column.
-// Package var so tests can inject a deterministic result; production wires it to
-// the recipient-bound loop.RegistrationReachable dispatcher (which itself never
-// dials a runner socket the recipient does not own).
-//
-// NOTE (WI-E1): this is a LIVE probe only. The cached reachable_at age column is
-// WI-E2's addition, not here.
-var statusReachableProbe = func(cfg *loop.Config, reg *loop.Registration) bool {
-	return loop.RegistrationReachable(cfg, reg, statusReachableTimeout)
-}
-
-// registrationReachableForStatus runs the live probe and tolerates ANY failure —
-// a probe error, timeout, or panic in an adapter — as "no". status is a
-// read-only diagnostic and must never crash on a single bad registration.
-func registrationReachableForStatus(cfg *loop.Config, reg *loop.Registration) (reachable bool) {
-	defer func() {
-		if recover() != nil {
-			reachable = false
-		}
-	}()
-	return statusReachableProbe(cfg, reg)
-}
-
 // printUnenrolledSection appends the read-only "PRESENT BUT NOT ENROLLED"
 // section: wrappers present in this pool with no live registration. Quiet when
 // there are none or the scan fails gracefully (nothing is printed).
@@ -174,47 +146,24 @@ func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registrati
 	fmt.Fprintln(w)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	// REACHABLE is the LIVE probe (WI-E1). CACHED is the age of the WI-E2 cached
-	// reachable_at fact (the self-healed reachability the off-turn loop records),
-	// or "-" when there is no cached fact.
-	fmt.Fprintln(tw, "AGENT\tSTATUS\tINBOX\tLAST_SEEN\tAGE\tHOST\tWAKE\tREACHABLE\tCACHED")
+	// Pull-only (Gate 6c): registrations carry no wake state and presence is the
+	// `.live` fact. There is no WAKE / REACHABLE / CACHED column; LAST_SEEN/AGE
+	// come from `.live` (loop.LiveLastSeen), absent => "-".
+	fmt.Fprintln(tw, "AGENT\tSTATUS\tINBOX\tLAST_SEEN\tAGE\tHOST")
 	for _, id := range loop.RegistrationsByAgentID(regs) {
 		reg := regs[id]
 		inboxDepth := countInbox(cfg.AgentInboxDir(id))
-		reachable := "no"
-		if registrationReachableForStatus(cfg, reg) {
-			reachable = "yes"
-		}
-		// GATE 3: presence (LAST_SEEN/AGE) comes from the `.live` fact, not
-		// registration last_seen. An absent `.live` renders "-" (zero time).
 		liveSeen, _ := loop.LiveLastSeen(cfg, reg.AgentID)
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n",
 			reg.AgentID,
 			reg.Status,
 			inboxDepth,
 			formatMaybeTime(liveSeen),
 			formatAge(now, liveSeen),
 			formatDash(reg.Host),
-			formatWake(reg.WakeMethod, reg.WakeTarget),
-			reachable,
-			formatCachedReachableAge(now, reg),
 		)
 	}
 	_ = tw.Flush()
-}
-
-// formatCachedReachableAge renders the age of the WI-E2 cached reachability fact
-// (reachable_at), or "-" when absent. Purely informational — the live REACHABLE
-// column remains the authoritative yes/no.
-func formatCachedReachableAge(now time.Time, reg *loop.Registration) string {
-	if reg == nil || reg.ReachableAt == nil {
-		return "-"
-	}
-	age := now.Sub(reg.ReachableAt.UTC())
-	if age < 0 {
-		age = 0
-	}
-	return age.Round(time.Second).String()
 }
 
 func countInbox(dir string) int {
@@ -274,19 +223,4 @@ func formatDash(value string) string {
 		return "-"
 	}
 	return value
-}
-
-func formatWake(method, target string) string {
-	method = strings.TrimSpace(method)
-	target = strings.TrimSpace(target)
-	if method == "" && target == "" {
-		return "-"
-	}
-	if method == "" {
-		return target
-	}
-	if target == "" {
-		return method
-	}
-	return method + ":" + target
 }

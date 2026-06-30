@@ -49,11 +49,10 @@ func resetSetupRuntimeState(root string, cfg *loop.Config, wrappers []string) se
 				result.Warnings = append(result.Warnings, fmt.Sprintf("remove runtime state %s: %v", path, err))
 			}
 		}
-		if cleared, warning := clearSetupHerdrName(cfg.ControlRepo, agentID); warning != "" {
-			result.Warnings = append(result.Warnings, warning)
-		} else if cleared {
-			result.HerdrNames = append(result.HerdrNames, agentID)
-		}
+		// Pull-only (Gate 6c): herdr is retired as a wake transport and a
+		// registration carries no herdr name binding, so there is no herdr-name
+		// binding to clear on reset. The HerdrNames result field stays for output
+		// stability but is no longer populated.
 	}
 	sort.Strings(result.Pollers)
 	sort.Strings(result.Runners)
@@ -390,20 +389,6 @@ func signalProcess(pid int, sig os.Signal) error {
 		return err
 	}
 	return p.Signal(sig)
-}
-
-func clearSetupHerdrName(root, agentID string) (bool, string) {
-	info, found := herdrAgentByName(agentID)
-	if !found {
-		return false, ""
-	}
-	if !setupPathMatchesRoot(info.Cwd, root) && !setupPathMatchesRoot(info.ForegroundCwd, root) {
-		return false, ""
-	}
-	if err := clearHerdrAgentName(agentID); err != nil {
-		return false, fmt.Sprintf("clear herdr name %s: %v", agentID, err)
-	}
-	return true, ""
 }
 
 func setupLocalHost(host string) bool {

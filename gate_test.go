@@ -428,23 +428,22 @@ func TestGateBlocksOnMalformedInbox(t *testing.T) {
 	})
 }
 
-// Codex review (c17e310): `release` phase must warn on WAKE_STALE peer
-// registrations (AGENTCHUTE.md §10). Warn-only — does not block release.
-func TestGateReleaseWarnsOnWakeStalePeer(t *testing.T) {
-	withFakeTmuxTargets(t, "%1", "%2")
+// Pull-only (Gate 6c): there are no pokable peers, so `release` never raises a
+// WAKE_STALE warning. The wake_stale field stays in the gate JSON shape (always
+// false) for wire-shape stability; release must still clear (not block) even with
+// a backdated peer present.
+func TestGateReleaseNoWakeStaleUnderPullOnly(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "%1")
 		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("TMUX_PANE", "%2")
 		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
 			t.Fatal(err)
 		}
 
-		// Backdate codex's last_seen past the stale threshold (codex is pokable
-		// per the TMUX_PANE auto-detect, so it qualifies as wake_stale).
+		// Backdate codex's last_seen past the stale threshold — under pull-only it
+		// is not pokable, so this never produces a wake_stale signal.
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
@@ -461,15 +460,14 @@ func TestGateReleaseWarnsOnWakeStalePeer(t *testing.T) {
 
 		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("release", "--json")) })
 		if err != nil {
-			t.Errorf("err = %v, want nil (wake_stale is warn-only, must not block release)", err)
+			t.Errorf("err = %v, want nil (release must clear)", err)
 		}
-		// Output must surface the wake_stale signal as a non-zero count.
 		var got gateStatus
 		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
 			t.Fatalf("unmarshal: %v\n%s", jerr, out)
 		}
-		if !got.WakeStale {
-			t.Errorf("WakeStale = false; want true with a backdated pokable peer")
+		if got.WakeStale || got.WakeStaleCount != 0 {
+			t.Errorf("WakeStale=%v count=%d; want false/0 under pull-only", got.WakeStale, got.WakeStaleCount)
 		}
 	})
 }

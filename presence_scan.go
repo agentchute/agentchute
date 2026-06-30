@@ -86,18 +86,15 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 		return nil, err
 	}
 
-	herdrTargets := map[string]bool{}
-	tmuxTargets := map[string]bool{}
+	// Pull-only (Gate 6c): registrations carry no wake target, so a herdr/tmux
+	// presence can no longer be matched to a registration BY wake target. herdr
+	// agents map to an enrolled lane only when the bound name is itself a
+	// registered agent id; tmux panes have no registration link at all, so an
+	// in-pool pane always surfaces as present-but-not-enrolled.
 	agentIDs := map[string]bool{}
 	enrolledPIDs := map[int]bool{}
-	for id, reg := range regs {
+	for id := range regs {
 		agentIDs[id] = true
-		switch strings.TrimSpace(reg.WakeMethod) {
-		case "herdr":
-			herdrTargets[strings.TrimSpace(reg.WakeTarget)] = true
-		case "tmux":
-			tmuxTargets[strings.TrimSpace(reg.WakeTarget)] = true
-		}
 		// Best-effort: a wrapper PID recorded in a live agent's session/runner
 		// state is "accounted for" — a raw process with that PID is NOT a bypass.
 		if sess, e := loop.LoadActiveSession(cfg, id); e == nil && sess.PID > 0 {
@@ -130,7 +127,7 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 			continue
 		}
 		name := p.Hint
-		if herdrTargets[name] || agentIDs[name] {
+		if agentIDs[name] {
 			continue
 		}
 		out = append(out, UnenrolledProcess{
@@ -144,7 +141,7 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 	// tmux panes: enrolled when the pane id is a registered tmux wake target.
 	for _, p := range listTmuxSafe() {
 		pane := strings.TrimSpace(p.PaneID)
-		if pane == "" || tmuxTargets[pane] {
+		if pane == "" {
 			continue
 		}
 		if !cwdMapsToPool(cfg, p.Cwd) {

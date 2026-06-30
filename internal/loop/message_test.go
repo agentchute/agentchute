@@ -279,16 +279,11 @@ func setupAnnounceFixture(t *testing.T) *Config {
 
 func newReg(t *testing.T, cfg *Config, agentID, vendor, wakeTarget, body string) *Registration {
 	t.Helper()
-	method := ""
-	if wakeTarget != "" {
-		method = "tmux"
-	}
+	_ = wakeTarget // pull-only (Gate 6c): registrations carry no wake target
 	reg := &Registration{
 		AgentID:     agentID,
 		Vendor:      vendor,
 		ControlRepo: cfg.ControlRepo,
-		WakeMethod:  method,
-		WakeTarget:  wakeTarget,
 		LastSeen:    time.Now().UTC(),
 		Status:      StatusActive,
 		Body:        body,

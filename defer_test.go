@@ -173,18 +173,16 @@ func TestDeferAck_DeliversByFileWriteNoPoke(t *testing.T) {
 	msgID, cfg := setupDeferFixture(t)
 	root := os.Getenv("TEST_DEFER_ROOT")
 
-	// Rewrite codex (the ack recipient) to advertise an unowned runner socket;
-	// pull-only defer must ignore it (no dial, no poke).
-	evil := &loop.Registration{
+	// Pull-only: codex (the ack recipient) carries no wake state; defer delivers
+	// the ack by writing codex's inbox file and never pokes a wake target.
+	reg := &loop.Registration{
 		AgentID:     "codex",
 		Vendor:      "openai",
 		ControlRepo: cfg.ControlRepo,
-		WakeMethod:  loop.RunnerWakeMethod,
-		WakeTarget:  "unix:/tmp/evil.sock",
 		LastSeen:    time.Now().UTC(),
 		Status:      loop.StatusActive,
 	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), evil); err != nil {
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), reg); err != nil {
 		t.Fatal(err)
 	}
 

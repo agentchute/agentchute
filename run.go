@@ -204,7 +204,6 @@ type runnerRuntime struct {
 	opts     runnerOptions
 	cwd      string
 	started  time.Time
-	socket   string
 	childPID int
 	cmd      *exec.Cmd
 	ptmx     *os.File
@@ -235,10 +234,9 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	// id-uniqueness + fence: the serve lease REPLACES the old socket-dial
 	// collision guard. ErrLeaseHeld => another live serve owns this id; refuse to
 	// start. The returned lease is held for the runner's lifetime: renewed each
-	// poll tick (fence verify) and released on exit. socketPath is computed only
-	// for the (vestigial) registration wake_target + runner-state diagnostic;
-	// nothing binds a socket anymore (Gate 6c removes the wake fields).
-	socketPath := cfg.RunnerSocketPath(opts.AgentID)
+	// poll tick (fence verify) and released on exit. Pull-only (Gate 6c): nothing
+	// binds a socket and the registration publishes no wake target, so no socket
+	// path is computed.
 	lease, err := refuseLiveRunnerCollision(cfg, opts.AgentID)
 	if err != nil {
 		return err
@@ -256,11 +254,11 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	if err := registerRunner(cfg, opts, socketPath, time.Now().UTC()); err != nil {
+	if err := registerRunner(cfg, opts, time.Now().UTC()); err != nil {
 		_ = ptmx.Close()
 		_ = cmd.Process.Kill()
 		<-done
-		_ = saveRunnerOfflineState(cfg, opts.AgentID, socketPath, cmd.Process.Pid, time.Now().UTC())
+		_ = saveRunnerOfflineState(cfg, opts.AgentID, cmd.Process.Pid, time.Now().UTC())
 		_ = loop.ReleaseLease(lease)
 		return err
 	}
@@ -270,7 +268,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		_ = ptmx.Close()
 		_ = cmd.Process.Kill()
 		<-done
-		_ = saveRunnerOfflineState(cfg, opts.AgentID, socketPath, cmd.Process.Pid, time.Now().UTC())
+		_ = saveRunnerOfflineState(cfg, opts.AgentID, cmd.Process.Pid, time.Now().UTC())
 		_ = markRunnerOffline(cfg, opts.AgentID)
 		_ = loop.ReleaseLease(lease)
 		return fmt.Errorf("set stdin raw mode: %w", err)
@@ -288,7 +286,6 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		opts:           opts,
 		cwd:            cwd,
 		started:        time.Now().UTC(),
-		socket:         socketPath,
 		childPID:       cmd.Process.Pid,
 		cmd:            cmd,
 		ptmx:           ptmx,
@@ -354,16 +351,13 @@ func runnerChildEnv(cfg *loop.Config, opts runnerOptions, serveToken string) []s
 	return env
 }
 
-func registerRunner(cfg *loop.Config, opts runnerOptions, socketPath string, now time.Time) error {
+func registerRunner(cfg *loop.Config, opts runnerOptions, now time.Time) error {
+	// Pull-only (Gate 6c): the runner publishes no wake target — it owns the wake
+	// path via the PTY supervisor, not a registration field. The registration is
+	// a plain no-wake record.
 	_, err := performRegister(cfg, registerOpts{
 		AgentID:            opts.AgentID,
 		Vendor:             opts.Vendor,
-		WakeMethod:         loop.RunnerWakeMethod,
-		WakeTarget:         loop.RunnerWakeTarget(socketPath),
-		WakeMethodProvided: true,
-		WakeTargetProvided: true,
-		ClearStaleTmuxWake: true,
-		PruneStalePeerTmux: true,
 		WorkingRepos:       []string{cfg.ControlRepo},
 		Host:               localHostname(),
 		HostProvided:       true,
@@ -391,7 +385,6 @@ func markRunnerOffline(cfg *loop.Config, agentID string) error {
 		}
 		reg.Status = loop.StatusOffline
 		reg.LastSeen = time.Now().UTC()
-		clearReachabilityCache(reg)
 		return loop.WriteRegistration(regPath, reg)
 	})
 }
@@ -411,13 +404,6 @@ func refuseLiveRunnerCollision(cfg *loop.Config, agentID string) (*loop.ServeLea
 		return nil, fmt.Errorf("acquire serve lease for %s: %w", agentID, err)
 	}
 	return lease, nil
-}
-
-func clearReachabilityCache(reg *loop.Registration) {
-	reg.ReachableAt = nil
-	reg.ReachabilityMethod = ""
-	reg.ReachabilityTarget = ""
-	reg.ReachabilityError = ""
 }
 
 func processAlive(pid int) bool {
@@ -736,7 +722,6 @@ func (r *runnerRuntime) saveStateWithStatus(status string) error {
 		Host:          localHostname(),
 		RunnerPID:     os.Getpid(),
 		ChildPID:      r.childPID,
-		SocketPath:    r.socket,
 		StartedAt:     r.started,
 		LastPoll:      r.lastPoll,
 		LastInjection: r.lastInjection,
@@ -747,14 +732,13 @@ func (r *runnerRuntime) saveStateWithStatus(status string) error {
 	return loop.SaveRunnerState(r.cfg, st)
 }
 
-func saveRunnerOfflineState(cfg *loop.Config, agentID, socketPath string, childPID int, now time.Time) error {
+func saveRunnerOfflineState(cfg *loop.Config, agentID string, childPID int, now time.Time) error {
 	return loop.SaveRunnerState(cfg, loop.RunnerState{
-		AgentID:    agentID,
-		Host:       localHostname(),
-		RunnerPID:  os.Getpid(),
-		ChildPID:   childPID,
-		SocketPath: socketPath,
-		StartedAt:  now,
-		Status:     "offline",
+		AgentID:   agentID,
+		Host:      localHostname(),
+		RunnerPID: os.Getpid(),
+		ChildPID:  childPID,
+		StartedAt: now,
+		Status:    "offline",
 	})
 }

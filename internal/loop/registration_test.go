@@ -34,7 +34,7 @@ review-first
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reg.AgentID != "codex" || reg.Vendor != "openai" || reg.WakeMethod != "tmux" || reg.WakeTarget != "%1" {
+	if reg.AgentID != "codex" || reg.Vendor != "openai" {
 		t.Fatalf("unexpected scalar fields: %#v", reg)
 	}
 	if len(reg.WorkingRepos) != 2 || reg.WorkingRepos[1] != "/tmp/other repo" {
@@ -63,8 +63,6 @@ func TestWriteRegistrationRoundTrip(t *testing.T) {
 		Vendor:       "human",
 		ControlRepo:  "/tmp/repo",
 		WorkingRepos: []string{"/tmp/repo"},
-		WakeMethod:   "tmux",
-		WakeTarget:   "%5",
 		LastSeen:     lastSeen,
 		Status:       StatusActive,
 		LastActive:   &lastActive,
@@ -139,57 +137,10 @@ func TestReadFileLimit_RejectsSymlink(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsMalformedWakeTarget(t *testing.T) {
-	base := func() *Registration {
-		return &Registration{
-			AgentID:     "codex",
-			Vendor:      "openai",
-			ControlRepo: "/tmp/repo",
-			LastSeen:    time.Now().UTC(),
-			Status:      StatusActive,
-		}
-	}
-
-	// Live formats must pass Validate().
-	live := []struct {
-		method, target string
-	}{
-		{"tmux", "%0"},
-		{"tmux", "%1"},
-		{"tmux", "main:0.0"},
-		{"herdr", "claude-code-agentchute"},
-		{"herdr", "codex-agentchute"},
-		{RunnerWakeMethod, "unix:/Users/alex/code/agentchute/.agentchute/loop/state/grok-agentchute/runner.sock"},
-	}
-	for _, lf := range live {
-		reg := base()
-		reg.WakeMethod = lf.method
-		reg.WakeTarget = lf.target
-		if err := reg.Validate(); err != nil {
-			t.Errorf("live registration %s/%q failed Validate(): %v", lf.method, lf.target, err)
-		}
-	}
-
-	// Malformed / hostile targets must fail Validate().
-	bad := []struct {
-		name, method, target string
-	}{
-		{"tmux foreign pane no percent", "tmux", "main"},
-		{"tmux leading dash", "tmux", "-t"},
-		{"tmux injection", "tmux", "%0;reboot"},
-		{"herdr traversal", "herdr", "../../etc/passwd"},
-		{"runner non-unix", RunnerWakeMethod, "/tmp/evil.sock"},
-		{"runner newline", RunnerWakeMethod, "unix:/tmp/evil\n.sock"},
-	}
-	for _, b := range bad {
-		reg := base()
-		reg.WakeMethod = b.method
-		reg.WakeTarget = b.target
-		if err := reg.Validate(); err == nil {
-			t.Errorf("%s: malformed registration %s/%q passed Validate(), want error", b.name, b.method, b.target)
-		}
-	}
-}
+// Pull-only (Gate 6c): TestValidateRejectsMalformedWakeTarget was removed.
+// Registrations carry no wake_method/wake_target, so Validate() no longer
+// shape-validates a wake target (ValidateWakeTarget is gone with the wake
+// adapters).
 
 func TestUpdateLastSeenPreservesBody(t *testing.T) {
 	cfg := newLockTestConfig(t)
@@ -485,8 +436,6 @@ status: active
 	}
 }
 
-// WI-E2: the four self-healing reachability cache fields round-trip through the
-// registration read/write path (backward-compatible; absent = old behavior).
 // WI-E3: launch provenance (launched_by / shim_name / hook_event) round-trips
 // through write/read, and an absent-provenance registration stays byte-identical
 // to the pre-upgrade format (no new keys emitted).
@@ -550,21 +499,23 @@ func TestRegistration_LaunchProvenanceRoundTrips(t *testing.T) {
 	}
 }
 
-func TestRegistration_ReachabilityFieldsRoundTrip(t *testing.T) {
+// Pull-only (Gate 6c): TestRegistration_ReachabilityFieldsRoundTrip and
+// TestRegistration_IsReachableEndpointBoundTTL were removed. The reachability
+// cache fields (reachable_at / reachability_*) and the IsReachable / IsPokable
+// helpers they exercised no longer exist — a registration carries no wake state.
+
+// Pull-only (Gate 6c): a registration round-trips with NO wake fields, and the
+// serialized form emits no wake_method / wake_target keys.
+func TestRegistration_RoundTripsWithNoWakeFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "codex.md")
-	reachableAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	reg := &Registration{
-		AgentID:            "codex",
-		Vendor:             "openai",
-		ControlRepo:        "/tmp/repo",
-		WakeMethod:         "herdr",
-		WakeTarget:         "codex-agentchute",
-		LastSeen:           time.Now().UTC(),
-		Status:             StatusActive,
-		ReachableAt:        &reachableAt,
-		ReachabilityMethod: "herdr",
-		ReachabilityTarget: "codex-agentchute",
-		ReachabilityError:  "prior probe: name not bound to a live pane",
+		AgentID:      "codex",
+		Vendor:       "openai",
+		ControlRepo:  "/tmp/repo",
+		WorkingRepos: []string{"/tmp/repo"},
+		Host:         "h1",
+		LastSeen:     time.Now().UTC(),
+		Status:       StatusActive,
 	}
 	if err := WriteRegistration(path, reg); err != nil {
 		t.Fatal(err)
@@ -573,104 +524,16 @@ func TestRegistration_ReachabilityFieldsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ReachableAt == nil || !got.ReachableAt.Equal(reachableAt) {
-		t.Fatalf("ReachableAt = %v, want %v", got.ReachableAt, reachableAt)
+	if got.AgentID != "codex" || got.Vendor != "openai" || got.Host != "h1" {
+		t.Fatalf("round-trip mismatch: %#v", got)
 	}
-	if got.ReachabilityMethod != "herdr" {
-		t.Fatalf("ReachabilityMethod = %q, want herdr", got.ReachabilityMethod)
-	}
-	if got.ReachabilityTarget != "codex-agentchute" {
-		t.Fatalf("ReachabilityTarget = %q, want codex-agentchute", got.ReachabilityTarget)
-	}
-	if got.ReachabilityError != "prior probe: name not bound to a live pane" {
-		t.Fatalf("ReachabilityError = %q round-trip mismatch", got.ReachabilityError)
-	}
-
-	// Backward-compat: a registration with NO reachability fields reads back with
-	// all four zero/absent (old behavior).
-	plain := &Registration{
-		AgentID:     "codex",
-		Vendor:      "openai",
-		ControlRepo: "/tmp/repo",
-		LastSeen:    time.Now().UTC(),
-		Status:      StatusActive,
-	}
-	plainPath := filepath.Join(t.TempDir(), "plain.md")
-	if err := WriteRegistration(plainPath, plain); err != nil {
-		t.Fatal(err)
-	}
-	gotPlain, err := ReadRegistration(plainPath)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotPlain.ReachableAt != nil || gotPlain.ReachabilityMethod != "" ||
-		gotPlain.ReachabilityTarget != "" || gotPlain.ReachabilityError != "" {
-		t.Fatalf("plain registration grew reachability fields: %#v", gotPlain)
-	}
-}
-
-// WI-E2: IsReachable is true ONLY for a fresh, endpoint-bound cache hit. A
-// wake-target change, a method mismatch, an expired timestamp, or an absent
-// ReachableAt all invalidate the cache. IsPokable stays structural (unchanged).
-func TestRegistration_IsReachableEndpointBoundTTL(t *testing.T) {
-	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
-	ttl := 60 * time.Second
-
-	base := func() *Registration {
-		at := now.Add(-10 * time.Second)
-		return &Registration{
-			AgentID:            "codex",
-			WakeMethod:         "herdr",
-			WakeTarget:         "codex-agentchute",
-			ReachableAt:        &at,
-			ReachabilityMethod: "herdr",
-			ReachabilityTarget: "codex-agentchute",
+	for _, key := range []string{"wake_method", "wake_target"} {
+		if strings.Contains(string(data), key) {
+			t.Fatalf("registration serialized %q key under pull-only:\n%s", key, data)
 		}
-	}
-
-	if r := base(); !r.IsReachable(now, ttl) {
-		t.Fatal("fresh endpoint-bound cache within ttl: IsReachable=false, want true")
-	}
-
-	// Expired.
-	expired := base()
-	old := now.Add(-2 * ttl)
-	expired.ReachableAt = &old
-	if expired.IsReachable(now, ttl) {
-		t.Fatal("expired cache: IsReachable=true, want false")
-	}
-
-	// Method mismatch (endpoint changed).
-	methodMismatch := base()
-	methodMismatch.ReachabilityMethod = "tmux"
-	if methodMismatch.IsReachable(now, ttl) {
-		t.Fatal("method mismatch: IsReachable=true, want false (endpoint-bound)")
-	}
-
-	// Target mismatch (wake target changed → cache invalidated).
-	targetMismatch := base()
-	targetMismatch.WakeTarget = "codex-agentchute-2"
-	if targetMismatch.IsReachable(now, ttl) {
-		t.Fatal("target mismatch: IsReachable=true, want false (endpoint-bound)")
-	}
-
-	// Absent ReachableAt.
-	absent := base()
-	absent.ReachableAt = nil
-	if absent.IsReachable(now, ttl) {
-		t.Fatal("absent ReachableAt: IsReachable=true, want false")
-	}
-
-	// IsPokable stays purely structural: the cache fields do not touch it.
-	pokable := base()
-	pokable.ReachableAt = nil
-	pokable.ReachabilityMethod = ""
-	pokable.ReachabilityTarget = ""
-	if !pokable.IsPokable() {
-		t.Fatal("IsPokable=false for a reg with wake_method+wake_target; must stay structural")
-	}
-	noWake := &Registration{AgentID: "codex"}
-	if noWake.IsPokable() {
-		t.Fatal("IsPokable=true for a reg with no wake strings; must stay structural")
 	}
 }

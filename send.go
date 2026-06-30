@@ -25,9 +25,10 @@ import (
 //     transition record).
 //   - --no-wake:    explicit opt-out of the poke side effect.
 //
-// Always emits a wake-attempt receipt (wake_method, wake_attempted,
-// wake_result) for sender-side visibility into "delivered but not poked"
-// states. Independent of --json: text mode adds it; JSON mode includes it.
+// Always emits a wake-attempt receipt (wake_attempted, wake_result) for
+// sender-side visibility. Pull-only (Gate 6c): senders never poke, so the
+// receipt always reports no wake. Independent of --json: text mode adds it;
+// JSON mode includes it.
 //
 // Warns (to stderr) if the sender's OWN pending-reply ledger has any entries
 // from <to> and --reply-to is not provided — catches "agent forgot to clear
@@ -294,7 +295,6 @@ func cmdSend(args []string) error {
 		From:           fromID,
 		To:             toID,
 		MessageID:      messageID,
-		WakeMethod:     receipt.method,
 		WakeAttempted:  receipt.attempted,
 		WakeResult:     receipt.result,
 		ReplyToCleared: ledgerTransition,
@@ -322,7 +322,6 @@ type sendResult struct {
 	From           string `json:"from"`
 	To             string `json:"to"`
 	MessageID      string `json:"message_id"`
-	WakeMethod     string `json:"wake_method"`
 	WakeAttempted  bool   `json:"wake_attempted"`
 	WakeResult     string `json:"wake_result"`
 	ReplyToCleared string `json:"reply_to_cleared,omitempty"`
@@ -349,14 +348,10 @@ func emitSendText(r sendResult) {
 	fmt.Printf("  from:           %s\n", r.From)
 	fmt.Printf("  to:             %s\n", r.To)
 	fmt.Printf("  path:           %s\n", r.Path)
-	fmt.Printf("  wake_method:    %s\n", r.WakeMethod)
 	fmt.Printf("  wake_attempted: %s\n", yesno(r.WakeAttempted))
 	fmt.Printf("  wake_result:    %s\n", r.WakeResult)
 	if r.ReplyToCleared != "" {
 		fmt.Printf("  reply_to:       %s\n", r.ReplyToCleared)
-	}
-	if r.WakeMethod == loop.RunnerWakeMethod && r.WakeAttempted && !strings.HasPrefix(r.WakeResult, "ok") {
-		fmt.Printf("  note: runner for %s unreachable; mail delivered to inbox; recipient will see on next start via shim\n", r.To)
 	}
 }
 

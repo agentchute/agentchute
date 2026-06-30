@@ -116,14 +116,8 @@ func withFakeTmuxTargets(t *testing.T, targets ...string) {
 	})
 }
 
-// setTmuxPaneLockObserver installs a pane-lock acquisition observer and returns
-// a restore func. Tests use it to assert which target the tmux pane lock was
-// keyed on (the authoritative in-lock target, not the stale pre-lock snapshot).
-func setTmuxPaneLockObserver(fn func(target string)) func() {
-	old := tmuxPaneLockObserver
-	tmuxPaneLockObserver = fn
-	return func() { tmuxPaneLockObserver = old }
-}
+// Pull-only (Gate 6c): setTmuxPaneLockObserver was removed with the tmux
+// pane-registration lock it observed.
 
 func mustWriteCanonicalHook(t *testing.T, root, wrapper string) {
 	t.Helper()
@@ -176,4 +170,21 @@ func mustWriteFreshPollerHeartbeat(t *testing.T, cfg *loop.Config, agentID strin
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// mustExampleRepo / readExampleReg were relocated here from the deleted
+// herdr_state_test.go (simple-again Gate 6c). They are shared fixture helpers
+// used by presence/register/presenced tests, unrelated to the retired herdr probe.
+func mustExampleRepo(t *testing.T, root string) {
+	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+}
+
+func readExampleReg(t *testing.T, root, agentID string) *loop.Registration {
+	t.Helper()
+	reg, err := loop.ReadRegistration(filepath.Join(root, ".examplecorp", "loop", "agents", agentID+".md"))
+	if err != nil {
+		t.Fatalf("read registration %s: %v", agentID, err)
+	}
+	return reg
 }

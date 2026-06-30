@@ -240,28 +240,22 @@ func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 	}
 }
 
-func TestMarkRunnerOfflineClearsReachabilityCache(t *testing.T) {
+// Pull-only (Gate 6c): markRunnerOffline sets Status=offline. The reachability
+// cache it used to clear no longer exists (registrations carry no wake state).
+func TestMarkRunnerOfflineSetsOfflineStatus(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 	if err != nil {
 		t.Fatal(err)
 	}
 	agentID := "runner-test"
-	target := loop.RunnerWakeTarget(cfg.RunnerSocketPath(agentID))
-	reachableAt := time.Now().UTC()
 	reg := &loop.Registration{
-		AgentID:            agentID,
-		Vendor:             "test",
-		ControlRepo:        cfg.ControlRepo,
-		Host:               localHostname(),
-		WakeMethod:         loop.RunnerWakeMethod,
-		WakeTarget:         target,
-		LastSeen:           reachableAt.Add(-time.Minute),
-		Status:             loop.StatusActive,
-		ReachableAt:        &reachableAt,
-		ReachabilityMethod: loop.RunnerWakeMethod,
-		ReachabilityTarget: target,
-		ReachabilityError:  "old success",
+		AgentID:     agentID,
+		Vendor:      "test",
+		ControlRepo: cfg.ControlRepo,
+		Host:        localHostname(),
+		LastSeen:    time.Now().UTC().Add(-time.Minute),
+		Status:      loop.StatusActive,
 	}
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
 		t.Fatal(err)
@@ -276,9 +270,6 @@ func TestMarkRunnerOfflineClearsReachabilityCache(t *testing.T) {
 	}
 	if got.Status != loop.StatusOffline {
 		t.Fatalf("status = %s, want offline", got.Status)
-	}
-	if got.ReachableAt != nil || got.ReachabilityMethod != "" || got.ReachabilityTarget != "" || got.ReachabilityError != "" {
-		t.Fatalf("reachability cache not cleared: at=%v method=%q target=%q err=%q", got.ReachableAt, got.ReachabilityMethod, got.ReachabilityTarget, got.ReachabilityError)
 	}
 }
 

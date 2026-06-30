@@ -235,8 +235,6 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 		Vendor:      "anthropic",
 		ControlRepo: cfg.ControlRepo,
 		Host:        "doctor-test",
-		WakeMethod:  "",
-		WakeTarget:  "",
 		LastSeen:    time.Now().UTC().Truncate(time.Second),
 		Status:      loop.StatusActive,
 	}

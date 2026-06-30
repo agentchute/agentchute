@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -199,19 +198,10 @@ func cmdGate(args []string) error {
 			}
 		}
 	}
-	// Wake-stale — release-phase warn surface (per the watchdog liveness model, AGENTCHUTE.md §10).
-	// Reads peer registrations and counts those that declare a wake_method
-	// (pokable) but whose last_seen exceeds StaleRegThreshold. A non-zero
-	// count populates the JSON shape and shows up in text output; it does
-	// NOT block release.
+	// Pull-only (Gate 6c): registrations carry no wake state, so there are no
+	// pokable peers to find stale. WakeStale/WakeStaleCount stay in the JSON
+	// shape (always 0) for wire-shape stability with downstream parsers.
 	wakeStaleCount := 0
-	if phase == gatePhaseRelease {
-		c, err := countWakeStalePeers(cfg, agentID, now, StaleRegThreshold)
-		if err != nil {
-			return fmt.Errorf("scan peer registrations: %w", err)
-		}
-		wakeStaleCount = c
-	}
 
 	status := gateStatus{
 		Agent:           agentID,
@@ -376,48 +366,7 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 		}
 	}
 
-	// release warns on wake_stale but does not block (per AGENTCHUTE.md §10).
-	if phase == gatePhaseRelease && s.WakeStaleCount > 0 {
-		warnings = append(warnings, fmt.Sprintf("%d peer registration(s) declare a wake_method but are stale (last_seen > %s); pokes may fail", s.WakeStaleCount, StaleRegThreshold))
-	}
-
 	return reasons, warnings
-}
-
-// countWakeStalePeers scans the registry and counts peers (excluding self)
-// that are pokable but whose last_seen is older than threshold. Used by
-// release to surface the WAKE_STALE warning. Best-effort: peers with
-// unreadable registrations are silently skipped (they are status's concern,
-// not gate's).
-func countWakeStalePeers(cfg *loop.Config, selfID string, now time.Time, threshold time.Duration) (int, error) {
-	entries, err := os.ReadDir(cfg.AgentsDir())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	stale := 0
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || strings.HasPrefix(name, ".") {
-			continue
-		}
-		if !strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".example.md") || name == "README.md" {
-			continue
-		}
-		reg, err := loop.ReadRegistration(filepath.Join(cfg.AgentsDir(), name))
-		if err != nil {
-			continue
-		}
-		if reg.AgentID == selfID || !reg.IsPokable() {
-			continue
-		}
-		if now.Sub(reg.LastSeen.UTC()) > threshold {
-			stale++
-		}
-	}
-	return stale, nil
 }
 
 func emitGateText(s gateStatus) {

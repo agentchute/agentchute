@@ -234,24 +234,7 @@ func TestRunnerSocketPathLongFallsToPerUserTempDir(t *testing.T) {
 	}
 }
 
-func TestRunnerWakeTargetOwnedBy(t *testing.T) {
-	cfg := &Config{
-		ControlRepo: "/r",
-		LoopDir:     "/r/.x/loop",
-		Vendor:      "x",
-	}
-	// The recipient's own socket target is accepted.
-	owned := RunnerWakeTarget(cfg.RunnerSocketPath("codex"))
-	if err := cfg.RunnerWakeTargetOwnedBy("codex", owned); err != nil {
-		t.Fatalf("owned target rejected: %v", err)
-	}
-	// A foreign /tmp socket is refused even though it is shape-valid.
-	if err := cfg.RunnerWakeTargetOwnedBy("codex", "unix:/tmp/evil.sock"); err == nil {
-		t.Fatal("foreign socket target accepted, want refusal")
-	}
-	// Another agent's owned socket is not codex's to bind.
-	other := RunnerWakeTarget(cfg.RunnerSocketPath("gemini-cli"))
-	if err := cfg.RunnerWakeTargetOwnedBy("codex", other); err == nil {
-		t.Fatal("another agent's socket accepted for codex, want refusal")
-	}
-}
+// Pull-only (Gate 6c): TestRunnerWakeTargetOwnedBy was removed. The runner
+// receive socket and the wake_target recipient-binding check
+// (RunnerWakeTargetOwnedBy / RunnerWakeTarget) it exercised no longer exist —
+// registrations publish no wake target.

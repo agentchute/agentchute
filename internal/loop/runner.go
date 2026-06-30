@@ -4,47 +4,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"time"
-)
-
-const (
-	RunnerWakeMethod = "agentchute-run"
-	runnerTargetUnix = "unix:"
 )
 
 // RunnerState is local diagnostic/recovery state for `agentchute run`.
 // Registration last_seen remains the liveness source of truth.
+//
+// Pull-only (simple-again Gate 6c): the runner no longer owns a receive socket
+// and a registration publishes no wake target, so there is no SocketPath field.
 type RunnerState struct {
 	AgentID       string    `json:"agent_id"`
 	Host          string    `json:"host,omitempty"`
 	RunnerPID     int       `json:"runner_pid"`
 	ChildPID      int       `json:"child_pid,omitempty"`
-	SocketPath    string    `json:"socket_path"`
 	StartedAt     time.Time `json:"started_at"`
 	LastPoll      time.Time `json:"last_poll,omitempty"`
 	LastInjection time.Time `json:"last_injection,omitempty"`
 	PendingWake   bool      `json:"pending_wake"`
 	Status        string    `json:"status"`
-}
-
-// RunnerWakeTarget formats a local Unix socket target for registrations.
-func RunnerWakeTarget(socketPath string) string {
-	return runnerTargetUnix + socketPath
-}
-
-// ParseRunnerWakeTarget parses an agentchute-run wake target. It also enforces
-// the wake_target shape (unix: prefix, non-empty clean absolute path) so every
-// caller that dials the socket — the poke adapter AND the liveness pings — is
-// protected from a hand-written registration smuggling a relative path or a
-// path with embedded control characters.
-func ParseRunnerWakeTarget(target string) (string, error) {
-	if err := ValidateWakeTarget(RunnerWakeMethod, target); err != nil {
-		return "", err
-	}
-	target = strings.TrimSpace(target)
-	path := strings.TrimSpace(strings.TrimPrefix(target, runnerTargetUnix))
-	return path, nil
 }
 
 // SaveRunnerState writes runner state atomically under state/<agent>/.

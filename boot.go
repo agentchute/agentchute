@@ -26,13 +26,14 @@ func cmdBoot(args []string) error {
 	fs := flag.NewFlagSet("boot", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, host, wakeMethod, wakeTarget, controlRepo, loopDir, bio, codexHook string
+	var agentID, vendor, host, controlRepo, loopDir, bio, codexHook string
+	var deprecatedWake string // accepted-but-ignored under pull-only (registrations carry no wake state)
 	var quiet, jsonOut, contextOnly bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google, xai, local, human)")
 	fs.StringVar(&host, "host", "", "host this agent runs on (defaults to OS hostname)")
-	fs.StringVar(&wakeMethod, "wake-method", "", "wake adapter (e.g., tmux, herdr); leave empty for non-pokable agents")
-	fs.StringVar(&wakeTarget, "wake-target", "", "wake target; auto-detected from $TMUX_PANE (tmux) or $HERDR_PANE_ID→agent id (herdr)")
+	fs.StringVar(&deprecatedWake, "wake-method", "", "deprecated/ignored: pull-only registrations publish no wake state")
+	fs.StringVar(&deprecatedWake, "wake-target", "", "deprecated/ignored: pull-only registrations publish no wake state")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.StringVar(&bio, "bio", "", "short self-description for the registration body (markdown allowed)")
@@ -49,11 +50,8 @@ func cmdBoot(args []string) error {
 	}
 
 	opts := registerOpts{
-		Host:               host,
-		WakeMethod:         wakeMethod,
-		WakeTarget:         wakeTarget,
-		Bio:                bio,
-		PruneStalePeerTmux: true,
+		Host: host,
+		Bio:  bio,
 	}
 	// WI-E3 provenance: boot is a SessionStart-class hook enroll. When it fires
 	// INSIDE the runner (AGENTCHUTE_RUNNER=1 set on the runner's child), the
@@ -64,10 +62,6 @@ func cmdBoot(args []string) error {
 		switch f.Name {
 		case "host":
 			opts.HostProvided = true
-		case "wake-method":
-			opts.WakeMethodProvided = true
-		case "wake-target":
-			opts.WakeTargetProvided = true
 		case "bio":
 			opts.BioProvided = true
 		}
@@ -154,8 +148,6 @@ func cmdBoot(args []string) error {
 		PendingReplies: pendingReplies,
 		MalformedCount: len(skipped),
 		Host:           result.ResolvedHost,
-		WakeMethod:     result.ResolvedWakeMethod,
-		WakeTarget:     result.ResolvedWakeTarget,
 		Warnings:       result.Warnings,
 		Blocked:        len(unread) > 0 || len(pendingReplies) > 0,
 	}
@@ -196,8 +188,6 @@ type bootStatus struct {
 	PendingReplies []loop.PendingReplyEntry `json:"pending_replies,omitempty"`
 	MalformedCount int                      `json:"malformed_count,omitempty"`
 	Host           string                   `json:"host,omitempty"`
-	WakeMethod     string                   `json:"wake_method,omitempty"`
-	WakeTarget     string                   `json:"wake_target,omitempty"`
 	Warnings       []string                 `json:"warnings,omitempty"`
 	Blocked        bool                     `json:"blocked"`
 
@@ -221,11 +211,7 @@ func emitBootText(s bootStatus, quiet bool) {
 			verb = "Registered"
 		}
 		fmt.Printf("%s %s (%s) — %s\n", verb, s.Agent, s.Vendor, blockedSummary(s))
-		if s.WakeMethod != "" {
-			fmt.Printf("  wake: %s %s\n", s.WakeMethod, s.WakeTarget)
-		} else {
-			fmt.Println("  (non-pokable: senders skip the wake poke; you must poll your own inbox)")
-		}
+		fmt.Println("  (pull-only: senders deliver to your inbox; you poll it yourself)")
 	}
 	if s.UnreadCount > 0 {
 		fmt.Printf("  unread: %d direct message(s) — run `agentchute check --as %s` to consume\n", s.UnreadCount, s.Agent)
@@ -357,8 +343,6 @@ Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
   --vendor <vendor>     vendor or origin (anthropic, openai, google, xai, local, human)
   --host <name>         host (defaults to OS hostname)
-  --wake-method <m>     wake adapter (tmux, herdr, agentchute-run); auto-detected from the launch context ($TMUX_PANE, herdr pane, or runner socket)
-  --wake-target <addr>  wake target; auto-detected from the launch context (tmux/herdr pane, runner socket)
   --bio <text>          short self-description for the registration body
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)

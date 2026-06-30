@@ -156,9 +156,8 @@ func (c *Config) ActiveSessionPath(agentID string) string {
 }
 
 // RunnerStatePath returns the per-agent runner state path. This is
-// recipient-owned local state for agentchute's PTY runner; peers may use the
-// registration wake_target to poke the runner socket, but this diagnostic file
-// is not part of the wire protocol.
+// recipient-owned local diagnostic/recovery state for agentchute's PTY runner;
+// it is not part of the wire protocol.
 func (c *Config) RunnerStatePath(agentID string) string {
 	return filepath.Join(c.AgentStateDir(agentID), "runner.json")
 }
@@ -192,38 +191,6 @@ func (c *Config) runnerSocketTempPath(agentID string) string {
 	sum := sha256.Sum256([]byte(c.LoopDir + "\x00" + agentID))
 	short := hex.EncodeToString(sum[:])[:16]
 	return filepath.Join(runnerSocketTempDir(), short+"-"+agentID+".sock")
-}
-
-// RunnerSocketPathsOwnedBy returns every socket path the named recipient could
-// legitimately own: the in-state path and the per-user temp fallback. A peer's
-// runner wake_target must name one of these; anything else is an attempt to
-// bind a foreign socket. Returned in no particular order.
-func (c *Config) RunnerSocketPathsOwnedBy(agentID string) []string {
-	return []string{
-		c.runnerSocketInStatePath(agentID),
-		c.runnerSocketTempPath(agentID),
-	}
-}
-
-// RunnerWakeTargetOwnedBy reports whether a runner wake_target's socket path is
-// one the recipient legitimately owns (RunnerSocketPathsOwnedBy). This is the
-// recipient-binding check that complements the pure shape validator: it refuses
-// a registration that names, e.g., unix:/tmp/evil.sock for a recipient whose
-// real socket lives elsewhere. Returns an error describing the mismatch.
-func (c *Config) RunnerWakeTargetOwnedBy(agentID, target string) error {
-	if err := ValidateWakeTarget(RunnerWakeMethod, target); err != nil {
-		return err
-	}
-	path, err := ParseRunnerWakeTarget(target)
-	if err != nil {
-		return err
-	}
-	for _, owned := range c.RunnerSocketPathsOwnedBy(agentID) {
-		if path == owned {
-			return nil
-		}
-	}
-	return fmt.Errorf("runner wake_target %q is not a socket owned by %q (expected one of %v)", target, agentID, c.RunnerSocketPathsOwnedBy(agentID))
 }
 
 // EnsureRunnerSocketDir creates the parent directory for socketPath and, when

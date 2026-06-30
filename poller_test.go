@@ -55,18 +55,11 @@ func TestPollerStatusBlocksWhenHeartbeatMissing(t *testing.T) {
 	})
 }
 
-func TestPollerEnsureNoopsWhenRunnerWakeReachable(t *testing.T) {
+func TestPollerEnsureNoopsWhenRunnerLive(t *testing.T) {
 	root, _ := setupSendFixture(t)
 	withCwd(t, root, func() {
 		// Resolve the config exactly as the poller command does (cwd-relative,
-		// symlink-normalized). On macOS t.TempDir() returns /var/... while
-		// os.Getwd() returns /private/var/..., which yields a different
-		// runner-socket temp-path hash. The owned-check (RunnerWakeTargetOwnedBy)
-		// recomputes that path from LoopDir, so the registered wake_target MUST
-		// be built from the same normalized cfg the recipient resolves — exactly
-		// as production, where every party Discovers LoopDir from the shared
-		// control repo. Building it from the unnormalized fixture cfg made the
-		// owned-check (correctly) reject a target it could not match.
+		// symlink-normalized).
 		cwd, err := os.Getwd()
 		if err != nil {
 			t.Fatal(err)
@@ -76,10 +69,8 @@ func TestPollerEnsureNoopsWhenRunnerWakeReachable(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		socketPath := cfg.RunnerSocketPath("codex")
-		// Gate 6b (pull-only): runner-wake reachability is `.live` freshness, not a
-		// socket ping; a fresh `.live` makes the poller treat the runner as
-		// reachable and no-op.
+		// Gate 6c (pull-only): a poller is not required when the agent is already
+		// live; presence is `.live` freshness, not a runner-socket ping.
 		mustWriteLiveAt(t, cfg, "codex", time.Now().UTC())
 
 		now := time.Now().UTC()
@@ -90,11 +81,9 @@ func TestPollerEnsureNoopsWhenRunnerWakeReachable(t *testing.T) {
 			WorkingRepos: []string{
 				cfg.ControlRepo,
 			},
-			Host:       localHostname(),
-			WakeMethod: loop.RunnerWakeMethod,
-			WakeTarget: loop.RunnerWakeTarget(socketPath),
-			LastSeen:   now,
-			Status:     loop.StatusActive,
+			Host:     localHostname(),
+			LastSeen: now,
+			Status:   loop.StatusActive,
 		}); err != nil {
 			t.Fatal(err)
 		}

@@ -340,18 +340,15 @@ func withoutEnv(env []string, keys ...string) []string {
 	return filtered
 }
 
-// registrationHasReachableWake reports whether reg declares a wake target that
-// is reachable from THIS host. Relocated verbatim (behavior-preserving) from the
-// deleted reachability.go (simple-again Gate 6a) into its sole caller. It rides
-// loop.RegistrationReachable, which in pull-only is the runner receive-socket
-// liveness probe (the owned-check runs before any dial; non-runner methods report
-// unreachable). Cross-host registrations are short-circuited unreachable. The
-// whole poller is slated for removal in a later gate.
-func registrationHasReachableWake(cfg *loop.Config, reg *loop.Registration) bool {
+// registrationIsLive reports whether reg's agent has a fresh `.live` presence
+// fact on THIS host. Pull-only (Gate 6c): registrations carry no wake target, so
+// a poller is "not required" when the agent is already live (its own serve /
+// heartbeat publishes `.live`). It rides loop.RegistrationReachable, which under
+// pull-only IS the `.live`-freshness check. Cross-host registrations are
+// short-circuited not-live (liveness is only provable same-host). The whole
+// poller is slated for removal in a later gate.
+func registrationIsLive(cfg *loop.Config, reg *loop.Registration) bool {
 	if reg == nil {
-		return false
-	}
-	if strings.TrimSpace(reg.WakeTarget) == "" {
 		return false
 	}
 	localHost, _ := os.Hostname()
@@ -377,19 +374,11 @@ func cmdPollerEnsure(args []string) error {
 	if err != nil {
 		return err
 	}
-	if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(common.AgentID)); err == nil && registrationHasReachableWake(cfg, reg) {
+	if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(common.AgentID)); err == nil && registrationIsLive(cfg, reg) {
 		if !common.Quiet {
-			fmt.Printf("poller ensure: %s has reachable wake target (%s); poller not required\n", common.AgentID, reg.WakeMethod)
+			fmt.Printf("poller ensure: %s is already live (.live fresh); poller not required\n", common.AgentID)
 		}
 		return nil
-	}
-	if pane := currentTmuxPane(); pane != "" && tmuxTargetReachable(pane) {
-		if !common.Quiet {
-			fmt.Printf("poller ensure: %s is in tmux (%s); poller not required\n", common.AgentID, pane)
-		}
-		return nil
-	} else if pane != "" && !common.Quiet {
-		fmt.Printf("poller ensure: %s has unreachable TMUX_PANE=%s; starting heartbeat poller\n", common.AgentID, pane)
 	}
 	if !common.Launch {
 		if session, err := loop.LoadActiveSession(cfg, common.AgentID); err == nil && activeSessionAlive(session) {
