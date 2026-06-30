@@ -250,16 +250,16 @@ func stopSetupRunner(cfg *loop.Config, agentID string) (bool, string) {
 		return false, ""
 	}
 	cmdline := setupProcessCommandLine(st.RunnerPID)
-	if !setupCommandMatchesPool(cmdline, "run", cfg) {
+	// Runner attribution = the runner.json pid->id binding (loaded above) +
+	// setupProcessAlive (checked above) + this being an `agentchute run` for THIS
+	// pool. A runner is launched WITHOUT --as (contextual id), so its cmdline never
+	// carries the agent id; requiring it here was a false-negative that left every
+	// live runner un-stopped. The state file binds pid->id; the cmdline only proves
+	// the pool. Simple-again Gate 6b (pull-only): the runner owns no receive socket,
+	// so SIGTERM is the stop — its signal handler marks the registration offline and
+	// releases its serve lease on exit.
+	if !setupCommandMatchesRunnerPool(cmdline, cfg) {
 		return false, fmt.Sprintf("not stopping runner for %s pid=%d; process command did not match this agentchute pool", agentID, st.RunnerPID)
-	}
-	// Simple-again Gate 6b (pull-only): the runner no longer owns a receive
-	// socket, so there is no ping verification or graceful socket-shutdown step.
-	// Verify the process names THIS agent id from its command line, then SIGTERM
-	// it — the runner's signal handler marks the registration offline and releases
-	// its serve lease on exit.
-	if !setupCommandHasAgentID(cmdline, agentID) {
-		return false, fmt.Sprintf("not stopping runner for %s pid=%d; process command did not name this agent id", agentID, st.RunnerPID)
 	}
 	if err := setupSignalProcess(st.RunnerPID, syscall.SIGTERM); err != nil {
 		return false, fmt.Sprintf("stop runner for %s pid=%d: %v", agentID, st.RunnerPID, err)
@@ -283,6 +283,21 @@ func setupCommandMatches(cmdline, agentID, subcommand string, cfg *loop.Config) 
 		return false
 	}
 	return setupCommandHasAgentID(cmdline, agentID)
+}
+
+// setupCommandMatchesRunnerPool attributes a live RUNNER to THIS pool. Unlike a
+// poller (which is launched with --as <id> and so carries its agent id in the
+// cmdline), a runner is launched with the CONTEXTUAL id — it has NO --as — so its
+// cmdline never contains the agent id. The pid->id binding therefore comes from
+// the runner.json state file (state/<id>/runner.json recorded this pid for <id>),
+// and the cmdline only needs to prove the process is an `agentchute run` for THIS
+// pool (its --control-repo/--loop-dir resolves to this pool). Requiring the agent
+// id in a runner cmdline is the false-negative this fixes: every live runner was
+// reported "ambiguous ... cmdline did not match this pool; refusing (fail closed)".
+// A foreign pool or non-agentchute process still fails this check (still ambiguous,
+// still fail-closed).
+func setupCommandMatchesRunnerPool(cmdline string, cfg *loop.Config) bool {
+	return setupCommandMatchesPool(cmdline, "run", cfg)
 }
 
 func setupCommandMatchesPool(cmdline, subcommand string, cfg *loop.Config) bool {
@@ -376,7 +391,10 @@ func processCommandLine(pid int) string {
 	if pid <= 0 {
 		return ""
 	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	// -ww disables ps's column-width truncation so a very long runner/poller
+	// cmdline (long control-repo/loop-dir paths) is returned in full; a truncated
+	// cmdline could drop the pool path and make a real match look ambiguous.
+	out, err := exec.Command("ps", "-ww", "-p", strconv.Itoa(pid), "-o", "command=").Output()
 	if err != nil {
 		return ""
 	}

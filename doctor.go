@@ -382,13 +382,13 @@ func checkUnenrolledPresence(cfg *loop.Config) doctorCheck {
 	return doctorCheck{
 		Name:     "unenrolled_presence",
 		Severity: severityWarn,
-		Message:  fmt.Sprintf("%d wrapper(s) present in this pool but not enrolled: %s — enroll via their `ac-<wrapper>` launcher or `agentchute boot --as <id>`", len(found), strings.Join(parts, ", ")),
+		Message:  fmt.Sprintf("%d wrapper(s) present in this pool but not enrolled: %s — enroll via the `ac` dispatcher (`ac run <wrapper>`) or `agentchute boot --as <id>`", len(found), strings.Join(parts, ", ")),
 	}
 }
 
 // checkLaunchProvenance is the WI-E3 detect-and-warn launch-bypass check. When
 // the runner wake path IS configured (setup installed the ac-* launchers and the
-// expected launch is `ac-<wrapper>` -> runner), it WARNS — never BLOCKS — if a
+// expected launch is `ac run <wrapper>` -> runner), it WARNS — never BLOCKS — if a
 // wrapper is running raw:
 //
 //   - the agent's registration records launched_by=manual or has no provenance
@@ -398,7 +398,7 @@ func checkUnenrolledPresence(cfg *loop.Config) doctorCheck {
 //
 // This is ADVISORY by design (codex guardrail): it NEVER returns a BLOCKER, it
 // does NOT flip the runner default (runner stays opt-in), and it installs no
-// same-name shadowing — it only points the operator at `ac-<wrapper>`. Managed
+// same-name shadowing — it only points the operator at `ac run <wrapper>`. Managed
 // enrollments (runner/hook/poller) and non-runner setups do not warn.
 func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
 	const name = "launch_provenance"
