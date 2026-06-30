@@ -87,7 +87,7 @@ func TestGateFinishBlocksOnUnreadMail(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 		if err != nil {
@@ -249,7 +249,7 @@ func TestGateCodexHookStopBlockedShape(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 		if err != nil {
@@ -412,7 +412,7 @@ func TestGateBlocksOnMalformedInbox(t *testing.T) {
 		}
 		// Drop a malformed file directly in the inbox (won't parse as a
 		// §6.1 reference filename — too few segments).
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		malformed := filepath.Join(inboxDir, "not-a-valid-message-name.md")
 		if err := os.WriteFile(malformed, []byte("---\nfrom: ??\n---\nbody\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -546,7 +546,7 @@ func TestGateContinuePhaseSamePredicateAsFinish(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 		if err != nil {
@@ -573,7 +573,7 @@ func TestGateGeminiHookAfterAgentBlockedShape(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 		if err != nil {

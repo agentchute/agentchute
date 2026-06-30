@@ -13,8 +13,8 @@ func newLeaseTestConfig(t *testing.T) *Config {
 	root := t.TempDir()
 	return &Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 }
 

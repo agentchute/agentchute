@@ -14,7 +14,7 @@ func TestBootSetsHookProvenance(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		t.Setenv("AGENTCHUTE_AGENT_ID", "")
 		t.Setenv("AGENTCHUTE_RUNNER", "")
 		t.Setenv("TMUX_PANE", "")
@@ -48,7 +48,7 @@ func TestBootUnderRunnerKeepsRunnerProvenance(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		t.Setenv("AGENTCHUTE_AGENT_ID", "")
 		t.Setenv("AGENTCHUTE_RUNNER", "1")
 		t.Setenv("TMUX_PANE", "%7")
@@ -107,7 +107,7 @@ func TestShimPassthroughSetsManualProvenance(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		t.Setenv("AGENTCHUTE_AGENT_ID", "")
 		t.Setenv("AGENTCHUTE_RUNNER", "")
 		t.Setenv("TMUX_PANE", "")
@@ -160,7 +160,7 @@ func TestPerformRegisterPreservesProvenanceOnReRegister(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)

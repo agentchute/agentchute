@@ -177,12 +177,12 @@ func mustWriteFreshPollerHeartbeat(t *testing.T, cfg *loop.Config, agentID strin
 // used by presence/register/presenced tests, unrelated to the retired herdr probe.
 func mustExampleRepo(t *testing.T, root string) {
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 }
 
 func readExampleReg(t *testing.T, root, agentID string) *loop.Registration {
 	t.Helper()
-	reg, err := loop.ReadRegistration(filepath.Join(root, ".examplecorp", "loop", "agents", agentID+".md"))
+	reg, err := loop.ReadRegistration(filepath.Join(root, ".agentchute", "loop", "agents", agentID+".md"))
 	if err != nil {
 		t.Fatalf("read registration %s: %v", agentID, err)
 	}

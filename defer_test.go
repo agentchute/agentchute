@@ -113,7 +113,9 @@ func TestDeferTransitionsLedgerAndAcksSender(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := string(data)
-		if strings.Contains(s, "task: deferred-reply") && strings.Contains(s, "needs research") {
+		// protocol-v2 envelope cut: the deferral-ack no longer emits `task:`;
+		// identify it by its reason body + the in_reply_to back-reference.
+		if strings.Contains(s, "needs research") {
 			found = true
 			if !strings.Contains(s, `in_reply_to: "`+msgID) {
 				t.Errorf("ack missing in_reply_to=%s: %s", msgID, s)

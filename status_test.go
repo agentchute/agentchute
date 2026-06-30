@@ -14,8 +14,8 @@ func TestPrintStatusIncludesAgentsAndInboxDepth(t *testing.T) {
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 	mustMkdir(t, cfg.AgentsDir())
 	mustMkdir(t, cfg.AgentInboxDir("codex"))
@@ -59,8 +59,8 @@ func TestStatus_PresenceFromLive(t *testing.T) {
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 	mustMkdir(t, cfg.AgentsDir())
 
@@ -190,7 +190,7 @@ func TestStatus_PresentButNotEnrolledSectionQuietWhenClean(t *testing.T) {
 func TestCmdStatusWithoutAgentIDPrintsPoolWithoutSideEffects(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 
 	withCwd(t, root, func() {
 		t.Setenv("TMUX_PANE", "%1")
@@ -248,7 +248,7 @@ func TestCmdStatusWithoutAgentIDPrintsPoolWithoutSideEffects(t *testing.T) {
 func TestCmdStatusWithAgentIDRefreshesLastSeen(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 
 	withCwd(t, root, func() {
 		t.Setenv("TMUX_PANE", "%1")

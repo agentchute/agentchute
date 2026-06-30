@@ -215,7 +215,7 @@ func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 			"--as", "codex",
 			"--vendor", "openai",
 			"--control-repo", root,
-			"--loop-dir", filepath.Join(root, ".examplecorp", "loop"),
+			"--loop-dir", filepath.Join(root, ".agentchute", "loop"),
 			"--interval", "5",
 			"--idle-grace", "100ms",
 			"--", script,
@@ -384,6 +384,6 @@ func setupShortRunFixture(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 	return root
 }

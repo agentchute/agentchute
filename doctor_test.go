@@ -33,8 +33,8 @@ func newDoctorCfg(t *testing.T) *loop.Config {
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 	// Scaffold the same layout init produces.
 	for _, d := range []string{cfg.AgentsDir(), filepath.Join(cfg.LoopDir, "inbox")} {
@@ -53,8 +53,8 @@ func TestDoctorMissingScaffoldBlocks(t *testing.T) {
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "loop_dir_scaffold")
@@ -613,7 +613,7 @@ func TestCmdDoctorDiscoveryFailureBlocks(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
-	// No AGENTCHUTE.md, no .examplecorp/loop — discovery will fail.
+	// No AGENTCHUTE.md, no .agentchute/loop — discovery will fail.
 	withCwd(t, root, func() {
 		_, err := captureStdout(t, func() error { return cmdDoctor(nil) })
 		if err == nil {

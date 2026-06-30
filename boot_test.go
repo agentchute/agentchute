@@ -47,7 +47,7 @@ func setupBootFixture(t *testing.T) string {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 	return root
 }
 
@@ -123,7 +123,7 @@ func TestBootWithUnreadMailReturnsBlocked(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Drop a valid §6.1-shaped message into the inbox.
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		now := time.Now().UTC()
 		msgContent := []byte("---\nmessage_id: 2026-05-19T17:53:59.561894Z\nfrom: codex\nto: claude-code\ntask: review\n---\n\nbody\n")
 		if _, err := loop.WriteInboxMessage(inboxDir, now, "codex", msgContent); err != nil {
@@ -200,7 +200,7 @@ func TestBootMissingLoopDirReturnsCommandFailure(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	// Note: no .examplecorp/loop directory; Discover should fail.
+	// Note: no .agentchute/loop directory; Discover should fail.
 	withCwd(t, root, func() {
 		_, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) })
 		if err == nil {
@@ -222,7 +222,7 @@ func TestBootContextOnlyNeverBlocks(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Drop an unread message.
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex", []byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 		if err != nil {
 			t.Fatal(err)
@@ -247,7 +247,7 @@ func TestBootCodexHookSessionStartGuidanceIsRunnable(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
 		t.Setenv("TMUX_PANE", "%1")
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "claude-code")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		mustMkdir(t, inboxDir)
 		msgContent := []byte("---\nmessage_id: 2026-05-19T17:53:59.561894Z\nfrom: codex\nto: claude-code\ntask: review\n---\n\nbody\n")
 		if _, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex", msgContent); err != nil {

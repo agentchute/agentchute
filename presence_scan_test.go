@@ -35,8 +35,8 @@ func presencePoolCfg(t *testing.T) (*loop.Config, string) {
 	mustExampleRepo(t, root)
 	cfg := &loop.Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 	mustMkdir(t, cfg.AgentsDir())
 	return cfg, root

@@ -117,7 +117,7 @@ func TestSelfCheckViaShellPrefersRunnerPID(t *testing.T) {
 	runnerPID := os.Getpid()
 	helper := shellQuote(os.Args[0]) + " -test.run=TestActiveSessionSelfCheckHelperProcess --" +
 		" --as codex --vendor openai --control-repo " + shellQuote(root) +
-		" --loop-dir " + shellQuote(filepath.Join(root, ".examplecorp", "loop")) +
+		" --loop-dir " + shellQuote(filepath.Join(root, ".agentchute", "loop")) +
 		" --quiet"
 	cmd := exec.Command("sh", "-c", helper)
 	cmd.Dir = root

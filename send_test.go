@@ -20,7 +20,7 @@ func TestSendFailsForUnregisteredRecipient(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 
 		// Register sender
 		if err := cmdRegister([]string{"--as", "sender", "--vendor", "test"}); err != nil {
@@ -46,7 +46,7 @@ func TestSendNonFatalMissingRegistrationButExistingInbox(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 
 		// Register sender
 		if err := cmdRegister([]string{"--as", "sender", "--vendor", "test"}); err != nil {
@@ -54,7 +54,7 @@ func TestSendNonFatalMissingRegistrationButExistingInbox(t *testing.T) {
 		}
 
 		// Manually create recipient inbox dir but NO registration file
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "recipient")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "recipient")
 		mustMkdir(t, inboxDir)
 
 		// Send should succeed (delivery) but print a warning (skipped poke)
@@ -81,7 +81,7 @@ func TestSendFencedByServeTokenMismatch(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		if err := cmdRegister([]string{"--as", "sender", "--vendor", "test"}); err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +121,7 @@ func TestSendRejectsNewlineInFrontmatterFlags(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		if err := cmdRegister([]string{"--as", "sender", "--vendor", "test", "--wake-target", ""}); err != nil {
 			t.Fatal(err)
 		}
@@ -149,7 +149,7 @@ func TestSendSucceedsForRegisteredRecipient(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 
 		// Register both
 		if err := cmdRegister([]string{"--as", "sender", "--vendor", "test"}); err != nil {
@@ -166,7 +166,7 @@ func TestSendSucceedsForRegisteredRecipient(t *testing.T) {
 		}
 
 		// Verify message in inbox
-		inboxDir := filepath.Join(root, ".examplecorp", "loop", "inbox", "recipient")
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "recipient")
 		entries, err := os.ReadDir(inboxDir)
 		if err != nil {
 			t.Fatal(err)

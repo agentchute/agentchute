@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-func TestDiscoverFindsSingleLoopDirFromCwd(t *testing.T) {
+func TestDiscoverFindsFixedLoopDirFromCwd(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# spec\n"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 	mustMkdir(t, filepath.Join(root, "sub", "dir"))
 
 	cfg, err := Discover(DiscoverOpts{Cwd: filepath.Join(root, "sub", "dir")})
@@ -20,39 +20,52 @@ func TestDiscoverFindsSingleLoopDirFromCwd(t *testing.T) {
 	if cfg.ControlRepo != root {
 		t.Fatalf("ControlRepo = %q, want %q", cfg.ControlRepo, root)
 	}
-	wantLoop := filepath.Join(root, ".examplecorp", "loop")
+	wantLoop := filepath.Join(root, ".agentchute", "loop")
 	if cfg.LoopDir != wantLoop {
 		t.Fatalf("LoopDir = %q, want %q", cfg.LoopDir, wantLoop)
 	}
-	if cfg.Vendor != "examplecorp" {
-		t.Fatalf("Vendor = %q, want examplecorp", cfg.Vendor)
+	if cfg.Vendor != "agentchute" {
+		t.Fatalf("Vendor = %q, want agentchute", cfg.Vendor)
 	}
 }
 
-func TestDiscoverRequiresLoopDirWhenMultipleExist(t *testing.T) {
+// Vendor namespacing was removed (simple-again): auto-discovery resolves the
+// fixed .agentchute/loop and IGNORES any coexisting foreign dotdir (no
+// "multiple vendor loop directories" refusal). An explicit --loop-dir still
+// overrides to a foreign dotdir.
+func TestDiscoverResolvesFixedLoopDirIgnoringForeignDotdir(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# spec\n"))
-	mustMkdir(t, filepath.Join(root, ".one", "loop"))
-	mustMkdir(t, filepath.Join(root, ".two", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
+	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
 
-	_, err := Discover(DiscoverOpts{Cwd: root})
-	if err == nil {
-		t.Fatal("expected multiple-loop-dir error")
+	cfg, err := Discover(DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatalf("fixed-namespace discovery should not be ambiguous: %v", err)
+	}
+	if cfg.LoopDir != filepath.Join(root, ".agentchute", "loop") {
+		t.Fatalf("LoopDir = %q, want the fixed .agentchute/loop", cfg.LoopDir)
+	}
+	if cfg.Vendor != "agentchute" {
+		t.Fatalf("Vendor = %q, want agentchute", cfg.Vendor)
 	}
 
-	cfg, err := Discover(DiscoverOpts{Cwd: root, LoopDirFlag: ".two/loop"})
+	cfg, err = Discover(DiscoverOpts{Cwd: root, LoopDirFlag: ".examplecorp/loop"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Vendor != "two" {
-		t.Fatalf("Vendor = %q, want two", cfg.Vendor)
+	if cfg.Vendor != "examplecorp" {
+		t.Fatalf("Vendor = %q, want examplecorp (--loop-dir override)", cfg.Vendor)
 	}
 }
 
-// Flag wins over env per the AGENTCHUTE.md §4 cascade (most-explicit-first).
+// Flag wins over env per the AGENTCHUTE.md §4 cascade (most-explicit-first). The
+// fixed .agentchute/loop is the control-repo marker; --loop-dir/env override the
+// resolved loop to a foreign dotdir.
 func TestDiscoverFlagLoopDirBeatsEnv(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# spec\n"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 	mustMkdir(t, filepath.Join(root, ".flag", "loop"))
 	mustMkdir(t, filepath.Join(root, ".env", "loop"))
 
@@ -76,7 +89,7 @@ func TestDiscoverFallsBackToEnvControlRepo(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# spec\n"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 
 	cfg, err := Discover(DiscoverOpts{Cwd: outside, EnvControlRepo: root})
 	if err != nil {
@@ -91,7 +104,7 @@ func TestDiscoverFallsBackToEnvWhenCwdRepoHasNoLoopDir(t *testing.T) {
 	control := t.TempDir()
 	cwdRepo := t.TempDir()
 	mustWrite(t, filepath.Join(control, "AGENTCHUTE.md"), []byte("# spec\n"))
-	mustMkdir(t, filepath.Join(control, ".examplecorp", "loop"))
+	mustMkdir(t, filepath.Join(control, ".agentchute", "loop"))
 	mustWrite(t, filepath.Join(cwdRepo, "AGENTCHUTE.md"), []byte("# other spec\n"))
 
 	cfg, err := Discover(DiscoverOpts{Cwd: cwdRepo, EnvControlRepo: control})
@@ -119,6 +132,7 @@ func TestDirExistsRejectsSymlink(t *testing.T) {
 func TestDiscoverRejectsSymlinkLoopDirFlag(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# spec\n"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop")) // control-repo marker
 	target := filepath.Join(root, ".real", "loop")
 	link := filepath.Join(root, ".link", "loop")
 	mustMkdir(t, target)
@@ -135,6 +149,7 @@ func TestDiscoverRejectsSymlinkLoopDirFlag(t *testing.T) {
 func TestDiscoverRejectsSymlinkEnvLoopDir(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# spec\n"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop")) // control-repo marker
 	target := filepath.Join(root, ".real", "loop")
 	link := filepath.Join(root, ".link", "loop")
 	mustMkdir(t, target)

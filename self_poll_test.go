@@ -143,8 +143,8 @@ func TestSelfPollJSONShape(t *testing.T) {
 func TestSelfPollNeedsBootForUnregisteredAgent(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
-	mustMkdir(t, filepath.Join(root, ".examplecorp", "loop", "agents"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
+	mustMkdir(t, filepath.Join(root, ".agentchute", "loop", "agents"))
 
 	withCwd(t, root, func() {
 		out, err := captureStdout(t, func() error { return cmdSelfPoll(selfPollArgs("--json")) })

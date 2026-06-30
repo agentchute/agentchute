@@ -20,13 +20,21 @@ func TestComposeMessageQuotesOptionalScalars(t *testing.T) {
 		"body",
 	))
 
-	for _, want := range []string{
-		`in_reply_to: "2026-05-09T16:00:00.000000Z\nforged: true"`,
-		`task: "review README: API"`,
-		`status: "info # note"`,
-	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("message missing %q:\n%s", want, msg)
+	// in_reply_to is the surviving optional scalar and must still be quoted when
+	// its value contains a newline/colon (injection-safety).
+	if want := `in_reply_to: "2026-05-09T16:00:00.000000Z\nforged: true"`; !strings.Contains(msg, want) {
+		t.Fatalf("message missing %q:\n%s", want, msg)
+	}
+
+	// protocol-v2 envelope cut (TEAM-DECISION §4): `to`, `task`, and `status` are
+	// no longer EMITTED even when passed (the parser still reads them off the wire
+	// for older messages). Assert no frontmatter line carries those bare keys
+	// (line-scoped so it does not false-match `in_reply_to:`).
+	for _, line := range strings.Split(msg, "\n") {
+		key, _, _ := strings.Cut(strings.TrimSpace(line), ":")
+		switch key {
+		case "to", "task", "status":
+			t.Fatalf("message unexpectedly still emits %q line:\n%s", key, msg)
 		}
 	}
 }
@@ -130,11 +138,9 @@ func TestSendCorrectiveWritesMessageAndSkipsPokeForEmptyTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(body)
-	// `task: "protocol correction"` is quoted because the value contains a space
-	// (ComposeMessage runs quoteIfNeeded on optional scalars).
+	// protocol-v2 envelope cut: the corrective no longer emits task/status; its
+	// content carries the §11.1 corrective body (CorrectiveBody) instead.
 	for _, want := range []string{
-		`task: "protocol correction"`,
-		"status: findings",
 		"malformed item: .agentchute/loop/malformed/bad.md",
 		"reason: filename does not match §6.1",
 		"action: re-send per AGENTCHUTE.md §6.1",
@@ -268,8 +274,8 @@ func setupAnnounceFixture(t *testing.T) *Config {
 	root := t.TempDir()
 	cfg := &Config{
 		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".examplecorp", "loop"),
-		Vendor:      "examplecorp",
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
 	if err := ensurePrivateDir(cfg.AgentsDir()); err != nil {
 		t.Fatal(err)

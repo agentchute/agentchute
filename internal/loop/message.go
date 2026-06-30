@@ -9,23 +9,28 @@ import (
 )
 
 // ComposeMessage builds an outbound message's bytes (frontmatter + body)
-// per AGENTCHUTE.md §6.4. Optional scalars (task, status, replyTo) may be
-// empty. Body is markdown; a trailing newline is normalized regardless of
-// the input.
+// per AGENTCHUTE.md §6.4. Body is markdown; a trailing newline is normalized
+// regardless of the input.
+//
+// protocol-v2 envelope cut (TEAM-DECISION §4): the emitted envelope is now
+// `from`, optional `in_reply_to`, plus `message_id` retained for the compat
+// window (the recipient pending-reply ledger + --reply-to threading still read
+// it). `to` is dropped — the inbox directory location encodes the recipient —
+// and the `task`/`status` workflow-vocabulary fields move to a body convention,
+// so neither is emitted. The `to`/`task`/`status` parameters are retained on the
+// signature for one release so callers (send, defer, announce, corrective) need
+// no change during the transition; the inbox parser still READS all of these
+// from any older message in flight.
 func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string) []byte {
+	_ = to     // recipient is encoded by the inbox directory; not emitted (compat param).
+	_ = task   // workflow vocabulary → body convention; not emitted (compat param).
+	_ = status // workflow vocabulary → body convention; not emitted (compat param).
 	var b strings.Builder
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "message_id: %s\n", FormatMessageID(now))
 	fmt.Fprintf(&b, "from: %s\n", from)
-	fmt.Fprintf(&b, "to: %s\n", to)
 	if replyTo != "" {
 		fmt.Fprintf(&b, "in_reply_to: %s\n", quoteIfNeeded(replyTo))
-	}
-	if task != "" {
-		fmt.Fprintf(&b, "task: %s\n", quoteIfNeeded(task))
-	}
-	if status != "" {
-		fmt.Fprintf(&b, "status: %s\n", quoteIfNeeded(status))
 	}
 	b.WriteString("---\n\n")
 	b.WriteString(strings.TrimRight(body, "\n"))

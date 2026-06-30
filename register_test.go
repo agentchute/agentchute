@@ -22,7 +22,7 @@ func TestRegister_RMWUnderAgentLock(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
@@ -86,7 +86,7 @@ func TestRegister_NoLostUpdateVsConcurrentUpdateLastSeen(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
@@ -152,7 +152,7 @@ func TestRegister_InboxExistsBeforeRegistrationVisible(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
@@ -187,7 +187,7 @@ func TestRegister_WritesRecordAndInitialLive(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
@@ -216,13 +216,13 @@ func TestRegisterClearsStaleStatusAndRestartAt(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 
 		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test"}); err != nil {
 			t.Fatal(err)
 		}
 
-		regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test-agent.md")
+		regPath := filepath.Join(root, ".agentchute", "loop", "agents", "test-agent.md")
 		reg, err := loop.ReadRegistration(regPath)
 		if err != nil {
 			t.Fatal(err)
@@ -255,13 +255,13 @@ func TestRegisterBioFlagSetsAndOverwritesBody(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 
 		if err := cmdRegister([]string{"--as", "test", "--vendor", "test", "--bio", "first bio"}); err != nil {
 			t.Fatal(err)
 		}
 
-		regPath := filepath.Join(root, ".examplecorp", "loop", "agents", "test.md")
+		regPath := filepath.Join(root, ".agentchute", "loop", "agents", "test.md")
 		reg, err := loop.ReadRegistration(regPath)
 		if err != nil {
 			t.Fatal(err)
@@ -306,7 +306,7 @@ func TestRegister_ContextualCollisionSuffixesAndWritesLive(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 		t.Setenv("AGENTCHUTE_AGENT_ID", "")
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
@@ -343,7 +343,7 @@ func TestNextContextualAgentIDByFilesystem_ErrorsPastCap(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
@@ -378,7 +378,7 @@ func TestNextContextualAgentIDByFilesystem_ErrorsPastCapWhenCandidateFree(t *tes
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".examplecorp", "loop"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
