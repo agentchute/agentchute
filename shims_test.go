@@ -49,7 +49,7 @@ func TestResolveRealWrapperSkipsShimDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+realDir)
-	spec, ok := shimSpecForName("ac-codex")
+	spec, ok := wrapperSpecForName("ac-codex")
 	if !ok {
 		t.Fatal("missing ac-codex shim spec")
 	}
@@ -123,9 +123,9 @@ func TestShimsInstallAliasesOptIn(t *testing.T) {
 // WI-E3 (gemini input): `agy` is the actual gemini-cli binary name on PATH, so
 // the launcher must recognize it as the gemini-cli wrapper / ac-gemini.
 func TestShims_AgyResolvesToGeminiWrapper(t *testing.T) {
-	spec, ok := shimSpecForName("agy")
+	spec, ok := wrapperSpecForName("agy")
 	if !ok {
-		t.Fatal("shimSpecForName(\"agy\") not recognized; want the gemini-cli wrapper")
+		t.Fatal("wrapperSpecForName(\"agy\") not recognized; want the gemini-cli wrapper")
 	}
 	if spec.Name != "ac-gemini" || spec.AgentID != "gemini-cli" {
 		t.Fatalf("agy resolved to %s/%s, want ac-gemini/gemini-cli", spec.Name, spec.AgentID)

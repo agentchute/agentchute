@@ -459,7 +459,7 @@ func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions)
 func shimNamesForAgent(agentID string) []string {
 	agentID = strings.TrimSpace(agentID)
 	if agentID != "" {
-		for _, spec := range shimSpecs {
+		for _, spec := range wrapperSpecs {
 			// Match contextual ids (codex-agentchute) to their canonical shim,
 			// not just exact base ids.
 			if registrationMatchesCanonical(agentID, spec.AgentID) {
@@ -467,8 +467,8 @@ func shimNamesForAgent(agentID string) []string {
 			}
 		}
 	}
-	names := make([]string, 0, len(shimSpecs))
-	for _, spec := range shimSpecs {
+	names := make([]string, 0, len(wrapperSpecs))
+	for _, spec := range wrapperSpecs {
 		names = append(names, spec.Name)
 	}
 	return names

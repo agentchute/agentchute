@@ -11,7 +11,11 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-type shimSpec struct {
+type wrapperSpec struct {
+	// Key is the canonical wrapper name used by the `ac` dispatcher
+	// (`ac run <Key>`). Name is the legacy generated-shim filename (ac-*),
+	// retained only until the dispatcher fully replaces generated shims.
+	Key        string
 	Name       string
 	Aliases    []string
 	AgentID    string
@@ -19,11 +23,38 @@ type shimSpec struct {
 	Candidates []string
 }
 
-var shimSpecs = []shimSpec{
-	{Name: "ac-claude", Aliases: []string{"claude", "claude-code"}, AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}},
-	{Name: "ac-codex", Aliases: []string{"codex"}, AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}},
-	{Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli", "agy"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli", "agy"}},
-	{Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
+var wrapperSpecs = []wrapperSpec{
+	{Key: "claude", Name: "ac-claude", Aliases: []string{"claude", "claude-code"}, AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}},
+	{Key: "codex", Name: "ac-codex", Aliases: []string{"codex"}, AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}},
+	{Key: "gemini", Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli", "agy"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli", "agy"}},
+	{Key: "grok", Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
+}
+
+// wrapperForToken resolves a dispatcher wrapper token (`ac run <token>`) by
+// canonical Key or alias. It deliberately does NOT match the legacy ac-* Name —
+// the dispatcher addresses wrappers, not generated shim filenames.
+func wrapperForToken(token string) (wrapperSpec, bool) {
+	token = strings.TrimSpace(token)
+	for _, spec := range wrapperSpecs {
+		if spec.Key == token {
+			return spec, true
+		}
+		for _, alias := range spec.Aliases {
+			if alias == token {
+				return spec, true
+			}
+		}
+	}
+	return wrapperSpec{}, false
+}
+
+// knownWrapperTokens lists every accepted wrapper token for error suggestions.
+func knownWrapperTokens() []string {
+	var out []string
+	for _, spec := range wrapperSpecs {
+		out = append(out, spec.Key)
+	}
+	return out
 }
 
 func cmdShims(args []string) error {
@@ -110,7 +141,7 @@ func cmdShimsInstall(args []string) error {
 	return nil
 }
 
-func shimInstallNames(spec shimSpec, aliases bool) []string {
+func shimInstallNames(spec wrapperSpec, aliases bool) []string {
 	names := []string{spec.Name}
 	if aliases {
 		names = append(names, spec.Aliases...)
@@ -120,16 +151,16 @@ func shimInstallNames(spec shimSpec, aliases bool) []string {
 
 func allShimCommandNames(aliases bool) []string {
 	var names []string
-	for _, spec := range shimSpecs {
+	for _, spec := range wrapperSpecs {
 		names = append(names, shimInstallNames(spec, aliases)...)
 	}
 	return names
 }
 
-func selectShimSpecs(wrapper string) ([]shimSpec, error) {
+func selectShimSpecs(wrapper string) ([]wrapperSpec, error) {
 	wrapper = strings.TrimSpace(wrapper)
 	if wrapper == "" || wrapper == "all" {
-		return shimSpecs, nil
+		return wrapperSpecs, nil
 	}
 	wanted := map[string]bool{}
 	for _, part := range strings.Split(wrapper, ",") {
@@ -142,9 +173,9 @@ func selectShimSpecs(wrapper string) ([]shimSpec, error) {
 	if len(wanted) == 0 {
 		return nil, fmt.Errorf("--wrapper must not be empty")
 	}
-	var selected []shimSpec
+	var selected []wrapperSpec
 	matched := map[string]bool{}
-	for _, spec := range shimSpecs {
+	for _, spec := range wrapperSpecs {
 		if wanted[spec.Name] || wanted[spec.AgentID] || wantedAny(wanted, spec.Aliases) {
 			selected = append(selected, spec)
 			if wanted[spec.Name] {
@@ -194,7 +225,7 @@ func cmdShimsExec(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return shimsUsage(err)
 	}
-	spec, ok := shimSpecForName(name)
+	spec, ok := wrapperSpecForName(name)
 	if !ok {
 		return fmt.Errorf("unknown shim name %q", name)
 	}
@@ -239,9 +270,9 @@ func cmdShimsExec(args []string) error {
 	return execReplace(agentchuteBin, runArgs, os.Environ())
 }
 
-func shimSpecForName(name string) (shimSpec, bool) {
+func wrapperSpecForName(name string) (wrapperSpec, bool) {
 	name = strings.TrimSpace(filepath.Base(name))
-	for _, spec := range shimSpecs {
+	for _, spec := range wrapperSpecs {
 		if spec.Name == name {
 			return spec, true
 		}
@@ -251,10 +282,10 @@ func shimSpecForName(name string) (shimSpec, bool) {
 			}
 		}
 	}
-	return shimSpec{}, false
+	return wrapperSpec{}, false
 }
 
-func resolveRealWrapper(spec shimSpec, shimDir string) (string, error) {
+func resolveRealWrapper(spec wrapperSpec, shimDir string) (string, error) {
 	absShimDir := ""
 	if shimDir != "" {
 		if abs, err := filepath.Abs(shimDir); err == nil {
