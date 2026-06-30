@@ -207,11 +207,3 @@ func herdrWakeForRegistration(opts registerOpts) (method, target string, warning
 	}
 	return "herdr", agentID, nil, true
 }
-
-// underAgentchuteRunner reports whether this process was launched by
-// `agentchute run` (the PTY runner). When true, the runner socket is the wake
-// path and auto-detection must NOT switch a registration to herdr/tmux just
-// because those envs are also present.
-func underAgentchuteRunner() bool {
-	return os.Getenv("AGENTCHUTE_RUNNER") == "1" || strings.TrimSpace(os.Getenv("AGENTCHUTE_RUNNER_PID")) != ""
-}
