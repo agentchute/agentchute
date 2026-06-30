@@ -119,8 +119,7 @@ func parseDispatch(args []string) (dispatchPlan, error) {
 	switch sub {
 	case "-h", "--help", "help":
 		return dispatchPlan{Kind: dispatchHelp}, nil
-	case "run", "serve":
-		// `serve` accepted as a forward-compatible alias for `run` launches.
+	case "run":
 		if len(subArgs) == 0 {
 			return dispatchPlan{}, fmt.Errorf("ac run <wrapper> — known wrappers: %s", strings.Join(knownWrapperTokens(), ", "))
 		}
@@ -168,6 +167,9 @@ func cmdDispatch(args []string) error {
 
 // dispatchExecRun resolves the real wrapper binary and re-execs `agentchute run`
 // for it, mirroring the generated-shim exec path (without an ac-* shim name).
+// Caller-supplied --control-repo/--loop-dir (peeled into plan.Global) are honored
+// via the discovery cascade and emitted exactly once; vendor comes from the
+// wrapper spec (a caller --vendor is dropped, never duplicated).
 func dispatchExecRun(plan dispatchPlan) error {
 	realWrapper, err := resolveRealWrapper(plan.Wrapper, "")
 	if err != nil {
@@ -181,10 +183,15 @@ func dispatchExecRun(plan dispatchPlan) error {
 	if err != nil {
 		return err
 	}
+	ctlRepo, g1, _ := extractGlobalFlag(plan.Global, "--control-repo")
+	loopDir, g2, _ := extractGlobalFlag(g1, "--loop-dir")
+	_, forwardGlobal, _ := extractGlobalFlag(g2, "--vendor")
 	cfg, err := loop.Discover(loop.DiscoverOpts{
-		Cwd:            cwd,
-		EnvControlRepo: os.Getenv("AGENTCHUTE_CONTROL_REPO"),
-		EnvLoopDir:     os.Getenv("AGENTCHUTE_LOOP_DIR"),
+		ControlRepoFlag: ctlRepo,
+		LoopDirFlag:     loopDir,
+		Cwd:             cwd,
+		EnvControlRepo:  os.Getenv("AGENTCHUTE_CONTROL_REPO"),
+		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
 	})
 	if err != nil {
 		if loop.IsNoControlRepo(err) {
@@ -196,16 +203,47 @@ func dispatchExecRun(plan dispatchPlan) error {
 	if err != nil {
 		return err
 	}
-	runArgs := []string{agentchuteBin, "run", "--vendor", plan.Wrapper.Vendor}
-	runArgs = append(runArgs, plan.Global...)
+	runArgs := buildDispatchRunArgs(agentchuteBin, plan.Wrapper.Vendor, forwardGlobal, cfg.ControlRepo, cfg.LoopDir, wrapperArgs)
+	return execReplace(agentchuteBin, runArgs, os.Environ())
+}
+
+// buildDispatchRunArgs assembles the `agentchute run` argv for a dispatcher
+// launch, emitting exactly one authoritative --vendor/--control-repo/--loop-dir.
+func buildDispatchRunArgs(agentchuteBin, vendor string, forwardGlobal []string, controlRepo, loopDir string, wrapperArgs []string) []string {
+	runArgs := []string{agentchuteBin, "run", "--vendor", vendor}
+	runArgs = append(runArgs, forwardGlobal...)
 	runArgs = append(runArgs,
-		"--control-repo", cfg.ControlRepo,
-		"--loop-dir", cfg.LoopDir,
+		"--control-repo", controlRepo,
+		"--loop-dir", loopDir,
 		"--shim-name", "ac",
 		"--",
 	)
 	runArgs = append(runArgs, wrapperArgs...)
-	return execReplace(agentchuteBin, runArgs, os.Environ())
+	return runArgs
+}
+
+// extractGlobalFlag removes `name` (in `--name value` or `--name=value` form)
+// from args, returning its last value, the remaining args, and whether found.
+func extractGlobalFlag(args []string, name string) (value string, rest []string, found bool) {
+	rest = make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == name {
+			found = true
+			if i+1 < len(args) {
+				value = args[i+1]
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(a, name+"=") {
+			found = true
+			value = a[len(name)+1:]
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return value, rest, found
 }
 
 func commandNamesSorted() []string {

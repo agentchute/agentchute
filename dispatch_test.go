@@ -59,7 +59,7 @@ func TestParseDispatch_Run(t *testing.T) {
 		{"run by alias agy", []string{"run", "agy"}, "gemini", nil, []string{}},
 		{"run with global flag (spaced)", []string{"--as", "x", "run", "codex"}, "codex", []string{"--as", "x"}, []string{}},
 		{"run with global flag (=)", []string{"--as=x", "run", "gemini", "--flag"}, "gemini", []string{"--as=x"}, []string{"--flag"}},
-		{"serve alias for run", []string{"serve", "claude"}, "claude", nil, []string{}},
+		{"run with control-repo + loop-dir globals", []string{"--control-repo", "R", "--loop-dir", "D", "run", "codex"}, "codex", []string{"--control-repo", "R", "--loop-dir", "D"}, []string{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,6 +95,7 @@ func TestParseDispatch_Errors(t *testing.T) {
 		{"run without wrapper", []string{"run"}, "ac run <wrapper>"},
 		{"run unknown wrapper", []string{"run", "nope"}, "unknown wrapper"},
 		{"global flag then nothing", []string{"--as", "x"}, "expected a command"},
+		{"serve is deferred, not a launch keyword", []string{"serve", "claude"}, "unknown subcommand"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,6 +140,57 @@ func TestCommandHandlersCoverExpected(t *testing.T) {
 	for _, name := range []string{"check", "send", "ack", "doctor", "setup", "run", "status", "gate", "boot"} {
 		if commandHandlers[name] == nil {
 			t.Errorf("commandHandlers missing %q", name)
+		}
+	}
+}
+
+func TestExtractGlobalFlag(t *testing.T) {
+	cases := []struct {
+		name      string
+		args      []string
+		flag      string
+		wantVal   string
+		wantRest  []string
+		wantFound bool
+	}{
+		{"spaced form", []string{"--as", "x", "--control-repo", "R"}, "--control-repo", "R", []string{"--as", "x"}, true},
+		{"equals form", []string{"--control-repo=R", "--as", "x"}, "--control-repo", "R", []string{"--as", "x"}, true},
+		{"absent", []string{"--as", "x"}, "--loop-dir", "", []string{"--as", "x"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			val, rest, found := extractGlobalFlag(tc.args, tc.flag)
+			if val != tc.wantVal || found != tc.wantFound {
+				t.Fatalf("got (%q,%v), want (%q,%v)", val, found, tc.wantVal, tc.wantFound)
+			}
+			if strings.Join(rest, " ") != strings.Join(tc.wantRest, " ") {
+				t.Fatalf("rest = %v, want %v", rest, tc.wantRest)
+			}
+		})
+	}
+}
+
+func TestBuildDispatchRunArgs_SingleAuthoritativePair(t *testing.T) {
+	got := buildDispatchRunArgs("/bin/agentchute", "openai", []string{"--as", "reviewer"},
+		"/repo", "/repo/.agentchute/loop", []string{"/usr/bin/codex", "resume"})
+	want := []string{
+		"/bin/agentchute", "run", "--vendor", "openai", "--as", "reviewer",
+		"--control-repo", "/repo", "--loop-dir", "/repo/.agentchute/loop", "--shim-name", "ac", "--",
+		"/usr/bin/codex", "resume",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("runArgs =\n  %v\nwant\n  %v", got, want)
+	}
+	// exactly one of each authoritative flag
+	for _, f := range []string{"--control-repo", "--loop-dir", "--vendor"} {
+		n := 0
+		for _, a := range got {
+			if a == f {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%s appears %d times, want 1", f, n)
 		}
 	}
 }
