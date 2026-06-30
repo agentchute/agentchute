@@ -32,6 +32,14 @@ import (
 // MaxOwedLedgerBytes caps the on-disk `.owed` file (refuses runaway/hand-corrupted state).
 const MaxOwedLedgerBytes = 4 << 20
 
+// ReplyOwedDeadline is the default age after which an unanswered asker obligation
+// is reported as EXPIRED — the asker-side dead-recipient signal the gate surfaces
+// (non-blocking). Aligned with the gate's StaleRegThreshold (30m) so a recipient
+// that has gone stale and one that has missed a reply deadline read as urgent on
+// the same horizon. send --ask records `now + ReplyOwedDeadline` unless overridden
+// by --reply-by.
+const ReplyOwedDeadline = 30 * time.Minute
+
 // OwedEntry is one outstanding obligation. From=asker (ledger owner),
 // To=recipient owing the reply; key = MsgID{To,From,Seq}.
 type OwedEntry struct {

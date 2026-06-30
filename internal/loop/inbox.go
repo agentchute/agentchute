@@ -491,6 +491,122 @@ func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.T
 	return dest, nil
 }
 
+// ClaimMessage is phase 1 of the two-phase consume (Gate 5): it MOVES a message
+// out of the inbox into claimedDir under its CANONICAL name (no archive
+// timestamp), so the displayed-but-not-yet-committed message survives a crash
+// between `check` (claim) and `ack` (commit) — at-least-once for the agent's
+// WORK. It mirrors WriteSeqMessage/ArchiveMessage's link-no-clobber + remove
+// discipline. Returns the claimed-copy path.
+//
+// IDEMPOTENT / DEDUP (modeled on ArchiveMessage's EEXIST/SameFile path): the
+// canonical (to,from,seq) name encodes IDENTITY, so if it already sits in
+// claimedDir — whether the same inode (a re-claim) or a fresh inode (a resend
+// that re-landed the SAME identity in the inbox while the original was already
+// claimed) — the inbox source is the SAME protocol message. We DROP it (remove
+// the source) and return the already-claimed copy rather than erroring. (This is
+// the one divergence from ArchiveMessage, which errors on a different-inode
+// EEXIST; for a claim a same-identity resend is a benign duplicate to discard.)
+func ClaimMessage(msg Message, claimedDir string) (string, error) {
+	if msg.Path == "" || msg.Filename == "" {
+		return "", fmt.Errorf("ClaimMessage: message Path and Filename required")
+	}
+	if err := ensurePrivateDir(claimedDir); err != nil {
+		return "", err
+	}
+	dest := filepath.Join(claimedDir, msg.Filename)
+	if err := linkNoClobber(msg.Path, dest); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// Same canonical identity already claimed → drop the inbox source
+			// (dedup) and keep the claimed copy.
+			if _, statErr := os.Stat(msg.Path); statErr != nil {
+				if errors.Is(statErr, os.ErrNotExist) {
+					return dest, nil // source already gone — fully claimed.
+				}
+				return "", fmt.Errorf("stat claim source %s: %w", msg.Path, statErr)
+			}
+			if err := os.Remove(msg.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("remove duplicate claim source %s: %w", msg.Path, err)
+			}
+			if err := syncDir(filepath.Dir(msg.Path)); err != nil {
+				return "", err
+			}
+			return dest, nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			// Source vanished mid-claim (a concurrent claimer) but the claimed
+			// copy may already be in place.
+			if _, statErr := os.Stat(dest); statErr == nil {
+				return dest, nil
+			}
+		}
+		return "", fmt.Errorf("claim %s -> %s: %w", msg.Path, dest, err)
+	}
+	if err := os.Remove(msg.Path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// Linked, then a concurrent claimer removed the source. The link
+			// succeeded, so the claimed copy is authoritative.
+			if err := syncDir(claimedDir); err != nil {
+				return "", err
+			}
+			return dest, nil
+		}
+		return "", fmt.Errorf("remove claimed source %s: %w", msg.Path, err)
+	}
+	if err := syncDir(filepath.Dir(msg.Path)); err != nil {
+		return "", err
+	}
+	if err := syncDir(claimedDir); err != nil {
+		return "", err
+	}
+	return dest, nil
+}
+
+// ListClaimedMessages returns the uncommitted residue in claimedDir — messages
+// CLAIMED by a prior `check` but not yet COMMITTED by `ack` (e.g. the agent
+// crashed, or hasn't run ack). It reuses parseAnyInboxName + the same
+// filename-lexicographic sort as the inbox lister, so legacy-nonce and seq files
+// share ONE path. A missing claimedDir is not an error (no residue → empty
+// slice). Unrecognized residue is skipped silently (it never came from a claim).
+func ListClaimedMessages(claimedDir string) ([]Message, error) {
+	entries, err := readInboxDir(claimedDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var msgs []Message
+	for _, entry := range entries {
+		regular, modTime, err := isRegularDirEntry(entry)
+		if err != nil {
+			return nil, err
+		}
+		if !regular {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, tempFilePrefix) {
+			continue
+		}
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		msg, ok := parseAnyInboxName(name, modTime)
+		if !ok {
+			continue
+		}
+		abs, err := filepath.Abs(filepath.Join(claimedDir, name))
+		if err != nil {
+			return nil, err
+		}
+		msg.Path = abs
+		msg.Filename = name
+		msgs = append(msgs, msg)
+	}
+	sort.Slice(msgs, func(i, j int) bool { return msgs[i].Filename < msgs[j].Filename })
+	return msgs, nil
+}
+
 func archiveAlreadyComplete(src, dest string) (ok, removeSource bool, err error) {
 	destInfo, destErr := os.Stat(dest)
 	if destErr != nil {

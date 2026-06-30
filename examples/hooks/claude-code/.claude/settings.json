@@ -42,6 +42,10 @@
           },
           {
             "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} ack --vendor anthropic --quiet"
+          },
+          {
+            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} gate --vendor anthropic --before finish --json"
           }
         ]

@@ -64,6 +64,52 @@ func (m MsgID) Equal(other MsgID) bool {
 	return m.To == other.To && m.From == other.From && m.Seq == other.Seq
 }
 
+// RefString returns the canonical, copyable in_reply_to reference for this
+// identity:
+//
+//	to-<to>_from-<from>_seq-<020d>
+//
+// Unlike Filename(), RefString spells ALL THREE components (including `to`)
+// because a reply travels to a DIFFERENT inbox than the original — the location
+// no longer encodes `to`, so it must ride in the ref. The asker records its
+// `.owed` obligation keyed on this exact tuple; the recipient echoes the ref as
+// the reply's in_reply_to; the asker's `check` parses it and discharges the
+// obligation (ClearOwed). Seq is zero-padded to 20 digits to round-trip cleanly
+// through ParseMsgIDRef.
+func (m MsgID) RefString() string {
+	return fmt.Sprintf("to-%s_from-%s_seq-%020d", m.To, m.From, m.Seq)
+}
+
+// msgIDRefRE parses the canonical in_reply_to reference emitted by RefString. It
+// is deliberately strict (both slugs match the agent_id rules; seq is exactly 20
+// digits) so a freeform threading hint never accidentally parses as a delivery
+// key and clears the wrong obligation.
+var msgIDRefRE = regexp.MustCompile(
+	`^to-(` + agentIDPattern + `)_from-(` + agentIDPattern + `)_seq-(\d{20})$`,
+)
+
+// ParseMsgIDRef inverts RefString. It returns the (To,From,Seq) identity and
+// ok=true only when s is a well-formed canonical ref with BOTH slugs passing
+// ValidateAgentID; otherwise ok=false (a non-canonical in_reply_to value — e.g.
+// a legacy RFC3339 message_id — is simply ignored by the owed flip).
+func ParseMsgIDRef(s string) (MsgID, bool) {
+	m := msgIDRefRE.FindStringSubmatch(s)
+	if m == nil {
+		return MsgID{}, false
+	}
+	if err := ValidateAgentID(m[1]); err != nil {
+		return MsgID{}, false
+	}
+	if err := ValidateAgentID(m[2]); err != nil {
+		return MsgID{}, false
+	}
+	seq, err := strconv.ParseUint(m[3], 10, 64)
+	if err != nil {
+		return MsgID{}, false
+	}
+	return MsgID{To: m[1], From: m[2], Seq: seq}, true
+}
+
 // seqFilenameRE parses the NEW-format canonical filename. It is deliberately
 // strict: seq MUST be exactly 20 digits (the zero-padded form Filename emits),
 // so a malformed/legacy name never silently parses as a seq message. Gate 4

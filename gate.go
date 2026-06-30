@@ -136,6 +136,30 @@ func cmdGate(args []string) error {
 		pendingReplies = ledger.PendingEntries()
 	}
 
+	// Asker-owned `.owed` ledger (protocol-v2 / Gate 5) — the NEW obligation
+	// surface. NON-BLOCKING for one release: RepliesPending (recipient-owned)
+	// stays the blocking authority for compat, while the asker's outstanding /
+	// expired obligations are surfaced as warnings (dead-recipient detection — an
+	// expired entry means the recipient may be dead). A corrupt `.owed` is a
+	// warning too, never fatal: gate stays read-only and must never deadlock.
+	owedOutstanding, owedExpired := 0, 0
+	owedCorrupt := false
+	if owed, oerr := loop.LoadOwedLedger(cfg, agentID); oerr != nil {
+		owedCorrupt = true
+	} else {
+		owedOutstanding = len(owed.OutstandingOwed())
+		owedExpired = len(owed.ExpiredOwed(now))
+	}
+
+	// Uncommitted two-phase-consume residue: messages CLAIMED by `check` but not
+	// yet COMMITTED by `ack`. NON-BLOCKING (gate is read-only; `ack` commits);
+	// surfaced so the operator knows work is mid-flight. A read error is ignored
+	// (best-effort, like the owed read).
+	claimedResidue := 0
+	if residue, rerr := loop.ListClaimedMessages(cfg.AgentClaimedDir(agentID)); rerr == nil {
+		claimedResidue = len(residue)
+	}
+
 	// Registration check — v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md
 	// §5.3): every phase blocks on missing registration; only commit/release
 	// additionally blocks on age-stale registration. An inbox dir that
@@ -201,6 +225,10 @@ func cmdGate(args []string) error {
 		StaleRegAge:     staleRegAge,
 		WakeStale:       wakeStaleCount > 0,
 		WakeStaleCount:  wakeStaleCount,
+		OwedOutstanding: owedOutstanding,
+		OwedExpired:     owedExpired,
+		OwedCorrupt:     owedCorrupt,
+		ClaimedResidue:  claimedResidue,
 	}
 
 	// Apply the phase predicates to build the blocking-reasons list and
@@ -212,6 +240,23 @@ func cmdGate(args []string) error {
 	// obligations), so they are NOT added to Reasons.
 	if n := loop.CountLegacyNonce(msgs); n > 0 {
 		status.Warnings = append(status.Warnings, fmt.Sprintf("%d legacy nonce-named message(s) pending drain (one-release migration window)", n))
+	}
+	// Asker-owned `.owed` obligations (protocol-v2): NON-BLOCKING dead-recipient
+	// signal. RepliesPending stays the blocking authority for one release.
+	if status.OwedOutstanding > 0 {
+		w := fmt.Sprintf("%d outstanding owed reply obligation(s) awaiting a reply", status.OwedOutstanding)
+		if status.OwedExpired > 0 {
+			w += fmt.Sprintf(" (%d past deadline — recipient may be dead)", status.OwedExpired)
+		}
+		status.Warnings = append(status.Warnings, w)
+	}
+	if status.OwedCorrupt {
+		status.Warnings = append(status.Warnings, fmt.Sprintf("owed-reply ledger is corrupt or unreadable; inspect `state/%s/owed.json`", status.Agent))
+	}
+	// Uncommitted claimed residue (two-phase consume): NON-BLOCKING — `ack`
+	// commits it (gate is read-only).
+	if status.ClaimedResidue > 0 {
+		status.Warnings = append(status.Warnings, fmt.Sprintf("%d claimed-but-unacked message(s) in .claimed; run `agentchute ack --as %s` to commit", status.ClaimedResidue, status.Agent))
 	}
 	status.Blocked = len(status.Reasons) > 0
 
@@ -254,6 +299,10 @@ type gateStatus struct {
 	StaleRegAge     string   `json:"stale_reg_age,omitempty"`
 	WakeStale       bool     `json:"wake_stale"`
 	WakeStaleCount  int      `json:"wake_stale_count,omitempty"`
+	OwedOutstanding int      `json:"owed_outstanding,omitempty"` // asker-owned obligations awaiting a reply (non-blocking)
+	OwedExpired     int      `json:"owed_expired,omitempty"`     // subset past deadline (dead-recipient signal; non-blocking)
+	OwedCorrupt     bool     `json:"owed_corrupt,omitempty"`     // .owed ledger unreadable (non-blocking warning)
+	ClaimedResidue  int      `json:"claimed_residue,omitempty"`  // messages claimed by check, not yet acked (non-blocking)
 	Blocked         bool     `json:"blocked"`
 	Reasons         []string `json:"reasons,omitempty"`
 	Warnings        []string `json:"warnings,omitempty"` // non-blocking signals (e.g., wake_stale on release)

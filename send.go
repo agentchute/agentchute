@@ -39,6 +39,7 @@ func cmdSend(args []string) error {
 
 	var fromID, toID, taskField, statusField, body, replyTo, controlRepo, loopDir string
 	var ask, jsonOut, noWake bool
+	var replyBy time.Duration
 	fs.StringVar(&fromID, "from", "", "sender agent id (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&toID, "to", "", "recipient agent id")
 	fs.StringVar(&taskField, "task", "", "short task descriptor for the message frontmatter (recommended)")
@@ -46,6 +47,7 @@ func cmdSend(args []string) error {
 	fs.StringVar(&body, "body", "", "message body markdown; if empty, body is read from stdin")
 	fs.StringVar(&replyTo, "reply-to", "", "prior message_id this is replying to (clears matching pending-reply ledger entry)")
 	fs.BoolVar(&ask, "ask", false, "set reply_required: true and prepend `## ASK` heading to the body")
+	fs.DurationVar(&replyBy, "reply-by", 0, "with --ask: override the owed-reply deadline (e.g. 1h; default 30m)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
 	fs.BoolVar(&noWake, "no-wake", false, "skip the wake poke (delivery only)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
@@ -199,6 +201,23 @@ func cmdSend(args []string) error {
 	// message_id stays emitted as a COMPAT frontmatter field (ComposeMessage)
 	// for one release; the on-wire identity is now (to,from,seq).
 	msg := loop.Message{Filename: id.Filename(), Path: filepath.Join(inboxDir, id.Filename())}
+
+	// Asker-owned obligation (protocol-v2 / Gate 5): when we ASK for a reply,
+	// record that WE are owed a reply to (to=recipient, from=us, seq) by a
+	// deadline. This is the NEW obligation authority — held ASKER-side in `.owed`
+	// (not the recipient's pending ledger), surfaced by our OWN gate as a
+	// non-blocking dead-recipient warning. The recipient echoes id.RefString() as
+	// their reply's in_reply_to; our `check` then discharges it (ClearOwed). A
+	// failure here is loud: an ask without a recorded obligation is a silent leak.
+	if ask {
+		deadline := now.Add(loop.ReplyOwedDeadline)
+		if replyBy > 0 {
+			deadline = now.Add(replyBy)
+		}
+		if err := loop.RecordOwed(cfg, fromID, id, deadline, now); err != nil {
+			return fmt.Errorf("record owed obligation for %s: %w", id.Filename(), err)
+		}
+	}
 
 	// Wake the recipient (or explicitly skip via --no-wake). Capture the
 	// outcome for the sender-side receipt regardless of success.
@@ -457,7 +476,7 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 
 func sendUsage(err error) error {
 	return fmt.Errorf(`%w
-usage: agentchute send --from <sender> --to <recipient> [--task <text>] [--status <status>] [--reply-to <msg-id>] [--ask] [--body <text>] [--json] [--no-wake] [--control-repo <path>] [--loop-dir <path>]
+usage: agentchute send --from <sender> --to <recipient> [--task <text>] [--status <status>] [--reply-to <msg-id>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--no-wake] [--control-repo <path>] [--loop-dir <path>]
 
   Ways to provide the body (pick one):
     --body "literal text"             short replies

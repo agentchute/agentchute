@@ -29,7 +29,8 @@ Commands:
   gate           lifecycle gate: block declaring done while inbox/replies are outstanding
   defer          explicitly defer a pending-reply obligation (clears the gate; notifies sender)
   send           send a message from one agent to another
-  check          consume and archive messages addressed to me
+  check          claim + display messages addressed to me (at-least-once; run ack to commit)
+  ack            commit messages claimed by check (archive the .claimed residue)
   pending        peek unread messages (read-only; safe for lifecycle hooks)
   default-id     print the contextual default agent id for a wrapper/vendor
   run            launch a wrapper under the PTY runner and local wake socket
@@ -85,6 +86,8 @@ func main() {
 		err = cmdSend(args)
 	case "check":
 		err = cmdCheck(args)
+	case "ack":
+		err = cmdAck(args)
 	case "pending":
 		err = cmdPending(args)
 	case "run":

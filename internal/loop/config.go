@@ -102,6 +102,16 @@ func (c *Config) AgentInboxDir(agentID string) string {
 	return filepath.Join(c.LoopDir, "inbox", agentID)
 }
 
+// AgentClaimedDir returns the two-phase-consume CLAIM directory for agentID, a
+// dot-prefixed child of the inbox so the normal inbox lister never descends into
+// it. `check` moves a message here (phase 1, CLAIM) under its CANONICAL name (no
+// archive timestamp); `ack` archives it (phase 2, COMMIT). A crash between the
+// two re-delivers the residue (at-least-once). Same owner-only 0700 posture as
+// the inbox; created lazily via ensurePrivateDir on the first claim.
+func (c *Config) AgentClaimedDir(agentID string) string {
+	return filepath.Join(c.AgentInboxDir(agentID), ".claimed")
+}
+
 // ArchiveDir returns the consumed-message archive directory.
 func (c *Config) ArchiveDir() string {
 	return filepath.Join(c.LoopDir, "archive")
