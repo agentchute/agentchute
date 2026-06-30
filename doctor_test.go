@@ -449,8 +449,8 @@ func TestDoctor_WarnsOnRawWrapperBypass(t *testing.T) {
 		if got.Severity == severityBlocker {
 			t.Fatalf("launch-bypass check must never be a BLOCKER; got %q", got.Severity)
 		}
-		if !strings.Contains(got.Message, "ac-gemini") {
-			t.Fatalf("warn message should name the fix `ac-gemini`: %q", got.Message)
+		if !strings.Contains(got.Message, "ac run gemini") {
+			t.Fatalf("warn message should name the fix `ac run gemini`: %q", got.Message)
 		}
 	})
 

@@ -416,29 +416,11 @@ func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions)
 		return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("%s wake does not include the runner; raw-launch bypass only applies to runner setups", wake)}
 	}
 
-	shimDir := ""
-	if opts.GlobalState != nil {
-		shimDir = opts.GlobalState.ShimDir
-	}
-	if shimDir == "" {
-		home, _ := os.UserHomeDir()
-		shimDir = filepath.Join(home, ".agentchute", "bin")
-	}
-	pathEnv := opts.PathEnv
-	if pathEnv == "" {
-		pathEnv = os.Getenv("PATH")
-	}
-
 	var reasons []string
-	// (1) Shadowing: a real wrapper binary appears before the shim dir on PATH.
-	// Gated on pathContains so "shim dir absent from PATH" (checkWrapperShadowing's
-	// domain) does not double-fire here.
-	candidates := wrapperCandidatesForAgent(agentID)
-	if pathContains(shimDir, pathEnv) && !pathIsPrioritized(shimDir, pathEnv, candidates) {
-		reasons = append(reasons, fmt.Sprintf("a real wrapper binary shadows the launcher shim in %s earlier on PATH", shimDir))
-	}
-	// (2) Provenance: the agent enrolled raw (manual / no provenance) rather than
-	// via the runner. Managed provenance (runner/hook/poller) is fine.
+	// Provenance: the agent enrolled raw (manual / no provenance) rather than via
+	// the runner. Managed provenance (runner/hook/poller) is fine. The old
+	// per-wrapper-shim shadow check is obsolete under the `ac` dispatcher — launch
+	// is `ac run <wrapper>`, and `ac`'s own PATH precedence is the ac_dispatcher check.
 	if agentID != "" {
 		if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID)); err == nil {
 			switch strings.TrimSpace(reg.LaunchedBy) {
@@ -453,12 +435,22 @@ func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions)
 	if len(reasons) == 0 {
 		return doctorCheck{Name: name, Severity: severityOK, Message: "no raw-launch bypass detected; this lane routes through the runner"}
 	}
-	fix := strings.Join(shimNamesForAgent(agentID), " / ")
 	return doctorCheck{
 		Name:     name,
 		Severity: severityWarn,
-		Message:  fmt.Sprintf("%s — relaunch via `%s` to route through the runner (advisory only; the runner stays opt-in and is never auto-activated)", strings.Join(reasons, "; "), fix),
+		Message:  fmt.Sprintf("%s — relaunch via `%s` to route through the runner (advisory only; the runner stays opt-in and is never auto-activated)", strings.Join(reasons, "; "), acRunHintForAgent(agentID)),
 	}
+}
+
+// acRunHintForAgent renders the canonical launch command for an agent id, e.g.
+// "ac run codex". Falls back to a generic hint for an unrecognized id.
+func acRunHintForAgent(agentID string) string {
+	for _, spec := range wrapperSpecs {
+		if spec.AgentID == agentID {
+			return "ac run " + spec.Key
+		}
+	}
+	return "ac run <wrapper>"
 }
 
 func shimNamesForAgent(agentID string) []string {

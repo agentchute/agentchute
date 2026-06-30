@@ -202,11 +202,11 @@ Usage:
 Scaffolds the control repo with agentchute init, stops local agentchute
 pollers/runners, clears stale live registrations and repo Herdr names so agents
 re-enroll, installs lifecycle hooks for the selected wrappers, and installs the
-launcher shims (the ac-* launchers front the runner wake path).
+single ac dispatcher (launch a wrapper with: ac run <wrapper>).
 
 runner is the only supported wake path: the tmux/herdr wake adapters were
 removed in the pull-only redesign. Agents wake by being launched through the
-ac-* runner launcher; peers deliver by writing the inbox and never poke.
+ac dispatcher (e.g. ac run codex); peers deliver by writing the inbox and never poke.
 
 Flags:
   --wake runner          install the runner wake path (the only supported value;
@@ -216,10 +216,10 @@ Flags:
   --wrappers <set>       all (detected on PATH), none, or comma list
                          (claude-code,codex,gemini-cli,grok; default all)
   --control-repo <path>  repo to initialize (default env or current git/cwd root)
-  --shim-dir <path>      launcher shim directory (default $HOME/.agentchute/bin)
-  --profile <path>       shell profile to update for launcher shims
+  --shim-dir <path>      directory for the ac dispatcher (default $HOME/.agentchute/bin)
+  --profile <path>       shell profile to update for the dispatcher PATH
   --no-profile           do not edit shell profile; print PATH hint instead
-  --aliases              also install legacy same-name wrapper aliases
+  --aliases              deprecated no-op (per-wrapper aliases are no longer installed)
   --init                 allow initializing a non-project directory
   --reset                explicitly run the runtime reset (always performed);
                          required alongside --wipe-state
@@ -574,7 +574,7 @@ func setupShimWrappers(wake string, wrappers []string) []string {
 // a single instruction.
 func printSetupCompletionGuidance(w io.Writer, wake string) {
 	_ = wake // runner is the only installable wake path; retained for call-site stability.
-	fmt.Fprintln(w, "Open one new shell, restart selected wrappers from this repo via the ac-* launcher, then run `agentchute doctor --as <id>`.")
+	fmt.Fprintln(w, "Open one new shell (or `hash -r`), restart selected wrappers via `ac run <wrapper>` (e.g. `ac run codex`), then run `agentchute doctor --as <id>`.")
 }
 
 func setupHookableWrappers(wrappers []string) []string {
