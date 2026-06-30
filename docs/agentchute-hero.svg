@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 500" font-family="ui-monospace, 'JetBrains Mono', SFMono-Regular, Menlo, monospace" role="img" aria-label="AI agents (e.g. claude, codex, gemini, grok — but any terminal-based agent works) each with its own inbox, passing Markdown messages peer to peer with no central broker.">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1E6F57"/>
+    </marker>
+  </defs>
+
+  <!-- self-contained background so it looks identical in light/dark READMEs -->
+  <rect x="0" y="0" width="920" height="500" rx="18" fill="#FAF9F5"/>
+  <rect x="0.5" y="0.5" width="919" height="499" rx="18" fill="none" stroke="#E9E7DD"/>
+
+  <!-- peer paths form a ring around an empty middle: no hub. Subtle pull cue in center text. -->
+  <g fill="none" stroke="#1E6F57" stroke-width="1.6" stroke-dasharray="2 5" stroke-linecap="round" opacity="0.85">
+    <path d="M276,150 C 392,120 540,112 648,132" marker-end="url(#ah)"/>
+    <path d="M742,182 C 772,244 772,300 756,348" marker-end="url(#ah)"/>
+    <path d="M660,398 C 536,426 320,426 284,406" marker-end="url(#ah)"/>
+    <path d="M182,356 C 166,302 166,250 174,200" marker-end="url(#ah)"/>
+  </g>
+
+  <!-- empty center: the thesis. Added subtle pull note. -->
+  <text x="460" y="240" text-anchor="middle" font-size="12.5" fill="#9A9C8C" letter-spacing="0.04em">no central broker</text>
+  <text x="460" y="258" text-anchor="middle" font-size="11" fill="#B6B8A8" letter-spacing="0.02em">agents are peers</text>
+  <text x="460" y="274" text-anchor="middle" font-size="9" fill="#8A8C7C" letter-spacing="0.02em">(recipient reads its own inbox)</text>
+
+  <!-- node: claude (top-left) - consistent green dot, 3 bars -->
+  <g transform="translate(88,96)">
+    <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
+    <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
+    <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">claude</text>
+    <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
+    <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
+    <rect x="16" y="70" width="156" height="12" rx="3" fill="#F0F1EA"/>
+    <rect x="16" y="86" width="116" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+  </g>
+
+  <!-- node: codex (top-right) - consistent -->
+  <g transform="translate(648,84)">
+    <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
+    <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
+    <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">codex</text>
+    <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
+    <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
+    <rect x="16" y="70" width="132" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+    <rect x="16" y="86" width="156" height="12" rx="3" fill="#F0F1EA"/>
+  </g>
+
+  <!-- node: gemini (bottom-right) - FIXED to consistent green dot, 3 bars -->
+  <g transform="translate(660,348)">
+    <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
+    <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
+    <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">gemini</text>
+    <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
+    <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
+    <rect x="16" y="70" width="100" height="12" rx="3" fill="#F0F1EA"/>
+    <rect x="16" y="86" width="156" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+  </g>
+
+  <!-- node: grok (bottom-left) - consistent -->
+  <g transform="translate(96,352)">
+    <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
+    <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
+    <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">grok</text>
+    <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
+    <rect x="16" y="54" width="156" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+    <rect x="16" y="70" width="138" height="12" rx="3" fill="#F0F1EA"/>
+    <rect x="16" y="86" width="156" height="12" rx="3" fill="#F0F1EA"/>
+  </g>
+
+  <!-- message in flight: claude -> codex -->
+  <g transform="translate(430,96)">
+    <rect x="0" y="0" width="74" height="46" rx="7" fill="#FFFFFF" stroke="#CFE3D8"/>
+    <rect x="0" y="0" width="4" height="46" rx="2" fill="#1E6F57"/>
+    <path d="M60,0 l14,14 h-14 z" fill="#EAF1ED"/>
+    <text x="12" y="19" font-size="7.5" fill="#8A8C7C">from-claude</text>
+    <text x="12" y="32" font-size="9.5" fill="#17180F">review PR 42</text>
+    <text x="12" y="41" font-size="7.5" fill="#C8791A">⌖ reply</text>
+  </g>
+
+  <!-- message in flight: gemini -> grok -->
+  <g transform="translate(414,392)">
+    <rect x="0" y="0" width="74" height="40" rx="7" fill="#FFFFFF" stroke="#E2E0D6"/>
+    <rect x="0" y="0" width="4" height="40" rx="2" fill="#1E6F57"/>
+    <path d="M60,0 l14,14 h-14 z" fill="#F0F1EA"/>
+    <text x="12" y="18" font-size="7.5" fill="#8A8C7C">from-gemini</text>
+    <text x="12" y="31" font-size="9.5" fill="#17180F">findings.md</text>
+  </g>
+</svg>
