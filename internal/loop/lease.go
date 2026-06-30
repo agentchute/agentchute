@@ -258,6 +258,11 @@ func AcquireServeLease(cfg *Config, id string) (*ServeLease, error) {
 // token. An absent claim (released/never-acquired) or a mismatch returns
 // ErrFenced — a holder that cannot prove ownership must stop. A corrupt claim
 // returns a wrapped parse error (can't prove ownership; fail closed).
+//
+// LOCK-FREE: it takes NO lock (just readClaim of the claim file), so it is safe
+// to call from INSIDE withAgentLock(id) without violating non-reentrancy — which
+// is exactly what AllocateSeq's in-lock fence re-check relies on to close its
+// reclaim TOCTOU.
 func VerifyFence(cfg *Config, id, token string) error {
 	if token == "" {
 		return fmt.Errorf("VerifyFence: empty token")

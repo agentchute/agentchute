@@ -96,7 +96,44 @@ func cmdGate(args []string) error {
 	}
 
 	now := time.Now().UTC()
+	status, err := evaluateGate(cfg, agentID, phase, requireConfirm, ackStaleReg, now)
+	if err != nil {
+		return err
+	}
 
+	// Emit + exit.
+	switch {
+	case codexHook == "Stop":
+		// On clear: no output, exit 0. On block: emit {"decision":"block",...}
+		// JSON, exit 0 (codex's preferred shape; main.go won't see errBlocked).
+		return emitGateCodexStop(status)
+	case geminiHook == "AfterAgent":
+		// Legacy/experimental gemini-cli AfterAgent decision envelope:
+		// {"decision":"deny","reason":"..."} on block, {"decision":"allow"}
+		// on clear. Always exits 0 (the JSON is the signal). Current shipped
+		// Gemini hooks use BeforeAgent + --json exit-code blocking instead.
+		return emitGateGeminiAfterAgent(status)
+	case jsonOut:
+		if err := emitGateJSON(status); err != nil {
+			return err
+		}
+	default:
+		emitGateText(status)
+	}
+
+	if status.Blocked {
+		return errBlocked
+	}
+	return nil
+}
+
+// evaluateGate performs the full read-only gate evaluation for `phase` and
+// returns the populated status (Reasons/Warnings/Blocked all set). It is the
+// SINGLE source of the gate's blocking decision: cmdGate emits its result, and
+// finishGateClear (used by `ack`) reuses it for the finish phase, so the two can
+// never diverge. Read-only: never refreshes registration, archives, or pokes
+// peers. `now` is injected so callers share one clock for liveness/expiry.
+func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackStaleReg bool, now time.Time) (gateStatus, error) {
 	// Inbox peek — same path boot/pending use, no side effects. `skipped`
 	// is the §11 protocol-violation surface: files that look like inbox
 	// messages but fail the §6.1 reference filename encoding. They block
@@ -114,7 +151,7 @@ func cmdGate(args []string) error {
 			inboxMissing = true
 			msgs, skipped = nil, nil
 		} else {
-			return fmt.Errorf("list inbox: %w", err)
+			return gateStatus{}, fmt.Errorf("list inbox: %w", err)
 		}
 	}
 
@@ -176,7 +213,7 @@ func cmdGate(args []string) error {
 		if os.IsNotExist(regErr) {
 			missingReg = true
 		} else {
-			return fmt.Errorf("read own registration: %w", regErr)
+			return gateStatus{}, fmt.Errorf("read own registration: %w", regErr)
 		}
 	} else if phaseChecksStaleReg(phase) {
 		// GATE 3: presence/freshness comes from `.live`, NOT registration
@@ -249,31 +286,25 @@ func cmdGate(args []string) error {
 		status.Warnings = append(status.Warnings, fmt.Sprintf("%d claimed-but-unacked message(s) in .claimed; run `agentchute ack --as %s` to commit", status.ClaimedResidue, status.Agent))
 	}
 	status.Blocked = len(status.Reasons) > 0
+	return status, nil
+}
 
-	// Emit + exit.
-	switch {
-	case codexHook == "Stop":
-		// On clear: no output, exit 0. On block: emit {"decision":"block",...}
-		// JSON, exit 0 (codex's preferred shape; main.go won't see errBlocked).
-		return emitGateCodexStop(status)
-	case geminiHook == "AfterAgent":
-		// Legacy/experimental gemini-cli AfterAgent decision envelope:
-		// {"decision":"deny","reason":"..."} on block, {"decision":"allow"}
-		// on clear. Always exits 0 (the JSON is the signal). Current shipped
-		// Gemini hooks use BeforeAgent + --json exit-code blocking instead.
-		return emitGateGeminiAfterAgent(status)
-	case jsonOut:
-		if err := emitGateJSON(status); err != nil {
-			return err
-		}
-	default:
-		emitGateText(status)
+// finishGateClear reports whether `agentchute gate --before finish` would clear,
+// using the EXACT SAME predicate (evaluateGate over the finish phase): unread
+// inbox / malformed inbox / pending-reply ledger / corrupt pending-reply ledger /
+// missing registration. Read-only.
+//
+// By construction NON-BLOCKING here (so `ack` can always commit its OWN
+// just-claimed mail once real blockers clear): uncommitted `.claimed` residue and
+// outstanding/expired `.owed` obligations are gate WARNINGS, not Reasons, so they
+// never make this return clear=false. `ack` is the caller; gate.go drives its own
+// finish decision through the same evaluateGate path, so the two cannot diverge.
+func finishGateClear(cfg *loop.Config, agentID string, now time.Time) (clear bool, reasons []string, err error) {
+	status, err := evaluateGate(cfg, agentID, gatePhaseFinish, false, false, now)
+	if err != nil {
+		return false, nil, err
 	}
-
-	if status.Blocked {
-		return errBlocked
-	}
-	return nil
+	return !status.Blocked, status.Reasons, nil
 }
 
 // gateStatus is the cross-format result of a gate evaluation.

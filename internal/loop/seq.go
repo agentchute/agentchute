@@ -216,6 +216,12 @@ func saveSeqState(cfg *Config, from, to string, st *seqState) error {
 	return atomicWriteFile(seqStatePath(cfg, from, to), data)
 }
 
+// afterOuterFenceHook, when non-nil, fires inside AllocateSeq AFTER the outer
+// (pre-lock) VerifyFence passes but BEFORE withAgentLock(from) is taken. Test-only
+// seam: lets a test inject a reclaim into the fence TOCTOU window so the in-lock
+// re-verify is exercised. nil in production.
+var afterOuterFenceHook func()
+
 // AllocateSeq returns the durable+monotonic seq for the next message from
 // `from` to `to`, write-ahead committed BEFORE the caller links the message.
 //
@@ -234,11 +240,17 @@ func saveSeqState(cfg *Config, from, to string, st *seqState) error {
 // is UNFENCED — the documented Gate-2/off-bus/degraded mode; serve supplies a
 // real token once the lease is wired in (Gate 6).
 //
-// VerifyFence runs OUTSIDE withAgentLock because withAgentLock is non-reentrant
-// (filelock_unix.go). There is a small TOCTOU between the fence read and the
-// locked persist; it is acceptable because the next heartbeat/seq-write
-// re-verifies and the reclaimer's fence wins (eventually-consistent within one
-// heartbeat interval, never a dup-WRITE).
+// FENCING (fail-closed): when serveToken != "", VerifyFence is checked TWICE —
+// once OUTSIDE withAgentLock (fast fail-closed) and AGAIN INSIDE the lock,
+// immediately after loading and before any mutate/save. The in-lock re-check
+// closes the TOCTOU a single outer check leaves open: a reclaimer
+// (AcquireServeLease) holds withAgentLock(from)==withAgentLock(id) while it writes
+// a fresh serve.claim, so it can land BETWEEN the outer check and our acquisition
+// of the lock. Without the re-check the stale (reclaimed) holder would advance and
+// persist the counter as the reclaimed id — NOT fail-closed. With it, a reclaimed
+// holder returns ErrFenced and allocates/saves NOTHING. VerifyFence is lock-free
+// (reads the claim file directly; see lease.go), so the in-lock call does NOT
+// violate withAgentLock non-reentrancy.
 func AllocateSeq(cfg *Config, from, to, idempotencyKey, serveToken string) (uint64, error) {
 	if err := ValidateAgentID(from); err != nil {
 		return 0, fmt.Errorf("from: %w", err)
@@ -253,11 +265,29 @@ func AllocateSeq(cfg *Config, from, to, idempotencyKey, serveToken string) (uint
 		}
 	}
 
+	// Test seam: fire AFTER the outer (pre-lock) fence passes but BEFORE we take
+	// withAgentLock(from). Lets a test inject a reclaim into the fence TOCTOU
+	// window so the in-lock re-verify below is exercised. nil in production.
+	if afterOuterFenceHook != nil {
+		afterOuterFenceHook()
+	}
+
 	var seq uint64
 	err := withAgentLock(cfg, from, func() error {
 		st, err := loadSeqState(cfg, from, to)
 		if err != nil {
 			return err
+		}
+
+		// FENCE RE-CHECK — closes the AllocateSeq TOCTOU. The outer VerifyFence
+		// ran OUTSIDE this lock; a reclaim could have landed since. Re-verify HERE,
+		// inside the lock, after loading and BEFORE allocating/saving (covers the
+		// re-issue path too, so a fenced holder never even returns a re-issued seq).
+		// VerifyFence is lock-free, so this does not re-enter withAgentLock.
+		if serveToken != "" {
+			if err := VerifyFence(cfg, from, serveToken); err != nil {
+				return err
+			}
 		}
 
 		// RE-ISSUE: an identical resend (same key) gets the seq it already
@@ -369,6 +399,19 @@ func SendSeqMessage(cfg *Config, from, to string, content []byte, idempotencyKey
 		return MsgID{}, err
 	}
 	id := MsgID{To: to, From: from, Seq: seq}
+	// Defense-in-depth (post-reclaim no-WRITE): re-verify the fence AFTER the
+	// counter is allocated but BEFORE the message links into the recipient inbox,
+	// so a reclaim landing in the AllocateSeq→link gap also fails closed. VerifyFence
+	// is lock-free, so this holds no lock and cannot deadlock. It NARROWS but cannot
+	// fully eliminate the link race (a reclaim can always slip between this read and
+	// the link); the durable+monotonic seq guarantees no REUSE regardless, so any
+	// residual late write lands at a seq the new owner will never re-issue. Only
+	// enforced when fenced (serveToken != ""); empty = unfenced transitional mode.
+	if serveToken != "" {
+		if err := VerifyFence(cfg, from, serveToken); err != nil {
+			return MsgID{}, err
+		}
+	}
 	if _, err := writeSeqMessage(cfg.AgentInboxDir(to), id, content); err != nil {
 		return MsgID{}, err
 	}

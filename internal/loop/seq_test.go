@@ -276,6 +276,61 @@ func TestSeqReuseDifferentContentDropped(t *testing.T) {
 	}
 }
 
+// TestAllocateSeqInLockFenceClosesTOCTOU proves the in-lock fence re-check closes
+// the seq-allocation TOCTOU (HIGH fix). The OUTER (pre-lock) VerifyFence passes
+// with the still-valid lease token; THEN a reclaim writes a fresh token (as
+// AcquireServeLease's reclaim would, while holding the agent lock); THEN the stale
+// holder takes the lock and the IN-LOCK re-verify must fail it closed (ErrFenced),
+// allocating and writing NOTHING. Without the in-lock re-check the stale holder
+// would advance the counter and land a message as the reclaimed id.
+func TestAllocateSeqInLockFenceClosesTOCTOU(t *testing.T) {
+	cfg := newSeqTestConfig(t)
+	mkInbox(t, cfg, "bob")
+
+	lease, err := AcquireServeLease(cfg, "alice")
+	if err != nil {
+		t.Fatalf("AcquireServeLease: %v", err)
+	}
+
+	// Inject the reclaim INTO the TOCTOU window: the hook fires after the outer
+	// fence passes (token still valid) but before the lock is taken. We overwrite
+	// the claim with a NEW token exactly once — simulating a completed reclaim by a
+	// new owner — so the in-lock re-verify sees a mismatch.
+	fired := false
+	prev := afterOuterFenceHook
+	afterOuterFenceHook = func() {
+		if fired {
+			return // only perturb the first (TOCTOU) allocation.
+		}
+		fired = true
+		overwriteClaimToken(t, cfg, "alice", "RECLAIMED-BY-NEW-OWNER")
+	}
+	t.Cleanup(func() { afterOuterFenceHook = prev })
+
+	// The stale holder passed the OUTER check; the in-lock re-check must catch the
+	// mid-window reclaim and fail closed.
+	_, err = SendSeqMessage(cfg, "alice", "bob", []byte("stale write"), "k1", lease.Token)
+	if err != ErrFenced {
+		t.Fatalf("SendSeqMessage after mid-window reclaim err = %v, want ErrFenced", err)
+	}
+	if !fired {
+		t.Fatal("afterOuterFenceHook never fired; the outer fence did not pass as expected")
+	}
+
+	// Fail-closed: NO message landed and the counter did NOT advance — the new
+	// owner's first allocation is still seq=1.
+	if n := countInboxBody(t, cfg, "bob", "stale write"); n != 0 {
+		t.Fatalf("fenced send wrote a message; copies = %d, want 0", n)
+	}
+	next, err := AllocateSeq(cfg, "alice", "bob", "k2", "RECLAIMED-BY-NEW-OWNER")
+	if err != nil {
+		t.Fatalf("AllocateSeq with new owner's token: %v", err)
+	}
+	if next != 1 {
+		t.Fatalf("seq after fenced abort = %d, want 1 (no advance)", next)
+	}
+}
+
 // TestAllocateSeqConcurrentDistinct: concurrent same-(from,to) sends get
 // DISTINCT, monotonic seqs (the per-agent lock serializes the allocation).
 func TestAllocateSeqConcurrentDistinct(t *testing.T) {
