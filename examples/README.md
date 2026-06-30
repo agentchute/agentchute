@@ -1,35 +1,38 @@
 # Examples
 
-Three concrete walkthroughs. Pick the one that matches your setup.
+Per-wrapper hook templates, plus pointers for running a pool. The fastest path is the
+[root README quickstart](../README.md) and the spec, [`AGENTCHUTE.md`](../AGENTCHUTE.md).
 
-| File | Setup |
+## Hook templates
+
+[`hooks/`](hooks/) holds the per-wrapper lifecycle hook templates the installer wires for
+you on `agentchute setup`. They run `boot` / `pending` / `gate` at the right lifecycle
+points so you don't call them by hand:
+
+| Wrapper | Template |
 |---|---|
-| [`quickstart.sh`](quickstart.sh) | Two agents in two tmux panes; minimum viable. |
-| [`three-agents.sh`](three-agents.sh) | Three agents (Claude Code + codex + gemini-cli); shows `register --vendor` per origin and how directly-addressed messages work. |
-| [`with-watchdog.sh`](with-watchdog.sh) | Two agents + a watchdog daemon. Shows what to do for 24/7 setups. |
+| Claude Code | [`hooks/claude-code/.claude/settings.json`](hooks/claude-code/.claude/settings.json) |
+| codex CLI | [`hooks/codex/.codex/hooks.json`](hooks/codex/.codex/hooks.json) |
+| Gemini CLI | [`hooks/gemini/.gemini/settings.json`](hooks/gemini/.gemini/settings.json) |
+| Grok CLI | hookless — uses the `ac-grok` launcher / `agentchute run` for startup + wake |
 
-Each script is annotated bash. Read them top-to-bottom; they're meant as documentation more than turnkey installers.
+## Running a pool (pull-only)
 
-## What you'll need before any example
-
-- `tmux` running.
-- `agentchute` on your `$PATH` (`go install github.com/agentchute/agentchute@latest` or download a release binary).
-- A repo (anywhere) where you want agentchute to live. The "control repo" is the one with `AGENTCHUTE.md` at its root.
-- The `AGENTCHUTE.md` spec at the repo root. Grab it from the agentchute repo's release page or `curl` it from main.
-
-## Vendor namespace
-
-Examples use `.myorg/loop/` as the vendor namespace placeholder. Replace `myorg` with your own owned namespace (e.g., your domain shorthand). The vendor dotdir avoids collision if you ever run multiple agentchute implementations side-by-side in the same repo.
-
-## Tmux pane targeting
-
-Find your pane id with:
+Coordination is **pull-only**: senders write to an inbox and never poke a recipient. Each
+agent runs under its `ac-*` launcher (`agentchute run`), a per-agent supervisor that polls
+the agent's own inbox and injects `check inbox`. There is no tmux/herdr wake and no
+watchdog — those were removed in 0.8.
 
 ```sh
-tmux list-panes -F '#{pane_index} #{pane_id} #{pane_current_command}'
-```
+# install + wire the repo once
+curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
+agentchute setup --wake runner --wrappers all --yes
 
-The `pane_id` (looks like `%0`, `%1`) is what goes in `--wake-target` (when paired with `--wake-method tmux`). Or use `session:window.pane` form if you prefer named addressing.
+# start each agent in its own terminal, with a pinned id
+AGENTCHUTE_AGENT_ID=claude-code ac-claude
+AGENTCHUTE_AGENT_ID=codex       ac-codex
+agentchute doctor --as codex            # sanity-check
+```
 
 ## When in doubt
 

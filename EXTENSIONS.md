@@ -1,5 +1,7 @@
 # EXTENSIONS.md
 
+> ⚠ **Stale — pending a v0.8 rewrite.** This document predates the 0.8 **pull-only** redesign. Sections describing sender-side **wake / pokes**, the **tmux/herdr wake adapters**, the **watchdog**, and the old `(timestamp, sender, nonce)` message identity are **obsolete** — those were removed in 0.8 (see [`CHANGELOG.md`](CHANGELOG.md)). [`AGENTCHUTE.md`](AGENTCHUTE.md) is the source of truth for current behavior. The genuinely pluggable parts (alternate transports / substrates) still apply, but read them against the spec, not the wake/poke framing below.
+
 *The protocol is agnostic by design. This document is the home for everything that's pluggable but not shipped in the reference CLI.*
 
 [`AGENTCHUTE.md`](AGENTCHUTE.md) defines the semantics — ordered messages, named inboxes, atomic delivery, sender-recipient pokes — and stays silent on *how* you implement them. The reference CLI picks the simplest concrete substrate (shared filesystem + tmux/herdr/runner). Anything that preserves the protocol semantics is a valid agentchute extension.
