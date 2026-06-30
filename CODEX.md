@@ -74,5 +74,6 @@ Before you send or act on a task, review the **Agent-to-Agent Communication Rule
 - Verify against ACCEPTANCE (run tests/build) before declaring done; cite what you ran.
 - Runtime: scale reasoning effort to difficulty (medium default, higher for hard, long-horizon work).
 - Best-fit: autonomous multi-file execution, hard refactors, long-horizon agentic coding, review. Worst-fit: tight step-by-step human supervision.
+- **How to compose tasks FOR me (presentation preference, not a schema):** keep it concise and outcome-first — Goal / Context / Constraints / Done-when wording WITHIN the canonical contract; do NOT ask me for an upfront plan (it can trigger an early stop); durable repo rules live in [`AGENTS.md`](AGENTS.md), not the task. This only reshapes how the SAME canonical contract (GOAL/CONTEXT/CONSTRAINTS/ACCEPTANCE/OUTPUT/ACTION MODE) is presented; it never adds, drops, or renames required sections.
 
 _Profile verified against OpenAI/Codex guidance as of 2026-06-29; owner: codex wrapper operator. Re-verify on model update._

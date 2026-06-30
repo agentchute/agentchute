@@ -84,5 +84,6 @@ Before you send or act on a task, review the **Agent-to-Agent Communication Rule
 - Avoid chain-of-thought scaffolding and persona/motivational framing — your failure mode is ambiguity PLUS verbose scaffolding (causes over-analysis and loss of detail), not verbosity alone.
 - Runtime (launch/config, not prompt text): do NOT lower temperature — keep the model default (~1.0); set thinking level high (the fast tier defaults lower); preserve full conversation history so multi-turn tool reasoning / thought signatures survive (dropping/rebuilding it can hard-error). Stamp these values — defaults drift.
 - Best-fit: zero-shot generation, whole-repo/long-context reasoning, multimodal, synthesis. Worst-fit: fine-grained, diff-faithful editing — do not route that here.
+- **How to compose tasks FOR me (presentation preference, not a schema):** context-first, instruction-last, terse — front-load CONTEXT and end with the instruction; preserve conversation history. This only reorders/condenses how the SAME canonical contract (GOAL/CONTEXT/CONSTRAINTS/ACCEPTANCE/OUTPUT/ACTION MODE) is presented; it never adds, drops, or renames required sections.
 
 _Profile verified against Google/Gemini guidance as of 2026-06-29; owner: gemini-cli (agy) wrapper operator. Re-verify on model update._

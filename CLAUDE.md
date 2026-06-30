@@ -67,5 +67,6 @@ Before you send or act on a task, review the **Agent-to-Agent Communication Rule
 - Do not let a reasoning invitation become scope expansion — ACCEPTANCE is the stop line.
 - Runtime (launch/config, not prompt text): raise effort / extended thinking for hard reasoning, architecture, or review; normal effort for well-specified slices.
 - Best-fit: hard reasoning, novel design, synthesis, final review. Worst-fit (over-qualified): rote edits a worker handles. Tier note: larger/smaller models of this family share this profile — route hard work to the larger tier, well-specified execution to the smaller.
+- **How to compose tasks FOR me (presentation preference, not a schema):** rich structure is welcome — explicit sections / XML tags and reasoning scaffolds land well; don't over-trim. This only reshapes how the SAME canonical contract (GOAL/CONTEXT/CONSTRAINTS/ACCEPTANCE/OUTPUT/ACTION MODE) is presented; it never adds, drops, or renames required sections. (v2 runtime: `serve` is the default launcher for Claude too — there is no reliable native self-poll loop; the runner polls my own inbox and injects the `check inbox` cue.)
 
 _Profile verified against Anthropic/Claude guidance as of 2026-06-29; owner: claude-code wrapper operator. Re-verify on model update._
