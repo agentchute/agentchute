@@ -130,27 +130,3 @@ func TestRegistrationReachable_HerdrHandleMismatchReachable(t *testing.T) {
 		t.Fatal("herdr registration with handle≠name reported unreachable through the wired live hook; the live probe must resolve by name")
 	}
 }
-
-// TestRecipientLiveness_HerdrHandleMismatchReachableViaWake exercises the
-// cache-miss live FALLBACK in evaluateRecipientLiveness: a herdr registration
-// with NO cached reachability fact (ReachableAt absent) whose handle differs
-// from its bound name must still be judged live via the live wake probe
-// (Via="wake"), not fall through to "unreachable". Before the fix the live
-// probe used `agent get <name>` (not_found for the "agy" case) so liveness fell
-// through to a stale-poller verdict; after the fix it resolves by name.
-func TestRecipientLiveness_HerdrHandleMismatchReachableViaWake(t *testing.T) {
-	root := t.TempDir()
-	cfg := reachTestCfg(t, root)
-
-	renameLog := filepath.Join(t.TempDir(), "rename.log")
-	withFakeHerdrList(t, renameLog, map[string]string{"gemini-cli-agentchute": "w3:p7"})
-
-	// A herdr reg on this host with NO ReachableAt cache (writeHerdrReg never
-	// sets it) → the cache fast-path misses and we fall through to the live probe.
-	writeHerdrReg(t, cfg, "gemini-cli-agentchute", "gemini-cli-agentchute")
-
-	live := evaluateRecipientLiveness(cfg, "gemini-cli-agentchute", time.Now())
-	if !live.OK || live.Via != "wake" {
-		t.Fatalf("recipient liveness = {OK:%v Via:%q Message:%q}, want OK via live wake probe (handle≠name resolved by name)", live.OK, live.Via, live.Message)
-	}
-}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -11,14 +10,6 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
-)
-
-// Default thresholds for cooperative waking, matching the watchdog
-// defaults (AGENTCHUTE.md §10.1). These are NOT configurable via `check`
-// flags — operators who need tuning run the dedicated watchdog.
-const (
-	cooperativeStaleThreshold      = 5 * time.Minute
-	cooperativeMessageAgeThreshold = 90 * time.Second
 )
 
 // recordReplyObligationFn is the seam check uses to record a pending-reply
@@ -37,7 +28,7 @@ func cmdCheck(args []string) error {
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
-	fs.BoolVar(&noArchive, "no-archive", false, "dry run: suppress inbox/cooperation side effects (no archive, quarantine, corrective sends, or cooperative pokes); own last_seen still updates")
+	fs.BoolVar(&noArchive, "no-archive", false, "dry run: suppress inbox side effects (no archive, quarantine, or corrective sends); own last_seen still updates")
 	fs.IntVar(&limit, "limit", 0, "process at most N messages this turn (0 = no limit)")
 
 	if err := fs.Parse(args); err != nil {
@@ -74,8 +65,8 @@ func cmdCheck(args []string) error {
 
 	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse to operate
 	// for an unregistered agent. check is an active agent command — it
-	// archives, quarantines, sends corrective notify, and runs cooperative
-	// waking; all of those imply the agent IS enrolled in the pool.
+	// archives, quarantines, and sends corrective notify; all of those
+	// imply the agent IS enrolled in the pool.
 	selfPath := cfg.AgentRegistrationPath(agentID)
 	selfExists := false
 	if _, err := os.Stat(selfPath); err == nil {
@@ -140,11 +131,6 @@ func cmdCheck(args []string) error {
 	}
 	if len(msgs) == 0 {
 		fmt.Println("(inbox empty)")
-		// Cooperation still runs even when our inbox is empty —
-		// see AGENTCHUTE.md §10.2 and codex's chunk-2 review.
-		if !noArchive {
-			runCooperativeWaking(cfg, agentID, time.Now().UTC())
-		}
 		return nil
 	}
 
@@ -232,42 +218,7 @@ func cmdCheck(args []string) error {
 		}
 	}
 
-	// §6.3 step 5 / §10.2: cooperative waking. After own-inbox work and
-	// timestamp updates, contribute best-effort liveness for peers that are
-	// stale with unread mail and reachable from this host. --no-archive
-	// suppresses inbox/cooperation side effects so dry-runs do not move,
-	// quarantine, or poke anything (own last_seen still updates).
-	// `now` is re-taken here in case the inbox-processing loop ran long
-	// enough to make the earlier timestamp stale for threshold checks.
-	if !noArchive {
-		runCooperativeWaking(cfg, agentID, time.Now().UTC())
-	}
-
 	return nil
-}
-
-// runCooperativeWaking performs AGENTCHUTE.md §10.2: every recipient flow
-// MAY run the §10.1 watchdog algorithm opportunistically during its
-// `check` cycle. The reference CLI always does. Per-peer errors warn or
-// log; cooperation MUST NOT make check exit nonzero. The message has
-// already been delivered to the recipient's inbox before this call (in
-// this reference CLI, via the shared filesystem).
-func runCooperativeWaking(cfg *loop.Config, agentID string, now time.Time) {
-	localHost, _ := os.Hostname() // empty = no host filter; tolerable
-
-	opts := watchdogOptions{
-		AgentID:             agentID,
-		LocalHost:           localHost,
-		StaleThreshold:      cooperativeStaleThreshold,
-		MessageAgeThreshold: cooperativeMessageAgeThreshold,
-		Now:                 func() time.Time { return now },
-	}
-	// Errors from runLivenessSweep are already logged per-peer via the
-	// watchdog log; the outer return is informational and only fires on a
-	// catastrophic agents-dir read failure (which the lenient iterator
-	// already surfaces as a per-file error line). Swallow to keep check
-	// non-fatal per §10.2 contract.
-	_ = runLivenessSweep(context.Background(), cfg, opts, now)
 }
 
 func checkUsage(err error) error {

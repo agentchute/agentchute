@@ -198,13 +198,12 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 			checkLedgerState(cfg, agentID),
 			checkWakeTargetValidity(cfg, agentID),
 			checkRunnerSocketStaleness(cfg, agentID),
-			checkRecipientLiveness(cfg, agentID, opts.Now),
 		)
 	} else {
 		checks = append(checks, doctorCheck{
 			Name:     "agent_specific_checks",
 			Severity: severitySkip,
-			Message:  "no --as / $AGENTCHUTE_AGENT_ID; skipped per-agent checks (registration freshness, inbox state, ledger state, wake target validity, recipient liveness)",
+			Message:  "no --as / $AGENTCHUTE_AGENT_ID; skipped per-agent checks (registration freshness, inbox state, ledger state, wake target validity)",
 		})
 	}
 
@@ -806,19 +805,6 @@ func checkWakeTargetValidity(cfg *loop.Config, agentID string) doctorCheck {
 	default:
 		return doctorCheck{Name: "wake_target_validity", Severity: severityWarn, Message: fmt.Sprintf("wake_method=%s unknown to v0.1 reference CLI; senders cannot poke this agent unless an adapter is provided externally", method)}
 	}
-}
-
-func checkRecipientLiveness(cfg *loop.Config, agentID string, now time.Time) doctorCheck {
-	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
-	if err != nil {
-		return doctorCheck{Name: "recipient_liveness", Severity: severitySkip, Message: "registration unreadable (see self_registration)"}
-	}
-	_ = reg
-	liveness := evaluateRecipientLiveness(cfg, agentID, now)
-	if liveness.OK {
-		return doctorCheck{Name: "recipient_liveness", Severity: severityOK, Message: liveness.Message}
-	}
-	return doctorCheck{Name: "recipient_liveness", Severity: severityBlocker, Message: liveness.Message}
 }
 
 // checkRunnerSocketStaleness is the append-only new check for C lane

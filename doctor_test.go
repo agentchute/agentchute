@@ -548,49 +548,6 @@ func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 	}
 }
 
-func TestDoctorRecipientLivenessBlocksWithoutWakeOrPoller(t *testing.T) {
-	cfg := newDoctorCfg(t)
-	reg := &loop.Registration{
-		AgentID:     "claude-code",
-		Vendor:      "anthropic",
-		ControlRepo: cfg.ControlRepo,
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code"), reg); err != nil {
-		t.Fatal(err)
-	}
-	got := checkRecipientLiveness(cfg, "claude-code", time.Now().UTC())
-	if got.Severity != severityBlocker {
-		t.Fatalf("recipient_liveness severity = %q, want BLOCKER", got.Severity)
-	}
-	if !strings.Contains(got.Message, "poller ensure") {
-		t.Errorf("message should include remediation command: %q", got.Message)
-	}
-}
-
-func TestDoctorRecipientLivenessAcceptsFreshLaunchEnabledPoller(t *testing.T) {
-	cfg := newDoctorCfg(t)
-	reg := &loop.Registration{
-		AgentID:     "claude-code",
-		Vendor:      "anthropic",
-		ControlRepo: cfg.ControlRepo,
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code"), reg); err != nil {
-		t.Fatal(err)
-	}
-	mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
-	got := checkRecipientLiveness(cfg, "claude-code", time.Now().UTC())
-	if got.Severity != severityOK {
-		t.Fatalf("recipient_liveness severity = %q, want OK (%s)", got.Severity, got.Message)
-	}
-	if !strings.Contains(got.Message, "fresh poller heartbeat") {
-		t.Errorf("message should mention fresh heartbeat: %q", got.Message)
-	}
-}
-
 // v0.1.3 hotfix (codex review on d73d4dd): AGENTCHUTE_BIN must point at
 // a regular, executable file. A directory at that path was previously
 // accepted as "OK" because the check was just os.Stat — hooks would

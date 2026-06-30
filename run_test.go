@@ -352,40 +352,6 @@ func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 	}
 }
 
-func TestRunnerWakeSatisfiesRecipientLiveness(t *testing.T) {
-	cfg := newDoctorCfg(t)
-	if err := loop.EnsurePrivateDir(cfg.AgentStateDir("codex")); err != nil {
-		t.Fatal(err)
-	}
-	socketPath := cfg.RunnerSocketPath("codex")
-	startFakeRunnerPingSocket(t, socketPath, loop.RunnerPingResponse{
-		OK:        true,
-		RunnerPID: os.Getpid(),
-		Status:    "active",
-	})
-
-	reg := &loop.Registration{
-		AgentID:     "codex",
-		Vendor:      "openai",
-		ControlRepo: cfg.ControlRepo,
-		Host:        localHostname(),
-		WakeMethod:  loop.RunnerWakeMethod,
-		WakeTarget:  loop.RunnerWakeTarget(socketPath),
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), reg); err != nil {
-		t.Fatal(err)
-	}
-	liveness := evaluateRecipientLiveness(cfg, "codex", time.Now().UTC())
-	if !liveness.OK {
-		t.Fatalf("liveness OK = false, message=%q", liveness.Message)
-	}
-	if liveness.Via != "wake" {
-		t.Fatalf("liveness Via = %q, want wake", liveness.Via)
-	}
-}
-
 func TestClearStaleRunnerWakeTargetsDoesNotClearTransientPingMiss(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})

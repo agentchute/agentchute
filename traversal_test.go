@@ -76,14 +76,6 @@ func TestCommandsRejectPathTraversalAgentIDs(t *testing.T) {
 				}
 			})
 		})
-		t.Run("watchdog/"+id, func(t *testing.T) {
-			withCwd(t, root, func() {
-				args := []string{"--as", id, "--once"}
-				if err := cmdWatchdog(args); err == nil {
-					t.Fatalf("expected rejection of --as %q, got nil", id)
-				}
-			})
-		})
 	}
 
 	// Confirm the loop tree itself stays bounded: only files written by the

@@ -43,7 +43,6 @@ Commands:
   status         print registry overview, inbox depths, and last_seen freshness
   doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, wake target
   watch          recipient-side persistent watcher: fire OS notification / print / exec on new mail
-  watchdog       run liveness daemon (§10.1); pokes peers with stale inboxes
   presenced      OPT-IN host presence daemon: discover + auto-enroll high-confidence wrappers (off by default; never auto-started)
   hooks          install canonical hook templates into .claude/ / .codex/ / .gemini/ (v0.2.1)
 
@@ -112,8 +111,6 @@ func main() {
 		err = cmdDoctor(args)
 	case "watch":
 		err = cmdWatch(args)
-	case "watchdog":
-		err = cmdWatchdog(args)
 	case "presenced":
 		err = cmdPresenced(args)
 	case "hooks":

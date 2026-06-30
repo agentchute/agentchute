@@ -16,9 +16,6 @@ import (
 
 // StaleRegThreshold is the age beyond which `gate --before commit` (and
 // stronger phases that wrap it) flag the agent's own registration as stale.
-// Mirrors the watchdog default in check.go (cooperativeStaleThreshold uses
-// the same 5m for peer activity, but a registration is "stale" at a longer
-// 30m grace).
 const StaleRegThreshold = 30 * time.Minute
 
 // Lifecycle phases recognized by `gate --before <phase>`. Order matters
@@ -43,7 +40,7 @@ const (
 // signal) when an obligation remains. Wrapper-specific hook-envelope modes
 // return exit 0 and signal block/allow in their JSON payload.
 //
-// Spec: AGENTCHUTE.md §6 (messaging obligations), §9 (liveness), §10 (watchdog).
+// Spec: AGENTCHUTE.md §6 (messaging obligations).
 func cmdGate(args []string) error {
 	fs := flag.NewFlagSet("gate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -161,14 +158,6 @@ func cmdGate(args []string) error {
 			staleReg = true
 		}
 	}
-	livenessOK := false
-	livenessMessage := ""
-	if !missingReg {
-		liveness := evaluateRecipientLiveness(cfg, agentID, now)
-		livenessOK = liveness.OK
-		livenessMessage = liveness.Message
-	}
-
 	// Wake-stale — release-phase warn surface (per the watchdog liveness model, AGENTCHUTE.md §10).
 	// Reads peer registrations and counts those that declare a wake_method
 	// (pokable) but whose last_seen exceeds StaleRegThreshold. A non-zero
@@ -195,8 +184,6 @@ func cmdGate(args []string) error {
 		StaleRegAge:     regAge.String(),
 		WakeStale:       wakeStaleCount > 0,
 		WakeStaleCount:  wakeStaleCount,
-		LivenessOK:      livenessOK,
-		LivenessMessage: livenessMessage,
 	}
 
 	// Apply the phase predicates to build the blocking-reasons list and
@@ -243,8 +230,6 @@ type gateStatus struct {
 	StaleRegAge     string   `json:"stale_reg_age,omitempty"`
 	WakeStale       bool     `json:"wake_stale"`
 	WakeStaleCount  int      `json:"wake_stale_count,omitempty"`
-	LivenessOK      bool     `json:"liveness_ok"`
-	LivenessMessage string   `json:"liveness_message,omitempty"`
 	Blocked         bool     `json:"blocked"`
 	Reasons         []string `json:"reasons,omitempty"`
 	Warnings        []string `json:"warnings,omitempty"` // non-blocking signals (e.g., wake_stale on release)
@@ -299,27 +284,6 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 	// itself to the pool; it can neither commit, finish, nor continue.
 	if s.MissingReg {
 		reasons = append(reasons, "not registered (run `agentchute boot --as <id> --vendor <vendor>` first; §5.3)")
-	}
-	// WI-4 Fix 1: liveness blocks only when the agent OWES work. An agent
-	// owes work if it has unread direct mail, malformed inbox files (a §11
-	// quarantine obligation), or pending-reply ledger entries — in those
-	// cases it must stay reachable, so dead liveness is a hard block. When
-	// nothing is owed (clean inbox + no obligations + registered), a dead
-	// wake target/poller must NOT block finish/continue: it downgrades to a
-	// non-blocking warning (still surfaced in message/JSON). This closes the
-	// documented dead-poller finish-gate deadlock.
-	//
-	// commit/release/consensus keep the original always-block semantics so a
-	// publishing agent still proves reachability before it acts on the bus.
-	owedWork := s.UnreadCount > 0 || s.MalformedCount > 0 || s.RepliesPending > 0 || s.LedgerCorrupt
-	if !s.MissingReg && !s.LivenessOK {
-		livenessOwedOptional := (phase == gatePhaseFinish || phase == gatePhaseContinue) && !owedWork
-		msg := fmt.Sprintf("recipient liveness not proven (%s)", s.LivenessMessage)
-		if livenessOwedOptional {
-			warnings = append(warnings, msg)
-		} else {
-			reasons = append(reasons, msg)
-		}
 	}
 
 	// commit + release additionally block on age-stale registration unless
@@ -459,7 +423,7 @@ named phase. Read-only: never refreshes registration, never archives,
 never pokes peers.
 
 Phases:
-  consensus  blocks on outstanding work + unproven recipient liveness
+  consensus  blocks on outstanding work
   commit     same as consensus + flags stale registration (> 30m)
   release    same as commit + warns on wake_stale peer registrations
   finish     blocks on outstanding work
@@ -474,11 +438,7 @@ Outstanding work / trust blockers (all phases):
   - corrupt or unreadable pending-reply ledger state
   - missing self-registration
 
-All phases block if this agent is not registered. Unproven recipient liveness
-(no reachable wake target, active session heartbeat, or launch-enabled poller
-heartbeat) blocks consensus/commit/release; on finish/continue it blocks only
-when work is owed (unread mail, malformed files, pending replies, or a corrupt
-ledger) and otherwise only WARNS (does not block).
+All phases block if this agent is not registered.
 
 Exit codes:
   0  clear to proceed; also used by hook-envelope modes whose JSON is the signal

@@ -215,6 +215,26 @@ func reproveTmuxWake(reg *loop.Registration) (reachable, rebound bool, newTarget
 	return false, false, newTarget, fmt.Sprintf("tmux pane %q not reachable", target)
 }
 
+// registrationHasReachableWake reports whether reg declares a wake target that
+// is reachable from THIS host. Relocated here from the deleted recipient_liveness.go
+// (Gate 1) because cmdPollerEnsure still consults it; it rides the same
+// recipient-bound loop.RegistrationReachable dispatcher (runner does its
+// owned-check before any dial; an unknown method has no adapter and reports
+// unreachable). Cross-host registrations are short-circuited unreachable.
+func registrationHasReachableWake(cfg *loop.Config, reg *loop.Registration) bool {
+	if reg == nil {
+		return false
+	}
+	if strings.TrimSpace(reg.WakeTarget) == "" {
+		return false
+	}
+	localHost, _ := os.Hostname()
+	if strings.TrimSpace(reg.Host) != "" && strings.TrimSpace(localHost) != "" && reg.Host != localHost {
+		return false
+	}
+	return loop.RegistrationReachable(cfg, reg, time.Second)
+}
+
 // truncateReachabilityError bounds the diagnostic stored in the registration.
 func truncateReachabilityError(s string) string {
 	s = strings.TrimSpace(s)
