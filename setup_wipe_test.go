@@ -480,3 +480,16 @@ func TestSetupCommandMatchesRunnerPool_SiblingPrefixRejected(t *testing.T) {
 		t.Fatal("a non-agentchute process must not match")
 	}
 }
+
+// Security (codex Gate-3 re-review): --control-repo/--loop-dir appearing in the
+// WRAPPER argv (after the `--` separator) must NOT attribute a foreign runner to
+// this pool. setupCommandFlagValue stops at `--`.
+func TestSetupCommandMatchesRunnerPool_IgnoresWrapperArgsAfterDashDash(t *testing.T) {
+	cfg := &loop.Config{ControlRepo: "/tmp/pool", LoopDir: "/tmp/pool/.agentchute/loop"}
+	// Foreign runner for /tmp/other; its launched wrapper happens to take a
+	// --control-repo /tmp/pool of its own — that is AFTER `--` and must be ignored.
+	foreign := "/usr/local/bin/agentchute run --vendor openai --control-repo /tmp/other --loop-dir /tmp/other/.agentchute/loop -- /usr/bin/codex --control-repo /tmp/pool --loop-dir /tmp/pool/.agentchute/loop"
+	if setupCommandMatchesRunnerPool(foreign, cfg) {
+		t.Fatal("--control-repo/--loop-dir in wrapper argv (after --) must NOT attribute to this pool")
+	}
+}

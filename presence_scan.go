@@ -70,12 +70,13 @@ var (
 const processAncestryDepthLimit = 32
 
 // processAncestryHasEnrolledRunner reports whether any ANCESTOR (walking ppid
-// from pid's parent upward) is an enrolled runner for this pool: a pid recorded
-// as a live runner.json RunnerPID (runnerPIDs), or a process whose cmdline is an
-// `agentchute run` for THIS pool. A vendor wrapper launched by the runner
-// (agentchute run -> codex -> node -> vendor codex) is therefore NOT a raw,
-// unenrolled bypass — it is the runner's child. Best-effort + cheap: bounded
-// depth, cycle-guarded, and only invoked for an in-pool wrapper process.
+// from pid's parent upward) is an enrolled runner for this pool — defined as a
+// LIVE, SAME-USER process whose cmdline is an `agentchute run` for THIS pool.
+// (Recorded runner.json pids are deliberately NOT trusted on their own: a stale
+// pid can be reused.) A vendor wrapper launched by the runner (agentchute run ->
+// codex -> node -> vendor codex) is therefore NOT a raw, unenrolled bypass — it
+// is the runner's child. Best-effort + cheap: bounded depth, cycle-guarded, and
+// only invoked for an in-pool wrapper process.
 func processAncestryHasEnrolledRunner(pid int, cfg *loop.Config) bool {
 	if pid <= 0 {
 		return false

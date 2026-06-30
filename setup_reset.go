@@ -330,10 +330,19 @@ func setupCommandMatchesPool(cmdline, subcommand string, cfg *loop.Config) bool 
 	return false
 }
 
-// setupCommandFlagValue returns the value of `flag` in a process cmdline,
-// handling both `--flag value` and `--flag=value` forms; "" if absent.
+// setupCommandFlagValue returns the value of `flag` among agentchute's OWN
+// run/poller flags, handling both `--flag value` and `--flag=value` forms; ""
+// if absent. It stops at the `--` separator so wrapper argv (e.g. a launched
+// codex with its own `--control-repo`) can never be mistaken for this pool's
+// flags — otherwise a foreign runner could be falsely attributed and SIGTERM'd.
 func setupCommandFlagValue(cmdline, flag string) string {
 	fields := strings.Fields(cmdline)
+	for i, f := range fields {
+		if f == "--" {
+			fields = fields[:i] // ignore wrapper argv after the separator
+			break
+		}
+	}
 	for i, f := range fields {
 		if f == flag && i+1 < len(fields) {
 			return fields[i+1]
