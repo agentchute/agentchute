@@ -74,6 +74,15 @@ func mustWrite(t *testing.T, path string, data []byte) {
 	}
 }
 
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 // mustWriteAgedInbox writes an inbox file and back-dates its filesystem mtime
 // to `arrival`. The watchdog now derives message age from mtime (arrival on
 // this host), not the sender-encoded filename timestamp, so tests that need an

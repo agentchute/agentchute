@@ -146,10 +146,35 @@ func parseDispatch(args []string) (dispatchPlan, error) {
 		sub, strings.Join(commandNamesSorted(), ", "), strings.Join(knownWrapperTokens(), ", "))
 }
 
+// splitDispatchContext peels the install-context prefix the generated `ac`
+// dispatcher script prepends: `dispatch --shim-dir <dir> -- "$@"`. It returns the
+// captured shim dir (empty when absent) and the remaining args (the user's real
+// `ac` argv), so parseDispatch stays a pure canonical-only parser. Both the
+// spaced (`--shim-dir X`) and `--shim-dir=X` forms are accepted, and a single
+// leading `--` end-of-options sentinel is consumed.
+func splitDispatchContext(args []string) (shimDir string, rest []string) {
+	rest = args
+	if len(rest) > 0 {
+		if strings.HasPrefix(rest[0], "--shim-dir=") {
+			shimDir = strings.TrimPrefix(rest[0], "--shim-dir=")
+			rest = rest[1:]
+		} else if rest[0] == "--shim-dir" && len(rest) > 1 {
+			shimDir = rest[1]
+			rest = rest[2:]
+		}
+	}
+	if len(rest) > 0 && rest[0] == "--" {
+		rest = rest[1:]
+	}
+	return shimDir, rest
+}
+
 // cmdDispatch is the `ac` front door. The installed `ac` script execs
-// `agentchute dispatch -- "$@"` (wired in Gate 2).
+// `agentchute dispatch --shim-dir <dir> -- "$@"` (wired in Gate 2); the
+// --shim-dir prefix is peeled here before the pure parser runs.
 func cmdDispatch(args []string) error {
-	plan, err := parseDispatch(args)
+	shimDir, rest := splitDispatchContext(args)
+	plan, err := parseDispatch(rest)
 	if err != nil {
 		return err
 	}
@@ -160,18 +185,21 @@ func cmdDispatch(args []string) error {
 	case dispatchCommand:
 		return commandHandlers[plan.Command](plan.CommandArgs)
 	case dispatchRun:
-		return dispatchExecRun(plan)
+		return dispatchExecRun(plan, shimDir)
 	}
 	return fmt.Errorf("ac: internal dispatch error")
 }
 
 // dispatchExecRun resolves the real wrapper binary and re-execs `agentchute run`
 // for it, mirroring the generated-shim exec path (without an ac-* shim name).
+// shimDir (peeled from the dispatcher script's --shim-dir) is excluded from the
+// PATH search so a stale same-name alias shim there is never picked as the real
+// wrapper during the transition.
 // Caller-supplied --control-repo/--loop-dir (peeled into plan.Global) are honored
 // via the discovery cascade and emitted exactly once; vendor comes from the
 // wrapper spec (a caller --vendor is dropped, never duplicated).
-func dispatchExecRun(plan dispatchPlan) error {
-	realWrapper, err := resolveRealWrapper(plan.Wrapper, "")
+func dispatchExecRun(plan dispatchPlan, shimDir string) error {
+	realWrapper, err := resolveRealWrapper(plan.Wrapper, shimDir)
 	if err != nil {
 		return err
 	}

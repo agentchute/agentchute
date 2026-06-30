@@ -59,8 +59,12 @@ type setupGlobalState struct {
 	NoProfile      bool     `json:"no_profile,omitempty"`
 	PathBlock      bool     `json:"path_block"`
 	ShimsInstalled bool     `json:"shims_installed"`
-	Aliases        bool     `json:"aliases,omitempty"`
-	UpdatedAt      string   `json:"updated_at"`
+	// DispatcherInstalled is the v0.8.8 truth: setup installs a single `ac`
+	// dispatcher rather than per-wrapper ac-* shims. ShimsInstalled is retained
+	// for back-compat reads (it gated the legacy shim/PATH cleanup paths).
+	DispatcherInstalled bool   `json:"dispatcher_installed"`
+	Aliases             bool   `json:"aliases,omitempty"`
+	UpdatedAt           string `json:"updated_at"`
 }
 
 type setupPoolState struct {
@@ -697,24 +701,27 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			}
 		}
 		if currentNeedsShims {
-			shimArgs := []string{
-				"install",
-				"--dir", opts.ShimDir,
-				"--wrapper", strings.Join(currentShimWrappers, ","),
-				"--force",
+			// Writes-before-reset: install the single `ac` dispatcher FIRST, then
+			// remove the legacy per-wrapper ac-* launchers it supersedes — so a pool
+			// is never left with no launcher mid-setup. The dispatcher is
+			// wrapper-agnostic, so it is installed regardless of which wrappers the
+			// pool selected. force=true keeps re-runs idempotent (the binary path,
+			// hence AGENTCHUTE_BIN, may change).
+			exe, err := os.Executable()
+			if err != nil {
+				return err
 			}
-			if opts.Aliases {
-				shimArgs = append(shimArgs, "--aliases")
+			exe, err = filepath.Abs(exe)
+			if err != nil {
+				return err
 			}
-			if err := cmdShims(shimArgs); err != nil {
-				return fmt.Errorf("shims install: %w", err)
+			if err := installDispatcher(opts.ShimDir, exe, true); err != nil {
+				return fmt.Errorf("install dispatcher: %w", err)
 			}
-			if !opts.Aliases {
-				for _, wrapper := range currentShimWrappers {
-					if err := removeSetupAliasShimsForWrapper(opts.ShimDir, wrapper); err != nil {
-						return err
-					}
-				}
+			if removed, err := removeLegacyWrapperShims(opts.ShimDir); err != nil {
+				return err
+			} else if len(removed) > 0 {
+				fmt.Printf("removed %d legacy launcher shim(s) from %s: %s\n", len(removed), opts.ShimDir, strings.Join(removed, ", "))
 			}
 			if err := setupEnsureShimPath(opts); err != nil {
 				return err
@@ -767,16 +774,17 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		}
 
 		if err := writeSetupGlobalState(setupGlobalState{
-			Version:        1,
-			Wake:           opts.Wake,
-			Wrappers:       wrappers,
-			ShimDir:        opts.ShimDir,
-			Profile:        opts.Profile,
-			NoProfile:      opts.NoProfile,
-			ShimsInstalled: currentNeedsShims,
-			Aliases:        currentNeedsShims && opts.Aliases,
-			PathBlock:      pathBlock,
-			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
+			Version:             1,
+			Wake:                opts.Wake,
+			Wrappers:            wrappers,
+			ShimDir:             opts.ShimDir,
+			Profile:             opts.Profile,
+			NoProfile:           opts.NoProfile,
+			ShimsInstalled:      currentNeedsShims,
+			DispatcherInstalled: currentNeedsShims,
+			Aliases:             currentNeedsShims && opts.Aliases,
+			PathBlock:           pathBlock,
+			UpdatedAt:           time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			return err
 		}
@@ -1170,7 +1178,26 @@ func removeSetupShims(dir string) error {
 			return err
 		}
 	}
+	// Also retire the single `ac` dispatcher (marker-guarded: only an
+	// agentchute-owned dispatcher is removed; a user-owned `ac` is left intact).
+	if err := removeAgentchuteDispatcher(filepath.Join(dir, "ac")); err != nil {
+		return err
+	}
 	fmt.Printf("removed agentchute shims from %s\n", dir)
+	return nil
+}
+
+func removeAgentchuteDispatcher(path string) error {
+	owned, err := isAgentchuteDispatcher(path)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove dispatcher %s: %w", path, err)
+	}
 	return nil
 }
 

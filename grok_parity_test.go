@@ -16,13 +16,15 @@ func TestShimsInstallGrok(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		if _, err := captureStdout(t, func() error {
+			// --wrapper grok is now a no-op; the wrapper-agnostic `ac` dispatcher
+			// routes grok via `ac run grok`.
 			return cmdShims([]string{"install", "--dir", filepath.Join(root, "bin"), "--wrapper", "grok"})
 		}); err != nil {
 			t.Fatalf("shims install grok: %v", err)
 		}
 	})
-	if _, err := os.Stat(filepath.Join(root, "bin", "ac-grok")); err != nil {
-		t.Fatalf("ac-grok shim not installed: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "bin", "ac")); err != nil {
+		t.Fatalf("ac dispatcher not installed: %v", err)
 	}
 }
 
@@ -107,7 +109,7 @@ func TestGrokIsKnownButHookless(t *testing.T) {
 	}
 }
 
-// Runner-mode setup with grok selected installs the grok launcher shim and does
+// Runner-mode setup with grok selected installs the `ac` dispatcher and does
 // NOT attempt to write a grok hook file (there is no grok hook template).
 func TestSetupRunnerInstallsGrokShimNoHook(t *testing.T) {
 	root := t.TempDir()
@@ -142,8 +144,8 @@ func TestSetupRunnerInstallsGrokShimNoHook(t *testing.T) {
 		}
 	})
 
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-grok")); err != nil {
-		t.Errorf("ac-grok shim not installed by setup: %v", err)
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac")); err != nil {
+		t.Errorf("ac dispatcher not installed by setup: %v", err)
 	}
 	// No grok hook file should exist anywhere — grok has no hook template.
 	for _, p := range []string{".grok/settings.json", ".grok/hooks.json"} {

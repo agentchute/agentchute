@@ -170,6 +170,53 @@ func TestExtractGlobalFlag(t *testing.T) {
 	}
 }
 
+func TestSplitDispatchContext(t *testing.T) {
+	cases := []struct {
+		name        string
+		args        []string
+		wantShimDir string
+		wantRest    []string
+	}{
+		{"spaced shim-dir then --", []string{"--shim-dir", "/d", "--", "run", "codex"}, "/d", []string{"run", "codex"}},
+		{"equals shim-dir then --", []string{"--shim-dir=/d", "--", "check", "--as", "x"}, "/d", []string{"check", "--as", "x"}},
+		{"shim-dir without trailing --", []string{"--shim-dir", "/d", "run", "codex"}, "/d", []string{"run", "codex"}},
+		{"no shim-dir, leading --", []string{"--", "check"}, "", []string{"check"}},
+		{"no shim-dir, no --", []string{"check", "--json"}, "", []string{"check", "--json"}},
+		{"empty", []string{}, "", []string{}},
+		{"user args preserved after --", []string{"--shim-dir", "/d", "--", "--as", "x", "run", "codex"}, "/d", []string{"--as", "x", "run", "codex"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			shimDir, rest := splitDispatchContext(tc.args)
+			if shimDir != tc.wantShimDir {
+				t.Fatalf("shimDir = %q, want %q", shimDir, tc.wantShimDir)
+			}
+			if strings.Join(rest, " ") != strings.Join(tc.wantRest, " ") {
+				t.Fatalf("rest = %v, want %v", rest, tc.wantRest)
+			}
+		})
+	}
+}
+
+func TestSplitDispatchContext_ThenParseRoundTrip(t *testing.T) {
+	// The exact argv the installed dispatcher script produces:
+	// `agentchute dispatch --shim-dir <dir> -- <user args>`.
+	shimDir, rest := splitDispatchContext([]string{"--shim-dir", "/shims", "--", "--as", "rev", "run", "codex"})
+	if shimDir != "/shims" {
+		t.Fatalf("shimDir = %q, want /shims", shimDir)
+	}
+	plan, err := parseDispatch(rest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Kind != dispatchRun || plan.Wrapper.Key != "codex" {
+		t.Fatalf("plan kind=%v key=%q, want run codex", plan.Kind, plan.Wrapper.Key)
+	}
+	if strings.Join(plan.Global, " ") != "--as rev" {
+		t.Fatalf("global = %v, want [--as rev]", plan.Global)
+	}
+}
+
 func TestBuildDispatchRunArgs_SingleAuthoritativePair(t *testing.T) {
 	got := buildDispatchRunArgs("/bin/agentchute", "openai", []string{"--as", "reviewer"},
 		"/repo", "/repo/.agentchute/loop", []string{"/usr/bin/codex", "resume"})

@@ -301,7 +301,14 @@ func checkBinaryOnPath() doctorCheck {
 	}
 }
 
+// checkWrapperShadowing verifies the single `ac` dispatcher (v0.8.8) resolves
+// from the shim dir ahead of the system `ac` (/usr/sbin/ac, the accounting
+// command). It is OK when `ac` resolves from $shim_dir AND $shim_dir precedes any
+// other dir with an `ac` on PATH; WARN when a non-shim-dir `ac` shadows it or the
+// shim dir is absent from PATH. The check is reported as `ac_dispatcher`.
 func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
+	const name = "ac_dispatcher"
+
 	wake := ""
 	if opts.PoolState != nil && opts.PoolState.Wake != "" {
 		wake = opts.PoolState.Wake
@@ -310,7 +317,7 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 	}
 
 	if wake == "" {
-		return doctorCheck{Name: "wrapper_shadowing", Severity: severitySkip, Message: "agentchute setup not run; skipping shadowing check"}
+		return doctorCheck{Name: name, Severity: severitySkip, Message: "agentchute setup not run; skipping ac dispatcher check"}
 	}
 
 	shimDir := ""
@@ -323,12 +330,12 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 	}
 
 	// Set-aware: the lifecycle-hook skip applies only when runner is NOT among
-	// the wake paths (runner installs all shims and requires them on PATH). A
-	// tmux/herdr-only set — single or combined ("tmux,herdr") — installs only
-	// hookless shims, so hookable wrappers rely on their lifecycle hook.
+	// the wake paths (runner requires the dispatcher on PATH). A legacy
+	// tmux/herdr-only set — single or combined ("tmux,herdr") — relies on the
+	// hookable wrapper's lifecycle hook, so the dispatcher is optional there.
 	if !setupNeedsShims(wake) && (wakeSetContains(wake, setupWakeTmux) || wakeSetContains(wake, setupWakeHerdr)) {
 		if _, hookable := hookWrapperForAgent(agentID); hookable {
-			return doctorCheck{Name: "wrapper_shadowing", Severity: severitySkip, Message: fmt.Sprintf("%s wake uses lifecycle hooks for this wrapper; launcher shim is optional", wake)}
+			return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("%s wake uses lifecycle hooks for this wrapper; ac dispatcher is optional", wake)}
 		}
 	}
 
@@ -336,23 +343,21 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 	if pathEnv == "" {
 		pathEnv = os.Getenv("PATH")
 	}
-	names := shimNamesForAgent(agentID)
 
-	if pathResolvesToDir(shimDir, pathEnv, names) {
-		return doctorCheck{Name: "wrapper_shadowing", Severity: severityOK, Message: fmt.Sprintf("namespaced launcher %s resolves from %s", strings.Join(names, ", "), shimDir)}
-	}
-
-	if pathContains(shimDir, pathEnv) {
+	if !pathContains(shimDir, pathEnv) {
 		return doctorCheck{
-			Name:     "wrapper_shadowing",
+			Name:     name,
 			Severity: severityWarn,
-			Message:  fmt.Sprintf("namespaced launcher %s is not resolving from %s; rerun setup or check PATH", strings.Join(names, ", "), shimDir),
+			Message:  fmt.Sprintf("shim dir %s is not on PATH; add it or rerun setup", shimDir),
 		}
 	}
+	if pathResolvesToDir(shimDir, pathEnv, []string{"ac"}) {
+		return doctorCheck{Name: name, Severity: severityOK, Message: fmt.Sprintf("ac dispatcher resolves from %s", shimDir)}
+	}
 	return doctorCheck{
-		Name:     "wrapper_shadowing",
+		Name:     name,
 		Severity: severityWarn,
-		Message:  fmt.Sprintf("shim dir %s is not on PATH; add it or rerun setup", shimDir),
+		Message:  fmt.Sprintf("the system `ac` shadows the agentchute dispatcher; ensure %s precedes /usr/sbin on PATH (open a new shell or `hash -r`)", shimDir),
 	}
 }
 
