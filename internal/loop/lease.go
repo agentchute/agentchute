@@ -280,6 +280,31 @@ func VerifyFence(cfg *Config, id, token string) error {
 	return nil
 }
 
+// ReadServeClaim reads id's serve.claim (the serve-lease holder fact) without
+// taking the lease or any lock. An absent claim surfaces os.ErrNotExist; a
+// corrupt/invalid claim surfaces a parse error. Exported (read-only) for
+// cross-pool liveness checks such as `setup --wipe-state`, which must refuse to
+// wipe a bus that a FRESH claim on ANOTHER HOST still owns. The returned
+// ServeClaim's Host/LastSeen are the load-bearing fields for that check; pair
+// with ClaimIsStale to fold in the lease-timeout freshness rule.
+func ReadServeClaim(cfg *Config, id string) (*ServeClaim, error) {
+	if err := ValidateAgentID(id); err != nil {
+		return nil, err
+	}
+	return readClaim(claimPath(cfg, id))
+}
+
+// ClaimIsStale reports whether c is past the serve-lease timeout relative to
+// now (a future-dated last_seen reads as FRESH — failing closed is the safe
+// direction). Exported alongside ReadServeClaim so external liveness checks
+// apply the same freshness rule AcquireServeLease uses internally.
+func ClaimIsStale(c *ServeClaim, now time.Time) bool {
+	if c == nil {
+		return true
+	}
+	return claimIsStale(c, now)
+}
+
 // RenewLease is the heartbeat: under withAgentLock(id) it verifies our token
 // still owns the claim (ErrFenced if reclaimed) and bumps last_seen.
 func RenewLease(l *ServeLease) error {

@@ -46,6 +46,8 @@ type setupOptions struct {
 	NoProfile   bool
 	Aliases     bool
 	InitNew     bool
+	Reset       bool
+	WipeState   bool
 }
 
 type setupGlobalState struct {
@@ -86,11 +88,18 @@ func cmdSetup(args []string) error {
 	fs.BoolVar(&opts.NoProfile, "no-profile", false, "do not edit shell profile; print PATH hint instead")
 	fs.BoolVar(&opts.Aliases, "aliases", false, "also install legacy same-name wrapper aliases")
 	fs.BoolVar(&opts.InitNew, "init", false, "allow setup to initialize a non-project directory")
+	fs.BoolVar(&opts.Reset, "reset", false, "explicitly run the runtime reset (always performed); required alongside --wipe-state")
+	fs.BoolVar(&opts.WipeState, "wipe-state", false, "DESTRUCTIVE: after reset, wipe loop runtime state (inbox/archive/malformed/live/scratch/state); requires --reset")
 	if err := fs.Parse(args); err != nil {
 		return setupUsage(err)
 	}
 	if fs.NArg() != 0 {
 		return setupUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
+	}
+	// --wipe-state is destructive; require the explicit --reset affirmation
+	// alongside it. Reject --wipe-state alone with a clear (non-help) error.
+	if opts.WipeState && !opts.Reset {
+		return fmt.Errorf("--wipe-state requires --reset: the destructive state wipe must be requested as `setup --reset --wipe-state`")
 	}
 
 	root, err := resolveSetupRoot(opts.ControlRepo)
@@ -141,6 +150,9 @@ func cmdSetup(args []string) error {
 
 	printSetupPlan(os.Stdout, root, opts, wrappers, detected)
 	if opts.DryRun {
+		if opts.WipeState {
+			printWipeStateDryRun(os.Stdout, root)
+		}
 		fmt.Println("\n(dry-run; no changes made)")
 		return nil
 	}
@@ -205,6 +217,15 @@ Flags:
   --no-profile           do not edit shell profile; print PATH hint instead
   --aliases              also install legacy same-name wrapper aliases
   --init                 allow initializing a non-project directory
+  --reset                explicitly run the runtime reset (always performed);
+                         required alongside --wipe-state
+  --wipe-state           DESTRUCTIVE: after reset, wipe loop runtime state
+                         (inbox/archive/malformed/live/scratch/state contents and
+                         live registrations) while preserving the committed
+                         scaffold and state/setup.json. Requires --reset; refuses
+                         a live bus. Use --dry-run to preview, --yes to skip the
+                         destructive confirm. Intended for the v0.7.0 -> v2
+                         transition.
   --dry-run              print plan without writing files
   --yes                  skip confirmation prompts
 `) + "\n"
@@ -489,7 +510,13 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 		fmt.Fprintf(w, "  wrappers:     %s\n", strings.Join(wrappers, ", "))
 	}
 	fmt.Fprintf(w, "  init:         %s\n", filepath.Join(root, "AGENTCHUTE.md"))
-	fmt.Fprintln(w, "  reset:        stop local agentchute pollers/runners, clear live agents/*.md, release repo Herdr names")
+	if opts.WipeState {
+		fmt.Fprintln(w, "  reset:        DESTRUCTIVE wipe-state — stop local pollers/runners, then WIPE loop runtime")
+		fmt.Fprintln(w, "                state (inbox/archive/malformed/live/scratch/state) + live registrations;")
+		fmt.Fprintln(w, "                preserves scaffold + state/setup.json; refuses a live bus (prompts before deleting)")
+	} else {
+		fmt.Fprintln(w, "  reset:        stop local agentchute pollers/runners, clear live agents/*.md, release repo Herdr names")
+	}
 	if len(hookWrappers) > 0 {
 		fmt.Fprintln(w, "  hooks:        repo scope, force/idempotent")
 	}
@@ -755,10 +782,20 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		}
 
 		// Phase 3 — destructive runtime reset, LAST. By the time we reach here
-		// every recoverable write above has landed, so even if the reset (or a
-		// crash during it) fails partway, the bus retains its wake infrastructure
-		// (hooks/shims/enrollment) and a `setup` re-run recovers cleanly.
-		if err := setupRunRuntimeReset(root, cfg, wrappers); err != nil {
+		// every recoverable write above has landed (including state/setup.json), so
+		// even if the reset (or a crash during it) fails partway, the bus retains its
+		// wake infrastructure (hooks/shims/enrollment) and a `setup` re-run recovers
+		// cleanly. With --wipe-state the soft reset is REPLACED by the hard wipe: the
+		// wipe subsumes the soft reset (it stops local processes, clears live
+		// registrations and per-agent state) AND additionally clears inbox/archive/
+		// malformed/live contents, scratch dirs, and root runtime logs — while
+		// preserving state/setup.json and the committed scaffold, and failing closed
+		// on any live local process or fresh foreign-host presence.
+		if opts.WipeState {
+			if err := setupRunWipeState(root, cfg, wrappers, opts); err != nil {
+				return err
+			}
+		} else if err := setupRunRuntimeReset(root, cfg, wrappers); err != nil {
 			return err
 		}
 
