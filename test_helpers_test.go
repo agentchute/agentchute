@@ -83,6 +83,17 @@ func mustRead(t *testing.T, path string) []byte {
 	return data
 }
 
+// mustWriteSeqInbox drops a canonical (from,seq) message file directly into
+// inboxDir. It replaces the removed loop.WriteInboxMessage nonce-writer as a
+// test fixture: the on-disk name is the canonical from-<from>_seq-<020d>.md that
+// production's send path writes, so listers/gates/pending/status treat it as a
+// real message. Seq must be unique per (from) within inboxDir to avoid collision.
+func mustWriteSeqInbox(t *testing.T, inboxDir, from string, seq uint64, content []byte) {
+	t.Helper()
+	name := loop.MsgID{From: from, Seq: seq}.Filename()
+	mustWrite(t, filepath.Join(inboxDir, name), content)
+}
+
 // mustWriteAgedInbox writes an inbox file and back-dates its filesystem mtime
 // to `arrival`. The watchdog now derives message age from mtime (arrival on
 // this host), not the sender-encoded filename timestamp, so tests that need an

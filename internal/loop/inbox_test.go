@@ -2,37 +2,27 @@ package loop
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
-func TestInboxFilenameRoundTrip(t *testing.T) {
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
-	name := formatInboxFilename(now, "codex", "abcd")
-	parsed, sender, nonce, err := ParseInboxFilename(name)
-	if err != nil {
+// writeSeqInbox drops a canonical (from,seq) message into inbox via the
+// production seq writer and returns the resulting Message the way the removed
+// WriteInboxMessage did. Test-only fixture replacing the deleted legacy nonce
+// writer; seq must be unique per (from) within inbox to avoid a link collision.
+func writeSeqInbox(t *testing.T, inbox, from string, seq uint64, content []byte) Message {
+	t.Helper()
+	id := MsgID{From: from, Seq: seq}
+	if _, err := writeSeqMessage(inbox, id, content); err != nil {
 		t.Fatal(err)
 	}
-	if sender != "codex" {
-		t.Fatalf("sender = %q, want codex", sender)
-	}
-	if nonce != "abcd" {
-		t.Fatalf("nonce = %q, want abcd", nonce)
-	}
-	if !parsed.Equal(now) {
-		t.Fatalf("timestamp = %s, want %s", parsed, now)
-	}
-}
-
-func TestParseInboxFilenameRejectsInvalidCalendarDate(t *testing.T) {
-	_, _, _, err := ParseInboxFilename("2026-02-31T16-32-00-123456Z_from-codex_msg-abcd.md")
-	if err == nil {
-		t.Fatal("expected invalid calendar date error")
+	return Message{
+		Path:     filepath.Join(inbox, id.Filename()),
+		Filename: id.Filename(),
+		Sender:   from,
 	}
 }
 
@@ -40,15 +30,11 @@ func TestWriteListArchiveMessage(t *testing.T) {
 	root := t.TempDir()
 	inbox := filepath.Join(root, "inbox", "claude-code")
 	archive := filepath.Join(root, "archive")
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
 
 	if err := os.MkdirAll(inbox, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	msg, err := WriteInboxMessage(inbox, now, "codex", []byte("hello\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	msg := writeSeqInbox(t, inbox, "codex", 1, []byte("hello\n"))
 	if _, err := os.Stat(msg.Path); err != nil {
 		t.Fatal(err)
 	}
@@ -100,16 +86,12 @@ func TestArchiveMessageRejectsExistingDestination(t *testing.T) {
 	root := t.TempDir()
 	inbox := filepath.Join(root, "inbox", "claude-code")
 	archive := filepath.Join(root, "archive")
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
 	consumed := time.Date(2026, 5, 9, 16, 33, 0, 0, time.UTC)
 
 	if err := os.MkdirAll(inbox, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	msg, err := WriteInboxMessage(inbox, now, "codex", []byte("hello\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	msg := writeSeqInbox(t, inbox, "codex", 1, []byte("hello\n"))
 
 	dest := filepath.Join(archive, "2026-05-09T16-33-00Z_to-claude-code_"+msg.Filename)
 	if err := os.MkdirAll(archive, 0o755); err != nil {
@@ -134,16 +116,12 @@ func TestArchiveMessageIdempotentWhenSourceAlreadyArchived(t *testing.T) {
 	root := t.TempDir()
 	inbox := filepath.Join(root, "inbox", "claude-code")
 	archive := filepath.Join(root, "archive")
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
 	consumed := time.Date(2026, 5, 9, 16, 33, 0, 0, time.UTC)
 
 	if err := os.MkdirAll(inbox, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	msg, err := WriteInboxMessage(inbox, now, "codex", []byte("hello\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	msg := writeSeqInbox(t, inbox, "codex", 1, []byte("hello\n"))
 
 	first, err := ArchiveMessage(msg, archive, "claude-code", consumed)
 	if err != nil {
@@ -172,7 +150,6 @@ func TestArchiveMessageIdempotentWhenDestinationIsSameFile(t *testing.T) {
 	root := t.TempDir()
 	inbox := filepath.Join(root, "inbox", "claude-code")
 	archive := filepath.Join(root, "archive")
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
 	consumed := time.Date(2026, 5, 9, 16, 33, 0, 0, time.UTC)
 
 	if err := os.MkdirAll(inbox, 0o755); err != nil {
@@ -181,10 +158,7 @@ func TestArchiveMessageIdempotentWhenDestinationIsSameFile(t *testing.T) {
 	if err := os.MkdirAll(archive, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	msg, err := WriteInboxMessage(inbox, now, "codex", []byte("hello\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	msg := writeSeqInbox(t, inbox, "codex", 1, []byte("hello\n"))
 	dest := ArchiveMessageDest(msg, archive, "claude-code", consumed)
 	if err := os.Link(msg.Path, dest); err != nil {
 		t.Skipf("hardlink setup unavailable: %v", err)
@@ -205,7 +179,9 @@ func TestArchiveMessageIdempotentWhenDestinationIsSameFile(t *testing.T) {
 	}
 }
 
-func TestWriteInboxMessageIgnoresTempCleanupError(t *testing.T) {
+// TestWriteSeqMessageIgnoresTempCleanupError: a failed temp-file cleanup after a
+// successful link must not fail the write; the leftover temp is left behind.
+func TestWriteSeqMessageIgnoresTempCleanupError(t *testing.T) {
 	oldRemoveFile := removeFile
 	t.Cleanup(func() {
 		removeFile = oldRemoveFile
@@ -216,15 +192,11 @@ func TestWriteInboxMessageIgnoresTempCleanupError(t *testing.T) {
 
 	root := t.TempDir()
 	inbox := filepath.Join(root, "inbox", "claude-code")
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
 	if err := os.MkdirAll(inbox, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	msg, err := WriteInboxMessage(inbox, now, "codex", []byte("hello\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	msg := writeSeqInbox(t, inbox, "codex", 1, []byte("hello\n"))
 	if _, err := os.Stat(msg.Path); err != nil {
 		t.Fatal(err)
 	}
@@ -247,105 +219,9 @@ func TestWriteInboxMessageIgnoresTempCleanupError(t *testing.T) {
 	}
 }
 
-// TestWriteInboxMessage_ConcurrentSameSenderNoBodyMixup forces the temp-path
-// collision window: N goroutines write distinct bodies as the same sender at a
-// FIXED `now`, and generateNonce is pinned to a tiny pool so many attempts
-// produce the same final filename (and, under the old deterministic
-// `.tmp_<final>` scheme, the SAME temp path). With a shared temp, a late writer
-// could clobber an earlier writer's body before it hard-linked the inode,
-// delivering the wrong body to the winner. A unique temp per attempt
-// (os.CreateTemp) makes each body land in its own inode, so every delivered
-// file's body matches the writer that produced its filename.
-func TestWriteInboxMessage_ConcurrentSameSenderNoBodyMixup(t *testing.T) {
-	root := t.TempDir()
-	inbox := filepath.Join(root, "inbox", "claude-code")
-	if err := os.MkdirAll(inbox, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Pin generateNonce so concurrent writers at the same `now` heavily collide
-	// on the final filename (and, under the OLD scheme, the SAME temp path),
-	// exercising the clobber window — but guarantee progress: the FIRST handful
-	// of draws cycle a tiny colliding pool; once exhausted, draws become unique
-	// (a monotonic counter) so every writer eventually wins a distinct final
-	// filename. Under the old deterministic temp, a clobbered body would surface
-	// as a body mismatch on the winner; under the fix it cannot.
-	oldGen := generateNonce
-	t.Cleanup(func() { generateNonce = oldGen })
-	collidingPool := []string{"aaaa", "bbbb", "cccc"}
-	const collidingDraws = 18 // > n, so the early concurrent rush collides hard
-	var nonceMu sync.Mutex
-	draw := 0
-	generateNonce = func() (string, error) {
-		nonceMu.Lock()
-		defer nonceMu.Unlock()
-		d := draw
-		draw++
-		if d < collidingDraws {
-			return collidingPool[d%len(collidingPool)], nil
-		}
-		// Unique tail: 4 lowercase hex chars derived from the draw counter so
-		// retries always find a free final filename and the test terminates.
-		return fmt.Sprintf("%04x", 0x1000+(d-collidingDraws)), nil
-	}
-
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
-	const n = 24
-
-	type result struct {
-		path string
-		body string
-	}
-	results := make([]result, n)
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			body := fmt.Sprintf("---\nfrom: codex\nto: claude-code\n---\n\nbody-marker-%03d\n", i)
-			<-start
-			msg, err := WriteInboxMessage(inbox, now, "codex", []byte(body))
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			results[i] = result{path: msg.Path, body: body}
-		}(i)
-	}
-	close(start)
-	wg.Wait()
-
-	for i, err := range errs {
-		if err != nil {
-			t.Fatalf("writer %d failed: %v", i, err)
-		}
-	}
-	// Every delivered file must contain exactly the body its own writer wrote.
-	for i, r := range results {
-		got, err := os.ReadFile(r.path)
-		if err != nil {
-			t.Fatalf("writer %d: read delivered file %s: %v", i, r.path, err)
-		}
-		if string(got) != r.body {
-			t.Fatalf("writer %d: delivered file %s body mismatch\n got: %q\nwant: %q",
-				i, r.path, string(got), r.body)
-		}
-	}
-	// And every writer got a distinct final path (no two writers claimed one file).
-	seen := make(map[string]int)
-	for i, r := range results {
-		if prev, ok := seen[r.path]; ok {
-			t.Fatalf("writers %d and %d both delivered to %s", prev, i, r.path)
-		}
-		seen[r.path] = i
-	}
-}
-
 // ListInboxMessagesWithSkipped must surface files that look like message
-// attempts but fail §6.1 parsing (hand-written with bad nonces/timestamps),
-// while keeping expected noise (.tmp_*, dotfiles, dirs, symlinks) silent.
+// attempts but fail seq parsing (hand-written with a bad seq), while keeping
+// expected noise (.tmp_*, dotfiles, dirs, symlinks) silent.
 func TestListInboxMessagesWithSkippedReportsMalformedNames(t *testing.T) {
 	root := t.TempDir()
 	inbox := filepath.Join(root, "inbox", "claude-code")
@@ -354,16 +230,14 @@ func TestListInboxMessagesWithSkippedReportsMalformedNames(t *testing.T) {
 	}
 
 	// 1. Valid message — should appear in msgs.
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
-	if _, err := WriteInboxMessage(inbox, now, "codex", []byte("hello\n")); err != nil {
-		t.Fatal(err)
-	}
+	writeSeqInbox(t, inbox, "codex", 1, []byte("hello\n"))
 
-	// 2. Malformed: gemini-style invalid nonce (g, l, c, i are not hex).
-	mustWrite(t, filepath.Join(inbox, "2026-05-11T17-30-00-000000Z_from-gemini-cli_msg-gcli.md"),
+	// 2. Malformed: seq-shaped name with a non-numeric seq (a peer hand-writing
+	//    a broken canonical name).
+	mustWrite(t, filepath.Join(inbox, "from-gemini-cli_seq-notdigits.md"),
 		[]byte("---\nfrom: gemini-cli\n---\n"))
 
-	// 3. Malformed: missing the _from-/_msg- structure entirely.
+	// 3. Malformed: no canonical structure at all.
 	mustWrite(t, filepath.Join(inbox, "stray-message.md"),
 		[]byte("not a agentchute message"))
 
@@ -384,9 +258,9 @@ func TestListInboxMessagesWithSkippedReportsMalformedNames(t *testing.T) {
 	if len(skipped) != 2 {
 		t.Fatalf("skipped = %v, want 2 entries (gemini-cli + stray)", skipped)
 	}
-	// Sorted (stray-message.md sorts before 2026-...).
+	// Sorted lexicographically ('f' < 's').
 	want := []string{
-		"2026-05-11T17-30-00-000000Z_from-gemini-cli_msg-gcli.md",
+		"from-gemini-cli_seq-notdigits.md",
 		"stray-message.md",
 	}
 	for i, name := range want {
@@ -401,9 +275,8 @@ func TestListInboxMessagesWithSkippedIgnoresVanishedEntries(t *testing.T) {
 	t.Cleanup(func() { readInboxDir = oldReadInboxDir })
 
 	inbox := t.TempDir()
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
-	valid := formatInboxFilename(now, "codex", "abcd")
-	vanished := formatInboxFilename(now.Add(time.Second), "gemini-cli", "beef")
+	valid := MsgID{From: "codex", Seq: 1}.Filename()
+	vanished := MsgID{From: "gemini-cli", Seq: 2}.Filename()
 	readInboxDir = func(string) ([]os.DirEntry, error) {
 		return []os.DirEntry{
 			fakeDirEntry{name: ".tmp_in-flight", infoErr: &os.PathError{Op: "lstat", Path: ".tmp_in-flight", Err: os.ErrNotExist}},
@@ -467,28 +340,24 @@ func (i fakeFileInfo) ModTime() time.Time { return time.Time{} }
 func (i fakeFileInfo) IsDir() bool        { return i.mode.IsDir() }
 func (i fakeFileInfo) Sys() any           { return nil }
 
-// InferSenderFromFilename should recover the sender when the filename retains
-// §6.1 structural shape (`_from-<slug>_msg-...` + `.md`) but the timestamp or
-// nonce is malformed (§11.1). Filenames missing the structural markers are
-// too broken to reliably attribute and must be dropped without inference,
-// even if the bare slug is recoverable from somewhere in the name.
-func TestInferSenderFromFilenameRecoversFromMalformedNames(t *testing.T) {
+// InferSenderFromFilename recovers the sender from a canonical seq filename.
+// The legacy nonce-name inference path was removed in v0.9.0, so a legacy
+// `_msg-`-shaped name (tombstone case) is no longer attributed.
+func TestInferSenderFromFilenameRecoversSeqSender(t *testing.T) {
 	cases := []struct {
 		name       string
 		filename   string
 		wantSender string
 		wantOK     bool
 	}{
-		{"fully-valid §6.1", "2026-05-09T16-32-00-123456Z_from-codex_msg-abcd.md", "codex", true},
-		{"bad nonce (non-hex)", "2026-05-09T16-32-00-123456Z_from-gemini-cli_msg-gcli.md", "gemini-cli", true},
-		{"bad timestamp", "garbage-prefix_from-codex_msg-zzzz.md", "codex", true},
-		{"no from segment", "2026-05-09T16-32-00-123456Z_msg-abcd.md", "", false},
-		{"invalid slug (uppercase)", "_from-CODEX_msg-abcd.md", "", false},
+		{"valid seq", MsgID{From: "codex", Seq: 7}.Filename(), "codex", true},
+		{"valid seq, hyphenated sender", MsgID{From: "gemini-cli", Seq: 1}.Filename(), "gemini-cli", true},
+		// Tombstone: the removed legacy nonce format is no longer inferred.
+		{"legacy nonce name not inferred", "2026-05-09T16-32-00-123456Z_from-codex_msg-abcd.md", "", false},
+		{"seq not zero-padded to 20", "from-codex_seq-7.md", "", false},
+		{"invalid slug (uppercase)", "from-CODEX_seq-00000000000000000001.md", "", false},
+		{"unstructured", "stray-message.md", "", false},
 		{"empty filename", "", "", false},
-		// §11.1 narrowing: structural markers missing → no inference.
-		{"missing _msg- segment", "2026-05-09T16-32-00-123456Z_from-codex_abcd.md", "", false},
-		{"missing .md suffix", "2026-05-09T16-32-00-123456Z_from-codex_msg-abcd", "", false},
-		{"only _from- segment", "junk_from-codex_junk", "", false},
 	}
 	for _, c := range cases {
 		got, ok := InferSenderFromFilename(c.filename)
@@ -570,7 +439,7 @@ func TestQuarantineInboxFile(t *testing.T) {
 	if err := os.MkdirAll(inbox, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	src := filepath.Join(inbox, "garbage_from-gemini-cli_msg-gcli.md")
+	src := filepath.Join(inbox, "garbage_from-gemini-cli.md")
 	mustWrite(t, src, []byte("malformed content\n"))
 
 	now := time.Date(2026, 5, 12, 4, 0, 0, 0, time.UTC)
@@ -588,7 +457,7 @@ func TestQuarantineInboxFile(t *testing.T) {
 	if string(got) != "malformed content\n" {
 		t.Errorf("content not preserved through quarantine: %q", got)
 	}
-	wantSuffix := "_to-claude-code_garbage_from-gemini-cli_msg-gcli.md"
+	wantSuffix := "_to-claude-code_garbage_from-gemini-cli.md"
 	if !strings.HasSuffix(dest, wantSuffix) {
 		t.Errorf("quarantined name %q missing expected suffix %q", dest, wantSuffix)
 	}
@@ -610,7 +479,7 @@ func TestListInboxMessagesSkipsSymlinks(t *testing.T) {
 	if err := os.WriteFile(target, []byte("not an inbox message\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(inbox, "2026-05-09T16-32-00-123456Z_from-codex_msg-abcd.md")
+	link := filepath.Join(inbox, MsgID{From: "codex", Seq: 1}.Filename())
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
@@ -621,5 +490,33 @@ func TestListInboxMessagesSkipsSymlinks(t *testing.T) {
 	}
 	if len(msgs) != 0 {
 		t.Fatalf("symlink inbox entry was listed: %#v", msgs)
+	}
+}
+
+// A seq message's advisory Timestamp is populated from the file mtime (a seq
+// name has no embedded timestamp). It is load-bearing for staleness/display,
+// never an ordering key.
+func TestListInboxMessagesSeqTimestampFromMtime(t *testing.T) {
+	inbox := t.TempDir()
+	writeSeqInbox(t, inbox, "alice", 1, []byte("seq"))
+	path := filepath.Join(inbox, MsgID{From: "alice", Seq: 1}.Filename())
+
+	mtime := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := ListInboxMessages(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("msgs = %d, want 1", len(msgs))
+	}
+	if msgs[0].Timestamp.IsZero() {
+		t.Fatal("seq Timestamp must not be zero (would mark every seq message ancient)")
+	}
+	if !msgs[0].Timestamp.UTC().Truncate(time.Second).Equal(mtime.UTC().Truncate(time.Second)) {
+		t.Fatalf("seq Timestamp = %s, want ~mtime %s", msgs[0].Timestamp.UTC(), mtime.UTC())
 	}
 }

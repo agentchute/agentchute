@@ -19,7 +19,7 @@ func TestPrintStatusIncludesAgentsAndInboxDepth(t *testing.T) {
 	}
 	mustMkdir(t, cfg.AgentsDir())
 	mustMkdir(t, cfg.AgentInboxDir("codex"))
-	mustWrite(t, filepath.Join(cfg.AgentInboxDir("codex"), "2026-05-09T16-32-00-123456Z_from-claude-code_msg-abcd.md"), []byte("hi"))
+	mustWriteSeqInbox(t, cfg.AgentInboxDir("codex"), "claude-code", 1, []byte("hi"))
 
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
 	regs := map[string]*loop.Registration{

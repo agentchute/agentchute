@@ -567,10 +567,8 @@ func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 	if err := os.MkdirAll(inbox, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loop.WriteInboxMessage(inbox, time.Now().UTC(), "codex",
-		[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n")); err != nil {
-		t.Fatal(err)
-	}
+	mustWriteSeqInbox(t, inbox, "codex", 1,
+		[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 	mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 
 	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})

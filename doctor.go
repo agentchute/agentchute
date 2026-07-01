@@ -727,26 +727,18 @@ func checkInboxState(cfg *loop.Config, agentID string) doctorCheck {
 		}
 		return doctorCheck{Name: "inbox_state", Severity: severityWarn, Message: fmt.Sprintf("inbox list error: %v", err)}
 	}
-	// Gate 4 dual-read drain gauge: count legacy nonce-named files still present.
-	// Drain is complete (and the legacy reader becomes removable in a future
-	// release) when every live inbox reports zero. Computed from the already-
-	// listed slice — no second filesystem scan.
-	legacyNote := ""
-	if n := loop.CountLegacyNonce(msgs); n > 0 {
-		legacyNote = fmt.Sprintf(" (%d legacy nonce-named, pending drain — one-release migration window)", n)
-	}
 	if len(skipped) > 0 {
 		return doctorCheck{
 			Name:     "inbox_state",
 			Severity: severityWarn,
-			Message:  fmt.Sprintf("%d unread + %d malformed file(s) in inbox%s; malformed files block `gate --before finish` until quarantined via `check`", len(msgs), len(skipped), legacyNote),
+			Message:  fmt.Sprintf("%d unread + %d malformed file(s) in inbox; malformed files block `gate --before finish` until quarantined via `check`", len(msgs), len(skipped)),
 		}
 	}
 	if len(msgs) > 0 {
 		return doctorCheck{
 			Name:     "inbox_state",
 			Severity: severityWarn,
-			Message:  fmt.Sprintf("%d unread direct message(s) in inbox%s", len(msgs), legacyNote),
+			Message:  fmt.Sprintf("%d unread direct message(s) in inbox", len(msgs)),
 		}
 	}
 	return doctorCheck{Name: "inbox_state", Severity: severityOK, Message: "inbox clear"}

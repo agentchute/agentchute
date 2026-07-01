@@ -13,9 +13,9 @@ import (
 // seq.go — the protocol-v2 identity tuple + the durable, monotonic,
 // per-(sender,recipient) sequence allocator.
 //
-// GATE 2: PURELY ADDITIVE. Nothing here is wired into send/check/run/gate
-// (that is Gates 3-6). The live inbox.go path (timestamp+nonce filenames) is
-// UNTOUCHED; this file introduces the NEW `(to,from,seq)` identity alongside it.
+// The `(to,from,seq)` identity is the canonical inbox format: filenames are
+// `from-<from>_seq-<020d>.md` (see ListInboxMessages in inbox.go); this file owns
+// the per-(sender,recipient) seq allocator + writer.
 //
 // The committed identity is the full delivery key (to,from,seq) — NOT a bare
 // seq and NOT a sender-asserted message_id (protocol-v2 TEAM-DECISION §2). The
@@ -110,10 +110,10 @@ func ParseMsgIDRef(s string) (MsgID, bool) {
 	return MsgID{To: m[1], From: m[2], Seq: seq}, true
 }
 
-// seqFilenameRE parses the NEW-format canonical filename. It is deliberately
-// strict: seq MUST be exactly 20 digits (the zero-padded form Filename emits),
-// so a malformed/legacy name never silently parses as a seq message. Gate 4
-// adds the dual-read window that accepts BOTH this and the legacy nonce format.
+// seqFilenameRE parses the canonical filename. It is deliberately strict: seq
+// MUST be exactly 20 digits (the zero-padded form Filename emits), so a
+// malformed or otherwise-unrecognized name never silently parses as a seq
+// message.
 var seqFilenameRE = regexp.MustCompile(
 	`^from-(` + agentIDPattern + `)_seq-(\d{20})\.md$`,
 )
@@ -335,10 +335,9 @@ func pruneSeqRecent(st *seqState) {
 	st.Recent = kept
 }
 
-// writeSeqMessage lands content at inboxDir/<id.Filename()> via the SAME
-// tmp+link discipline as WriteInboxMessage: a UNIQUE temp inode
-// (os.CreateTemp) -> write+fsync -> linkNoClobber to the canonical path ->
-// remove temp -> fsync dir.
+// writeSeqMessage lands content at inboxDir/<id.Filename()> via a tmp+link
+// discipline: a UNIQUE temp inode (os.CreateTemp) -> write+fsync ->
+// linkNoClobber to the canonical path -> remove temp -> fsync dir.
 //
 // link-EEXIST is NOT an error: the canonical (to,from,seq) path already exists,
 // so the substrate confirms "this exact identity is STILL PRESENT in the inbox."

@@ -111,11 +111,11 @@ body
 func TestCorrectiveBodyFormat(t *testing.T) {
 	got := CorrectiveBody(
 		".agentchute/loop/malformed/2026-05-12T04-00-00Z_to-claude-code_bad.md",
-		"nonce must be 4 lowercase hex chars (§6.1)",
+		"filename does not match the canonical seq format (§6.1)",
 		"§6.1",
 	)
 	want := "malformed item: .agentchute/loop/malformed/2026-05-12T04-00-00Z_to-claude-code_bad.md\n" +
-		"reason: nonce must be 4 lowercase hex chars (§6.1)\n" +
+		"reason: filename does not match the canonical seq format (§6.1)\n" +
 		"action: re-send per AGENTCHUTE.md §6.1\n"
 	if got != want {
 		t.Errorf("CorrectiveBody mismatch:\n got  %q\n want %q", got, want)

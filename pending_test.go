@@ -227,9 +227,7 @@ func TestPendingReadsWhitespaceTolerantFrontmatter(t *testing.T) {
 		"   ---   \n" +
 		"\n" +
 		"body content\n"
-	if err := os.WriteFile(filepath.Join(inbox, "2026-05-19T22-10-00-000000Z_from-codex_msg-abcd.md"), []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	mustWriteSeqInbox(t, inbox, "codex", 1, []byte(body))
 	withCwd(t, root, func() {
 		out, err := captureStdout(t, func() error { return cmdPending(pendingArgs("--json")) })
 		if err != nil {
@@ -268,10 +266,8 @@ func TestPendingIsStrictlyReadOnlyAcrossManyInvocations(t *testing.T) {
 	// Seed inbox with 3 valid messages + 1 malformed file.
 	inbox := cfg.AgentInboxDir("claude-code")
 	for i := 0; i < 3; i++ {
-		if _, err := loop.WriteInboxMessage(inbox, time.Now().UTC().Add(time.Duration(i)*time.Microsecond), "codex",
-			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n")); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteSeqInbox(t, inbox, "codex", uint64(i+1),
+			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 	}
 	malformed := filepath.Join(inbox, "not-a-valid-message-name.md")
 	if err := osWriteFile(malformed, []byte("---\nfrom: weird\n---\nbody\n")); err != nil {
@@ -340,10 +336,8 @@ func osWriteFile(path string, data []byte) error {
 func TestPendingInboxOnlyReportsZeroOwed(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	inbox := cfg.AgentInboxDir("claude-code")
-	if _, err := loop.WriteInboxMessage(inbox, time.Now().UTC(), "codex",
-		[]byte("---\nfrom: codex\nto: claude-code\ntask: hi\n---\n\nb\n")); err != nil {
-		t.Fatal(err)
-	}
+	mustWriteSeqInbox(t, inbox, "codex", 1,
+		[]byte("---\nfrom: codex\nto: claude-code\ntask: hi\n---\n\nb\n"))
 	withCwd(t, root, func() {
 		out, err := captureStdout(t, func() error { return cmdPending(pendingArgs("--json")) })
 		if err != nil {
