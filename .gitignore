@@ -23,3 +23,6 @@
 .agentchute/loop/scratch-*
 .agentchute/loop/watchdog.log
 # agentchute-gitignore v2 end
+
+# Local scratch (spike runs) — never commit
+proposal_spike_run/
