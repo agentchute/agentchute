@@ -59,8 +59,8 @@ func TestSendWritesSeqFormatNotNonce(t *testing.T) {
 	if len(skipped) != 0 {
 		t.Fatalf("seq message must not be skipped/quarantined; skipped=%v", skipped)
 	}
-	if len(msgs) != 1 || msgs[0].LegacyNonce {
-		t.Fatalf("expected 1 non-legacy msg, got %+v", msgs)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 msg, got %+v", msgs)
 	}
 }
 

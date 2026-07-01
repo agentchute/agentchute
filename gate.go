@@ -236,13 +236,6 @@ func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackSt
 	// Apply the phase predicates to build the blocking-reasons list and
 	// any non-blocking warnings.
 	status.Reasons, status.Warnings = evaluateGatePhase(phase, status, requireConfirm, ackStaleReg)
-	// Gate 4 drain gauge (ADVISORY only — never blocks): surface legacy
-	// nonce-named files still present so the one-release migration window is
-	// observable. They are valid deliverable mail (not malformed/unread
-	// obligations), so they are NOT added to Reasons.
-	if n := loop.CountLegacyNonce(msgs); n > 0 {
-		status.Warnings = append(status.Warnings, fmt.Sprintf("%d legacy nonce-named message(s) pending drain (one-release migration window)", n))
-	}
 	// Asker-owned `.owed` obligations (protocol-v2): NON-BLOCKING dead-recipient
 	// signal. This is the sole reply-obligation surface (v0.9.0); the recipient
 	// is never blocked at finish by a reply_required message.

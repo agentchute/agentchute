@@ -331,8 +331,9 @@ func TestRunnerPoll_WakesOnMalformedFile(t *testing.T) {
 		t.Fatal("unexpected wake on seeding poll of empty inbox")
 	}
 
-	// A hand-written file with an invalid nonce — parses as skipped, not a Message.
-	malformed := filepath.Join(cfg.AgentInboxDir("runner-test"), "2026-05-09T16-32-00-123456Z_from-codex_msg-zz.md")
+	// A hand-written file with an unrecognized (non-seq) name — parses as
+	// skipped, not a Message.
+	malformed := filepath.Join(cfg.AgentInboxDir("runner-test"), "not-a-seq-name.md")
 	mustWrite(t, malformed, []byte("body"))
 
 	rt.pollOnce(true)
@@ -341,9 +342,9 @@ func TestRunnerPoll_WakesOnMalformedFile(t *testing.T) {
 	}
 }
 
-// A valid new file whose sender-encoded filename timestamp sorts BEFORE the
-// last-observed filename must still wake the runner. The old lexicographic-
-// newest tracking would miss back-dated mail.
+// A valid new file whose seq filename sorts BEFORE the last-observed filename
+// (a lower seq landing after a higher one) must still wake the runner. The old
+// lexicographic-newest tracking would miss such out-of-order mail.
 func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
@@ -353,16 +354,17 @@ func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 	rt := newPollTestRuntime(t, cfg, "runner-test")
 	inbox := cfg.AgentInboxDir("runner-test")
 
-	// A "newer" message is already present and observed on the seeding poll.
-	newer := filepath.Join(inbox, "2026-05-09T16-32-00-123456Z_from-codex_msg-abcd.md")
+	// A higher-seq message is already present and observed on the seeding poll.
+	newer := filepath.Join(inbox, loop.MsgID{From: "codex", Seq: 5}.Filename())
 	mustWrite(t, newer, []byte("newer"))
 	rt.pollOnce(false)
 	if rt.drainWake() {
 		t.Fatal("unexpected wake on seeding poll")
 	}
 
-	// A valid message whose filename timestamp sorts BEFORE the observed newest.
-	backdated := filepath.Join(inbox, "2026-05-09T16-30-00-000000Z_from-codex_msg-bcde.md")
+	// A valid message whose seq filename sorts BEFORE the observed newest (a
+	// lower seq landing after a higher one).
+	backdated := filepath.Join(inbox, loop.MsgID{From: "codex", Seq: 2}.Filename())
 	mustWrite(t, backdated, []byte("back-dated"))
 
 	rt.pollOnce(true)

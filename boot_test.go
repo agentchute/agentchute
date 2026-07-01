@@ -122,13 +122,10 @@ func TestBootWithUnreadMailReturnsBlocked(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
-		// Drop a valid §6.1-shaped message into the inbox.
+		// Drop a canonical seq message into the inbox.
 		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
-		now := time.Now().UTC()
 		msgContent := []byte("---\nmessage_id: 2026-05-19T17:53:59.561894Z\nfrom: codex\nto: claude-code\ntask: review\n---\n\nbody\n")
-		if _, err := loop.WriteInboxMessage(inboxDir, now, "codex", msgContent); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteSeqInbox(t, inboxDir, "codex", 1, msgContent)
 
 		out, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) })
 		if !errors.Is(err, errBlocked) {
@@ -218,10 +215,7 @@ func TestBootContextOnlyNeverBlocks(t *testing.T) {
 		}
 		// Drop an unread message.
 		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
-		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex", []byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		mustWriteSeqInbox(t, inboxDir, "codex", 1, []byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
 		out, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--context-only")) })
 		if err != nil {
 			t.Errorf("--context-only returned error = %v; want nil (hook-safe mode never blocks)", err)
@@ -246,9 +240,7 @@ func TestBootCodexHookSessionStartGuidanceIsRunnable(t *testing.T) {
 		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
 		mustMkdir(t, inboxDir)
 		msgContent := []byte("---\nmessage_id: 2026-05-19T17:53:59.561894Z\nfrom: codex\nto: claude-code\ntask: review\n---\n\nbody\n")
-		if _, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex", msgContent); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteSeqInbox(t, inboxDir, "codex", 1, msgContent)
 		out, err := captureStdout(t, func() error {
 			return cmdBoot(bootArgs("--codex-hook", "SessionStart"))
 		})

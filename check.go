@@ -290,9 +290,10 @@ func printConsumedBody(msg loop.Message, content []byte, redelivered bool) {
 // carry, when msg is reply_required. The ref is the ORIGINAL message's identity
 // MsgID{To: agentID (us, the recipient), From: msg.Sender, Seq}: the asker
 // recorded their `.owed` obligation under this exact tuple, so echoing it back as
-// the reply's in_reply_to is what lets the asker's `check` discharge it. Legacy
-// nonce messages have no seq (Seq=0 — a degenerate ref) since they predate the
-// identity; they drain within one release.
+// the reply's in_reply_to is what lets the asker's `check` discharge it. A name
+// that does not parse as a canonical seq filename yields Seq=0 (a degenerate
+// ref); the listers surface only seq messages, so this does not occur on the
+// live path.
 func printReplyRefIfRequired(agentID string, msg loop.Message, fm map[string]string) {
 	if !isFrontmatterReplyRequired(fm) {
 		return

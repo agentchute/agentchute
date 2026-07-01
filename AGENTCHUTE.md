@@ -139,7 +139,7 @@ The reference encoding is the canonical filename `from-<from>_seq-<020d>.md` (`s
 
 `seq` is **write-ahead durable**: the counter is committed *before* the message links, so a crash can only ever produce a GAP (an allocated seq whose message never landed), never a reuse for different content. Gaps are legal — `seq` is identity + sort key, not a no-gap contract.
 
-> **One-release compatibility (dual-read drain).** Inbox listing still READS the legacy nonce format `<ts>_from-<sender>_msg-<nonce>.md` alongside the canonical seq format, so residue written before the cutover still drains. Legacy names sort before seq names (digit vs. `f`), which is correct across the cutover. `gate`/`doctor` surface a non-blocking gauge of remaining legacy-named messages; the legacy reader is removable only once every live inbox reports zero.
+The canonical `from-<from>_seq-<020d>.md` is the only inbox filename format. A name that does not parse as a canonical seq filename is unrecognized: it is skipped by the lister and quarantined by `check` (§11.1).
 
 ### 6.2 Sender flow
 1. Compose body (UTF-8).
@@ -231,7 +231,7 @@ Triggers include malformed inbox filenames, unparseable frontmatter, or unparsea
 2. **Notify offender**: send a corrective message (Task: `protocol correction`, Status: `findings`) to the inferred sender. Sender inference order: filename capture → frontmatter `from:` → no notify.
 3. **Continue**: do NOT block the sender or the turn.
 
-A well-formed canonical seq file is never quarantined (the dual-read lister recognizes both formats); only a genuinely-unrecognized name is enforced on.
+A well-formed canonical seq file is never quarantined; only a genuinely-unrecognized name is enforced on.
 
 ## 12. Non-goals (v1)
 - No non-filesystem transport in the reference CLI.
@@ -252,11 +252,12 @@ One-release compatibility carried from v0.8.0. Each has an in-code `// COMPAT(re
 
 | Item | Location | Target | Gate |
 |------|----------|--------|------|
-| Legacy-nonce inbox reader + writer (dual-read/write of `<ts>_from-<s>_msg-<nonce>.md`) | `internal/loop/inbox.go` — READ: `inboxFilenameRE`/`inboxFilenameShapeRE`, `InferSenderFromFilename` legacy branch, `LegacyNonce` classifier, `ParseInboxFilename` legacy path, `CountLegacyNonce`; WRITE (test-only callers): `WriteInboxMessage`/`generateNonce`/`formatInboxFilename` (remove together — `WriteInboxMessage` calls `ParseInboxFilename`; migrate ~30 test fixtures) | v0.8.9 | **legacy-gauge-zero pool-wide, INCLUDING `.claimed/` residue** — extend `CountLegacyNonce` to scan `inbox/<id>/.claimed/` (`ListClaimedMessages`) first; it reads inbox listings only today, so a legacy message parked in `.claimed/` would make "zero" a false negative |
 | `run` verb → `serve` | `run.go` | `serve` ships v0.8.9 with `run` as a deprecated alias; alias removed the release after | `serve` shipped + one release elapsed |
 | `renderShimScript` (legacy shim generator) | `shims.go` | v0.8.9 | **none** — zero production callers; migrate its 3 test-fixture callers to inline legacy content |
 | `selectShimSpecs`/`shimInstallNames` selectors → static legacy-name list | `shims.go`, `setup.go` | v0.8.9 | **none** — behavior-preserving swap; the cleanup only needs the legacy `ac-*` name set, not generation logic |
 | `shims install --wrapper`/`--aliases` + `setup --aliases` no-op flags | `shims.go`, `setup.go` | after cutover | live pool confirmed running the `ac` dispatcher (v0.8.8+), not merely "dispatcher code exists" — old scripts/muscle-memory may still pass them |
+
+**DONE in v0.9.0 — legacy-nonce inbox reader + writer removed (clean delete).** The one-release dual-read window is over: the live-bus gauge reported zero legacy `<ts>_from-<sender>_msg-<nonce>.md` files pool-wide, so both the reader (`inboxFilenameRE`/`inboxFilenameShapeRE`, the `InferSenderFromFilename` legacy branch, the `LegacyNonce` classifier + struct field, `ParseInboxFilename`, `CountLegacyNonce`) and the test-only writer (`WriteInboxMessage`/`generateNonce`/`formatInboxFilename`) were deleted. The canonical `from-<from>_seq-<020d>.md` is now the only inbox filename format; a stray legacy-named file is simply skipped as unrecognized (and quarantined by `check` like any other malformed name). The non-blocking `gate`/`doctor` drain gauges were removed with it.
 
 **DONE in v0.9.0 — `message_id` frontmatter removed (clean delete).** The reference CLI's `send` no longer emits a `message_id` field, and the display-only readers (`boot`/`pending`/`sendResult`) were dropped — the canonical `(to,from,seq)` identity is surfaced via the message filename (`from-<from>_seq-<seq>`) and reply threading rides `in_reply_to` (the `(to,from,seq)` ref) + the asker-owned `.owed` ledger. A `message_id` on an older in-flight message is tolerated on read but never consulted for identity or reply discharge.
 

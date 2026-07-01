@@ -20,7 +20,7 @@ func newSeqTestConfig(t *testing.T) *Config {
 }
 
 // mkInbox creates the recipient's inbox dir (writeSeqMessage requires it to
-// exist, mirroring WriteInboxMessage).
+// exist).
 func mkInbox(t *testing.T, cfg *Config, to string) {
 	t.Helper()
 	if err := ensurePrivateDir(cfg.AgentInboxDir(to)); err != nil {
@@ -29,8 +29,8 @@ func mkInbox(t *testing.T, cfg *Config, to string) {
 }
 
 // countInboxBody reads the recipient's inbox and counts seq-format files whose
-// content equals body. (ListInboxMessages parses the legacy §6.1 format only, so
-// the seq files are invisible to it — by design for Gate 2.)
+// content equals body. It scans the directory directly rather than via
+// ListInboxMessages because it matches on file CONTENT, not just the name.
 func countInboxBody(t *testing.T, cfg *Config, to, body string) int {
 	t.Helper()
 	dir := cfg.AgentInboxDir(to)

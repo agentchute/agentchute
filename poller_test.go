@@ -146,9 +146,7 @@ func TestPollerLaunchedWrapperReceivesAgentchuteEnv(t *testing.T) {
 		}
 		now := time.Now().UTC()
 		content := loop.ComposeMessage(now, "claude-code", agentID, "wake", "request", "", "body")
-		if _, err := loop.WriteInboxMessage(cfg.AgentInboxDir(agentID), now, "claude-code", content); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteSeqInbox(t, cfg.AgentInboxDir(agentID), "claude-code", 1, content)
 
 		t.Setenv("AGENTCHUTE_AGENT_ID", "wrong-agent")
 		t.Setenv("AGENTCHUTE_CONTROL_REPO", "/wrong/control")
@@ -254,9 +252,7 @@ func seedPollerWork(t *testing.T, cfg *loop.Config, agentID string) {
 	}
 	now := time.Now().UTC()
 	content := loop.ComposeMessage(now, "claude-code", agentID, "wake", "request", "", "body")
-	if _, err := loop.WriteInboxMessage(cfg.AgentInboxDir(agentID), now, "claude-code", content); err != nil {
-		t.Fatal(err)
-	}
+	mustWriteSeqInbox(t, cfg.AgentInboxDir(agentID), "claude-code", 1, content)
 }
 
 // seedOldHeartbeat writes a known-old launch-enabled heartbeat so a tick that
@@ -529,9 +525,7 @@ func TestPollerDefaultDoesNotLaunchWrapperWhenWorkPending(t *testing.T) {
 		}
 		now := time.Now().UTC()
 		content := loop.ComposeMessage(now, "claude-code", agentID, "wake", "request", "", "body")
-		if _, err := loop.WriteInboxMessage(cfg.AgentInboxDir(agentID), now, "claude-code", content); err != nil {
-			t.Fatal(err)
-		}
+		mustWriteSeqInbox(t, cfg.AgentInboxDir(agentID), "claude-code", 1, content)
 
 		params := serviceParams{
 			AgentID:  agentID,

@@ -84,13 +84,10 @@ func TestGateFinishBlocksOnUnreadMail(t *testing.T) {
 		}
 
 		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
-		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
+		mustWriteSeqInbox(t, inboxDir, "codex", 1,
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
-		if err != nil {
-			t.Fatal(err)
-		}
 
-		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
+		_, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
 		if !errors.Is(err, errBlocked) {
 			t.Fatalf("err = %v, want errBlocked", err)
 		}
@@ -246,11 +243,8 @@ func TestGateCodexHookStopBlockedShape(t *testing.T) {
 			t.Fatal(err)
 		}
 		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
-		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
+		mustWriteSeqInbox(t, inboxDir, "codex", 1,
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
-		if err != nil {
-			t.Fatal(err)
-		}
 		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--codex-hook", "Stop")) })
 		if err != nil {
 			t.Errorf("err = %v, want nil (codex Stop block exits 0)", err)
@@ -450,11 +444,8 @@ func TestGateContinuePhaseSamePredicateAsFinish(t *testing.T) {
 			t.Fatal(err)
 		}
 		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
-		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
+		mustWriteSeqInbox(t, inboxDir, "codex", 1,
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
-		if err != nil {
-			t.Fatal(err)
-		}
 		_, errFinish := captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
 		_, errContinue := captureStdout(t, func() error { return cmdGate(gateArgs("continue")) })
 		if !errors.Is(errFinish, errBlocked) {
@@ -477,11 +468,8 @@ func TestGateGeminiHookAfterAgentBlockedShape(t *testing.T) {
 			t.Fatal(err)
 		}
 		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
-		_, err := loop.WriteInboxMessage(inboxDir, time.Now().UTC(), "codex",
+		mustWriteSeqInbox(t, inboxDir, "codex", 1,
 			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
-		if err != nil {
-			t.Fatal(err)
-		}
 		out, err := captureStdout(t, func() error {
 			return cmdGate(gateArgs("continue", "--gemini-hook", "AfterAgent"))
 		})
