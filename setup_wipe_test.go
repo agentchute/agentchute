@@ -281,7 +281,7 @@ func TestScanWipeLiveSignalsRefusesLiveRunner(t *testing.T) {
 	// Realistic runner cmdline: NO --as (runners use the contextual id), so the
 	// pool proof is the exact --control-repo/--loop-dir value match.
 	setupProcessCommandLine = func(pid int) string {
-		return "/usr/local/bin/agentchute run --vendor openai --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir + " --shim-name ac -- /usr/bin/codex"
+		return "/usr/local/bin/agentchute serve --vendor openai --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir + " --shim-name ac -- /usr/bin/codex"
 	}
 	t.Cleanup(func() { setupProcessAlive = oldAlive; setupProcessCommandLine = oldCmd })
 
@@ -323,7 +323,7 @@ func TestSetupRunWipeStateRefusesLiveRunner(t *testing.T) {
 	oldWait := wipeProcessWait
 	setupProcessAlive = func(pid int) bool { return pid == 4243 }
 	setupProcessCommandLine = func(pid int) string {
-		return "/usr/local/bin/agentchute run " + id + " --as " + id + " " + cfg.LoopDir
+		return "/usr/local/bin/agentchute serve " + id + " --as " + id + " " + cfg.LoopDir
 	}
 	setupSignalProcess = func(pid int, sig os.Signal) error { return nil } // no-op: never signal a real pid
 	wipeProcessWait = time.Millisecond
@@ -371,9 +371,17 @@ func TestSetupCommandMatchesRunnerPool(t *testing.T) {
 
 	// A runner is launched WITHOUT --as (contextual id), but DOES carry the pool
 	// path. It must match — this is the false-negative the fix repairs.
-	runnerNoAs := "/usr/local/bin/agentchute run --control-repo " + root + " --loop-dir " + cfg.LoopDir
+	runnerNoAs := "/usr/local/bin/agentchute serve --control-repo " + root + " --loop-dir " + cfg.LoopDir
 	if !setupCommandMatchesRunnerPool(runnerNoAs, cfg) {
 		t.Fatalf("runner cmdline without --as but with the pool path must match: %q", runnerNoAs)
+	}
+
+	// The deprecated `run` alias (removed v0.10.0) must be attributed IDENTICALLY to
+	// `serve` — a supervisor launched via `agentchute run` is still a live runner for
+	// this pool.
+	runAlias := "/usr/local/bin/agentchute run --control-repo " + root + " --loop-dir " + cfg.LoopDir
+	if !setupCommandMatchesRunnerPool(runAlias, cfg) {
+		t.Fatalf("deprecated `agentchute run` alias supervisor must still match this pool: %q", runAlias)
 	}
 
 	// A poller carries --as <id>; the poller matcher still requires it.
@@ -384,7 +392,7 @@ func TestSetupCommandMatchesRunnerPool(t *testing.T) {
 
 	// A foreign pool / non-agentchute process must NOT match (still ambiguous ->
 	// fail closed).
-	foreignPool := "/usr/local/bin/agentchute run --control-repo /some/other/repo"
+	foreignPool := "/usr/local/bin/agentchute serve --control-repo /some/other/repo"
 	if setupCommandMatchesRunnerPool(foreignPool, cfg) {
 		t.Fatalf("a runner for a DIFFERENT pool must not match: %q", foreignPool)
 	}
@@ -412,7 +420,7 @@ func TestScanWipeLiveSignalsRunnerWithoutAsIsLiveNotAmbiguous(t *testing.T) {
 	setupProcessAlive = func(pid int) bool { return pid == 4711 }
 	setupProcessCommandLine = func(pid int) string {
 		// NO --as: runners launch with the contextual id.
-		return "/usr/local/bin/agentchute run --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
+		return "/usr/local/bin/agentchute serve --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
 	}
 	t.Cleanup(func() { setupProcessAlive = oldAlive; setupProcessCommandLine = oldCmd })
 
@@ -468,11 +476,11 @@ func TestSetupWipeStateDryRunMutatesNothing(t *testing.T) {
 // gates a SIGTERM for runners that carry no agent id).
 func TestSetupCommandMatchesRunnerPool_SiblingPrefixRejected(t *testing.T) {
 	cfg := &loop.Config{ControlRepo: "/tmp/repo", LoopDir: "/tmp/repo/.agentchute/loop"}
-	foreign := "/usr/local/bin/agentchute run --control-repo /tmp/repo2 --loop-dir /tmp/repo2/.agentchute/loop"
+	foreign := "/usr/local/bin/agentchute serve --control-repo /tmp/repo2 --loop-dir /tmp/repo2/.agentchute/loop"
 	if setupCommandMatchesRunnerPool(foreign, cfg) {
 		t.Fatal("sibling-prefix /tmp/repo2 must NOT match pool /tmp/repo")
 	}
-	ours := "/usr/local/bin/agentchute run --vendor openai --control-repo /tmp/repo --loop-dir /tmp/repo/.agentchute/loop --shim-name ac -- /usr/bin/codex"
+	ours := "/usr/local/bin/agentchute serve --vendor openai --control-repo /tmp/repo --loop-dir /tmp/repo/.agentchute/loop --shim-name ac -- /usr/bin/codex"
 	if !setupCommandMatchesRunnerPool(ours, cfg) {
 		t.Fatal("this pool's runner (no --as) must match by exact path value")
 	}
@@ -488,7 +496,7 @@ func TestSetupCommandMatchesRunnerPool_IgnoresWrapperArgsAfterDashDash(t *testin
 	cfg := &loop.Config{ControlRepo: "/tmp/pool", LoopDir: "/tmp/pool/.agentchute/loop"}
 	// Foreign runner for /tmp/other; its launched wrapper happens to take a
 	// --control-repo /tmp/pool of its own — that is AFTER `--` and must be ignored.
-	foreign := "/usr/local/bin/agentchute run --vendor openai --control-repo /tmp/other --loop-dir /tmp/other/.agentchute/loop -- /usr/bin/codex --control-repo /tmp/pool --loop-dir /tmp/pool/.agentchute/loop"
+	foreign := "/usr/local/bin/agentchute serve --vendor openai --control-repo /tmp/other --loop-dir /tmp/other/.agentchute/loop -- /usr/bin/codex --control-repo /tmp/pool --loop-dir /tmp/pool/.agentchute/loop"
 	if setupCommandMatchesRunnerPool(foreign, cfg) {
 		t.Fatal("--control-repo/--loop-dir in wrapper argv (after --) must NOT attribute to this pool")
 	}

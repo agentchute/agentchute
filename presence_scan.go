@@ -71,9 +71,9 @@ const processAncestryDepthLimit = 32
 
 // processAncestryHasEnrolledRunner reports whether any ANCESTOR (walking ppid
 // from pid's parent upward) is an enrolled runner for this pool — defined as a
-// LIVE, SAME-USER process whose cmdline is an `agentchute run` for THIS pool.
+// LIVE, SAME-USER process whose cmdline is an `agentchute serve` for THIS pool.
 // (Recorded runner.json pids are deliberately NOT trusted on their own: a stale
-// pid can be reused.) A vendor wrapper launched by the runner (agentchute run ->
+// pid can be reused.) A vendor wrapper launched by the runner (agentchute serve ->
 // codex -> node -> vendor codex) is therefore NOT a raw, unenrolled bypass — it
 // is the runner's child. Best-effort + cheap: bounded depth, cycle-guarded, and
 // only invoked for an in-pool wrapper process.
@@ -92,7 +92,7 @@ func processAncestryHasEnrolledRunner(pid int, cfg *loop.Config) bool {
 		// Revalidate the ancestor DIRECTLY — never trust a recorded runner.json
 		// pid (it can be stale or reused as an unrelated process). The ancestor
 		// counts only if it is a LIVE, SAME-USER process whose cmdline is an
-		// `agentchute run` for THIS pool.
+		// `agentchute serve` for THIS pool.
 		if setupProcessAlive(parent) && processSameUser(parent) &&
 			setupCommandMatchesRunnerPool(setupProcessCommandLine(parent), cfg) {
 			return true
@@ -216,7 +216,7 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 			Kind:       "herdr",
 			Hint:       name,
 			Cwd:        p.Cwd,
-			Suggestion: fmt.Sprintf("herdr agent %q is in this pool but not enrolled; relaunch via the `ac` dispatcher (`ac run <wrapper>`) or run `agentchute boot --as %s`", name, name),
+			Suggestion: fmt.Sprintf("herdr agent %q is in this pool but not enrolled; relaunch via the `ac` dispatcher (`ac serve <wrapper>`) or run `agentchute boot --as %s`", name, name),
 		})
 	}
 
@@ -235,7 +235,7 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 			Kind:       "tmux",
 			Hint:       pane,
 			Cwd:        p.Cwd,
-			Suggestion: fmt.Sprintf("tmux pane %s is in this pool but not enrolled; relaunch via the `ac` dispatcher (`ac run <wrapper>`) or run `agentchute boot --as <id>`", pane),
+			Suggestion: fmt.Sprintf("tmux pane %s is in this pool but not enrolled; relaunch via the `ac` dispatcher (`ac serve <wrapper>`) or run `agentchute boot --as <id>`", pane),
 		})
 	}
 
@@ -271,7 +271,7 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 			continue
 		}
 		// Suppress runner children: a wrapper whose ancestry includes an enrolled
-		// runner for this pool was launched BY the runner (agentchute run -> wrapper
+		// runner for this pool was launched BY the runner (agentchute serve -> wrapper
 		// -> ... -> vendor binary); it is not a raw, unenrolled launch. Checked last
 		// so the ppid walk only runs for an in-pool wrapper process (cheapest).
 		if pr.PID > 0 && processAncestryHasEnrolledRunner(pr.PID, cfg) {
@@ -281,7 +281,7 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 			Kind:       "process",
 			Hint:       fmt.Sprintf("pid %d (%s)", pr.PID, filepath.Base(strings.TrimSpace(pr.Command))),
 			Cwd:        pr.Cwd,
-			Suggestion: "wrapper running raw with no agentchute enrollment; relaunch via the `ac` dispatcher (`ac run <wrapper>`) or run `agentchute boot --as <id>`",
+			Suggestion: "wrapper running raw with no agentchute enrollment; relaunch via the `ac` dispatcher (`ac serve <wrapper>`) or run `agentchute boot --as <id>`",
 		})
 	}
 

@@ -252,7 +252,7 @@ func snapshotDir(t *testing.T, dir string) map[string]string {
 }
 
 // Task 3: a wrapper process whose ancestry includes an enrolled runner (the
-// runner launched it: agentchute run -> wrapper -> ... -> vendor binary) must NOT
+// runner launched it: agentchute serve -> wrapper -> ... -> vendor binary) must NOT
 // be reported as unenrolled, while a truly raw wrapper still is.
 func TestScanUnenrolledWrappers_SuppressesRunnerChildren(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
@@ -299,11 +299,11 @@ func TestScanUnenrolledWrappers_SuppressesRunnerChildren(t *testing.T) {
 			return 1
 		}
 	}
-	// The ancestor 5000 is revalidated DIRECTLY: a live, same-user `agentchute run`
+	// The ancestor 5000 is revalidated DIRECTLY: a live, same-user `agentchute serve`
 	// for THIS pool. A recorded runner.json pid is never trusted on its own.
 	setupProcessCommandLine = func(pid int) string {
 		if pid == 5000 {
-			return "/usr/local/bin/agentchute run --vendor openai --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir + " --shim-name ac -- /usr/bin/codex"
+			return "/usr/local/bin/agentchute serve --vendor openai --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir + " --shim-name ac -- /usr/bin/codex"
 		}
 		return ""
 	}
@@ -329,7 +329,7 @@ func TestScanUnenrolledWrappers_SuppressesRunnerChildren(t *testing.T) {
 }
 
 // Security (codex Gate-3 review): a STALE/reused runner.json pid must NOT suppress
-// a raw wrapper. The ancestor pid is recorded but is no longer an agentchute run,
+// a raw wrapper. The ancestor pid is recorded but is no longer an agentchute serve,
 // so it must not count — the raw child is reported.
 func TestScanUnenrolledWrappers_StalePIDDoesNotSuppress(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
@@ -371,7 +371,7 @@ func TestScanUnenrolledWrappers_StalePIDDoesNotSuppress(t *testing.T) {
 	}
 }
 
-// Security (codex Gate-3 review): an ancestor whose cmdline IS an agentchute run
+// Security (codex Gate-3 review): an ancestor whose cmdline IS an agentchute serve
 // for this pool but owned by ANOTHER user must NOT suppress (no cross-user trust).
 func TestScanUnenrolledWrappers_CrossUserAncestorDoesNotSuppress(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
@@ -389,7 +389,7 @@ func TestScanUnenrolledWrappers_CrossUserAncestorDoesNotSuppress(t *testing.T) {
 	}
 	setupProcessCommandLine = func(pid int) string {
 		if pid == 9100 {
-			return "/usr/local/bin/agentchute run --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
+			return "/usr/local/bin/agentchute serve --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
 		}
 		return ""
 	}
@@ -410,7 +410,7 @@ func TestScanUnenrolledWrappers_CrossUserAncestorDoesNotSuppress(t *testing.T) {
 	}
 }
 
-// Task 3 fallback: an ancestor that is an `agentchute run` for this pool (matched
+// Task 3 fallback: an ancestor that is an `agentchute serve` for this pool (matched
 // by cmdline) also suppresses the child, even without a runner.json pid binding.
 func TestScanUnenrolledWrappers_SuppressesViaRunnerCmdlineAncestor(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
@@ -429,7 +429,7 @@ func TestScanUnenrolledWrappers_SuppressesViaRunnerCmdlineAncestor(t *testing.T)
 	}
 	setupProcessCommandLine = func(pid int) string {
 		if pid == 9100 {
-			return "/usr/local/bin/agentchute run --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
+			return "/usr/local/bin/agentchute serve --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
 		}
 		return ""
 	}
@@ -447,7 +447,7 @@ func TestScanUnenrolledWrappers_SuppressesViaRunnerCmdlineAncestor(t *testing.T)
 		t.Fatalf("scanUnenrolledWrappers: %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("a child of an `agentchute run` ancestor must be suppressed, got %+v", got)
+		t.Fatalf("a child of an `agentchute serve` ancestor must be suppressed, got %+v", got)
 	}
 }
 

@@ -202,11 +202,11 @@ Usage:
 Scaffolds the control repo with agentchute init, stops local agentchute
 pollers/runners, clears stale live registrations and repo Herdr names so agents
 re-enroll, installs lifecycle hooks for the selected wrappers, and installs the
-single ac dispatcher (launch a wrapper with: ac run <wrapper>).
+single ac dispatcher (launch a wrapper with: ac serve <wrapper>).
 
 runner is the only supported wake path: the tmux/herdr wake adapters were
 removed in the pull-only redesign. Agents wake by being launched through the
-ac dispatcher (e.g. ac run codex); peers deliver by writing the inbox and never poke.
+ac dispatcher (e.g. ac serve codex); peers deliver by writing the inbox and never poke.
 
 Flags:
   --wake runner          install the runner wake path (the only supported value;
@@ -393,7 +393,7 @@ func setupPromptInput() (io.Reader, func(), error) {
 
 // setupWrapper describes a wrapper that `agentchute setup` knows about. The
 // set is broader than hookWrappers: a wrapper is enrollable through the runner
-// shim (which routes any vendor through `agentchute run`) even when its CLI has
+// shim (which routes any vendor through `agentchute serve`) even when its CLI has
 // no repo hook system. Hookable wrappers additionally have a hookWrappers entry
 // whose lifecycle hooks setup installs; hookless wrappers (e.g. grok, whose CLI
 // exposes no settings.json/hooks.json) rely on the shim wake path alone.
@@ -574,7 +574,7 @@ func setupShimWrappers(wake string, wrappers []string) []string {
 // a single instruction.
 func printSetupCompletionGuidance(w io.Writer, wake string) {
 	_ = wake // runner is the only installable wake path; retained for call-site stability.
-	fmt.Fprintln(w, "Open one new shell (or `hash -r`), restart selected wrappers via `ac run <wrapper>` (e.g. `ac run codex`), then run `agentchute doctor --as <id>`.")
+	fmt.Fprintln(w, "Open one new shell (or `hash -r`), restart selected wrappers via `ac serve <wrapper>` (e.g. `ac serve codex`), then run `agentchute doctor --as <id>`.")
 }
 
 func setupHookableWrappers(wrappers []string) []string {

@@ -13,7 +13,7 @@ import (
 
 type wrapperSpec struct {
 	// Key is the canonical wrapper name used by the `ac` dispatcher
-	// (`ac run <Key>`). Name is the legacy generated-shim filename (ac-*),
+	// (`ac serve <Key>`). Name is the legacy generated-shim filename (ac-*),
 	// retained only until the dispatcher fully replaces generated shims.
 	Key        string
 	Name       string
@@ -30,7 +30,7 @@ var wrapperSpecs = []wrapperSpec{
 	{Key: "grok", Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
 }
 
-// wrapperForToken resolves a dispatcher wrapper token (`ac run <token>`) by
+// wrapperForToken resolves a dispatcher wrapper token (`ac serve <token>`) by
 // canonical Key or alias. It deliberately does NOT match the legacy ac-* Name —
 // the dispatcher addresses wrappers, not generated shim filenames.
 func wrapperForToken(token string) (wrapperSpec, bool) {
@@ -212,7 +212,7 @@ exec "$AGENTCHUTE_BIN" shims exec --name %s --shim-dir %s -- "$@"
 
 // renderDispatcherScript renders the single `ac` dispatcher that setup /
 // `shims install` writes. It is wrapper-agnostic: it execs `agentchute dispatch`,
-// which routes `ac <command>` and `ac run <wrapper>` (parsed in dispatch.go). The
+// which routes `ac <command>` and `ac serve <wrapper>` (parsed in dispatch.go). The
 // --shim-dir argument lets dispatch exclude a stale same-name alias shim inside
 // the shim dir during the transition. Mirrors renderShimScript's AGENTCHUTE_BIN
 // override + shellQuote discipline.
@@ -348,7 +348,7 @@ func cmdShimsExec(args []string) error {
 	}
 	runArgs := []string{
 		agentchuteBin,
-		"run",
+		"serve",
 		"--vendor", spec.Vendor,
 		"--control-repo", cfg.ControlRepo,
 		"--loop-dir", cfg.LoopDir,
@@ -523,7 +523,7 @@ Usage:
 ` + "`shims install`" + ` installs the single ` + "`ac`" + ` dispatcher (default
 $HOME/.agentchute/bin/ac) and removes any legacy per-wrapper ac-* launchers it
 supersedes. The dispatcher routes ` + "`ac <command>`" + ` to agentchute and
-` + "`ac run <wrapper>`" + ` to the runner. --wrapper/--aliases are accepted for
+` + "`ac serve <wrapper>`" + ` to the runner. --wrapper/--aliases are accepted for
 back-compat but no longer generate per-wrapper files.
 `)
 }

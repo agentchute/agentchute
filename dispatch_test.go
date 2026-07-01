@@ -55,11 +55,15 @@ func TestParseDispatch_Run(t *testing.T) {
 		wantGlobal []string
 		wantWArgs  []string
 	}{
-		{"run by key", []string{"run", "codex"}, "codex", nil, []string{}},
-		{"run by alias agy", []string{"run", "agy"}, "gemini", nil, []string{}},
-		{"run with global flag (spaced)", []string{"--as", "x", "run", "codex"}, "codex", []string{"--as", "x"}, []string{}},
-		{"run with global flag (=)", []string{"--as=x", "run", "gemini", "--flag"}, "gemini", []string{"--as=x"}, []string{"--flag"}},
-		{"run with control-repo + loop-dir globals", []string{"--control-repo", "R", "--loop-dir", "D", "run", "codex"}, "codex", []string{"--control-repo", "R", "--loop-dir", "D"}, []string{}},
+		{"serve by key", []string{"serve", "codex"}, "codex", nil, []string{}},
+		{"serve by alias agy", []string{"serve", "agy"}, "gemini", nil, []string{}},
+		{"serve with global flag (spaced)", []string{"--as", "x", "serve", "codex"}, "codex", []string{"--as", "x"}, []string{}},
+		{"serve with global flag (=)", []string{"--as=x", "serve", "gemini", "--flag"}, "gemini", []string{"--as=x"}, []string{"--flag"}},
+		{"serve with control-repo + loop-dir globals", []string{"--control-repo", "R", "--loop-dir", "D", "serve", "codex"}, "codex", []string{"--control-repo", "R", "--loop-dir", "D"}, []string{}},
+		// `run` is the deprecated alias — it must launch identically to `serve`.
+		{"run alias by key", []string{"run", "codex"}, "codex", nil, []string{}},
+		{"run alias by wrapper alias agy", []string{"run", "agy"}, "gemini", nil, []string{}},
+		{"run alias with global flag", []string{"--as", "x", "run", "codex"}, "codex", []string{"--as", "x"}, []string{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -89,13 +93,14 @@ func TestParseDispatch_Errors(t *testing.T) {
 		args    []string
 		wantSub string
 	}{
-		{"bare wrapper requires run", []string{"claude"}, "use `ac run claude`"},
-		{"bare wrapper alias requires run", []string{"agy"}, "use `ac run agy`"},
+		{"bare wrapper requires serve", []string{"claude"}, "use `ac serve claude`"},
+		{"bare wrapper alias requires serve", []string{"agy"}, "use `ac serve agy`"},
 		{"unknown subcommand", []string{"frobnicate"}, "unknown subcommand"},
-		{"run without wrapper", []string{"run"}, "ac run <wrapper>"},
-		{"run unknown wrapper", []string{"run", "nope"}, "unknown wrapper"},
+		{"serve without wrapper", []string{"serve"}, "ac serve <wrapper>"},
+		{"serve unknown wrapper", []string{"serve", "nope"}, "unknown wrapper"},
+		{"run alias without wrapper", []string{"run"}, "ac serve <wrapper>"},
+		{"run alias unknown wrapper", []string{"run", "nope"}, "unknown wrapper"},
 		{"global flag then nothing", []string{"--as", "x"}, "expected a command"},
-		{"serve is deferred, not a launch keyword", []string{"serve", "claude"}, "unknown subcommand"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,14 +116,17 @@ func TestParseDispatch_Errors(t *testing.T) {
 }
 
 func TestParseDispatch_CommandWinsOverWrapperName(t *testing.T) {
-	// "run" is both an agentchute command and the dispatcher launch keyword;
-	// the dispatcher must treat `ac run <wrapper>` as a launch, not cmdRun.
-	plan, err := parseDispatch([]string{"run", "grok"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.Kind != dispatchRun || plan.Wrapper.Key != "grok" {
-		t.Fatalf("ac run grok => kind=%v key=%q; want launch of grok", plan.Kind, plan.Wrapper.Key)
+	// "serve" (and its deprecated alias "run") are both agentchute commands and the
+	// dispatcher launch keyword; the dispatcher must treat `ac serve <wrapper>` /
+	// `ac run <wrapper>` as a launch, not as cmdServe routed through the command path.
+	for _, verb := range []string{"serve", "run"} {
+		plan, err := parseDispatch([]string{verb, "grok"})
+		if err != nil {
+			t.Fatalf("ac %s grok: %v", verb, err)
+		}
+		if plan.Kind != dispatchRun || plan.Wrapper.Key != "grok" {
+			t.Fatalf("ac %s grok => kind=%v key=%q; want launch of grok", verb, plan.Kind, plan.Wrapper.Key)
+		}
 	}
 }
 
@@ -137,7 +145,7 @@ func TestParseDispatch_Help(t *testing.T) {
 func TestCommandHandlersCoverExpected(t *testing.T) {
 	// Guard against accidental removal: the dispatcher's known-command set must
 	// include the core operational commands.
-	for _, name := range []string{"check", "send", "ack", "doctor", "setup", "run", "status", "gate", "boot"} {
+	for _, name := range []string{"check", "send", "ack", "doctor", "setup", "serve", "run", "status", "gate", "boot"} {
 		if commandHandlers[name] == nil {
 			t.Errorf("commandHandlers missing %q", name)
 		}
@@ -221,7 +229,7 @@ func TestBuildDispatchRunArgs_SingleAuthoritativePair(t *testing.T) {
 	got := buildDispatchRunArgs("/bin/agentchute", "openai", []string{"--as", "reviewer"},
 		"/repo", "/repo/.agentchute/loop", []string{"/usr/bin/codex", "resume"})
 	want := []string{
-		"/bin/agentchute", "run", "--vendor", "openai", "--as", "reviewer",
+		"/bin/agentchute", "serve", "--vendor", "openai", "--as", "reviewer",
 		"--control-repo", "/repo", "--loop-dir", "/repo/.agentchute/loop", "--shim-name", "ac", "--",
 		"/usr/bin/codex", "resume",
 	}

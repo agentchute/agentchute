@@ -211,7 +211,7 @@ func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 	}
 
 	withCwd(t, root, func() {
-		if err := cmdRun([]string{
+		if err := cmdServe([]string{
 			"--as", "codex",
 			"--vendor", "openai",
 			"--control-repo", root,
@@ -220,7 +220,7 @@ func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 			"--idle-grace", "100ms",
 			"--", script,
 		}); err != nil {
-			t.Fatalf("cmdRun err = %v", err)
+			t.Fatalf("cmdServe err = %v", err)
 		}
 	})
 

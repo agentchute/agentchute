@@ -1,6 +1,6 @@
 // agentchute — pull-only, inbox-based agent coordination via markdown files.
 // Senders only write a recipient's inbox; nobody pokes a recipient. A loopless
-// wrapper is supervised by the runner (`agentchute run`), a per-agent PTY
+// wrapper is supervised by the runner (`agentchute serve`), a per-agent PTY
 // supervisor that polls the agent's own inbox and injects a `check inbox` cue
 // (see AGENTCHUTE.md §8).
 //
@@ -34,7 +34,7 @@ Commands:
   ack            commit messages claimed by check (archive the .claimed residue)
   pending        peek unread messages (read-only; safe for lifecycle hooks)
   default-id     print the contextual default agent id for a wrapper/vendor
-  run            launch a wrapper under the PTY runner (serve lease + inbox polling + check-inbox injection; pull-only, no wake socket)
+  serve          launch a wrapper under the PTY runner (serve lease + inbox polling + check-inbox injection; pull-only, no wake socket). "run" is a deprecated alias (removed in v0.10.0)
   setup          one-command control-repo setup; installs the runner wake path (the only supported path)
   update         self-update the binary to a release, then re-sync this repo's setup
   self-check     refresh own registration/last_seen and .live presence (pull-only: no wake target to reconcile)

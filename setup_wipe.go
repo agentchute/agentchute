@@ -561,7 +561,7 @@ func scanWipeLiveSignals(cfg *loop.Config, agentIDs []string) []string {
 			if setupLocalHost(st.Host) && st.RunnerPID > 0 && setupProcessAlive(st.RunnerPID) {
 				cmdline := setupProcessCommandLine(st.RunnerPID)
 				// Runner attribution: runner.json binds this pid to <id>, the pid is
-				// alive, and the cmdline is an `agentchute run` for THIS pool. A runner
+				// alive, and the cmdline is an `agentchute serve` for THIS pool. A runner
 				// has NO --as (contextual id), so we must NOT require the agent id in the
 				// cmdline — doing so reported every live runner as ambiguous. The poller
 				// case below keeps the agent-id check (pollers DO carry --as).

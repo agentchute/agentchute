@@ -86,7 +86,7 @@ type Registration struct {
 
 // WI-E3 launch-provenance values for Registration.LaunchedBy. Advisory only.
 const (
-	LaunchedByRunner = "runner" // started under `agentchute run` (the runner owns the lane).
+	LaunchedByRunner = "runner" // started under `agentchute serve` (the runner owns the lane).
 	LaunchedByHook   = "hook"   // a SessionStart-class lifecycle hook ran boot/self-check.
 	LaunchedByManual = "manual" // a hand-run `agentchute register` (or raw/passthrough enroll).
 	LaunchedByPoller = "poller" // enrolled/refreshed by a recipient-side poller.

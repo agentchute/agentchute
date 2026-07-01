@@ -14,7 +14,7 @@
 
 A small convention for two or more agents (humans, AI assistants, or both) to coordinate through **shared inboxes**. Designed for explicit handoffs: agent X writes a message into agent Y's inbox; Y picks it up on its own cadence.
 
-Coordination is **pull-only**. A sender's sole responsibility is durable delivery — write the file. A sender NEVER pokes or wakes a recipient. Each recipient discovers its own mail by polling, and a wrapper that has no native polling loop is launched under the reference CLI's **runner** (`agentchute run`), a per-agent PTY supervisor that polls the agent's own inbox and injects a `check inbox` cue into the child when new mail arrives. This is a correctness choice, not a simplicity one: parent-child supervision is ground truth, whereas a published wake target (a socket, a tmux pane, a reachability cache) goes stale and lies. The previous push apparatus (watchdog, sender-side wake, wake adapters, reachability cache) is **deleted**.
+Coordination is **pull-only**. A sender's sole responsibility is durable delivery — write the file. A sender NEVER pokes or wakes a recipient. Each recipient discovers its own mail by polling, and a wrapper that has no native polling loop is launched under the reference CLI's **runner** (`agentchute serve`), a per-agent PTY supervisor that polls the agent's own inbox and injects a `check inbox` cue into the child when new mail arrives. This is a correctness choice, not a simplicity one: parent-child supervision is ground truth, whereas a published wake target (a socket, a tmux pane, a reachability cache) goes stale and lies. The previous push apparatus (watchdog, sender-side wake, wake adapters, reachability cache) is **deleted**.
 
 ### Protocol primitives (implementation-agnostic)
 
@@ -33,7 +33,7 @@ The protocol is a small set of implementation-agnostic primitives. Conforming im
 The reference CLI maps these primitives onto local filesystem choices on a shared filesystem:
 - **Inbox medium**: `.md` files under a fixed loop directory (`.agentchute/loop/inbox/<id>/`).
 - **Transport**: unique-temp + atomic `link()`-no-clobber (NFS-safe; `EEXIST` = already-delivered).
-- **Wake**: none on the wire. A loopless wrapper is supervised by `agentchute run`, which injects `[agentchute:run] check inbox` into the child's PTY when its OWN inbox poll sees new mail. The runner is local to the agent it supervises; it is not a sender-reachable endpoint.
+- **Wake**: none on the wire. A loopless wrapper is supervised by `agentchute serve`, which injects `[agentchute] check inbox` into the child's PTY when its OWN inbox poll sees new mail. The runner is local to the agent it supervises; it is not a sender-reachable endpoint.
 
 These are reference choices, not protocol requirements. Conforming implementations can swap the inbox medium and transport (see [`EXTENSIONS.md`](EXTENSIONS.md) and the alternate `log` binding in [`conformance/`](conformance/)) as long as no-overwrite per-recipient delivery and the seven invariants hold.
 
@@ -41,7 +41,7 @@ These are reference choices, not protocol requirements. Conforming implementatio
 
 ### In scope (v1)
 - **Pull-only inbox coordination** through per-recipient inboxes (§6).
-- **Per-agent supervision.** A loopless wrapper runs under `agentchute run` (PTY supervisor) for inbox polling and `check inbox` injection. No sender-side wake.
+- **Per-agent supervision.** A loopless wrapper runs under `agentchute serve` (PTY supervisor) for inbox polling and `check inbox` injection. No sender-side wake.
 - **Small shared-FS pool.** 2 to ~10 agents sharing one filesystem (single host, or multi-host over a shared/network mount). Beyond that, routing/role-election is required (v2).
 - **Substrate-defined pool locator.** _Reference CLI: a repo containing `AGENTCHUTE.md` and a `.agentchute/loop` directory._
 - **Free-form messages with optional structured envelope** (§6.4).
@@ -204,7 +204,7 @@ Identity is pool-scoped: `(pool_locator, agent_id)`. A physical process particip
 There is **no wake on the wire** and no sender-side poke. Discovery is recipient-side polling; the only question is what drives a given wrapper's poll.
 
 - **Native-loop wrappers** poll their own inbox on their own cadence (or at lifecycle boundaries via hooks).
-- **Loopless wrappers** run under the **runner** — `agentchute run -- <wrapper>` — a per-agent PTY supervisor. It launches the child under a PTY, acquires the serve lease (§5.4), polls the agent's OWN inbox each tick, writes `.live`, and injects `[agentchute:run] check inbox` into the child's PTY when new mail appears (respecting an idle/injection window so it doesn't interrupt mid-turn). It uses per-vendor submit bytes (e.g. bracketed-paste + enhanced-enter for codex) so the cue actually submits.
+- **Loopless wrappers** run under the **runner** — `agentchute serve -- <wrapper>` — a per-agent PTY supervisor. It launches the child under a PTY, acquires the serve lease (§5.4), polls the agent's OWN inbox each tick, writes `.live`, and injects `[agentchute] check inbox` into the child's PTY when new mail appears (respecting an idle/injection window so it doesn't interrupt mid-turn). It uses per-vendor submit bytes (e.g. bracketed-paste + enhanced-enter for codex) so the cue actually submits.
 
 The leading bracket in the injected cue is machine metadata; the model-facing instruction is `check inbox`. `setup --wake` installs the runner path only; the former tmux/herdr wake adapters and the runner receive-socket were removed in the pull-only redesign.
 
@@ -252,7 +252,7 @@ One-release compatibility carried from v0.8.0. Each has an in-code `// COMPAT(re
 
 | Item | Location | Target | Gate |
 |------|----------|--------|------|
-| `run` verb → `serve` | `run.go` | `serve` ships v0.8.9 with `run` as a deprecated alias; alias removed the release after | `serve` shipped + one release elapsed |
+| `run` verb → `serve` alias removal | `dispatch.go` (`commandHandlers["run"]`), `run.go` | v0.10.0 — `serve` shipped in v0.9.0 with `run` as a deprecated working alias (no stderr/stdout deprecation spam; the docs/help carry it); delete the `"run": cmdServe` alias entry and its `COMPAT` marker | one release elapsed since v0.9.0 (v0.10.0 branch-cut) |
 | `renderShimScript` (legacy shim generator) | `shims.go` | v0.8.9 | **none** — zero production callers; migrate its 3 test-fixture callers to inline legacy content |
 | `selectShimSpecs`/`shimInstallNames` selectors → static legacy-name list | `shims.go`, `setup.go` | v0.8.9 | **none** — behavior-preserving swap; the cleanup only needs the legacy `ac-*` name set, not generation logic |
 | `shims install --wrapper`/`--aliases` + `setup --aliases` no-op flags | `shims.go`, `setup.go` | after cutover | live pool confirmed running the `ac` dispatcher (v0.8.8+), not merely "dispatcher code exists" — old scripts/muscle-memory may still pass them |

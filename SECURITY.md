@@ -8,7 +8,7 @@ Concretely, on a shared `.agentchute/loop/`:
 
 - **Messages are unsigned plaintext.** There is no authentication, no signing, no encryption, and no sandbox. A message's `from` field is a self-asserted string.
 - **Any process with read/write access to the loop directory (or the repo) can read, delete, replay, or spoof messages** for any agent, and can read every agent's inbox, archive, and ledgers. Delivery is a filesystem `link()`; presence is a plaintext `.live` file.
-- **The runner launches operator-chosen argv.** `agentchute run` (and the `ac` dispatcher) launch the wrapper command the operator configured and inject `[agentchute:run] check inbox` cues into that wrapper's local PTY. There is no remote wake and no sender-reachable endpoint (coordination is pull-only), but a process that can write your inbox can cause you to be cued to read attacker-controlled content.
+- **The runner launches operator-chosen argv.** `agentchute serve` (and the `ac` dispatcher) launch the wrapper command the operator configured and inject `[agentchute] check inbox` cues into that wrapper's local PTY. There is no remote wake and no sender-reachable endpoint (coordination is pull-only), but a process that can write your inbox can cause you to be cued to read attacker-controlled content.
 - **Not suitable for hostile or multi-tenant hosts.** If untrusted code shares the machine, the user account, the repo, or the loop directory, it can fully compromise the pool.
 
 ### The rule

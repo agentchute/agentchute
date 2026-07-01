@@ -164,7 +164,7 @@ func cmdSend(args []string) error {
 	// sender crash between the durable seq commit and the link loses the
 	// allocated seq as a legal gap (at-most-once for this message). Acceptable
 	// for the transition. serveToken rides AGENTCHUTE_SERVE_TOKEN (Gate 6b): a
-	// send from a child launched under `agentchute run` carries the runner's
+	// send from a child launched under `agentchute serve` carries the runner's
 	// active serve-lease fence, so a write from a fenced (reclaimed) agent fails
 	// closed (AllocateSeq VerifyFence -> ErrFenced). Empty env (no serve lease) =>
 	// unfenced, the transitional off-bus mode (unchanged behavior).

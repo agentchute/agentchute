@@ -23,7 +23,7 @@ const (
 	defaultRunnerIntervalSeconds = 5
 	defaultRunnerIdleGrace       = 2 * time.Second
 	defaultRunnerBusyGrace       = 30 * time.Second
-	defaultRunnerPrompt          = "[agentchute:run] check inbox"
+	defaultRunnerPrompt          = "[agentchute] check inbox"
 
 	bracketedPasteStart = "\x1b[200~"
 	bracketedPasteEnd   = "\x1b[201~"
@@ -54,8 +54,8 @@ type runnerOptions struct {
 	ShimName        string // ac-* launcher shim that started this lane (provenance).
 }
 
-func cmdRun(args []string) error {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+func cmdServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
 	var opts runnerOptions
@@ -180,7 +180,7 @@ func runHelpErr() error {
 
 func runHelp() string {
 	return strings.TrimSpace(`
-Usage: agentchute run --vendor <vendor> [--as <id>] [flags] -- <wrapper> [args...]
+Usage: agentchute serve --vendor <vendor> [--as <id>] [flags] -- <wrapper> [args...]
 
 Launch an interactive wrapper under agentchute's PTY runner. The runner owns
 registration, last_seen heartbeat updates, the serve lease (id-uniqueness +
@@ -191,7 +191,7 @@ Flags:
   --vendor <vendor>          vendor or origin (anthropic, openai, google, xai)
   --interval <seconds>       inbox poll interval (minimum 5; default 5)
   --interrupt-policy <mode>  after-idle|after-grace|always (default after-idle; idle is heuristic)
-  --prompt <text>            prompt injected on wake (default "[agentchute:run] check inbox")
+  --prompt <text>            prompt injected on wake (default "[agentchute] check inbox")
   --idle-grace <duration>    quiet period before prompt injection (default 2s)
   --busy-grace <duration>    grace before Ctrl-C in after-grace mode (default 30s)
   --control-repo <p>         control repo path (or $AGENTCHUTE_CONTROL_REPO)
@@ -276,7 +276,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	if rawEnabled {
 		defer func() {
 			if err := restoreTerminal(); err != nil {
-				fmt.Fprintf(os.Stderr, "agentchute run: restore terminal: %v\n", err)
+				fmt.Fprintf(os.Stderr, "agentchute serve: restore terminal: %v\n", err)
 			}
 		}()
 	}
@@ -299,7 +299,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	rt.lastOutputUnixNano.Store(nowUnix)
 	rt.lastInputUnixNano.Store(nowUnix)
 	if err := rt.saveState(); err != nil {
-		fmt.Fprintf(os.Stderr, "agentchute run: write runner state: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentchute serve: write runner state: %v\n", err)
 	}
 
 	defer func() {
@@ -315,7 +315,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		// (another serve owns the id); releasing would be a no-op and must not
 		// delete the new owner's claim, so it is not an error to report.
 		if err := loop.ReleaseLease(rt.lease); err != nil && !errors.Is(err, loop.ErrFenced) {
-			fmt.Fprintf(os.Stderr, "agentchute run: release serve lease: %v\n", err)
+			fmt.Fprintf(os.Stderr, "agentchute serve: release serve lease: %v\n", err)
 		}
 	}()
 
@@ -442,15 +442,15 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	if r.lease != nil {
 		if err := loop.RenewLease(r.lease); err != nil {
 			if errors.Is(err, loop.ErrFenced) {
-				fmt.Fprintf(os.Stderr, "agentchute run: serve lease reclaimed (fenced); shutting down\n")
+				fmt.Fprintf(os.Stderr, "agentchute serve: serve lease reclaimed (fenced); shutting down\n")
 				r.requestShutdown(syscall.SIGTERM)
 				return
 			}
-			fmt.Fprintf(os.Stderr, "agentchute run: renew serve lease: %v\n", err)
+			fmt.Fprintf(os.Stderr, "agentchute serve: renew serve lease: %v\n", err)
 		}
 	}
 	if err := loop.UpdateLastSeen(r.cfg, r.opts.AgentID, now); err != nil {
-		fmt.Fprintf(os.Stderr, "agentchute run: update last_seen: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentchute serve: update last_seen: %v\n", err)
 	}
 	// Track a SEEN-filename snapshot across BOTH parsed messages and skipped
 	// (malformed/unparseable) files. Lexicographic-newest tracking misses two
@@ -461,7 +461,7 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	// filename not already in the set is unseen mail and must enqueue a wake.
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(r.cfg.AgentInboxDir(r.opts.AgentID))
 	if err != nil && !errors.Is(err, loop.ErrInboxMissing) {
-		fmt.Fprintf(os.Stderr, "agentchute run: list inbox: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentchute serve: list inbox: %v\n", err)
 	}
 	r.mu.Lock()
 	if r.seenInboxFiles == nil {
@@ -488,7 +488,7 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	r.lastPoll = now
 	r.mu.Unlock()
 	if err := r.saveState(); err != nil {
-		fmt.Fprintf(os.Stderr, "agentchute run: write runner state: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentchute serve: write runner state: %v\n", err)
 	}
 }
 
@@ -562,7 +562,7 @@ func (r *runnerRuntime) isIdle() bool {
 
 func (r *runnerRuntime) injectPrompt() {
 	if err := r.writePTY(promptInjectionBytes(r.opts)); err != nil {
-		fmt.Fprintf(os.Stderr, "agentchute run: inject prompt: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentchute serve: inject prompt: %v\n", err)
 		return
 	}
 	now := time.Now().UTC()
@@ -603,7 +603,7 @@ func (r *runnerRuntime) copyPTYOutput() {
 		if n > 0 {
 			r.lastOutputUnixNano.Store(time.Now().UnixNano())
 			if _, werr := os.Stdout.Write(buf[:n]); werr != nil {
-				fmt.Fprintf(os.Stderr, "agentchute run: write stdout: %v\n", werr)
+				fmt.Fprintf(os.Stderr, "agentchute serve: write stdout: %v\n", werr)
 				return
 			}
 		}

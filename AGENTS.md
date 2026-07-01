@@ -4,7 +4,7 @@ This file follows the [AGENTS.md](https://agents.md) convention. Any AI agent �
 
 ---
 
-<!-- agentchute-enrollment v18 begin -->
+<!-- agentchute-enrollment v19 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 **1. Setup / Startup Path**
@@ -14,16 +14,16 @@ Run `agentchute setup` once per control repo. `runner` is the only supported wak
 agentchute setup --wake runner --wrappers all --yes
 ```
 
-> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the single `ac` dispatcher (`ac run <wrapper>`).
+> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the single `ac` dispatcher (`ac serve <wrapper>`; `run` is a deprecated alias for `serve`, removed in v0.10.0).
 
-Start sessions with `ac run <wrapper>` from a control repo. The dispatcher routes through `agentchute run`, which registers you, acquires a serve lease (id-uniqueness + fencing token), refreshes `last_seen` and your `.live` presence, polls your OWN inbox, exports your resolved id as `AGENTCHUTE_AGENT_ID` into the wrapper, and injects `[agentchute:run] check inbox` when mail arrives. The runner publishes no wake target — peers never poke it (pull-only). Hookless wrappers such as Grok still need the dispatcher for startup because they have no lifecycle hook that can run `boot`; `ac run <wrapper>` enrolls them. Treat the bracketed prefix as machine metadata: the injection is only a CUE — you must actually RUN `agentchute check --as "$AGENTCHUTE_AGENT_ID"` to claim mail (then `ack` to commit); the runner does NOT consume it for you.
+Start sessions with `ac serve <wrapper>` from a control repo (`run` is a deprecated alias for `serve`, removed in v0.10.0). The dispatcher routes through `agentchute serve`, which registers you, acquires a serve lease (id-uniqueness + fencing token), refreshes `last_seen` and your `.live` presence, polls your OWN inbox, exports your resolved id as `AGENTCHUTE_AGENT_ID` into the wrapper, and injects `[agentchute] check inbox` when mail arrives. The runner publishes no wake target — peers never poke it (pull-only). Hookless wrappers such as Grok still need the dispatcher for startup because they have no lifecycle hook that can run `boot`; `ac serve <wrapper>` enrolls them. Treat the bracketed prefix as machine metadata: the injection is only a CUE — you must actually RUN `agentchute check --as "$AGENTCHUTE_AGENT_ID"` to claim mail (then `ack` to commit); the runner does NOT consume it for you.
 
 **The project is the communication boundary**: agents by default only see and talk to peers in the same discovered project pool. Unrelated projects on one host or tmux server are isolated because each project has its own pool and, when identity is not explicit, the CLI derives project-scoped IDs from the folder name (for example, `codex-agentchute`).
 
 If a session starts and you do not see agentchute boot/enrolled context, run the wrapper with its vendor so the CLI can derive the contextual identity:
 
 ```sh
-agentchute run --vendor <vendor> -- <wrapper>
+agentchute serve --vendor <vendor> -- <wrapper>
 ```
 
 As a manual fallback, pin your identity ONCE and then enroll under it before doing any work:
@@ -65,11 +65,11 @@ agentchute doctor --as <your-id>
 ```
 
 **2. Lifecycle Hooks (Required for Context and Gates)**
-`agentchute setup` installs lifecycle hooks for hook-capable wrappers. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox context per turn and block finish while unread mail remains. Hookless wrappers rely on the `ac` dispatcher (`ac run <wrapper>`) for startup enrollment.
+`agentchute setup` installs lifecycle hooks for hook-capable wrappers. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox context per turn and block finish while unread mail remains. Hookless wrappers rely on the `ac` dispatcher (`ac serve <wrapper>`) for startup enrollment.
 
 **3. Recipient Polling Fallback**
-Senders only deliver to your inbox (pull-only; nobody pokes you). If you are not launched through `agentchute run`, keep recipient polling alive so your `.live` presence stays fresh:
-- **Runner default**: `agentchute run --vendor <vendor> -- <wrapper>` polls your own inbox, keeps `.live` fresh, and injects the `check inbox` cue.
+Senders only deliver to your inbox (pull-only; nobody pokes you). If you are not launched through `agentchute serve`, keep recipient polling alive so your `.live` presence stays fresh:
+- **Runner default**: `agentchute serve --vendor <vendor> -- <wrapper>` polls your own inbox, keeps `.live` fresh, and injects the `check inbox` cue.
 - **Hook-managed fallback**: `agentchute poller ensure --as <id> --vendor <vendor>` starts/verifies heartbeat-only `poller run` and writes `state/<agent_id>/poller.json` + `.live`; it does not launch wrappers or consume mail unless explicitly run with `--launch`.
 - **Native loops**: if your wrapper has a recurring task feature, it may replace `poller run` only if it keeps a fresh heartbeat.
 
@@ -85,13 +85,13 @@ agentchute gate --before finish --as <your-id>
 The gate (read-only) blocks `finish` on unread direct mail or an unregistered self; it does NOT check `.live` at `finish`/`continue` (a stale/absent `.live` blocks only the `commit`/`release` gates). Reply obligations are asker-owned only: outstanding/expired `.owed` obligations surface as non-blocking warnings, and a `reply_required` message never blocks the recipient. Clear the gate by consuming mail with `agentchute check --as <your-id>` (then `ack`); reply to any message that needs one with `agentchute send --reply-to <ref>`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v18 end -->
+<!-- agentchute-enrollment v19 end -->
 
 ---
 
 ## What this is
 
-**agentchute** is a tiny **pull-only** coordination protocol for AI agents: per-recipient inboxes where senders only ever write files and never poke a recipient. A loopless wrapper is supervised by the runner (`agentchute run`), a per-agent PTY supervisor that polls the agent's own inbox and injects a `check inbox` cue. The reference implementation stores those inboxes as markdown files on a shared filesystem; alternate transports (queues, object stores, HTTP) are protocol-compatible but don't ship in the reference CLI (see [`EXTENSIONS.md`](EXTENSIONS.md)). Small Go codebase, mostly stdlib, with one PTY dependency for the runner. Ships via `go install` and pre-built binaries on GitHub Releases. MIT.
+**agentchute** is a tiny **pull-only** coordination protocol for AI agents: per-recipient inboxes where senders only ever write files and never poke a recipient. A loopless wrapper is supervised by the runner (`agentchute serve`), a per-agent PTY supervisor that polls the agent's own inbox and injects a `check inbox` cue. The reference implementation stores those inboxes as markdown files on a shared filesystem; alternate transports (queues, object stores, HTTP) are protocol-compatible but don't ship in the reference CLI (see [`EXTENSIONS.md`](EXTENSIONS.md)). Small Go codebase, mostly stdlib, with one PTY dependency for the runner. Ships via `go install` and pre-built binaries on GitHub Releases. MIT.
 
 The pitch is intentionally narrow: agents sharing one inbox medium (typically running side-by-side in tmux panes on the reference CLI's shared filesystem; optionally on different machines via a network mount) get a markdown-based mailbox so they stop copy-pasting handoffs by hand. That's the entire scope.
 
@@ -102,7 +102,7 @@ The pitch is intentionally narrow: agents sharing one inbox medium (typically ru
 3. `AGENTCHUTE.md` — the protocol spec. Source of truth for any reimplementation.
 4. `EXTENSIONS.md` — community-extension space (cross-folder enrollment, alternate substrates/transports, cross-pool agents); informs which changes belong in the core spec vs. an extension.
 5. `CONTRIBUTING.md` — PR process, style details, scope criteria, bug-report template.
-6. `examples/` — start at [`examples/README.md`](examples/README.md) (the index) and `examples/hooks/` (the per-wrapper lifecycle hook templates the installer wires). The tmux/wake/watchdog-era walkthrough scripts were removed in the pull-only redesign; the runner (`ac run <wrapper>`) flow lives in the root README quickstart.
+6. `examples/` — start at [`examples/README.md`](examples/README.md) (the index) and `examples/hooks/` (the per-wrapper lifecycle hook templates the installer wires). The tmux/wake/watchdog-era walkthrough scripts were removed in the pull-only redesign; the runner (`ac serve <wrapper>`) flow lives in the root README quickstart.
 
 ## Working rules
 

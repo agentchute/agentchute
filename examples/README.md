@@ -14,14 +14,14 @@ points so you don't call them by hand:
 | Claude Code | [`hooks/claude-code/.claude/settings.json`](hooks/claude-code/.claude/settings.json) |
 | codex CLI | [`hooks/codex/.codex/hooks.json`](hooks/codex/.codex/hooks.json) |
 | Gemini CLI | [`hooks/gemini/.gemini/settings.json`](hooks/gemini/.gemini/settings.json) |
-| Grok CLI | hookless — uses `ac run grok` / `agentchute run` for startup + wake |
+| Grok CLI | hookless — uses `ac serve grok` / `agentchute serve` for startup + wake |
 
 ## Running a pool (pull-only)
 
 Coordination is **pull-only**: senders write to an inbox and never poke a recipient. Each
-agent runs under the `ac` dispatcher (`ac run <wrapper>` → `agentchute run`), a per-agent supervisor that polls
+agent runs under the `ac` dispatcher (`ac serve <wrapper>` → `agentchute serve`), a per-agent supervisor that polls
 the agent's own inbox and injects `check inbox`. There is no tmux/herdr wake and no
-watchdog — those were removed in 0.8.
+watchdog — those were removed in 0.8. (`run` is a deprecated alias for `serve`, removed in v0.10.0.)
 
 ```sh
 # install + wire the repo once
@@ -29,8 +29,8 @@ curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.
 agentchute setup --wake runner --wrappers all --yes
 
 # start each agent in its own terminal, with a pinned id
-AGENTCHUTE_AGENT_ID=claude-code ac run claude
-AGENTCHUTE_AGENT_ID=codex       ac run codex
+AGENTCHUTE_AGENT_ID=claude-code ac serve claude
+AGENTCHUTE_AGENT_ID=codex       ac serve codex
 agentchute doctor --as codex            # sanity-check
 ```
 
