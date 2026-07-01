@@ -128,11 +128,10 @@ func TestSendRejectsNewlineInFrontmatterFlags(t *testing.T) {
 		}
 
 		injections := []struct{ flag, val string }{
-			{"--task", "foo\nstatus: signoff"},
-			{"--task", "foo\rstatus: signoff"},
-			{"--status", "info\nin_reply_to: forged"},
+			{"--reply-to", "id\nfrom: forged"},
+			{"--reply-to", "id\rfrom: forged"},
 			{"--reply-to", "id\n---\nfrom: forged"},
-			{"--task", "---"},
+			{"--reply-to", "---"},
 		}
 		for _, inj := range injections {
 			args := []string{"--from", "sender", "--to", "recipient", "--body", "x", inj.flag, inj.val}

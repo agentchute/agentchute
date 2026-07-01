@@ -28,13 +28,11 @@ func cmdSend(args []string) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var fromID, toID, taskField, statusField, body, replyTo, controlRepo, loopDir string
+	var fromID, toID, body, replyTo, controlRepo, loopDir string
 	var ask, jsonOut bool
 	var replyBy time.Duration
 	fs.StringVar(&fromID, "from", "", "sender agent id (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&toID, "to", "", "recipient agent id")
-	fs.StringVar(&taskField, "task", "", "short task descriptor for the message frontmatter (recommended)")
-	fs.StringVar(&statusField, "status", "", "message status frontmatter field (e.g., request, signoff, info)")
 	fs.StringVar(&body, "body", "", "message body markdown; if empty, body is read from stdin")
 	fs.StringVar(&replyTo, "reply-to", "", "prior message ref this is replying to (emitted as in_reply_to; discharges the asker's .owed obligation when they consume it)")
 	fs.BoolVar(&ask, "ask", false, "set reply_required: true and prepend `## ASK` heading to the body")
@@ -59,10 +57,8 @@ func cmdSend(args []string) error {
 	}
 
 	// Keep short-string flags one-line even though loop.ComposeMessage quotes
-	// YAML-sensitive scalars. These fields are meant to be compact metadata.
+	// YAML-sensitive scalars. This field is meant to be compact metadata.
 	for _, fld := range []struct{ name, val string }{
-		{"--task", taskField},
-		{"--status", statusField},
 		{"--reply-to", replyTo},
 	} {
 		if err := rejectFrontmatterInjection(fld.name, fld.val); err != nil {
@@ -140,7 +136,7 @@ func cmdSend(args []string) error {
 		return fmt.Errorf("stat own registration: %w", err)
 	}
 
-	content := loop.ComposeMessage(now, fromID, toID, taskField, statusField, replyTo, body)
+	content := loop.ComposeMessage(fromID, replyTo, body)
 	if ask {
 		content = applyReplyRequiredFrontmatter(content)
 	}
@@ -273,10 +269,12 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 	fm := rest[:closeIdx]
 	body := rest[closeIdx:]
 	// Line/key-scoped idempotence: scanning for the substring
-	// "reply_required:" anywhere in fm would false-positive when a task or
-	// status value happens to contain that text (e.g.
-	// `task: "reply_required: audit"`). Walk the frontmatter line by line
-	// and check only the bare key (codex review on 89ad2d9).
+	// "reply_required:" anywhere in fm would false-positive when
+	// in_reply_to's value contains that text — e.g. a --reply-to value of
+	// "reply_required: audit" is quoted onto one line (`in_reply_to:
+	// "reply_required: audit"`) but still contains the substring. Walk the
+	// frontmatter line by line and check only the bare key (codex review
+	// on 89ad2d9; see TestSendAskWithMisleadingReplyToValueStillSetsFrontmatter).
 	for _, line := range strings.Split(fm, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "reply_required:") {
@@ -288,7 +286,7 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 
 func sendUsage(err error) error {
 	return fmt.Errorf(`%w
-usage: agentchute send --from <sender> --to <recipient> [--task <text>] [--status <status>] [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
+usage: agentchute send --from <sender> --to <recipient> [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
 
   Ways to provide the body (pick one):
     --body "literal text"             short replies

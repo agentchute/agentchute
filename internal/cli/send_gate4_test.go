@@ -14,7 +14,7 @@ func TestSendWritesSeqFormat(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	withCwd(t, root, func() {
 		t.Setenv("AGENTCHUTE_AGENT_ID", "codex")
-		if err := cmdSend([]string{"--to", "claude-code", "--task", "gate4 seq write", "--body", "hi"}); err != nil {
+		if err := cmdSend([]string{"--to", "claude-code", "--body", "hi"}); err != nil {
 			t.Fatal(err)
 		}
 	})

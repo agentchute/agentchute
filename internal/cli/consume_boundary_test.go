@@ -70,7 +70,7 @@ func TestConsumeBoundary_ClaimRedeliverAck(t *testing.T) {
 
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "alice", "--to", "bob",
-			"--task", "greet", "--body", "hello bob"}); err != nil {
+			"--body", "hello bob"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -186,7 +186,7 @@ func TestOwedFlip_RecordClearExpireGateWarn(t *testing.T) {
 	// alice ASKS bob → alice records an owed obligation keyed (to=bob, from=alice, seq=1).
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "alice", "--to", "bob",
-			"--task", "review", "--ask", "--body", "please review"}); err != nil {
+			"--ask", "--body", "please review"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -207,7 +207,7 @@ func TestOwedFlip_RecordClearExpireGateWarn(t *testing.T) {
 	// bob replies, echoing the ref as in_reply_to (via --reply-to).
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "bob", "--to", "alice",
-			"--task", "review-reply", "--reply-to", ref, "--body", "done"}); err != nil {
+			"--reply-to", ref, "--body", "done"}); err != nil {
 			t.Fatal(err)
 		}
 	})

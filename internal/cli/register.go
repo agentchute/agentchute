@@ -358,7 +358,7 @@ func cmdRegister(args []string) error {
 	}
 
 	if announce {
-		ar, err := loop.AnnounceEnrollment(cfg, reg, now)
+		ar, err := loop.AnnounceEnrollment(cfg, reg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: announce failed: %v\n", err)
 		} else {

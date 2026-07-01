@@ -5,25 +5,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // ComposeMessage builds an outbound message's bytes (frontmatter + body)
 // per AGENTCHUTE.md §6.4. Body is markdown; a trailing newline is normalized
 // regardless of the input.
 //
-// protocol-v2 envelope cut (TEAM-DECISION §4): the emitted envelope is now
-// `from` plus an optional `in_reply_to`. `to` is dropped — the inbox directory
-// location encodes the recipient — and the `task`/`status` workflow-vocabulary fields move to a
-// body convention, so neither is emitted. The `to`/`task`/`status` parameters
-// are retained on the signature for one release so callers (send, announce,
-// corrective) need no change during the transition; the inbox parser still
-// READS all of these from any older message in flight.
-func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string) []byte {
-	_ = now    // no longer seeds a message_id (dropped v0.9.0); param kept for signature stability.
-	_ = to     // recipient is encoded by the inbox directory; not emitted (compat param).
-	_ = task   // workflow vocabulary → body convention; not emitted (compat param).
-	_ = status // workflow vocabulary → body convention; not emitted (compat param).
+// protocol-v2 envelope (TEAM-DECISION §4, P1 residue cleanup): the envelope is
+// `from` plus an optional `in_reply_to`. `to` is encoded by the inbox
+// directory, not emitted; a message's subject, if any, is a body convention
+// (first Markdown line), not a typed field. `now`/`to`/`task`/`status` were
+// compat-only parameters (unused; the envelope stopped emitting them in
+// v0.9.0) and are gone from the signature entirely, not just unemitted.
+func ComposeMessage(from, replyTo, body string) []byte {
 	var b strings.Builder
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "from: %s\n", from)
@@ -54,7 +48,7 @@ type AnnounceResult struct {
 // Per-peer failures (missing inbox, malformed registration) are collected as
 // Warnings; the function does not abort on them. A returned error means the
 // agents directory itself could not be read.
-func AnnounceEnrollment(cfg *Config, self *Registration, now time.Time) (AnnounceResult, error) {
+func AnnounceEnrollment(cfg *Config, self *Registration) (AnnounceResult, error) {
 	entries, err := os.ReadDir(cfg.AgentsDir())
 	if err != nil {
 		return AnnounceResult{}, fmt.Errorf("read agents dir: %w", err)
@@ -82,7 +76,7 @@ func AnnounceEnrollment(cfg *Config, self *Registration, now time.Time) (Announc
 			continue
 		}
 		result.Total++
-		content := ComposeMessage(now, self.AgentID, peer.AgentID, "enrolled", "info", "", body)
+		content := ComposeMessage(self.AgentID, "", body)
 		// Gate 4: deliver under the canonical (to,from,seq) identity (empty
 		// idempotencyKey/serveToken = transitional at-most-once, unfenced).
 		if _, err := SendSeqMessage(cfg, self.AgentID, peer.AgentID, content, "", ""); err != nil {
@@ -187,9 +181,9 @@ func CorrectiveBody(malformedItem, reason, sectionRef string) string {
 // and the offender picks it up on its own poll — there is no poke. If the
 // offender's inbox dir doesn't exist, the corrective send fails — the caller
 // leaves the file quarantined and logs locally without retrying.
-func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionRef string, now time.Time) (Message, error) {
+func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionRef string) (Message, error) {
 	body := CorrectiveBody(malformedItem, reason, sectionRef)
-	content := ComposeMessage(now, from, offender, "protocol correction", "findings", "", body)
+	content := ComposeMessage(from, "", body)
 
 	// Gate 4: deliver under the canonical (to,from,seq) identity (empty
 	// idempotencyKey/serveToken = transitional at-most-once, unfenced).

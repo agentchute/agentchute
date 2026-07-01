@@ -145,7 +145,7 @@ func TestPollerLaunchedWrapperReceivesAgentchuteEnv(t *testing.T) {
 			t.Fatal(err)
 		}
 		now := time.Now().UTC()
-		content := loop.ComposeMessage(now, "claude-code", agentID, "wake", "request", "", "body")
+		content := loop.ComposeMessage("claude-code", "", "body")
 		mustWriteSeqInbox(t, cfg.AgentInboxDir(agentID), "claude-code", 1, content)
 
 		t.Setenv("AGENTCHUTE_AGENT_ID", "wrong-agent")
@@ -250,8 +250,7 @@ func seedPollerWork(t *testing.T, cfg *loop.Config, agentID string) {
 	if err := cmdRegister([]string{"--as", agentID, "--vendor", "openai"}); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
-	content := loop.ComposeMessage(now, "claude-code", agentID, "wake", "request", "", "body")
+	content := loop.ComposeMessage("claude-code", "", "body")
 	mustWriteSeqInbox(t, cfg.AgentInboxDir(agentID), "claude-code", 1, content)
 }
 
@@ -524,7 +523,7 @@ func TestPollerDefaultDoesNotLaunchWrapperWhenWorkPending(t *testing.T) {
 			t.Fatal(err)
 		}
 		now := time.Now().UTC()
-		content := loop.ComposeMessage(now, "claude-code", agentID, "wake", "request", "", "body")
+		content := loop.ComposeMessage("claude-code", "", "body")
 		mustWriteSeqInbox(t, cfg.AgentInboxDir(agentID), "claude-code", 1, content)
 
 		params := serviceParams{

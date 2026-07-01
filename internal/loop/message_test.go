@@ -8,33 +8,28 @@ import (
 	"time"
 )
 
-func TestComposeMessageQuotesOptionalScalars(t *testing.T) {
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
+func TestComposeMessageQuotesInReplyTo(t *testing.T) {
 	msg := string(ComposeMessage(
-		now,
 		"codex",
-		"claude-code",
-		"review README: API",
-		"info # note",
 		"2026-05-09T16:00:00.000000Z\nforged: true",
 		"body",
 	))
 
-	// in_reply_to is the surviving optional scalar and must still be quoted when
-	// its value contains a newline/colon (injection-safety).
+	// in_reply_to is the one optional scalar and must still be quoted when its
+	// value contains a newline/colon (injection-safety).
 	if want := `in_reply_to: "2026-05-09T16:00:00.000000Z\nforged: true"`; !strings.Contains(msg, want) {
 		t.Fatalf("message missing %q:\n%s", want, msg)
 	}
 
-	// protocol-v2 envelope cut (TEAM-DECISION §4): `to`, `task`, and `status` are
-	// no longer EMITTED even when passed (the parser still reads them off the wire
-	// for older messages). Assert no frontmatter line carries those bare keys
+	// Envelope minimality (AGENTCHUTE.md §6.4, P1 residue cleanup): `to`,
+	// `task`, `status` are gone from ComposeMessage's signature entirely, not
+	// just unemitted — assert no frontmatter line carries those bare keys
 	// (line-scoped so it does not false-match `in_reply_to:`).
 	for _, line := range strings.Split(msg, "\n") {
 		key, _, _ := strings.Cut(strings.TrimSpace(line), ":")
 		switch key {
 		case "to", "task", "status":
-			t.Fatalf("message unexpectedly still emits %q line:\n%s", key, msg)
+			t.Fatalf("message unexpectedly emits %q line:\n%s", key, msg)
 		}
 	}
 }
@@ -127,9 +122,8 @@ func TestSendCorrectiveWritesMessageAndSkipsPokeForEmptyTarget(t *testing.T) {
 	newReg(t, cfg, "claude-code", "anthropic", "", "")    // self
 	offender := newReg(t, cfg, "codex", "openai", "", "") // offender (pull-only: delivery is inbox-write only, no poke)
 
-	now := time.Date(2026, 5, 12, 4, 0, 0, 0, time.UTC)
 	msg, err := SendCorrective(cfg, "claude-code", offender.AgentID,
-		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1", now)
+		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +149,7 @@ func TestAnnounceEnrollmentNoPeers(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
 	self := newReg(t, cfg, "claude-code", "anthropic", "", "I do synthesis.")
 
-	result, err := AnnounceEnrollment(cfg, self, time.Now().UTC())
+	result, err := AnnounceEnrollment(cfg, self)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +170,7 @@ func TestAnnounceEnrollmentSendsToPeersSkipsSelfAndExamples(t *testing.T) {
 	// .example.md files exist alongside live registrations; must be skipped.
 	mustWrite(t, filepath.Join(cfg.AgentsDir(), "codex.example.md"), []byte("---\nagent_id: codex\nvendor: openai\ncontrol_repo: "+cfg.ControlRepo+"\nlast_seen: 2026-05-09T16:08:36Z\nstatus: active\n---\n"))
 
-	result, err := AnnounceEnrollment(cfg, self, time.Now().UTC())
+	result, err := AnnounceEnrollment(cfg, self)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +221,7 @@ func TestAnnounceEnrollmentMissingInboxIsWarningNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := AnnounceEnrollment(cfg, self, time.Now().UTC())
+	result, err := AnnounceEnrollment(cfg, self)
 	if err != nil {
 		t.Fatalf("missing inbox should not be fatal: %v", err)
 	}

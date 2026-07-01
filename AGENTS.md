@@ -151,7 +151,7 @@ Apply to every response, all contexts:
 agentchute dogfoods itself: agents working on agentchute coordinate through agentchute. The loop lives at `.agentchute/loop/`. **The project is the communication boundary**: agents by default only see and talk to peers in the same pool. Enrollment commands are at the top of this file. After enrolling:
 
 - **Each turn:** run `agentchute check --vendor <vendor>` first (claims + displays), or pass `--as <id>` for a custom/non-wrapper lane. If it says you are not registered, immediately run `agentchute boot --vendor <vendor>` plus `agentchute poller ensure --vendor <vendor>`, then rerun `check`. Process any messages, then `agentchute ack` to commit (the Stop hook does this for you).
-- **Sending:** `agentchute send --to <peer> --task ... --body ...` from a registered lane, or pass `--from <id>` explicitly (or follow `AGENTCHUTE.md` §6 directly — the binary just makes it ergonomic). Sending only writes the recipient's inbox; it never wakes them.
+- **Sending:** `agentchute send --to <peer> --body ...` from a registered lane, or pass `--from <id>` explicitly (or follow `AGENTCHUTE.md` §6 directly — the binary just makes it ergonomic). Sending only writes the recipient's inbox; it never wakes them.
 - **No watchdog / cooperative waking:** coordination is pull-only. There is no watchdog and no sender-side or cooperative poke — a recipient discovers its own mail via the runner / its native loop, and a dead recipient is detected via stale `.live` + the asker's expired `.owed` (not by a liveness daemon). The `watchdog` command was removed.
 - **Gitignore check:** `git check-ignore .agentchute/loop/agents/<your-id>.md` should print the path.
 
@@ -183,7 +183,7 @@ These rules govern task messages between agents on the bus. They exist because r
   - `ACCEPTANCE:` a done-condition the recipient can verify without asking. MUST NOT be `none`/`N/A`.
   - `OUTPUT:` the exact required response format. MUST NOT be `none`/`N/A`.
   - `ACTION MODE:` exactly one task mode token: `implement`, `review-only`, `research`, or `decision`.
-  The body sections are authoritative; the frontmatter `task:` field MAY summarize the work but does not replace them. If frontmatter and body conflict, the message is ambiguous.
+  The body sections are authoritative in full — there is no frontmatter field that summarizes or stands in for them.
 - **S2 (MUST)** Every CONTEXT reference is a stable pointer; no deictic references.
 - **S3 (MUST)** Before sending, verify every CONTEXT pointer resolves at send time. If one cannot be verified, remove it or mark it `unverified` in CONTEXT with the reason.
 - **S4 (MUST NOT)** Do not add persona framing, motivational text, chain-of-thought requests, or model-specific stylistic scaffolding. Facts, constraints, and required output only.

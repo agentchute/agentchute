@@ -78,7 +78,7 @@ func TestSendAskSetsReplyRequiredAndHeading(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
-			"--task", "review", "--ask", "--body", "look at the diff"}); err != nil {
+			"--ask", "--body", "look at the diff"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -98,7 +98,7 @@ func TestSendAskPreservesExistingAskHeading(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
-			"--task", "review", "--ask", "--body", "## ASK\n\nalready has heading"}); err != nil {
+			"--ask", "--body", "## ASK\n\nalready has heading"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -121,7 +121,7 @@ func TestSendAskReplyDischargesAskerOwedViaCheck(t *testing.T) {
 	//    asker-owned `.owed` obligation keyed (To:codex, From:claude-code, Seq).
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
-			"--task", "review", "--ask", "--body", "please review the diff"}); err != nil {
+			"--ask", "--body", "please review the diff"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -144,7 +144,7 @@ func TestSendAskReplyDischargesAskerOwedViaCheck(t *testing.T) {
 	//    message carries the ref.
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "codex", "--to", "claude-code",
-			"--task", "review-reply", "--reply-to", ref, "--body", "looks good"}); err != nil {
+			"--reply-to", ref, "--body", "looks good"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -170,23 +170,26 @@ func TestSendAskReplyDischargesAskerOwedViaCheck(t *testing.T) {
 	}
 }
 
-// Codex review (89ad2d9): applyReplyRequiredFrontmatter's idempotence check
-// must be line/key scoped, not substring scoped. A task value containing
-// "reply_required: audit" must not prevent --ask from adding the actual
-// frontmatter field.
-func TestSendAskWithMisleadingTaskValueStillSetsFrontmatter(t *testing.T) {
+// Codex review (89ad2d9), retargeted post-P1: applyReplyRequiredFrontmatter's
+// idempotence check must be line/key scoped, not substring scoped. P1 removed
+// --task (the original vector), but --reply-to's value still flows into the
+// composed frontmatter's in_reply_to line — quoted (it contains a colon), so
+// it stays on one line, but the substring "reply_required:" is still present
+// inside it. That must not fool the splice into skipping the real
+// top-level reply_required: true field.
+func TestSendAskWithMisleadingReplyToValueStillSetsFrontmatter(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
-			"--task", "reply_required: audit", "--ask",
+			"--reply-to", "reply_required: audit", "--ask",
 			"--body", "test body"}); err != nil {
 			t.Fatal(err)
 		}
 	})
 	body := readMostRecentInboxMessage(t, cfg, "codex")
 
-	// The frontmatter must contain the real reply_required: true line,
-	// not just the substring inside the task value.
+	// The frontmatter must contain the real reply_required: true line, not
+	// just the substring inside the quoted in_reply_to value.
 	lines := strings.Split(body, "\n")
 	foundActualField := false
 	for _, line := range lines {
@@ -197,7 +200,7 @@ func TestSendAskWithMisleadingTaskValueStillSetsFrontmatter(t *testing.T) {
 		}
 	}
 	if !foundActualField {
-		t.Errorf("frontmatter missing top-level `reply_required: true` line (substring match on task value confused the splice):\n%s", body)
+		t.Errorf("frontmatter missing top-level `reply_required: true` line (substring match on in_reply_to value confused the splice):\n%s", body)
 	}
 }
 
@@ -208,7 +211,7 @@ func TestSendReplyToWithoutMatchingEntryIsSilent(t *testing.T) {
 	root, _ := setupSendFixture(t)
 	withCwd(t, root, func() {
 		err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
-			"--task", "x", "--reply-to", "to-codex_from-claude-code_seq-00000000000000000009",
+			"--reply-to", "to-codex_from-claude-code_seq-00000000000000000009",
 			"--body", "b"})
 		if err != nil {
 			t.Errorf("err = %v, want nil (unmatched --reply-to is a benign threading hint)", err)
@@ -221,7 +224,7 @@ func TestSendJSONShape(t *testing.T) {
 	withCwd(t, root, func() {
 		out, err := captureStdout(t, func() error {
 			return cmdSend([]string{"--from", "claude-code", "--to", "codex",
-				"--task", "x", "--body", "b", "--json"})
+				"--body", "b", "--json"})
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -272,7 +275,7 @@ func TestSendWarnsOnSelfSendWithAsk(t *testing.T) {
 
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "claude-code",
-			"--task", "self-test", "--ask", "--body", "self-obligation"}); err != nil {
+			"--ask", "--body", "self-obligation"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -292,7 +295,7 @@ func TestSendReplyToWithoutAskDoesNotSetReplyRequired(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
-			"--task", "ack", "--reply-to", "2026-05-19T00:00:00.000000Z",
+			"--reply-to", "2026-05-19T00:00:00.000000Z",
 			"--body", "thanks"}); err != nil {
 			t.Fatal(err)
 		}

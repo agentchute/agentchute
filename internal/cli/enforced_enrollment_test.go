@@ -47,7 +47,7 @@ func TestSendRefusesMissingSelfRegistration(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := captureStdout(t, func() error {
-			return cmdSend([]string{"--from", "claude-code", "--to", "codex", "--task", "x", "--body", "y"})
+			return cmdSend([]string{"--from", "claude-code", "--to", "codex", "--body", "y"})
 		})
 		if err == nil {
 			t.Fatal("send should refuse for unregistered sender; got nil error")
