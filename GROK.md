@@ -1,13 +1,13 @@
 # GROK.md
 
-<!-- agentchute-enrollment v15 begin -->
+<!-- agentchute-enrollment v16 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 Canonical enrollment spec: [`AGENTS.md`](AGENTS.md) (full identity precedence, polling, hooks). This file is a thin pointer.
 
 **1. Pin your identity — once.** Base `agent_id=grok`, `vendor=xai`. Resolve your lane id ONCE at startup and reuse the SAME id on every call:
 
-- Launched via the installed `ac-*` launcher for this wrapper (`agentchute run`)? Your id is already pinned in `$AGENTCHUTE_AGENT_ID` — use it as-is.
+- Launched via the `ac` dispatcher (`ac run <wrapper>`)? Your id is already pinned in `$AGENTCHUTE_AGENT_ID` — use it as-is.
 - Otherwise set it yourself, before `boot`:
 
 ```sh
@@ -31,7 +31,7 @@ agentchute setup --wake runner --wrappers grok --yes
 
 `--wrappers grok` is single-agent scope (just this wrapper); a shared multi-vendor pool uses `--wrappers all` (see [`AGENTS.md`](AGENTS.md)). `runner` is the only supported wake path: coordination is pull-only, so senders write your inbox and never poke you; the runner polls your own inbox and injects the cue. (The old tmux/herdr wake adapters were removed.)
 
-> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the namespaced launcher for this wrapper (`ac-claude`/`ac-codex`/`ac-gemini`/`ac-grok`). Start runner-mode sessions with that installed `ac-*` launcher.
+> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the single `ac` dispatcher. Start runner-mode sessions with `ac run <wrapper>`.
 
 **Wake events** arrive as `[agentchute:run] check inbox`, injected by your own runner when it sees new mail in your inbox. The bracketed prefix is machine metadata; the instruction is `check inbox` — so actually RUN `agentchute check --as "$AGENTCHUTE_AGENT_ID"`. The runner injects the cue but does NOT auto-consume mail; `check` is what CLAIMS and displays your mail, and `ack` commits it.
 
@@ -51,13 +51,13 @@ agentchute gate --before finish --as "$AGENTCHUTE_AGENT_ID"
 Consume unread mail with `agentchute check --as "$AGENTCHUTE_AGENT_ID"` (CLAIMS + displays — at-least-once; a crash before `ack` re-delivers), `ack` to commit, then answer each obligation or release it with `agentchute defer --as "$AGENTCHUTE_AGENT_ID" --message <message-id> --reason "..."` until the gate is clear. The Stop hook runs `ack` then the gate for you.
 
 Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v15 end -->
+<!-- agentchute-enrollment v16 end -->
 
 ---
 
 ## Grok-Specific Notes
 
-- **Wake path is the runner launcher, not lifecycle hooks.** The grok CLI has no repo hook system (no `settings.json`/`hooks.json`, no SessionStart/UserPromptSubmit/Stop events), so `agentchute setup --wrappers grok` installs `ac-grok`, which routes through `agentchute run` and skips hook install. When runner is among the wake paths this follows the normal shim path; in tmux/herdr-only modes setup still installs `ac-grok` because no hook can run startup enrollment. `agentchute hooks install` has no grok target by design.
+- **Startup/enrollment runs through the `ac` dispatcher, not lifecycle hooks.** The grok CLI has no repo hook system (no `settings.json`/`hooks.json`, no SessionStart/UserPromptSubmit/Stop events), so `agentchute setup --wrappers grok` installs the `ac` dispatcher and `ac run grok` routes through `agentchute run` to enroll you — there is no hook install. setup still installs the `ac` dispatcher for grok precisely because no lifecycle hook can run startup enrollment. `agentchute hooks install` has no grok target by design.
 - Treat `AGENTCHUTE.md` as the wire-contract source of truth. If code behavior and spec text disagree, surface the mismatch before patching.
 - Standard pre-commit ritual from `AGENTS.md`: `gofmt -w .`, `go vet ./...`, `go test ./...`, `go build ./...`.
 - Use `.agentchute/loop/` for coordination. Check your inbox at turn start, archive consumed messages, and reply through agentchute or the documented file protocol.

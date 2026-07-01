@@ -335,6 +335,52 @@ func TestDoctorShadowingSkipsHookableWrapperForTmuxHerdrSet(t *testing.T) {
 	}
 }
 
+// The v0.8.8 ac_dispatcher check: OK when the `ac` dispatcher resolves from the
+// shim dir ahead of any other `ac` (e.g. the system /usr/sbin/ac), WARN when a
+// non-shim-dir `ac` shadows it or the shim dir is absent from PATH.
+func TestDoctorAcDispatcherResolution(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	shimDir := filepath.Join(t.TempDir(), "shim")
+	sysDir := filepath.Join(t.TempDir(), "sbin") // stand-in for /usr/sbin
+	for _, d := range []string{shimDir, sysDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeExec := func(path string) {
+		mustWrite(t, path, []byte("#!/bin/sh\nexit 0\n"))
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeExec(filepath.Join(shimDir, "ac"))
+	writeExec(filepath.Join(sysDir, "ac"))
+
+	gs := &setupGlobalState{Wake: "runner", ShimDir: shimDir}
+	mkOpts := func(pathEnv string) doctorOptions {
+		return doctorOptions{GlobalState: gs, PoolState: &setupPoolState{Wake: "runner"}, PathEnv: pathEnv}
+	}
+	sep := string(os.PathListSeparator)
+
+	// OK: shim dir precedes the system ac.
+	got := checkWrapperShadowing(cfg, "codex", mkOpts(shimDir+sep+sysDir))
+	if got.Name != "ac_dispatcher" || got.Severity != severityOK {
+		t.Fatalf("precedes case: name=%q sev=%q msg=%q, want ac_dispatcher OK", got.Name, got.Severity, got.Message)
+	}
+
+	// WARN: the system ac precedes the shim dir (shadowing).
+	got = checkWrapperShadowing(cfg, "codex", mkOpts(sysDir+sep+shimDir))
+	if got.Severity != severityWarn || !strings.Contains(got.Message, "shadows the agentchute dispatcher") {
+		t.Fatalf("shadowed case: sev=%q msg=%q, want WARN shadowing", got.Severity, got.Message)
+	}
+
+	// WARN: shim dir not on PATH.
+	got = checkWrapperShadowing(cfg, "codex", mkOpts(sysDir))
+	if got.Severity != severityWarn || !strings.Contains(got.Message, "not on PATH") {
+		t.Fatalf("not-on-path case: sev=%q msg=%q, want WARN not-on-PATH", got.Severity, got.Message)
+	}
+}
+
 // hookWrapperForAgent and shimNamesForAgent must resolve contextual ids
 // (codex-agentchute) to their canonical wrapper, not only exact base ids.
 func TestWrapperResolutionHandlesContextualIDs(t *testing.T) {
@@ -403,8 +449,8 @@ func TestDoctor_WarnsOnRawWrapperBypass(t *testing.T) {
 		if got.Severity == severityBlocker {
 			t.Fatalf("launch-bypass check must never be a BLOCKER; got %q", got.Severity)
 		}
-		if !strings.Contains(got.Message, "ac-gemini") {
-			t.Fatalf("warn message should name the fix `ac-gemini`: %q", got.Message)
+		if !strings.Contains(got.Message, "ac run gemini") {
+			t.Fatalf("warn message should name the fix `ac run gemini`: %q", got.Message)
 		}
 	})
 
@@ -623,4 +669,20 @@ func TestCmdDoctorDiscoveryFailureBlocks(t *testing.T) {
 			t.Errorf("err = %v, want errBlocked (discovery failure should be a doctor blocker)", err)
 		}
 	})
+}
+
+func TestAcRunHintForAgent_ContextualIDs(t *testing.T) {
+	cases := map[string]string{
+		"codex":                 "ac run codex",
+		"codex-agentchute":      "ac run codex",  // contextual id
+		"gemini-cli-agentchute": "ac run gemini", // contextual id, aliased wrapper
+		"claude-code":           "ac run claude",
+		"grok-agentchute":       "ac run grok",
+		"totally-unknown":       "ac run <wrapper>",
+	}
+	for id, want := range cases {
+		if got := acRunHintForAgent(id); got != want {
+			t.Errorf("acRunHintForAgent(%q) = %q, want %q", id, got, want)
+		}
+	}
 }

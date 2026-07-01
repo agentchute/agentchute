@@ -59,8 +59,12 @@ type setupGlobalState struct {
 	NoProfile      bool     `json:"no_profile,omitempty"`
 	PathBlock      bool     `json:"path_block"`
 	ShimsInstalled bool     `json:"shims_installed"`
-	Aliases        bool     `json:"aliases,omitempty"`
-	UpdatedAt      string   `json:"updated_at"`
+	// DispatcherInstalled is the v0.8.8 truth: setup installs a single `ac`
+	// dispatcher rather than per-wrapper ac-* shims. ShimsInstalled is retained
+	// for back-compat reads (it gated the legacy shim/PATH cleanup paths).
+	DispatcherInstalled bool   `json:"dispatcher_installed"`
+	Aliases             bool   `json:"aliases,omitempty"`
+	UpdatedAt           string `json:"updated_at"`
 }
 
 type setupPoolState struct {
@@ -86,7 +90,7 @@ func cmdSetup(args []string) error {
 	fs.BoolVar(&opts.Yes, "yes", false, "skip confirmation prompts")
 	fs.BoolVar(&opts.DryRun, "dry-run", false, "print plan without writing files")
 	fs.BoolVar(&opts.NoProfile, "no-profile", false, "do not edit shell profile; print PATH hint instead")
-	fs.BoolVar(&opts.Aliases, "aliases", false, "also install legacy same-name wrapper aliases")
+	fs.BoolVar(&opts.Aliases, "aliases", false, "deprecated no-op (per-wrapper aliases are no longer installed)")
 	fs.BoolVar(&opts.InitNew, "init", false, "allow setup to initialize a non-project directory")
 	fs.BoolVar(&opts.Reset, "reset", false, "explicitly run the runtime reset (always performed); required alongside --wipe-state")
 	fs.BoolVar(&opts.WipeState, "wipe-state", false, "DESTRUCTIVE: after reset, wipe loop runtime state (inbox/archive/malformed/live/scratch/state); requires --reset")
@@ -198,11 +202,11 @@ Usage:
 Scaffolds the control repo with agentchute init, stops local agentchute
 pollers/runners, clears stale live registrations and repo Herdr names so agents
 re-enroll, installs lifecycle hooks for the selected wrappers, and installs the
-launcher shims (the ac-* launchers front the runner wake path).
+single ac dispatcher (launch a wrapper with: ac run <wrapper>).
 
 runner is the only supported wake path: the tmux/herdr wake adapters were
 removed in the pull-only redesign. Agents wake by being launched through the
-ac-* runner launcher; peers deliver by writing the inbox and never poke.
+ac dispatcher (e.g. ac run codex); peers deliver by writing the inbox and never poke.
 
 Flags:
   --wake runner          install the runner wake path (the only supported value;
@@ -212,10 +216,10 @@ Flags:
   --wrappers <set>       all (detected on PATH), none, or comma list
                          (claude-code,codex,gemini-cli,grok; default all)
   --control-repo <path>  repo to initialize (default env or current git/cwd root)
-  --shim-dir <path>      launcher shim directory (default $HOME/.agentchute/bin)
-  --profile <path>       shell profile to update for launcher shims
+  --shim-dir <path>      directory for the ac dispatcher (default $HOME/.agentchute/bin)
+  --profile <path>       shell profile to update for the dispatcher PATH
   --no-profile           do not edit shell profile; print PATH hint instead
-  --aliases              also install legacy same-name wrapper aliases
+  --aliases              deprecated no-op (per-wrapper aliases are no longer installed)
   --init                 allow initializing a non-project directory
   --reset                explicitly run the runtime reset (always performed);
                          required alongside --wipe-state
@@ -523,7 +527,7 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 	if len(shimWrappers) > 0 {
 		fmt.Fprintf(w, "  shims:        %s\n", opts.ShimDir)
 		if opts.Aliases {
-			fmt.Fprintln(w, "  aliases:      legacy same-name wrapper aliases")
+			fmt.Fprintln(w, "  aliases:      deprecated no-op (per-wrapper aliases are no longer installed)")
 		}
 		if !setupNeedsShims(opts.Wake) {
 			fmt.Fprintf(w, "  shim wrappers: %s (hookless startup enrollment)\n", strings.Join(shimWrappers, ", "))
@@ -570,7 +574,7 @@ func setupShimWrappers(wake string, wrappers []string) []string {
 // a single instruction.
 func printSetupCompletionGuidance(w io.Writer, wake string) {
 	_ = wake // runner is the only installable wake path; retained for call-site stability.
-	fmt.Fprintln(w, "Open one new shell, restart selected wrappers from this repo via the ac-* launcher, then run `agentchute doctor --as <id>`.")
+	fmt.Fprintln(w, "Open one new shell (or `hash -r`), restart selected wrappers via `ac run <wrapper>` (e.g. `ac run codex`), then run `agentchute doctor --as <id>`.")
 }
 
 func setupHookableWrappers(wrappers []string) []string {
@@ -697,24 +701,27 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			}
 		}
 		if currentNeedsShims {
-			shimArgs := []string{
-				"install",
-				"--dir", opts.ShimDir,
-				"--wrapper", strings.Join(currentShimWrappers, ","),
-				"--force",
+			// Writes-before-reset: install the single `ac` dispatcher FIRST, then
+			// remove the legacy per-wrapper ac-* launchers it supersedes — so a pool
+			// is never left with no launcher mid-setup. The dispatcher is
+			// wrapper-agnostic, so it is installed regardless of which wrappers the
+			// pool selected. force=true keeps re-runs idempotent (the binary path,
+			// hence AGENTCHUTE_BIN, may change).
+			exe, err := os.Executable()
+			if err != nil {
+				return err
 			}
-			if opts.Aliases {
-				shimArgs = append(shimArgs, "--aliases")
+			exe, err = filepath.Abs(exe)
+			if err != nil {
+				return err
 			}
-			if err := cmdShims(shimArgs); err != nil {
-				return fmt.Errorf("shims install: %w", err)
+			if err := installDispatcher(opts.ShimDir, exe, true); err != nil {
+				return fmt.Errorf("install dispatcher: %w", err)
 			}
-			if !opts.Aliases {
-				for _, wrapper := range currentShimWrappers {
-					if err := removeSetupAliasShimsForWrapper(opts.ShimDir, wrapper); err != nil {
-						return err
-					}
-				}
+			if removed, err := removeLegacyWrapperShims(opts.ShimDir); err != nil {
+				return err
+			} else if len(removed) > 0 {
+				fmt.Printf("removed %d legacy launcher shim(s) from %s: %s\n", len(removed), opts.ShimDir, strings.Join(removed, ", "))
 			}
 			if err := setupEnsureShimPath(opts); err != nil {
 				return err
@@ -767,16 +774,17 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		}
 
 		if err := writeSetupGlobalState(setupGlobalState{
-			Version:        1,
-			Wake:           opts.Wake,
-			Wrappers:       wrappers,
-			ShimDir:        opts.ShimDir,
-			Profile:        opts.Profile,
-			NoProfile:      opts.NoProfile,
-			ShimsInstalled: currentNeedsShims,
-			Aliases:        currentNeedsShims && opts.Aliases,
-			PathBlock:      pathBlock,
-			UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
+			Version:             1,
+			Wake:                opts.Wake,
+			Wrappers:            wrappers,
+			ShimDir:             opts.ShimDir,
+			Profile:             opts.Profile,
+			NoProfile:           opts.NoProfile,
+			ShimsInstalled:      currentNeedsShims,
+			DispatcherInstalled: currentNeedsShims,
+			Aliases:             currentNeedsShims && opts.Aliases,
+			PathBlock:           pathBlock,
+			UpdatedAt:           time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			return err
 		}
@@ -1170,7 +1178,26 @@ func removeSetupShims(dir string) error {
 			return err
 		}
 	}
+	// Also retire the single `ac` dispatcher (marker-guarded: only an
+	// agentchute-owned dispatcher is removed; a user-owned `ac` is left intact).
+	if err := removeAgentchuteDispatcher(filepath.Join(dir, "ac")); err != nil {
+		return err
+	}
 	fmt.Printf("removed agentchute shims from %s\n", dir)
+	return nil
+}
+
+func removeAgentchuteDispatcher(path string) error {
+	owned, err := isAgentchuteDispatcher(path)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove dispatcher %s: %w", path, err)
+	}
 	return nil
 }
 

@@ -250,16 +250,16 @@ func stopSetupRunner(cfg *loop.Config, agentID string) (bool, string) {
 		return false, ""
 	}
 	cmdline := setupProcessCommandLine(st.RunnerPID)
-	if !setupCommandMatchesPool(cmdline, "run", cfg) {
+	// Runner attribution = the runner.json pid->id binding (loaded above) +
+	// setupProcessAlive (checked above) + this being an `agentchute run` for THIS
+	// pool. A runner is launched WITHOUT --as (contextual id), so its cmdline never
+	// carries the agent id; requiring it here was a false-negative that left every
+	// live runner un-stopped. The state file binds pid->id; the cmdline only proves
+	// the pool. Simple-again Gate 6b (pull-only): the runner owns no receive socket,
+	// so SIGTERM is the stop — its signal handler marks the registration offline and
+	// releases its serve lease on exit.
+	if !setupCommandMatchesRunnerPool(cmdline, cfg) {
 		return false, fmt.Sprintf("not stopping runner for %s pid=%d; process command did not match this agentchute pool", agentID, st.RunnerPID)
-	}
-	// Simple-again Gate 6b (pull-only): the runner no longer owns a receive
-	// socket, so there is no ping verification or graceful socket-shutdown step.
-	// Verify the process names THIS agent id from its command line, then SIGTERM
-	// it — the runner's signal handler marks the registration offline and releases
-	// its serve lease on exit.
-	if !setupCommandHasAgentID(cmdline, agentID) {
-		return false, fmt.Sprintf("not stopping runner for %s pid=%d; process command did not name this agent id", agentID, st.RunnerPID)
 	}
 	if err := setupSignalProcess(st.RunnerPID, syscall.SIGTERM); err != nil {
 		return false, fmt.Sprintf("stop runner for %s pid=%d: %v", agentID, st.RunnerPID, err)
@@ -285,6 +285,21 @@ func setupCommandMatches(cmdline, agentID, subcommand string, cfg *loop.Config) 
 	return setupCommandHasAgentID(cmdline, agentID)
 }
 
+// setupCommandMatchesRunnerPool attributes a live RUNNER to THIS pool. Unlike a
+// poller (which is launched with --as <id> and so carries its agent id in the
+// cmdline), a runner is launched with the CONTEXTUAL id — it has NO --as — so its
+// cmdline never contains the agent id. The pid->id binding therefore comes from
+// the runner.json state file (state/<id>/runner.json recorded this pid for <id>),
+// and the cmdline only needs to prove the process is an `agentchute run` for THIS
+// pool (its --control-repo/--loop-dir resolves to this pool). Requiring the agent
+// id in a runner cmdline is the false-negative this fixes: every live runner was
+// reported "ambiguous ... cmdline did not match this pool; refusing (fail closed)".
+// A foreign pool or non-agentchute process still fails this check (still ambiguous,
+// still fail-closed).
+func setupCommandMatchesRunnerPool(cmdline string, cfg *loop.Config) bool {
+	return setupCommandMatchesPool(cmdline, "run", cfg)
+}
+
 func setupCommandMatchesPool(cmdline, subcommand string, cfg *loop.Config) bool {
 	cmdline = strings.TrimSpace(cmdline)
 	if cmdline == "" {
@@ -304,8 +319,83 @@ func setupCommandMatchesPool(cmdline, subcommand string, cfg *loop.Config) bool 
 	default:
 		return false
 	}
-	if setupCommandContainsPath(cmdline, cfg.ControlRepo) || setupCommandContainsPath(cmdline, cfg.LoopDir) {
+	// EXACT --control-repo/--loop-dir VALUE match (not substring): a foreign
+	// `--control-repo /tmp/repo2` must NOT match this pool's `/tmp/repo`. For
+	// runners this is the SOLE pool proof (their cmdline carries no agent id), and
+	// it gates a SIGTERM, so loose substring matching here is unsafe.
+	if setupPathsEquivalent(setupCommandFlagValue(cmdline, "--control-repo"), cfg.ControlRepo) ||
+		setupPathsEquivalent(setupCommandFlagValue(cmdline, "--loop-dir"), cfg.LoopDir) {
 		return true
+	}
+	return false
+}
+
+// setupCommandFlagValue returns the value of `flag` among agentchute's OWN
+// run/poller flags, handling both `--flag value` and `--flag=value` forms; ""
+// if absent. It stops at the `--` separator so wrapper argv (e.g. a launched
+// codex with its own `--control-repo`) can never be mistaken for this pool's
+// flags — otherwise a foreign runner could be falsely attributed and SIGTERM'd.
+func setupCommandFlagValue(cmdline, flag string) string {
+	fields := strings.Fields(cmdline)
+	for i, f := range fields {
+		if f == "--" {
+			fields = fields[:i] // ignore wrapper argv after the separator
+			break
+		}
+	}
+	for i, f := range fields {
+		if f == flag && i+1 < len(fields) {
+			return fields[i+1]
+		}
+		if strings.HasPrefix(f, flag+"=") {
+			return strings.TrimPrefix(f, flag+"=")
+		}
+	}
+	return ""
+}
+
+// setupPathCandidates returns the equivalence set for a path: itself, its abs
+// form, EvalSymlinks resolution, and the /private/var <-> /var twins (macOS).
+func setupPathCandidates(path string) map[string]bool {
+	path = strings.TrimSpace(path)
+	out := map[string]bool{}
+	if path == "" {
+		return out
+	}
+	out[path] = true
+	if abs, err := filepath.Abs(path); err == nil {
+		out[abs] = true
+		if r, err := filepath.EvalSymlinks(abs); err == nil {
+			out[r] = true
+		}
+	}
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		out[r] = true
+	}
+	for c := range mapsClone(out) {
+		if strings.HasPrefix(c, "/private/var/") {
+			out["/var/"+strings.TrimPrefix(c, "/private/var/")] = true
+		}
+		if strings.HasPrefix(c, "/var/") {
+			out["/private/var/"+strings.TrimPrefix(c, "/var/")] = true
+		}
+	}
+	return out
+}
+
+// setupPathsEquivalent reports whether two paths refer to the same location,
+// comparing whole normalized paths exactly (no substring/prefix matching).
+func setupPathsEquivalent(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	ca := setupPathCandidates(a)
+	for c := range setupPathCandidates(b) {
+		if c != "" && ca[c] {
+			return true
+		}
 	}
 	return false
 }
@@ -333,37 +423,6 @@ func setupCommandHasAgentID(cmdline, agentID string) bool {
 	return false
 }
 
-func setupCommandContainsPath(cmdline, path string) bool {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return false
-	}
-	candidates := map[string]bool{path: true}
-	if abs, err := filepath.Abs(path); err == nil {
-		candidates[abs] = true
-		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-			candidates[resolved] = true
-		}
-	}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		candidates[resolved] = true
-	}
-	for candidate := range mapsClone(candidates) {
-		if strings.HasPrefix(candidate, "/private/var/") {
-			candidates["/var/"+strings.TrimPrefix(candidate, "/private/var/")] = true
-		}
-		if strings.HasPrefix(candidate, "/var/") {
-			candidates["/private/var/"+strings.TrimPrefix(candidate, "/var/")] = true
-		}
-	}
-	for candidate := range candidates {
-		if candidate != "" && strings.Contains(cmdline, candidate) {
-			return true
-		}
-	}
-	return false
-}
-
 func mapsClone(in map[string]bool) map[string]bool {
 	out := make(map[string]bool, len(in))
 	for k, v := range in {
@@ -376,7 +435,10 @@ func processCommandLine(pid int) string {
 	if pid <= 0 {
 		return ""
 	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	// -ww disables ps's column-width truncation so a very long runner/poller
+	// cmdline (long control-repo/loop-dir paths) is returned in full; a truncated
+	// cmdline could drop the pool path and make a real match look ambiguous.
+	out, err := exec.Command("ps", "-ww", "-p", strconv.Itoa(pid), "-o", "command=").Output()
 	if err != nil {
 		return ""
 	}

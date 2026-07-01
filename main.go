@@ -72,63 +72,23 @@ func main() {
 
 	var err error
 	switch cmd {
-	case "init":
-		err = cmdInit(args)
-	case "prepare-pool":
-		err = cmdPreparePool(args)
-	case "register":
-		err = cmdRegister(args)
-	case "boot":
-		err = cmdBoot(args)
-	case "gate":
-		err = cmdGate(args)
-	case "defer":
-		err = cmdDefer(args)
-	case "send":
-		err = cmdSend(args)
-	case "check":
-		err = cmdCheck(args)
-	case "ack":
-		err = cmdAck(args)
-	case "pending":
-		err = cmdPending(args)
-	case "run":
-		err = cmdRun(args)
-	case "setup":
-		err = cmdSetup(args)
-	case "update":
-		err = cmdUpdate(args)
-	case "self-check":
-		err = cmdSelfCheck(args)
-	case "self-poll":
-		err = cmdSelfPoll(args)
-	case "poller":
-		err = cmdPoller(args)
-	case "default-id":
-		err = cmdIdentity(args)
-	case "identity":
-		err = cmdIdentity(args)
-	case "shims":
-		err = cmdShims(args)
-	case "status":
-		err = cmdStatus(args)
-	case "doctor":
-		err = cmdDoctor(args)
-	case "watch":
-		err = cmdWatch(args)
-	case "presenced":
-		err = cmdPresenced(args)
-	case "hooks":
-		err = cmdHooks(args)
 	case "-v", "--version", "version":
 		fmt.Printf("agentchute %s\n", version)
 		return
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
+	case "ac", "dispatch":
+		// The `ac` launcher/dispatcher front door (Gate 1). The installed `ac`
+		// script execs `agentchute dispatch -- "$@"`.
+		err = cmdDispatch(args)
 	default:
-		fmt.Fprintf(os.Stderr, "agentchute: unknown command %q\n\n%s", cmd, usage)
-		os.Exit(2)
+		if h, ok := commandHandlers[cmd]; ok {
+			err = h(args)
+		} else {
+			fmt.Fprintf(os.Stderr, "agentchute: unknown command %q\n\n%s", cmd, usage)
+			os.Exit(2)
+		}
 	}
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
