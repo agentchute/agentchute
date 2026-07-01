@@ -52,5 +52,5 @@ func cmdIdentity(args []string) error {
 }
 
 func identityUsage(err error) error {
-	return fmt.Errorf("%w\nusage: agentchute default-id [--as <id>] [--vendor <v> | --wrapper <name>] [--control-repo <path>] [--loop-dir <path>]", err)
+	return fmt.Errorf("%w\nusage: agentchute identity [--as <id>] [--vendor <v> | --wrapper <name>] [--control-repo <path>] [--loop-dir <path>]", err)
 }

@@ -375,12 +375,13 @@ func TestSetupCommandMatchesRunnerPool(t *testing.T) {
 		t.Fatalf("runner cmdline without --as but with the pool path must match: %q", runnerNoAs)
 	}
 
-	// The deprecated `run` alias (removed v0.10.0) must be attributed IDENTICALLY to
-	// `serve` — a supervisor launched via `agentchute run` is still a live runner for
-	// this pool.
-	runAlias := "/usr/local/bin/agentchute run --control-repo " + root + " --loop-dir " + cfg.LoopDir
-	if !setupCommandMatchesRunnerPool(runAlias, cfg) {
-		t.Fatalf("deprecated `agentchute run` alias supervisor must still match this pool: %q", runAlias)
+	// UPGRADE-CLEANUP COMPATIBILITY: `run` was removed from the command surface, but
+	// a live PRE-v0.9.1 supervisor still execs `agentchute run`. reset/wipe/update
+	// must keep attributing it to this pool so it is stopped cleanly on upgrade
+	// (process attribution for teardown, not command support).
+	legacyRun := "/usr/local/bin/agentchute run --control-repo " + root + " --loop-dir " + cfg.LoopDir
+	if !setupCommandMatchesRunnerPool(legacyRun, cfg) {
+		t.Fatalf("live pre-upgrade `agentchute run` supervisor must still match for cleanup: %q", legacyRun)
 	}
 
 	// A poller carries --as <id>; the poller matcher still requires it.

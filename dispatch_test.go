@@ -60,10 +60,6 @@ func TestParseDispatch_Run(t *testing.T) {
 		{"serve with global flag (spaced)", []string{"--as", "x", "serve", "codex"}, "codex", []string{"--as", "x"}, []string{}},
 		{"serve with global flag (=)", []string{"--as=x", "serve", "gemini", "--flag"}, "gemini", []string{"--as=x"}, []string{"--flag"}},
 		{"serve with control-repo + loop-dir globals", []string{"--control-repo", "R", "--loop-dir", "D", "serve", "codex"}, "codex", []string{"--control-repo", "R", "--loop-dir", "D"}, []string{}},
-		// `run` is the deprecated alias — it must launch identically to `serve`.
-		{"run alias by key", []string{"run", "codex"}, "codex", nil, []string{}},
-		{"run alias by wrapper alias agy", []string{"run", "agy"}, "gemini", nil, []string{}},
-		{"run alias with global flag", []string{"--as", "x", "run", "codex"}, "codex", []string{"--as", "x"}, []string{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,8 +94,7 @@ func TestParseDispatch_Errors(t *testing.T) {
 		{"unknown subcommand", []string{"frobnicate"}, "unknown subcommand"},
 		{"serve without wrapper", []string{"serve"}, "ac serve <wrapper>"},
 		{"serve unknown wrapper", []string{"serve", "nope"}, "unknown wrapper"},
-		{"run alias without wrapper", []string{"run"}, "ac serve <wrapper>"},
-		{"run alias unknown wrapper", []string{"run", "nope"}, "unknown wrapper"},
+		{"removed run alias is now unknown", []string{"run", "codex"}, "unknown subcommand"},
 		{"global flag then nothing", []string{"--as", "x"}, "expected a command"},
 	}
 	for _, tc := range cases {
@@ -116,17 +111,15 @@ func TestParseDispatch_Errors(t *testing.T) {
 }
 
 func TestParseDispatch_CommandWinsOverWrapperName(t *testing.T) {
-	// "serve" (and its deprecated alias "run") are both agentchute commands and the
-	// dispatcher launch keyword; the dispatcher must treat `ac serve <wrapper>` /
-	// `ac run <wrapper>` as a launch, not as cmdServe routed through the command path.
-	for _, verb := range []string{"serve", "run"} {
-		plan, err := parseDispatch([]string{verb, "grok"})
-		if err != nil {
-			t.Fatalf("ac %s grok: %v", verb, err)
-		}
-		if plan.Kind != dispatchRun || plan.Wrapper.Key != "grok" {
-			t.Fatalf("ac %s grok => kind=%v key=%q; want launch of grok", verb, plan.Kind, plan.Wrapper.Key)
-		}
+	// "serve" is both an agentchute command and the dispatcher launch keyword; the
+	// dispatcher must treat `ac serve <wrapper>` as a launch, not as cmdServe routed
+	// through the command path.
+	plan, err := parseDispatch([]string{"serve", "grok"})
+	if err != nil {
+		t.Fatalf("ac serve grok: %v", err)
+	}
+	if plan.Kind != dispatchRun || plan.Wrapper.Key != "grok" {
+		t.Fatalf("ac serve grok => kind=%v key=%q; want launch of grok", plan.Kind, plan.Wrapper.Key)
 	}
 }
 
@@ -145,7 +138,7 @@ func TestParseDispatch_Help(t *testing.T) {
 func TestCommandHandlersCoverExpected(t *testing.T) {
 	// Guard against accidental removal: the dispatcher's known-command set must
 	// include the core operational commands.
-	for _, name := range []string{"check", "send", "ack", "doctor", "setup", "serve", "run", "status", "gate", "boot"} {
+	for _, name := range []string{"check", "send", "ack", "doctor", "setup", "serve", "status", "gate", "boot"} {
 		if commandHandlers[name] == nil {
 			t.Errorf("commandHandlers missing %q", name)
 		}
@@ -185,13 +178,13 @@ func TestSplitDispatchContext(t *testing.T) {
 		wantShimDir string
 		wantRest    []string
 	}{
-		{"spaced shim-dir then --", []string{"--shim-dir", "/d", "--", "run", "codex"}, "/d", []string{"run", "codex"}},
+		{"spaced shim-dir then --", []string{"--shim-dir", "/d", "--", "serve", "codex"}, "/d", []string{"serve", "codex"}},
 		{"equals shim-dir then --", []string{"--shim-dir=/d", "--", "check", "--as", "x"}, "/d", []string{"check", "--as", "x"}},
-		{"shim-dir without trailing --", []string{"--shim-dir", "/d", "run", "codex"}, "/d", []string{"run", "codex"}},
+		{"shim-dir without trailing --", []string{"--shim-dir", "/d", "serve", "codex"}, "/d", []string{"serve", "codex"}},
 		{"no shim-dir, leading --", []string{"--", "check"}, "", []string{"check"}},
 		{"no shim-dir, no --", []string{"check", "--json"}, "", []string{"check", "--json"}},
 		{"empty", []string{}, "", []string{}},
-		{"user args preserved after --", []string{"--shim-dir", "/d", "--", "--as", "x", "run", "codex"}, "/d", []string{"--as", "x", "run", "codex"}},
+		{"user args preserved after --", []string{"--shim-dir", "/d", "--", "--as", "x", "serve", "codex"}, "/d", []string{"--as", "x", "serve", "codex"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -209,7 +202,7 @@ func TestSplitDispatchContext(t *testing.T) {
 func TestSplitDispatchContext_ThenParseRoundTrip(t *testing.T) {
 	// The exact argv the installed dispatcher script produces:
 	// `agentchute dispatch --shim-dir <dir> -- <user args>`.
-	shimDir, rest := splitDispatchContext([]string{"--shim-dir", "/shims", "--", "--as", "rev", "run", "codex"})
+	shimDir, rest := splitDispatchContext([]string{"--shim-dir", "/shims", "--", "--as", "rev", "serve", "codex"})
 	if shimDir != "/shims" {
 		t.Fatalf("shimDir = %q, want /shims", shimDir)
 	}
@@ -218,7 +211,7 @@ func TestSplitDispatchContext_ThenParseRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if plan.Kind != dispatchRun || plan.Wrapper.Key != "codex" {
-		t.Fatalf("plan kind=%v key=%q, want run codex", plan.Kind, plan.Wrapper.Key)
+		t.Fatalf("plan kind=%v key=%q, want serve codex", plan.Kind, plan.Wrapper.Key)
 	}
 	if strings.Join(plan.Global, " ") != "--as rev" {
 		t.Fatalf("global = %v, want [--as rev]", plan.Global)
