@@ -1109,7 +1109,7 @@ func removeSetupShims(dir string) error {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
-	for _, name := range allShimCommandNames(true) {
+	for _, name := range allLegacyShimNames() {
 		path := filepath.Join(dir, name)
 		if err := removeAgentchuteShim(path); err != nil {
 			return err
@@ -1142,15 +1142,13 @@ func removeSetupShimsForWrapper(dir, wrapper string) error {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
-	specs, err := selectShimSpecs(wrapper)
-	if err != nil {
+	names := legacyShimNamesForSetupWrapper(wrapper)
+	if len(names) == 0 {
 		return nil
 	}
-	for _, spec := range specs {
-		for _, name := range shimInstallNames(spec, true) {
-			if err := removeAgentchuteShim(filepath.Join(dir, name)); err != nil {
-				return err
-			}
+	for _, name := range names {
+		if err := removeAgentchuteShim(filepath.Join(dir, name)); err != nil {
+			return err
 		}
 	}
 	fmt.Printf("removed setup-managed %s shims from %s\n", wrapper, dir)

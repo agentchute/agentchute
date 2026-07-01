@@ -20,6 +20,15 @@ exec "$AGENTCHUTE_BIN" shims exec --name %s --shim-dir %s -- "$@"
 `, shellQuote(agentchuteBin), shellQuote(name), shellQuote(shimDir))
 }
 
+func stringSliceContains(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestShimsInstallWritesDispatcher(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bin")
 	if err := cmdShims([]string{"install", "--dir", dir, "--quiet"}); err != nil {
@@ -254,6 +263,64 @@ func TestRemoveLegacyWrapperShims(t *testing.T) {
 	}
 }
 
+func TestRemoveSetupShimsForWrapperNarrowsToDroppedWrapper(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range legacyShimNamesForSetupWrapper("gemini-cli") {
+		mustWrite(t, filepath.Join(dir, name), []byte(legacyShimScript("/bin/agentchute", dir, name)))
+	}
+	for _, name := range legacyShimNamesForSetupWrapper("codex") {
+		mustWrite(t, filepath.Join(dir, name), []byte(legacyShimScript("/bin/agentchute", dir, name)))
+	}
+	mustWrite(t, filepath.Join(dir, "ac"), []byte(renderDispatcherScript("/bin/agentchute", dir)))
+	userClaude := []byte("#!/bin/sh\n# user-owned claude wrapper\nexec /opt/claude \"$@\"\n")
+	mustWrite(t, filepath.Join(dir, "claude"), userClaude)
+
+	if err := removeSetupShimsForWrapper(dir, "gemini-cli"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range legacyShimNamesForSetupWrapper("gemini-cli") {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s should be removed for dropped gemini-cli: %v", name, err)
+		}
+	}
+	for _, name := range legacyShimNamesForSetupWrapper("codex") {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("%s should survive dropping gemini-cli: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ac")); err != nil {
+		t.Fatalf("dispatcher must survive per-wrapper cleanup: %v", err)
+	}
+	if string(mustRead(t, filepath.Join(dir, "claude"))) != string(userClaude) {
+		t.Fatal("user-owned non-target wrapper file was modified/removed")
+	}
+}
+
+func TestRemoveSetupShimsForWrapperPreservesUserOwnedTargetName(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(dir, "ac-codex"), []byte(legacyShimScript("/bin/agentchute", dir, "ac-codex")))
+	userCodex := []byte("#!/bin/sh\n# user-owned codex wrapper\nexec /opt/codex \"$@\"\n")
+	mustWrite(t, filepath.Join(dir, "codex"), userCodex)
+
+	if err := removeSetupShimsForWrapper(dir, "codex"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "ac-codex")); !os.IsNotExist(err) {
+		t.Fatalf("agentchute-owned ac-codex should be removed: %v", err)
+	}
+	if string(mustRead(t, filepath.Join(dir, "codex"))) != string(userCodex) {
+		t.Fatal("user-owned targeted same-name file was modified/removed")
+	}
+}
+
 // WI-E3 (gemini input): `agy` is the actual gemini-cli binary name on PATH, so
 // the launcher must recognize it as the gemini-cli wrapper / ac-gemini.
 func TestShims_AgyResolvesToGeminiWrapper(t *testing.T) {
@@ -264,13 +331,9 @@ func TestShims_AgyResolvesToGeminiWrapper(t *testing.T) {
 	if spec.Name != "ac-gemini" || spec.AgentID != "gemini-cli" {
 		t.Fatalf("agy resolved to %s/%s, want ac-gemini/gemini-cli", spec.Name, spec.AgentID)
 	}
-	// agy must also be a valid --wrapper alias selector and a real-binary candidate.
-	selected, err := selectShimSpecs("agy")
-	if err != nil {
-		t.Fatalf("selectShimSpecs(\"agy\"): %v", err)
-	}
-	if len(selected) != 1 || selected[0].Name != "ac-gemini" {
-		t.Fatalf("selectShimSpecs(\"agy\") = %v, want [ac-gemini]", selected)
+	// agy must also remain in the keyed legacy cleanup map and real-binary candidates.
+	if !stringSliceContains(legacyShimNamesForSetupWrapper("gemini-cli"), "agy") {
+		t.Fatalf("gemini-cli legacy cleanup names %v missing agy", legacyShimNamesForSetupWrapper("gemini-cli"))
 	}
 	foundCandidate := false
 	for _, c := range spec.Candidates {
