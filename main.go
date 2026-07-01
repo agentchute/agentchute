@@ -24,26 +24,29 @@ Usage:
   agentchute <command> [flags]
 
 Commands:
+  setup          one-command control-repo setup; installs the runner wake path (the only supported path)
   init           scaffold a project for agentchute (writes AGENTCHUTE.md, loop dirs, enrollment blocks)
-  prepare-pool   prepare one or more folders as pool participants (writes pointer file + enrollment blocks)
-  register       create or update a live registration for an agent
-  boot           session-start ritual: register + peek inbox + owed-reply summary (use in SessionStart hooks)
-  gate           lifecycle gate: block declaring done while unread inbox mail is outstanding
+  serve          launch a wrapper under the PTY runner (serve lease + inbox polling + check-inbox injection; pull-only, no wake socket)
   send           send a message from one agent to another
   check          claim + display messages addressed to me (at-least-once; run ack to commit)
   ack            commit messages claimed by check (archive the .claimed residue)
-  pending        peek unread messages (read-only; safe for lifecycle hooks)
-  default-id     print the contextual default agent id for a wrapper/vendor
-  serve          launch a wrapper under the PTY runner (serve lease + inbox polling + check-inbox injection; pull-only, no wake socket). "run" is a deprecated alias (removed in v0.10.0)
-  setup          one-command control-repo setup; installs the runner wake path (the only supported path)
-  update         self-update the binary to a release, then re-sync this repo's setup
-  self-check     refresh own registration/last_seen and .live presence (pull-only: no wake target to reconcile)
-  poller         recipient-side poller heartbeat/run/status that keeps .live fresh
-  identity       resolve and print the contextual agent identity (alias of default-id)
-  shims          install/pass-through launcher shims for known wrappers
   status         print registry overview, inbox depths, and .live presence freshness
   doctor         diagnostic aggregator: scaffold, hook content, registration, inbox, .live presence
+
+Advanced / internal:
+  boot           session-start ritual: register + peek inbox + owed-reply summary (use in SessionStart hooks)
+  register       create or update a live registration for an agent
+  gate           lifecycle gate: block declaring done while unread inbox mail is outstanding
+  pending        peek unread messages (read-only; safe for lifecycle hooks)
+  poller         recipient-side poller heartbeat/run/status that keeps .live fresh
+  self-check     refresh own registration/last_seen and .live presence (pull-only: no wake target to reconcile)
   hooks          install canonical hook templates into .claude/ / .codex/ / .gemini/ (v0.2.1)
+  shims          install/pass-through launcher shims for known wrappers
+  prepare-pool   prepare one or more folders as pool participants (writes pointer file + enrollment blocks)
+  identity       resolve and print the contextual agent identity (alias of default-id)
+  default-id     print the contextual default agent id for a wrapper/vendor
+  update         self-update the binary to a release, then re-sync this repo's setup
+  run            deprecated alias of 'serve' (removed in v0.10.0)
 
 Run 'agentchute <command> --help' for command-specific flags.
 See AGENTCHUTE.md for the full spec.
