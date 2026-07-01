@@ -9,6 +9,9 @@ shared filesystem, delivered with a unique-temp + atomic `link()`-no-clobber.
 Anything that preserves the protocol's semantics is a valid agentchute
 implementation.
 
+For a copy-pasteable filesystem walkthrough, see
+[`AGENTCHUTE.md` Appendix C](AGENTCHUTE.md#appendix-c-hand-protocol-walkthrough).
+
 The seven invariants (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`) *are* those semantics,
 and [`conformance/`](conformance/) is the executable spec — the invariants as a
 Go test suite driven against multiple substrate bindings. An implementation that
