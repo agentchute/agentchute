@@ -314,7 +314,15 @@ func setupCommandMatchesPool(cmdline, subcommand string, cfg *loop.Config) bool 
 		}
 	case "serve":
 		// The `ac` dispatcher and the legacy ac-* shim both exec `agentchute serve`.
-		if !strings.Contains(normalized, " agentchute serve ") && !strings.Contains(normalized, "/agentchute serve ") {
+		// UPGRADE-CLEANUP COMPATIBILITY ONLY: `run` was removed from the command
+		// surface (dispatch/help/handlers), but a PRE-v0.9.1 supervisor still execs
+		// `agentchute run`. reset/wipe/update must keep ATTRIBUTING a live old `run`
+		// runner to this pool so it is stopped cleanly on upgrade — otherwise cleanup
+		// fails closed on an orphaned runner holding a serve lease. This is process
+		// attribution for teardown, not command support.
+		serveMatch := strings.Contains(normalized, " agentchute serve ") || strings.Contains(normalized, "/agentchute serve ")
+		runAliasMatch := strings.Contains(normalized, " agentchute run ") || strings.Contains(normalized, "/agentchute run ")
+		if !serveMatch && !runAliasMatch {
 			return false
 		}
 	default:

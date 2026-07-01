@@ -375,11 +375,13 @@ func TestSetupCommandMatchesRunnerPool(t *testing.T) {
 		t.Fatalf("runner cmdline without --as but with the pool path must match: %q", runnerNoAs)
 	}
 
-	// The `run` verb was removed (serve is the only launch verb): a supervisor
-	// launched via the old `agentchute run` is no longer attributed to this pool.
-	runVerb := "/usr/local/bin/agentchute run --control-repo " + root + " --loop-dir " + cfg.LoopDir
-	if setupCommandMatchesRunnerPool(runVerb, cfg) {
-		t.Fatalf("removed `agentchute run` verb must NOT match the runner pool: %q", runVerb)
+	// UPGRADE-CLEANUP COMPATIBILITY: `run` was removed from the command surface, but
+	// a live PRE-v0.9.1 supervisor still execs `agentchute run`. reset/wipe/update
+	// must keep attributing it to this pool so it is stopped cleanly on upgrade
+	// (process attribution for teardown, not command support).
+	legacyRun := "/usr/local/bin/agentchute run --control-repo " + root + " --loop-dir " + cfg.LoopDir
+	if !setupCommandMatchesRunnerPool(legacyRun, cfg) {
+		t.Fatalf("live pre-upgrade `agentchute run` supervisor must still match for cleanup: %q", legacyRun)
 	}
 
 	// A poller carries --as <id>; the poller matcher still requires it.
