@@ -4,7 +4,7 @@ Thanks for considering it. Three things up-front:
 
 1. **The spec is the source of truth.** [`AGENTCHUTE.md`](AGENTCHUTE.md) defines the wire format, file conventions, and behavior. If a PR changes any of that, propose the spec change first (open an issue or draft PR for the spec only). Don't sneak protocol changes into a code PR.
 
-2. **The binary is intentionally small.** agentchute's pitch is "a few markdown files and an optional wake poke." If a PR adds a dependency, a config file, a new subcommand category, or a feature that requires explanation, the bar is high. We'd rather ship less.
+2. **The binary is intentionally small.** agentchute's pitch is "a few markdown files and a pull-only inbox." If a PR adds a dependency, a config file, a new subcommand category, or a feature that requires explanation, the bar is high. We'd rather ship less.
 
 3. **Test what you change.** If you fix a bug, add a test that fails without the fix. If you add a feature, integration tests > unit tests for v0.1.0. Run the full pre-commit ritual before sending the PR:
 

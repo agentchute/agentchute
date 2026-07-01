@@ -100,7 +100,7 @@ The pitch is intentionally narrow: agents sharing one inbox medium (typically ru
 1. `README.md` — 2 minutes, orients you. The public-facing pitch and quickstart.
 2. `HANDOFF.md` — current state, pending work, decisions log, what NOT to do. Read this BEFORE touching anything.
 3. `AGENTCHUTE.md` — the protocol spec. Source of truth for any reimplementation.
-4. `EXTENSIONS.md` — community-extension space (cross-folder enrollment, alternate wake adapters, cross-pool agents); informs which changes belong in the core spec vs. an extension.
+4. `EXTENSIONS.md` — community-extension space (cross-folder enrollment, alternate substrates/transports, cross-pool agents); informs which changes belong in the core spec vs. an extension.
 5. `CONTRIBUTING.md` — PR process, style details, scope criteria, bug-report template.
 6. `examples/` — start at [`examples/README.md`](examples/README.md) (the index) and `examples/hooks/` (the per-wrapper lifecycle hook templates the installer wires). The tmux/wake/watchdog-era walkthrough scripts were removed in the pull-only redesign; the runner (`ac run <wrapper>`) flow lives in the root README quickstart.
 

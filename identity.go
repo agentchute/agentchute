@@ -46,7 +46,7 @@ func resolveAgentIDRaw(flagID, vendor string, cfg *loop.Config) (string, error) 
 	// --as / $AGENTCHUTE_AGENT_ID or the contextual default below.
 	canon := canonicalAgentIDForVendor(vendor)
 	if canon == "" {
-		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, run from a registered tmux/herdr pane, or provide a recognized --vendor/--wrapper for a contextual default")
+		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, or provide a recognized --vendor/--wrapper for a contextual default")
 	}
 
 	cwd, err := os.Getwd()
@@ -70,7 +70,7 @@ func resolveAgentIDRaw(flagID, vendor string, cfg *loop.Config) (string, error) 
 func resolveRegisteredAgentID(flagID string, cfg *loop.Config) (string, error) {
 	id, err := resolveAgentID(flagID, "", cfg)
 	if err != nil {
-		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, or run from a registered tmux/herdr pane")
+		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, or run with --vendor for a contextual id")
 	}
 	return id, nil
 }
