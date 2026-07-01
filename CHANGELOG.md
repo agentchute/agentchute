@@ -30,6 +30,16 @@ The release that completes the protocol. The finish-line worklist from the indep
 - Deleted the `selectShimSpecs`/`shimInstallNames` selector helpers; cleanup still marker-checks files, preserves the `ac` dispatcher, and leaves user-owned same-name files untouched.
 - Removed the now-satisfied §13.1 deferred ledger row from `AGENTCHUTE.md`.
 
+**Deprecation & versioning policy (D/P3)**
+- New `CONTRIBUTING.md` section, in force from v0.10.0 onward: patch releases are fixes-only; minor releases may remove/rename CLI surface after one deprecation window; timelines are binding unless the owner logs an explicit CHANGELOG exception (retroactively applied to the early v0.9.1 `run`-alias removal); the enrollment-marker-bump contract is stated.
+- Also fixed the web/blog featured excerpt to note `self-poll`/`doctor --generate-service` were removed in v0.9.0 (they were presented as current).
+
+**Implementation guidance now linked (E/P4)**
+- README links `EXTENSIONS.md`; `EXTENSIONS.md` points to `AGENTCHUTE.md` Appendix C's copy-pasteable hand-protocol walkthrough. No new content — the guide already existed, just wasn't discoverable from README.
+
+**Spec reads as the current contract (F/P6a)**
+- The six historical "DONE in v0.9.x" migration paragraphs moved verbatim from §13.1 into a new Appendix D (compatibility history); §13.1 is now an empty deferred-cleanup ledger pointing there.
+
 ## v0.9.1 (2026-07-01) — the lean release, finished
 
 A fast-follow that completes the v0.9.0 subtraction: remove all remaining legacy not in the current protocol spirit, then relocate the code into a clean shape. No new features; no wire-format change. Six dual-gated PRs (five code + one release-prep), each reviewed by codex + sonnet, plus a full 4-way docs sweep.
