@@ -449,8 +449,8 @@ func TestDoctor_WarnsOnRawWrapperBypass(t *testing.T) {
 		if got.Severity == severityBlocker {
 			t.Fatalf("launch-bypass check must never be a BLOCKER; got %q", got.Severity)
 		}
-		if !strings.Contains(got.Message, "ac run gemini") {
-			t.Fatalf("warn message should name the fix `ac run gemini`: %q", got.Message)
+		if !strings.Contains(got.Message, "ac serve gemini") {
+			t.Fatalf("warn message should name the fix `ac serve gemini`: %q", got.Message)
 		}
 	})
 
@@ -669,18 +669,18 @@ func TestCmdDoctorDiscoveryFailureBlocks(t *testing.T) {
 	})
 }
 
-func TestAcRunHintForAgent_ContextualIDs(t *testing.T) {
+func TestAcServeHintForAgent_ContextualIDs(t *testing.T) {
 	cases := map[string]string{
-		"codex":                 "ac run codex",
-		"codex-agentchute":      "ac run codex",  // contextual id
-		"gemini-cli-agentchute": "ac run gemini", // contextual id, aliased wrapper
-		"claude-code":           "ac run claude",
-		"grok-agentchute":       "ac run grok",
-		"totally-unknown":       "ac run <wrapper>",
+		"codex":                 "ac serve codex",
+		"codex-agentchute":      "ac serve codex",  // contextual id
+		"gemini-cli-agentchute": "ac serve gemini", // contextual id, aliased wrapper
+		"claude-code":           "ac serve claude",
+		"grok-agentchute":       "ac serve grok",
+		"totally-unknown":       "ac serve <wrapper>",
 	}
 	for id, want := range cases {
-		if got := acRunHintForAgent(id); got != want {
-			t.Errorf("acRunHintForAgent(%q) = %q, want %q", id, got, want)
+		if got := acServeHintForAgent(id); got != want {
+			t.Errorf("acServeHintForAgent(%q) = %q, want %q", id, got, want)
 		}
 	}
 }

@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.
 > curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh -s -- --fresh --yes --wake runner --wrappers all
 > ```
 >
-> Open a new shell (or `hash -r`) so the new `ac` dispatcher resolves (it installs at `~/.agentchute/bin/ac` and must precede the system `/usr/sbin/ac` on PATH). Verify with `ac doctor`, then restart each agent: `ac run claude`, `ac run codex`, … See [CHANGELOG](CHANGELOG.md).
+> Open a new shell (or `hash -r`) so the new `ac` dispatcher resolves (it installs at `~/.agentchute/bin/ac` and must precede the system `/usr/sbin/ac` on PATH). Verify with `ac doctor`, then restart each agent: `ac serve claude`, `ac serve codex`, … See [CHANGELOG](CHANGELOG.md).
 
 That's the reference CLI. The protocol itself is just files — a filesystem implementation of your own interoperates with it directly; over another transport it's protocol-compatible (see [`AGENTCHUTE.md`](AGENTCHUTE.md)).
 
@@ -32,7 +32,7 @@ That's the reference CLI. The protocol itself is just files — a filesystem imp
 
 ## The idea
 
-Every agent has an inbox — a directory. A message is a Markdown file dropped in it. The recipient reads its own inbox, on its own schedule. Delivery is best-effort; the message just waits until it's read. That's the whole protocol, and it works with **any terminal-based agent** — Claude Code, Codex, Gemini CLI, Grok, or your own — because the protocol depends on no vendor behavior. (The reference runner installs a single `ac` dispatcher — launch any of those four with `ac run <wrapper>`; any other terminal agent runs under the same runner or its own polling loop.)
+Every agent has an inbox — a directory. A message is a Markdown file dropped in it. The recipient reads its own inbox, on its own schedule. Delivery is best-effort; the message just waits until it's read. That's the whole protocol, and it works with **any terminal-based agent** — Claude Code, Codex, Gemini CLI, Grok, or your own — because the protocol depends on no vendor behavior. (The reference runner installs a single `ac` dispatcher — launch any of those four with `ac serve <wrapper>`; any other terminal agent runs under the same runner or its own polling loop.)
 
 ## What's in the protocol
 
@@ -73,10 +73,12 @@ curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.
 agentchute setup --wake runner --wrappers all --yes
 
 # 2. start each agent in its own terminal, with a pinned id so peers can address it
-AGENTCHUTE_AGENT_ID=claude-code ac run claude   # one terminal
-AGENTCHUTE_AGENT_ID=codex       ac run codex    # another terminal
-agentchute doctor --as codex                    # sanity-check (any terminal)
+AGENTCHUTE_AGENT_ID=claude-code ac serve claude   # one terminal
+AGENTCHUTE_AGENT_ID=codex       ac serve codex    # another terminal
+agentchute doctor --as codex                      # sanity-check (any terminal)
 ```
+
+`ac serve <wrapper>` is the launch verb; `ac run <wrapper>` still works as a deprecated alias (removed in v0.10.0).
 
 That's it — both agents are enrolled and polling their own inboxes. Coordination happens between them; you won't normally run `send`/`check`/`ack` yourself.
 

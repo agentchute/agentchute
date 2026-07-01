@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// RunnerState is local diagnostic/recovery state for `agentchute run`.
+// RunnerState is local diagnostic/recovery state for `agentchute serve`.
 // Registration last_seen remains the liveness source of truth.
 //
 // Pull-only (simple-again Gate 6c): the runner no longer owns a receive socket

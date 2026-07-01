@@ -76,7 +76,7 @@ func (p cleanPlan) RemoveItems() []cleanItem {
 	return out
 }
 
-// cleanProcess is a live `agentchute run`/`agentchute poller run` process for
+// cleanProcess is a live `agentchute serve`/`agentchute poller run` process for
 // THIS pool, already cmdline-matched by the FIXED matcher (Task 1).
 type cleanProcess struct {
 	PID  int
@@ -416,7 +416,7 @@ func resolveCleanInputs(cfg *loop.Config, controlRepo string, agentIDs []string)
 // printWipeStateDryRun so the clean-all shares the wipe's single destructive
 // confirm and post-confirm live-bus rescan.)
 
-// listPoolAgentchuteProcesses enumerates live `agentchute run`/`poller run`
+// listPoolAgentchuteProcesses enumerates live `agentchute serve`/`poller run`
 // processes whose cmdline matches THIS pool (the FIXED matcher from Task 1).
 // Package var so the wipe orchestration stays testable without shelling out.
 var listPoolAgentchuteProcesses = defaultListPoolAgentchuteProcesses

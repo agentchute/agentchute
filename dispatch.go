@@ -22,17 +22,21 @@ var commandHandlers = map[string]func([]string) error{
 	"check":        cmdCheck,
 	"ack":          cmdAck,
 	"pending":      cmdPending,
-	"run":          cmdRun,
-	"setup":        cmdSetup,
-	"update":       cmdUpdate,
-	"self-check":   cmdSelfCheck,
-	"poller":       cmdPoller,
-	"default-id":   cmdIdentity,
-	"identity":     cmdIdentity,
-	"shims":        cmdShims,
-	"status":       cmdStatus,
-	"doctor":       cmdDoctor,
-	"hooks":        cmdHooks,
+	"serve":        cmdServe,
+	// COMPAT(remove-in: v0.10.0): "run" is a deprecated alias for "serve" (v0.9.0
+	// rename). Kept working for one release; no deprecation warning is printed so a
+	// supervised wrapper's PTY is never polluted. Delete this entry with the alias.
+	"run":        cmdServe,
+	"setup":      cmdSetup,
+	"update":     cmdUpdate,
+	"self-check": cmdSelfCheck,
+	"poller":     cmdPoller,
+	"default-id": cmdIdentity,
+	"identity":   cmdIdentity,
+	"shims":      cmdShims,
+	"status":     cmdStatus,
+	"doctor":     cmdDoctor,
+	"hooks":      cmdHooks,
 }
 
 // globalValueFlags are the leading flags the `ac` dispatcher accepts BEFORE the
@@ -51,7 +55,7 @@ type dispatchKind int
 
 const (
 	dispatchCommand dispatchKind = iota // route to an agentchute subcommand
-	dispatchRun                         // launch a wrapper under `run`
+	dispatchRun                         // launch a wrapper under `serve` (`run` is a deprecated alias)
 	dispatchHelp
 )
 
@@ -94,10 +98,10 @@ func splitLeadingGlobalFlags(args []string) (global, rest []string) {
 }
 
 // parseDispatch is the bounded, canonical-only `ac` parser (v0.8.8):
-//   - known command          -> route to it
-//   - run <wrapper> [args]    -> launch that wrapper
-//   - bare known wrapper      -> ERROR "use ac run <wrapper>"
-//   - unknown                 -> ERROR with suggestions
+//   - known command            -> route to it
+//   - serve <wrapper> [args]    -> launch that wrapper (`run` is a deprecated alias)
+//   - bare known wrapper        -> ERROR "use ac serve <wrapper>"
+//   - unknown                   -> ERROR with suggestions
 //
 // It performs NO arbitrary-PATH-executable inference; a command name always
 // wins over a same-named wrapper.
@@ -105,7 +109,7 @@ func parseDispatch(args []string) (dispatchPlan, error) {
 	global, rest := splitLeadingGlobalFlags(args)
 	if len(rest) == 0 {
 		if len(global) > 0 {
-			return dispatchPlan{}, fmt.Errorf("ac: expected a command or `run <wrapper>` after %s", strings.Join(global, " "))
+			return dispatchPlan{}, fmt.Errorf("ac: expected a command or `serve <wrapper>` after %s", strings.Join(global, " "))
 		}
 		return dispatchPlan{Kind: dispatchHelp}, nil
 	}
@@ -115,14 +119,16 @@ func parseDispatch(args []string) (dispatchPlan, error) {
 	switch sub {
 	case "-h", "--help", "help":
 		return dispatchPlan{Kind: dispatchHelp}, nil
-	case "run":
+	case "serve", "run":
+		// `serve` is the launch verb; `run` is a deprecated alias (removed in
+		// v0.10.0). Both dispatch a wrapper launch identically.
 		if len(subArgs) == 0 {
-			return dispatchPlan{}, fmt.Errorf("ac run <wrapper> — known wrappers: %s", strings.Join(knownWrapperTokens(), ", "))
+			return dispatchPlan{}, fmt.Errorf("ac serve <wrapper> — known wrappers: %s", strings.Join(knownWrapperTokens(), ", "))
 		}
 		token := subArgs[0]
 		spec, ok := wrapperForToken(token)
 		if !ok {
-			return dispatchPlan{}, fmt.Errorf("ac run: unknown wrapper %q — known: %s", token, strings.Join(knownWrapperTokens(), ", "))
+			return dispatchPlan{}, fmt.Errorf("ac serve: unknown wrapper %q — known: %s", token, strings.Join(knownWrapperTokens(), ", "))
 		}
 		return dispatchPlan{Kind: dispatchRun, Global: global, Wrapper: spec, WrapperArgs: subArgs[1:]}, nil
 	}
@@ -133,12 +139,12 @@ func parseDispatch(args []string) (dispatchPlan, error) {
 		return dispatchPlan{Kind: dispatchCommand, Global: global, Command: sub, CommandArgs: cmdArgs}, nil
 	}
 
-	// A bare wrapper token is canonical-only: require `ac run <wrapper>`.
+	// A bare wrapper token is canonical-only: require `ac serve <wrapper>`.
 	if _, ok := wrapperForToken(sub); ok {
-		return dispatchPlan{}, fmt.Errorf("`ac %s` launches a wrapper — use `ac run %s`", sub, sub)
+		return dispatchPlan{}, fmt.Errorf("`ac %s` launches a wrapper — use `ac serve %s`", sub, sub)
 	}
 
-	return dispatchPlan{}, fmt.Errorf("ac: unknown subcommand %q\n  commands: %s\n  wrappers: use `ac run <wrapper>` (%s)",
+	return dispatchPlan{}, fmt.Errorf("ac: unknown subcommand %q\n  commands: %s\n  wrappers: use `ac serve <wrapper>` (%s)",
 		sub, strings.Join(commandNamesSorted(), ", "), strings.Join(knownWrapperTokens(), ", "))
 }
 
@@ -186,7 +192,7 @@ func cmdDispatch(args []string) error {
 	return fmt.Errorf("ac: internal dispatch error")
 }
 
-// dispatchExecRun resolves the real wrapper binary and re-execs `agentchute run`
+// dispatchExecRun resolves the real wrapper binary and re-execs `agentchute serve`
 // for it, mirroring the generated-shim exec path (without an ac-* shim name).
 // shimDir (peeled from the dispatcher script's --shim-dir) is excluded from the
 // PATH search so a stale same-name alias shim there is never picked as the real
@@ -231,10 +237,10 @@ func dispatchExecRun(plan dispatchPlan, shimDir string) error {
 	return execReplace(agentchuteBin, runArgs, os.Environ())
 }
 
-// buildDispatchRunArgs assembles the `agentchute run` argv for a dispatcher
+// buildDispatchRunArgs assembles the `agentchute serve` argv for a dispatcher
 // launch, emitting exactly one authoritative --vendor/--control-repo/--loop-dir.
 func buildDispatchRunArgs(agentchuteBin, vendor string, forwardGlobal []string, controlRepo, loopDir string, wrapperArgs []string) []string {
-	runArgs := []string{agentchuteBin, "run", "--vendor", vendor}
+	runArgs := []string{agentchuteBin, "serve", "--vendor", vendor}
 	runArgs = append(runArgs, forwardGlobal...)
 	runArgs = append(runArgs,
 		"--control-repo", controlRepo,
@@ -283,9 +289,10 @@ func dispatchHelpText() string {
 	return fmt.Sprintf(`ac — the agentchute launcher/dispatcher
 
 Usage:
-  ac run <wrapper> [args...]   launch a wrapper under the runner (%s)
-  ac <command> [args...]       any agentchute command (%s)
+  ac serve <wrapper> [args...]   launch a wrapper under the runner (%s)
+  ac <command> [args...]         any agentchute command (%s)
 
-Global flags may precede the subcommand: ac --as <id> run codex
+Global flags may precede the subcommand: ac --as <id> serve codex
+(run is a deprecated alias for serve, removed in v0.10.0.)
 `, strings.Join(knownWrapperTokens(), ", "), strings.Join(commandNamesSorted(), ", "))
 }

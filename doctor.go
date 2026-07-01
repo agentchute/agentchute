@@ -373,13 +373,13 @@ func checkUnenrolledPresence(cfg *loop.Config) doctorCheck {
 	return doctorCheck{
 		Name:     "unenrolled_presence",
 		Severity: severityWarn,
-		Message:  fmt.Sprintf("%d wrapper(s) present in this pool but not enrolled: %s — enroll via the `ac` dispatcher (`ac run <wrapper>`) or `agentchute boot --as <id>`", len(found), strings.Join(parts, ", ")),
+		Message:  fmt.Sprintf("%d wrapper(s) present in this pool but not enrolled: %s — enroll via the `ac` dispatcher (`ac serve <wrapper>`) or `agentchute boot --as <id>`", len(found), strings.Join(parts, ", ")),
 	}
 }
 
 // checkLaunchProvenance is the WI-E3 detect-and-warn launch-bypass check. When
 // the runner wake path IS configured (setup installed the ac-* launchers and the
-// expected launch is `ac run <wrapper>` -> runner), it WARNS — never BLOCKS — if a
+// expected launch is `ac serve <wrapper>` -> runner), it WARNS — never BLOCKS — if a
 // wrapper is running raw:
 //
 //   - the agent's registration records launched_by=manual or has no provenance
@@ -389,7 +389,7 @@ func checkUnenrolledPresence(cfg *loop.Config) doctorCheck {
 //
 // This is ADVISORY by design (codex guardrail): it NEVER returns a BLOCKER, it
 // does NOT flip the runner default (runner stays opt-in), and it installs no
-// same-name shadowing — it only points the operator at `ac run <wrapper>`. Managed
+// same-name shadowing — it only points the operator at `ac serve <wrapper>`. Managed
 // enrollments (runner/hook/poller) and non-runner setups do not warn.
 func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
 	const name = "launch_provenance"
@@ -411,7 +411,7 @@ func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions)
 	// Provenance: the agent enrolled raw (manual / no provenance) rather than via
 	// the runner. Managed provenance (runner/hook/poller) is fine. The old
 	// per-wrapper-shim shadow check is obsolete under the `ac` dispatcher — launch
-	// is `ac run <wrapper>`, and `ac`'s own PATH precedence is the ac_dispatcher check.
+	// is `ac serve <wrapper>`, and `ac`'s own PATH precedence is the ac_dispatcher check.
 	if agentID != "" {
 		if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID)); err == nil {
 			switch strings.TrimSpace(reg.LaunchedBy) {
@@ -429,22 +429,22 @@ func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions)
 	return doctorCheck{
 		Name:     name,
 		Severity: severityWarn,
-		Message:  fmt.Sprintf("%s — relaunch via `%s` to route through the runner (advisory only; the runner stays opt-in and is never auto-activated)", strings.Join(reasons, "; "), acRunHintForAgent(agentID)),
+		Message:  fmt.Sprintf("%s — relaunch via `%s` to route through the runner (advisory only; the runner stays opt-in and is never auto-activated)", strings.Join(reasons, "; "), acServeHintForAgent(agentID)),
 	}
 }
 
-// acRunHintForAgent renders the canonical launch command for an agent id, e.g.
-// "ac run codex". Falls back to a generic hint for an unrecognized id.
-func acRunHintForAgent(agentID string) string {
+// acServeHintForAgent renders the canonical launch command for an agent id, e.g.
+// "ac serve codex". Falls back to a generic hint for an unrecognized id.
+func acServeHintForAgent(agentID string) string {
 	agentID = strings.TrimSpace(agentID)
 	for _, spec := range wrapperSpecs {
 		// Match contextual ids (codex-agentchute) to their canonical wrapper,
 		// not just exact base ids — mirrors shimNamesForAgent.
 		if registrationMatchesCanonical(agentID, spec.AgentID) {
-			return "ac run " + spec.Key
+			return "ac serve " + spec.Key
 		}
 	}
-	return "ac run <wrapper>"
+	return "ac serve <wrapper>"
 }
 
 func shimNamesForAgent(agentID string) []string {

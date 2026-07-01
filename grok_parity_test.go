@@ -8,7 +8,7 @@ import (
 
 // Grok parity, runner/shim surface. The grok CLI has no repo hook system
 // (no settings.json/hooks.json, no SessionStart lifecycle), so its first-class
-// wake path is the launcher shim that routes through `agentchute run`. These
+// wake path is the launcher shim that routes through `agentchute serve`. These
 // tests pin grok as a known setup wrapper and a shimmable wrapper, while
 // asserting it is correctly treated as hookless.
 
@@ -17,7 +17,7 @@ func TestShimsInstallGrok(t *testing.T) {
 	withCwd(t, root, func() {
 		if _, err := captureStdout(t, func() error {
 			// --wrapper grok is now a no-op; the wrapper-agnostic `ac` dispatcher
-			// routes grok via `ac run grok`.
+			// routes grok via `ac serve grok`.
 			return cmdShims([]string{"install", "--dir", filepath.Join(root, "bin"), "--wrapper", "grok"})
 		}); err != nil {
 			t.Fatalf("shims install grok: %v", err)

@@ -251,7 +251,7 @@ func stopSetupRunner(cfg *loop.Config, agentID string) (bool, string) {
 	}
 	cmdline := setupProcessCommandLine(st.RunnerPID)
 	// Runner attribution = the runner.json pid->id binding (loaded above) +
-	// setupProcessAlive (checked above) + this being an `agentchute run` for THIS
+	// setupProcessAlive (checked above) + this being an `agentchute serve` for THIS
 	// pool. A runner is launched WITHOUT --as (contextual id), so its cmdline never
 	// carries the agent id; requiring it here was a false-negative that left every
 	// live runner un-stopped. The state file binds pid->id; the cmdline only proves
@@ -290,14 +290,14 @@ func setupCommandMatches(cmdline, agentID, subcommand string, cfg *loop.Config) 
 // cmdline), a runner is launched with the CONTEXTUAL id — it has NO --as — so its
 // cmdline never contains the agent id. The pid->id binding therefore comes from
 // the runner.json state file (state/<id>/runner.json recorded this pid for <id>),
-// and the cmdline only needs to prove the process is an `agentchute run` for THIS
+// and the cmdline only needs to prove the process is an `agentchute serve` for THIS
 // pool (its --control-repo/--loop-dir resolves to this pool). Requiring the agent
 // id in a runner cmdline is the false-negative this fixes: every live runner was
 // reported "ambiguous ... cmdline did not match this pool; refusing (fail closed)".
 // A foreign pool or non-agentchute process still fails this check (still ambiguous,
 // still fail-closed).
 func setupCommandMatchesRunnerPool(cmdline string, cfg *loop.Config) bool {
-	return setupCommandMatchesPool(cmdline, "run", cfg)
+	return setupCommandMatchesPool(cmdline, "serve", cfg)
 }
 
 func setupCommandMatchesPool(cmdline, subcommand string, cfg *loop.Config) bool {
@@ -312,8 +312,13 @@ func setupCommandMatchesPool(cmdline, subcommand string, cfg *loop.Config) bool 
 		if !strings.Contains(normalized, " agentchute poller run ") && !strings.Contains(normalized, "/agentchute poller run ") {
 			return false
 		}
-	case "run":
-		if !strings.Contains(normalized, " agentchute run ") && !strings.Contains(normalized, "/agentchute run ") {
+	case "serve":
+		// The `ac` dispatcher and the legacy ac-* shim both exec `agentchute serve`.
+		// `agentchute run` remains a working deprecated alias (removed v0.10.0), so a
+		// directly-`run`-launched supervisor must still be attributed identically.
+		serveMatch := strings.Contains(normalized, " agentchute serve ") || strings.Contains(normalized, "/agentchute serve ")
+		runAliasMatch := strings.Contains(normalized, " agentchute run ") || strings.Contains(normalized, "/agentchute run ")
+		if !serveMatch && !runAliasMatch {
 			return false
 		}
 	default:
