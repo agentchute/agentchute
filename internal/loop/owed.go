@@ -24,6 +24,16 @@ import (
 // GATE 2: PURELY ADDITIVE. record-on-ask / clear-on-reply / expiry are wired
 // into send/check/gate in Gate 5; nothing here is wired yet.
 //
+// DESIGN NOTE — `.owed` is NOT a drop-in replacement for the recipient-side
+// pending-reply ledger's finish-gate block (ledger.go). Do NOT "make `.owed` the
+// sole reply-obligation authority" by dropping that block: `.owed` is
+// asker-owned and non-blocking, while the recipient's finish gate MUST block on
+// recipient-LOCAL state (peers never read each other's state dir) — so the block
+// cannot move to the asker's `.owed`. Removing it breaks the "never a silent
+// hang" guarantee. Any unification is a REDESIGN that relocates the block, not a
+// deletion; if trimming real duplication, target PendingReplyEntry.message_id.
+// See AGENTCHUTE.md "Compatibility & Deprecations".
+//
 // KEY: the primary key is the trusted committed identity MsgID{To,From,Seq} —
 // exactly as ledger.go keys on the trusted OriginalFilename rather than a
 // sender-asserted id. From == the asker (== the ledger owner); To == the

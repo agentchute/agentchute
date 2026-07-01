@@ -57,6 +57,27 @@ var agentIDPattern = `[a-z0-9][a-z0-9-]*`
 // Timestamp: `YYYY-MM-DDTHH-MM-SS-uuuuuuZ` (`-` instead of `:` for fs portability;
 // microseconds zero-padded to 6 digits).
 // Nonce: 4 lowercase hex characters.
+//
+// COMPAT(remove-in: v0.8.9, gate: legacy-gauge-zero): this is the root of the
+// one-release legacy-nonce dual-read. Removable ONLY after every live inbox
+// reports zero legacy-named messages pool-wide — and the gauge must cover BOTH
+// inbox/<id>/ AND inbox/<id>/.claimed/ residue: CountLegacyNonce is fed only from
+// inbox listings today (gate.go/doctor.go), but a legacy message parked in
+// .claimed/ (post-claim crash or a blocked ack) would make "zero" a false
+// negative. Extend the gauge to .claimed (ListClaimedMessages/parseAnyInboxName)
+// before it can serve as this gate.
+//
+//	READ set:  inboxFilenameRE + inboxFilenameShapeRE, the legacy branch of
+//	           InferSenderFromFilename, the LegacyNonce:true classifier,
+//	           ParseInboxFilename's legacy path, CountLegacyNonce.
+//	WRITE set: WriteInboxMessage, generateNonce, formatInboxFilename — ZERO
+//	           production callers (prod send writes seq via seq.go); only ~30 test
+//	           fixtures use them. WriteInboxMessage calls ParseInboxFilename, so
+//	           READ+WRITE must be removed together (and the ~30 test sites migrated
+//	           to the seq writer or a test-only legacy fixture) or the build breaks.
+//
+// If the gauge is nonzero at branch-cut, DO NOT silently re-defer — escalate.
+// See AGENTCHUTE.md "Compatibility & Deprecations".
 var inboxFilenameRE = regexp.MustCompile(
 	`^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{6}Z)_from-(` + agentIDPattern + `)_msg-([0-9a-f]{4})\.md$`,
 )
