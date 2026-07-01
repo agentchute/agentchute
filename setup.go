@@ -41,7 +41,6 @@ type setupOptions struct {
 	Yes         bool
 	DryRun      bool
 	NoProfile   bool
-	Aliases     bool
 	InitNew     bool
 	Reset       bool
 	WipeState   bool
@@ -60,7 +59,6 @@ type setupGlobalState struct {
 	// dispatcher rather than per-wrapper ac-* shims. ShimsInstalled is retained
 	// for back-compat reads (it gated the legacy shim/PATH cleanup paths).
 	DispatcherInstalled bool   `json:"dispatcher_installed"`
-	Aliases             bool   `json:"aliases,omitempty"`
 	UpdatedAt           string `json:"updated_at"`
 }
 
@@ -70,7 +68,6 @@ type setupPoolState struct {
 	Wrappers    []string `json:"wrappers"`
 	ControlRepo string   `json:"control_repo"`
 	LoopDir     string   `json:"loop_dir"`
-	Aliases     bool     `json:"aliases,omitempty"`
 	UpdatedAt   string   `json:"updated_at"`
 }
 
@@ -87,7 +84,6 @@ func cmdSetup(args []string) error {
 	fs.BoolVar(&opts.Yes, "yes", false, "skip confirmation prompts")
 	fs.BoolVar(&opts.DryRun, "dry-run", false, "print plan without writing files")
 	fs.BoolVar(&opts.NoProfile, "no-profile", false, "do not edit shell profile; print PATH hint instead")
-	fs.BoolVar(&opts.Aliases, "aliases", false, "deprecated no-op (per-wrapper aliases are no longer installed)")
 	fs.BoolVar(&opts.InitNew, "init", false, "allow setup to initialize a non-project directory")
 	fs.BoolVar(&opts.Reset, "reset", false, "explicitly run the runtime reset (always performed); required alongside --wipe-state")
 	fs.BoolVar(&opts.WipeState, "wipe-state", false, "DESTRUCTIVE: after reset, wipe loop runtime state (inbox/archive/malformed/live/scratch/state); requires --reset")
@@ -211,7 +207,6 @@ Flags:
   --shim-dir <path>      directory for the ac dispatcher (default $HOME/.agentchute/bin)
   --profile <path>       shell profile to update for the dispatcher PATH
   --no-profile           do not edit shell profile; print PATH hint instead
-  --aliases              deprecated no-op (per-wrapper aliases are no longer installed)
   --init                 allow initializing a non-project directory
   --reset                explicitly run the runtime reset (always performed);
                          required alongside --wipe-state
@@ -479,12 +474,6 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 	}
 	if len(shimWrappers) > 0 {
 		fmt.Fprintf(w, "  shims:        %s\n", opts.ShimDir)
-		if opts.Aliases {
-			fmt.Fprintln(w, "  aliases:      deprecated no-op (per-wrapper aliases are no longer installed)")
-		}
-		if !setupNeedsShims(opts.Wake) {
-			fmt.Fprintf(w, "  shim wrappers: %s (hookless startup enrollment)\n", strings.Join(shimWrappers, ", "))
-		}
 		if opts.NoProfile {
 			fmt.Fprintln(w, "  profile:      skipped (--no-profile)")
 		} else if profiles := setupPlausibleProfiles(opts.Profile); len(profiles) > 0 {
@@ -703,7 +692,7 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			}
 		}
 
-		if err := writeSetupPoolState(cfg, opts.Wake, wrappers, currentNeedsShims && opts.Aliases); err != nil {
+		if err := writeSetupPoolState(cfg, opts.Wake, wrappers); err != nil {
 			return err
 		}
 		profiles := setupPlausibleProfiles(opts.Profile)
@@ -730,7 +719,6 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			NoProfile:           opts.NoProfile,
 			ShimsInstalled:      currentNeedsShims,
 			DispatcherInstalled: currentNeedsShims,
-			Aliases:             currentNeedsShims && opts.Aliases,
 			PathBlock:           pathBlock,
 			UpdatedAt:           time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
@@ -1280,7 +1268,7 @@ func writeSetupGlobalState(state setupGlobalState) error {
 	return nil
 }
 
-func writeSetupPoolState(cfg *loop.Config, wake string, wrappers []string, aliases bool) error {
+func writeSetupPoolState(cfg *loop.Config, wake string, wrappers []string) error {
 	stateDir := filepath.Join(cfg.LoopDir, "state")
 	if err := loop.EnsurePrivateDir(stateDir); err != nil {
 		return err
@@ -1291,7 +1279,6 @@ func writeSetupPoolState(cfg *loop.Config, wake string, wrappers []string, alias
 		Wrappers:    wrappers,
 		ControlRepo: cfg.ControlRepo,
 		LoopDir:     cfg.LoopDir,
-		Aliases:     aliases,
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.MarshalIndent(state, "", "  ")

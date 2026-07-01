@@ -382,7 +382,7 @@ func TestCmdUpdateWrappersNoneReplays(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := writeSetupPoolState(cfg, "tmux", nil, false); err != nil {
+		if err := writeSetupPoolState(cfg, "tmux", nil); err != nil {
 			t.Fatal(err)
 		}
 		out, err := captureStdout(t, func() error {

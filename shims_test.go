@@ -38,11 +38,18 @@ func TestShimsInstallWritesDispatcher(t *testing.T) {
 	}
 }
 
-// --wrapper/--aliases are retained for back-compat but are no-ops: `shims
-// install` still installs only the wrapper-agnostic `ac` dispatcher.
-func TestShimsInstallLegacyFlagsAreNoOps(t *testing.T) {
+// The legacy --wrapper/--aliases no-op flags were removed; passing them now
+// errors. Plain `shims install` still installs only the wrapper-agnostic `ac`
+// dispatcher.
+func TestShimsInstallRejectsRemovedLegacyFlags(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bin")
-	if err := cmdShims([]string{"install", "--dir", dir, "--wrapper", "codex", "--aliases", "--quiet"}); err != nil {
+	if err := cmdShims([]string{"install", "--dir", dir, "--aliases", "--quiet"}); err == nil {
+		t.Fatal("shims install --aliases should now error (flag removed)")
+	}
+	if err := cmdShims([]string{"install", "--dir", dir, "--wrapper", "codex", "--quiet"}); err == nil {
+		t.Fatal("shims install --wrapper should now error (flag removed)")
+	}
+	if err := cmdShims([]string{"install", "--dir", dir, "--quiet"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "ac")); err != nil {
@@ -50,7 +57,7 @@ func TestShimsInstallLegacyFlagsAreNoOps(t *testing.T) {
 	}
 	for _, name := range []string{"ac-codex", "codex", "ac-gemini", "gemini"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-			t.Fatalf("%s should not be installed (legacy flags are no-ops): %v", name, err)
+			t.Fatalf("%s should not be installed: %v", name, err)
 		}
 	}
 }

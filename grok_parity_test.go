@@ -16,9 +16,9 @@ func TestShimsInstallGrok(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		if _, err := captureStdout(t, func() error {
-			// --wrapper grok is now a no-op; the wrapper-agnostic `ac` dispatcher
-			// routes grok via `ac serve grok`.
-			return cmdShims([]string{"install", "--dir", filepath.Join(root, "bin"), "--wrapper", "grok"})
+			// The wrapper-agnostic `ac` dispatcher routes grok via `ac serve grok`;
+			// there is no per-wrapper grok shim.
+			return cmdShims([]string{"install", "--dir", filepath.Join(root, "bin")})
 		}); err != nil {
 			t.Fatalf("shims install grok: %v", err)
 		}
