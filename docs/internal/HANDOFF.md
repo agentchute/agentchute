@@ -6,7 +6,7 @@ Read this after `AGENTS.md` and before touching anything. This file stays short 
 
 ## Current state
 
-Latest release: **`v0.9.0`** — the subtraction release: a pure trim toward **inbox + Markdown + pull** (recipient-owned reply obligations, wire-compat and wake-surface vestiges removed, `run` → `serve`, leaner CLI/repo). Built on the v0.8.0 "simple again" / protocol-v2 redesign.
+Latest release: **`v0.9.1`** — the lean release, finished: completes the v0.9.0 subtraction toward **inbox + Markdown + pull**. Removed the `run` verb alias + the redundant `default-id` command (`serve`/`identity` are the sole verbs), collapsed `--wake` to runner-only (tmux/herdr/all/both machinery gone), dropped the deprecated no-op `--wrapper`/`--aliases` flags, and relocated the flat root package into `internal/cli` (root is a thin `main.go` wiring layer). Built on the v0.9.0 subtraction release and the v0.8.0 "simple again" / protocol-v2 redesign.
 
 Coordination is **pull-only**: senders only ever write files and never poke a recipient. A loopless wrapper runs under the runner (`agentchute serve`, launched via `ac serve <wrapper>`) — a per-agent PTY supervisor that polls the agent's own inbox and injects a `check inbox` cue. There is no watchdog, no reachability cache, and no tmux/herdr wake adapters; those were removed. Message identity is the durable `(to, from, seq)` tuple; consumption is two-phase (`check` claims, `ack` commits — at-least-once, so handlers must be idempotent). Presence is the `.live` fact. Reply obligations are asker-owned (`.owed`). Id-uniqueness rides a serve lease + fencing token. The protocol's invariants ship as an executable suite in [`conformance/`](conformance/).
 
@@ -19,7 +19,6 @@ Coordination is **pull-only**: senders only ever write files and never poke a re
 ## What NOT to do
 
 - Don't reintroduce sender-side wake/pokes, a watchdog, reachability tracking, or per-vendor wake adapters — the redesign deleted them on purpose.
-- Don't treat [`EXTENSIONS.md`](EXTENSIONS.md) as current; it predates v0.8 and is pending a rewrite (see its banner).
 - Behavior changes start with the spec and the conformance suite, not the CLI.
 
 ## Verification ritual

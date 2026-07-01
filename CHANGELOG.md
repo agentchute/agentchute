@@ -4,6 +4,26 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v0.9.1 (2026-07-01) — the lean release, finished
+
+A fast-follow that completes the v0.9.0 subtraction: remove all remaining legacy not in the current protocol spirit, then relocate the code into a clean shape. No new features; no wire-format change. Six dual-gated PRs (five code + one release-prep), each reviewed by codex + sonnet, plus a full 4-way docs sweep.
+
+**Deprecated command/flag surface removed**
+- Dropped the `run` verb alias — `serve` is the only launch verb; `agentchute run` / `ac run <wrapper>` now error as unknown. `setupCommandMatchesRunnerPool` still *attributes* a live pre-upgrade `agentchute run` supervisor for teardown only, so `setup --reset`/`--wipe-state`/`update` still stop an orphaned old runner cleanly. (The poller's own `poller run` subcommand is unaffected.)
+- Dropped the redundant `default-id` command — `identity` is the single id-resolution command.
+- Collapsed `--wake` to **runner-only**: the `tmux`/`herdr`/`both`/`all` aliases and the whole multi-value wake-set machinery (`wakeSetContains`, `canonicalizePersistedWake`, the deprecation-note plumbing) are gone. Any persisted legacy wake value reads back as `runner`.
+- Removed the deprecated no-op flags `shims install --wrapper`/`--aliases` and `setup --aliases` (passing them now errors), the persisted `aliases` state field, and update's `--aliases` re-pass. The `ac` dispatcher cutover is complete, so these were never doing anything.
+
+**Dead code + structure**
+- Deleted the test-only `renderShimScript` (moved to a test fixture helper) and the zero-caller `removeSetupAliasShimsForWrapper`; renamed the misnamed `gitignoreBeginV1`/`EndV1` constants.
+- **Tier D**: relocated the flat root `package main` (72 files) into `internal/cli` (`package cli`); the repo root is now a thin `main.go` that embeds the root assets (spec, enrollment templates, hook templates) and injects them into `cli.Main`. Pure structural move — behavior byte-identical (crown-jewel PTY-injection + enrollment-drift tests pass unchanged).
+
+**Docs + CI**
+- Full 4-way stale-info sweep: corrected leftover `task`/`status` wire terminology, reworded the §13.1 compat ledger, and updated `CONTRIBUTING.md`/`AGENTS.md`/`HANDOFF.md` for the `internal/cli` layout.
+- CI now runs the `conformance/` module (previously `go test ./...` from the root skipped the nested module).
+
+**Compatibility** — enrollment marker bumped v19 → v21 (re-run `setup` to re-stamp). A pre-upgrade `agentchute run` runner is still cleaned up on the next `setup --reset`/`update`, but restart wrappers with `ac serve <wrapper>` after upgrading. Deferred: swapping the shim selectors for a static legacy-name list (still wired to the dropped-wrapper cleanup path), and the `ComposeMessage`/`send --task`/`--status` workflow-vocabulary cleanup (a remove-vs-repurpose design call for its own PR).
+
 ## v0.9.0 (2026-07-01) — the subtraction release
 
 A pure subtraction toward the target shape — **inbox + Markdown + pull**: a recipient reads its own inbox; no pokes, no checks on others; best-effort only. **Net −8,281 lines** (+1,308 / −9,589) across nine dual-gated PRs. No new features — the wire contract shrinks, the CLI surface shrinks, and the reference implementation gets smaller. New standing guardrail: every release should trend to fewer commands, files, and docs; if a change doesn't remove something, it probably isn't moving toward the goal.
