@@ -560,7 +560,12 @@ func scanWipeLiveSignals(cfg *loop.Config, agentIDs []string) []string {
 		if st, err := loop.LoadRunnerState(cfg, id); err == nil {
 			if setupLocalHost(st.Host) && st.RunnerPID > 0 && setupProcessAlive(st.RunnerPID) {
 				cmdline := setupProcessCommandLine(st.RunnerPID)
-				if setupCommandMatchesPool(cmdline, "run", cfg) && setupCommandHasAgentID(cmdline, id) {
+				// Runner attribution: runner.json binds this pid to <id>, the pid is
+				// alive, and the cmdline is an `agentchute run` for THIS pool. A runner
+				// has NO --as (contextual id), so we must NOT require the agent id in the
+				// cmdline — doing so reported every live runner as ambiguous. The poller
+				// case below keeps the agent-id check (pollers DO carry --as).
+				if setupCommandMatchesRunnerPool(cmdline, cfg) {
 					reasons = append(reasons, fmt.Sprintf("live runner for %s (pid=%d) is still running; stop it before wiping", id, st.RunnerPID))
 				} else {
 					reasons = append(reasons, fmt.Sprintf("ambiguous live process pid=%d recorded as runner for %s (cmdline did not match this pool); refusing (fail closed)", st.RunnerPID, id))
@@ -771,6 +776,14 @@ var setupRunWipeState = func(root string, cfg *loop.Config, wrappers []string, o
 	}
 	printWipePlan(os.Stdout, plan)
 
+	// Clean-all (v0.8.8): compute + print the stale-install-artifact audit BEFORE
+	// the single destructive confirm, so the operator approves the binary-backup
+	// removals together with the loop wipe. The removals are APPLIED below, after
+	// the confirm and the post-confirm live-bus rescan.
+	cleanIn := resolveCleanInputs(cfg, root, agentIDs)
+	cleanAudit := computeCleanPlan(cleanIn)
+	printCleanPlan(os.Stdout, cleanAudit)
+
 	if !opts.Yes {
 		ok, err := promptSetupConfirm("\nWipe the runtime state above? This is DESTRUCTIVE and cannot be undone. [y/N]: ")
 		if err != nil {
@@ -794,6 +807,15 @@ var setupRunWipeState = func(root string, cfg *loop.Config, wrappers []string, o
 	}
 	if leftovers := rescanWipeLeftovers(cfg.LoopDir); len(leftovers) > 0 {
 		return fmt.Errorf("wipe-state: runtime files reappeared during the wipe (a live process may be writing): %s", strings.Join(leftovers, ", "))
+	}
+
+	// Apply the guarded clean-all removals (re-checks every guard before each
+	// unlink; fails closed). Report-only items (orphans, PATH shadows, out-of-root
+	// backups) were already printed above and are never acted on.
+	if removed, err := applyCleanPlan(cleanAudit, cleanIn.CurrentUID, false); err != nil {
+		return fmt.Errorf("wipe-state: %w", err)
+	} else if len(removed) > 0 {
+		fmt.Printf("clean-all: removed %d stale install artifact(s)\n", len(removed))
 	}
 
 	fmt.Println("wipe-state: runtime state wiped; preserved scaffold (README.md, *.example.md) and state/setup.json.")
@@ -835,4 +857,7 @@ func printWipeStateDryRun(w io.Writer, root string) {
 	} else {
 		fmt.Fprintln(w, "  live-bus check: no live local or foreign-host signals detected (re-verified at apply time).")
 	}
+
+	// Clean-all audit (read-only report; the destructive removals run only on apply).
+	printCleanPlan(w, computeCleanPlan(resolveCleanInputs(cfg, root, agentIDs)))
 }

@@ -50,16 +50,19 @@ func TestSetupRunnerInstallsAllFourShimsRegardlessOfDetection(t *testing.T) {
 		t.Fatalf("codex hooks not installed: %v", err)
 	}
 
-	// INVARIANT: In runner mode, all four namespaced shims are installed even if only one
-	// wrapper is detected on PATH.
-	for _, name := range []string{"ac-claude", "ac-codex", "ac-gemini", "ac-grok"} {
-		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); err != nil {
-			t.Fatalf("%s shim not installed: %v", name, err)
-		}
+	// INVARIANT (v0.8.8): runner mode installs the single wrapper-agnostic `ac`
+	// dispatcher (no per-wrapper ac-* launchers, no same-name aliases).
+	acPath := filepath.Join(home, ".agentchute", "bin", "ac")
+	acData, err := os.ReadFile(acPath)
+	if err != nil {
+		t.Fatalf("ac dispatcher not installed: %v", err)
 	}
-	for _, name := range []string{"claude", "claude-code", "codex", "gemini", "gemini-cli", "grok"} {
+	if !strings.Contains(string(acData), "dispatch --shim-dir") {
+		t.Fatalf("ac dispatcher does not exec `agentchute dispatch`:\n%s", acData)
+	}
+	for _, name := range []string{"ac-claude", "ac-codex", "ac-gemini", "ac-grok", "claude", "claude-code", "codex", "gemini", "gemini-cli", "grok"} {
 		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); !os.IsNotExist(err) {
-			t.Fatalf("%s same-name alias should not be installed by default: %v", name, err)
+			t.Fatalf("legacy launcher/alias %s should not be installed: %v", name, err)
 		}
 	}
 	data, err := os.ReadFile(profile)
@@ -277,6 +280,37 @@ func TestReadSetupStateCanonicalizesLegacyBothWake(t *testing.T) {
 	}
 }
 
+// The v0.8.8 dispatcher_installed flag must survive a write/read round-trip and
+// serialize under its documented JSON key.
+func TestSetupGlobalStateDispatcherInstalledRoundTrips(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	in := setupGlobalState{
+		Version:             1,
+		Wake:                "runner",
+		Wrappers:            []string{"codex"},
+		ShimsInstalled:      true,
+		DispatcherInstalled: true,
+	}
+	if err := writeSetupGlobalState(in); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readSetupGlobalState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.DispatcherInstalled {
+		t.Fatalf("DispatcherInstalled did not round-trip: %+v", got)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".config", "agentchute", "setup.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"dispatcher_installed": true`) {
+		t.Fatalf("setup.json missing dispatcher_installed key:\n%s", raw)
+	}
+}
+
 func TestSetupHelpAndInvalidWakeRunnerOnly(t *testing.T) {
 	help := setupHelp()
 	for _, want := range []string{
@@ -472,8 +506,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v15 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v15 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v16 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v16 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)
@@ -516,8 +550,8 @@ func TestSetupRemovesOwnedSameNameAliasesOnly(t *testing.T) {
 		}
 	})
 
-	if _, err := os.Stat(filepath.Join(shimDir, "ac-codex")); err != nil {
-		t.Fatalf("ac-codex shim should be installed: %v", err)
+	if _, err := os.Stat(filepath.Join(shimDir, "ac")); err != nil {
+		t.Fatalf("ac dispatcher should be installed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(shimDir, "codex")); !os.IsNotExist(err) {
 		t.Fatalf("owned same-name codex alias should be removed: %v", err)
@@ -588,12 +622,14 @@ func TestSetupWrapperNarrowingRemovesDroppedHooksAndShims(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, ".gemini", "settings.json")); !os.IsNotExist(err) {
 		t.Fatalf("gemini hook should be removed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-codex")); err != nil {
-		t.Fatalf("ac-codex shim should remain: %v", err)
+	// The wrapper-agnostic `ac` dispatcher persists across a narrowing re-setup
+	// (it routes every wrapper); no per-wrapper ac-* launchers are written.
+	if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac")); err != nil {
+		t.Fatalf("ac dispatcher should remain: %v", err)
 	}
-	for _, name := range []string{"ac-gemini", "ac-grok", "ac-claude"} {
-		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); err != nil {
-			t.Fatalf("%s shim should remain (INVARIANT: all four shims in runner mode): %v", name, err)
+	for _, name := range []string{"ac-codex", "ac-gemini", "ac-grok", "ac-claude"} {
+		if _, err := os.Stat(filepath.Join(home, ".agentchute", "bin", name)); !os.IsNotExist(err) {
+			t.Fatalf("legacy launcher %s should not be installed: %v", name, err)
 		}
 	}
 }
@@ -636,7 +672,7 @@ func TestSetup_TemplatesWrittenBeforeRuntimeReset(t *testing.T) {
 		hadEnrollment = e1 == nil
 		_, e2 := os.Stat(filepath.Join(root, ".codex", "hooks.json"))
 		hadHook = e2 == nil
-		_, e3 := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac-codex"))
+		_, e3 := os.Stat(filepath.Join(home, ".agentchute", "bin", "ac"))
 		hadShim = e3 == nil
 		return errors.New("injected runtime-reset failure")
 	}
@@ -663,13 +699,13 @@ func TestSetup_TemplatesWrittenBeforeRuntimeReset(t *testing.T) {
 		t.Error("codex hook (.codex/hooks.json) was NOT written before the destructive reset")
 	}
 	if !hadShim {
-		t.Error("ac-codex shim was NOT written before the destructive reset")
+		t.Error("ac dispatcher was NOT written before the destructive reset")
 	}
 	// And they are durable on disk after the failed setup returns.
 	for _, p := range []string{
 		filepath.Join(root, "CODEX.md"),
 		filepath.Join(root, ".codex", "hooks.json"),
-		filepath.Join(home, ".agentchute", "bin", "ac-codex"),
+		filepath.Join(home, ".agentchute", "bin", "ac"),
 	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("wake-infra artifact missing after failed setup: %s (%v)", p, err)

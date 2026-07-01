@@ -16,7 +16,7 @@
 # Equivalent env vars (flags win on conflict):
 #   AGENTCHUTE_VERSION       pin a specific tag (default: latest release)
 #   AGENTCHUTE_INSTALL_DIR   override install dir (default: ~/.local/bin)
-#   AGENTCHUTE_SHIM_DIR      override launcher shim dir used by setup (default: ~/.agentchute/bin)
+#   AGENTCHUTE_SHIM_DIR      dir for the `ac` dispatcher installed by setup (default: ~/.agentchute/bin)
 #   AGENTCHUTE_PROFILE       shell profile to update when PATH needs entries
 #   AGENTCHUTE_NO_PATH_UPDATE=1  do not update shell profile; print hints only
 #   AGENTCHUTE_SETUP=0       skip setup after install
@@ -593,7 +593,7 @@ EOF
 	ensure_path_available "$install_dir" "binary"
 
 	if [ -z "$shim_dir" ]; then
-		[ -n "${HOME:-}" ] || err "HOME unset; set AGENTCHUTE_SHIM_DIR explicitly for launcher shims"
+		[ -n "${HOME:-}" ] || err "HOME unset; set AGENTCHUTE_SHIM_DIR explicitly for the ac dispatcher"
 		shim_dir="${HOME}/.agentchute/bin"
 	fi
 	is_valid_install_dir "$shim_dir" || err "invalid shim dir: $shim_dir (must not contain quotes, dollar signs, backticks, or backslashes)"

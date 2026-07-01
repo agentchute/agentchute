@@ -25,14 +25,14 @@ func hookLaunchProvenance(event string) (launchedBy, hookEvent string) {
 // With no/unknown agent id it returns every known candidate.
 func wrapperCandidatesForAgent(agentID string) []string {
 	if agentID != "" {
-		for _, spec := range shimSpecs {
+		for _, spec := range wrapperSpecs {
 			if registrationMatchesCanonical(agentID, spec.AgentID) {
 				return spec.Candidates
 			}
 		}
 	}
 	var all []string
-	for _, spec := range shimSpecs {
+	for _, spec := range wrapperSpecs {
 		all = append(all, spec.Candidates...)
 	}
 	return all

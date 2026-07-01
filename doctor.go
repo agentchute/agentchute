@@ -301,7 +301,14 @@ func checkBinaryOnPath() doctorCheck {
 	}
 }
 
+// checkWrapperShadowing verifies the single `ac` dispatcher (v0.8.8) resolves
+// from the shim dir ahead of the system `ac` (/usr/sbin/ac, the accounting
+// command). It is OK when `ac` resolves from $shim_dir AND $shim_dir precedes any
+// other dir with an `ac` on PATH; WARN when a non-shim-dir `ac` shadows it or the
+// shim dir is absent from PATH. The check is reported as `ac_dispatcher`.
 func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
+	const name = "ac_dispatcher"
+
 	wake := ""
 	if opts.PoolState != nil && opts.PoolState.Wake != "" {
 		wake = opts.PoolState.Wake
@@ -310,7 +317,7 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 	}
 
 	if wake == "" {
-		return doctorCheck{Name: "wrapper_shadowing", Severity: severitySkip, Message: "agentchute setup not run; skipping shadowing check"}
+		return doctorCheck{Name: name, Severity: severitySkip, Message: "agentchute setup not run; skipping ac dispatcher check"}
 	}
 
 	shimDir := ""
@@ -323,12 +330,12 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 	}
 
 	// Set-aware: the lifecycle-hook skip applies only when runner is NOT among
-	// the wake paths (runner installs all shims and requires them on PATH). A
-	// tmux/herdr-only set — single or combined ("tmux,herdr") — installs only
-	// hookless shims, so hookable wrappers rely on their lifecycle hook.
+	// the wake paths (runner requires the dispatcher on PATH). A legacy
+	// tmux/herdr-only set — single or combined ("tmux,herdr") — relies on the
+	// hookable wrapper's lifecycle hook, so the dispatcher is optional there.
 	if !setupNeedsShims(wake) && (wakeSetContains(wake, setupWakeTmux) || wakeSetContains(wake, setupWakeHerdr)) {
 		if _, hookable := hookWrapperForAgent(agentID); hookable {
-			return doctorCheck{Name: "wrapper_shadowing", Severity: severitySkip, Message: fmt.Sprintf("%s wake uses lifecycle hooks for this wrapper; launcher shim is optional", wake)}
+			return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("%s wake uses lifecycle hooks for this wrapper; ac dispatcher is optional", wake)}
 		}
 	}
 
@@ -336,23 +343,21 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 	if pathEnv == "" {
 		pathEnv = os.Getenv("PATH")
 	}
-	names := shimNamesForAgent(agentID)
 
-	if pathResolvesToDir(shimDir, pathEnv, names) {
-		return doctorCheck{Name: "wrapper_shadowing", Severity: severityOK, Message: fmt.Sprintf("namespaced launcher %s resolves from %s", strings.Join(names, ", "), shimDir)}
-	}
-
-	if pathContains(shimDir, pathEnv) {
+	if !pathContains(shimDir, pathEnv) {
 		return doctorCheck{
-			Name:     "wrapper_shadowing",
+			Name:     name,
 			Severity: severityWarn,
-			Message:  fmt.Sprintf("namespaced launcher %s is not resolving from %s; rerun setup or check PATH", strings.Join(names, ", "), shimDir),
+			Message:  fmt.Sprintf("shim dir %s is not on PATH; add it or rerun setup", shimDir),
 		}
 	}
+	if pathResolvesToDir(shimDir, pathEnv, []string{"ac"}) {
+		return doctorCheck{Name: name, Severity: severityOK, Message: fmt.Sprintf("ac dispatcher resolves from %s", shimDir)}
+	}
 	return doctorCheck{
-		Name:     "wrapper_shadowing",
+		Name:     name,
 		Severity: severityWarn,
-		Message:  fmt.Sprintf("shim dir %s is not on PATH; add it or rerun setup", shimDir),
+		Message:  fmt.Sprintf("the system `ac` shadows the agentchute dispatcher; ensure %s precedes /usr/sbin on PATH (open a new shell or `hash -r`)", shimDir),
 	}
 }
 
@@ -377,13 +382,13 @@ func checkUnenrolledPresence(cfg *loop.Config) doctorCheck {
 	return doctorCheck{
 		Name:     "unenrolled_presence",
 		Severity: severityWarn,
-		Message:  fmt.Sprintf("%d wrapper(s) present in this pool but not enrolled: %s — enroll via their `ac-<wrapper>` launcher or `agentchute boot --as <id>`", len(found), strings.Join(parts, ", ")),
+		Message:  fmt.Sprintf("%d wrapper(s) present in this pool but not enrolled: %s — enroll via the `ac` dispatcher (`ac run <wrapper>`) or `agentchute boot --as <id>`", len(found), strings.Join(parts, ", ")),
 	}
 }
 
 // checkLaunchProvenance is the WI-E3 detect-and-warn launch-bypass check. When
 // the runner wake path IS configured (setup installed the ac-* launchers and the
-// expected launch is `ac-<wrapper>` -> runner), it WARNS — never BLOCKS — if a
+// expected launch is `ac run <wrapper>` -> runner), it WARNS — never BLOCKS — if a
 // wrapper is running raw:
 //
 //   - the agent's registration records launched_by=manual or has no provenance
@@ -393,7 +398,7 @@ func checkUnenrolledPresence(cfg *loop.Config) doctorCheck {
 //
 // This is ADVISORY by design (codex guardrail): it NEVER returns a BLOCKER, it
 // does NOT flip the runner default (runner stays opt-in), and it installs no
-// same-name shadowing — it only points the operator at `ac-<wrapper>`. Managed
+// same-name shadowing — it only points the operator at `ac run <wrapper>`. Managed
 // enrollments (runner/hook/poller) and non-runner setups do not warn.
 func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
 	const name = "launch_provenance"
@@ -411,29 +416,11 @@ func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions)
 		return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("%s wake does not include the runner; raw-launch bypass only applies to runner setups", wake)}
 	}
 
-	shimDir := ""
-	if opts.GlobalState != nil {
-		shimDir = opts.GlobalState.ShimDir
-	}
-	if shimDir == "" {
-		home, _ := os.UserHomeDir()
-		shimDir = filepath.Join(home, ".agentchute", "bin")
-	}
-	pathEnv := opts.PathEnv
-	if pathEnv == "" {
-		pathEnv = os.Getenv("PATH")
-	}
-
 	var reasons []string
-	// (1) Shadowing: a real wrapper binary appears before the shim dir on PATH.
-	// Gated on pathContains so "shim dir absent from PATH" (checkWrapperShadowing's
-	// domain) does not double-fire here.
-	candidates := wrapperCandidatesForAgent(agentID)
-	if pathContains(shimDir, pathEnv) && !pathIsPrioritized(shimDir, pathEnv, candidates) {
-		reasons = append(reasons, fmt.Sprintf("a real wrapper binary shadows the launcher shim in %s earlier on PATH", shimDir))
-	}
-	// (2) Provenance: the agent enrolled raw (manual / no provenance) rather than
-	// via the runner. Managed provenance (runner/hook/poller) is fine.
+	// Provenance: the agent enrolled raw (manual / no provenance) rather than via
+	// the runner. Managed provenance (runner/hook/poller) is fine. The old
+	// per-wrapper-shim shadow check is obsolete under the `ac` dispatcher — launch
+	// is `ac run <wrapper>`, and `ac`'s own PATH precedence is the ac_dispatcher check.
 	if agentID != "" {
 		if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID)); err == nil {
 			switch strings.TrimSpace(reg.LaunchedBy) {
@@ -448,18 +435,31 @@ func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions)
 	if len(reasons) == 0 {
 		return doctorCheck{Name: name, Severity: severityOK, Message: "no raw-launch bypass detected; this lane routes through the runner"}
 	}
-	fix := strings.Join(shimNamesForAgent(agentID), " / ")
 	return doctorCheck{
 		Name:     name,
 		Severity: severityWarn,
-		Message:  fmt.Sprintf("%s — relaunch via `%s` to route through the runner (advisory only; the runner stays opt-in and is never auto-activated)", strings.Join(reasons, "; "), fix),
+		Message:  fmt.Sprintf("%s — relaunch via `%s` to route through the runner (advisory only; the runner stays opt-in and is never auto-activated)", strings.Join(reasons, "; "), acRunHintForAgent(agentID)),
 	}
+}
+
+// acRunHintForAgent renders the canonical launch command for an agent id, e.g.
+// "ac run codex". Falls back to a generic hint for an unrecognized id.
+func acRunHintForAgent(agentID string) string {
+	agentID = strings.TrimSpace(agentID)
+	for _, spec := range wrapperSpecs {
+		// Match contextual ids (codex-agentchute) to their canonical wrapper,
+		// not just exact base ids — mirrors shimNamesForAgent.
+		if registrationMatchesCanonical(agentID, spec.AgentID) {
+			return "ac run " + spec.Key
+		}
+	}
+	return "ac run <wrapper>"
 }
 
 func shimNamesForAgent(agentID string) []string {
 	agentID = strings.TrimSpace(agentID)
 	if agentID != "" {
-		for _, spec := range shimSpecs {
+		for _, spec := range wrapperSpecs {
 			// Match contextual ids (codex-agentchute) to their canonical shim,
 			// not just exact base ids.
 			if registrationMatchesCanonical(agentID, spec.AgentID) {
@@ -467,8 +467,8 @@ func shimNamesForAgent(agentID string) []string {
 			}
 		}
 	}
-	names := make([]string, 0, len(shimSpecs))
-	for _, spec := range shimSpecs {
+	names := make([]string, 0, len(wrapperSpecs))
+	for _, spec := range wrapperSpecs {
 		names = append(names, spec.Name)
 	}
 	return names

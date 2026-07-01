@@ -11,7 +11,11 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-type shimSpec struct {
+type wrapperSpec struct {
+	// Key is the canonical wrapper name used by the `ac` dispatcher
+	// (`ac run <Key>`). Name is the legacy generated-shim filename (ac-*),
+	// retained only until the dispatcher fully replaces generated shims.
+	Key        string
 	Name       string
 	Aliases    []string
 	AgentID    string
@@ -19,11 +23,38 @@ type shimSpec struct {
 	Candidates []string
 }
 
-var shimSpecs = []shimSpec{
-	{Name: "ac-claude", Aliases: []string{"claude", "claude-code"}, AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}},
-	{Name: "ac-codex", Aliases: []string{"codex"}, AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}},
-	{Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli", "agy"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli", "agy"}},
-	{Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
+var wrapperSpecs = []wrapperSpec{
+	{Key: "claude", Name: "ac-claude", Aliases: []string{"claude", "claude-code"}, AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}},
+	{Key: "codex", Name: "ac-codex", Aliases: []string{"codex"}, AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}},
+	{Key: "gemini", Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli", "agy"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli", "agy"}},
+	{Key: "grok", Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
+}
+
+// wrapperForToken resolves a dispatcher wrapper token (`ac run <token>`) by
+// canonical Key or alias. It deliberately does NOT match the legacy ac-* Name —
+// the dispatcher addresses wrappers, not generated shim filenames.
+func wrapperForToken(token string) (wrapperSpec, bool) {
+	token = strings.TrimSpace(token)
+	for _, spec := range wrapperSpecs {
+		if spec.Key == token {
+			return spec, true
+		}
+		for _, alias := range spec.Aliases {
+			if alias == token {
+				return spec, true
+			}
+		}
+	}
+	return wrapperSpec{}, false
+}
+
+// knownWrapperTokens lists every accepted wrapper token for error suggestions.
+func knownWrapperTokens() []string {
+	var out []string
+	for _, spec := range wrapperSpecs {
+		out = append(out, spec.Key)
+	}
+	return out
 }
 
 func cmdShims(args []string) error {
@@ -49,9 +80,9 @@ func cmdShimsInstall(args []string) error {
 	var dir, wrapper string
 	var aliases, force, quiet bool
 	fs.StringVar(&dir, "dir", "", "shim directory (default: $HOME/.agentchute/bin)")
-	fs.StringVar(&wrapper, "wrapper", "all", "wrapper key(s): claude-code,codex,gemini-cli,grok or all")
-	fs.BoolVar(&aliases, "aliases", false, "also install legacy same-name wrapper aliases")
-	fs.BoolVar(&force, "force", false, "overwrite existing shim files")
+	fs.StringVar(&wrapper, "wrapper", "all", "deprecated, no-op: the `ac` dispatcher is wrapper-agnostic")
+	fs.BoolVar(&aliases, "aliases", false, "deprecated, no-op: the `ac` dispatcher needs no per-wrapper aliases")
+	fs.BoolVar(&force, "force", false, "overwrite an existing agentchute-owned `ac` dispatcher")
 	fs.BoolVar(&quiet, "quiet", false, "suppress status text")
 	if err := fs.Parse(args); err != nil {
 		return shimsUsage(err)
@@ -59,6 +90,10 @@ func cmdShimsInstall(args []string) error {
 	if fs.NArg() != 0 {
 		return shimsUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
+	// --wrapper/--aliases are retained so older invocations keep parsing, but the
+	// dispatcher is wrapper-agnostic and no longer generates per-wrapper files.
+	_ = wrapper
+	_ = aliases
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -70,9 +105,6 @@ func cmdShimsInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := loop.EnsurePrivateDir(absDir); err != nil {
-		return err
-	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -81,27 +113,20 @@ func cmdShimsInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	selected, err := selectShimSpecs(wrapper)
+	// Writes-before-reset: install the new `ac` dispatcher BEFORE removing any
+	// legacy per-wrapper ac-* shims, so a pool is never left with no launcher.
+	if err := installDispatcher(absDir, exe, force); err != nil {
+		return err
+	}
+	removed, err := removeLegacyWrapperShims(absDir)
 	if err != nil {
 		return err
 	}
-	for _, spec := range selected {
-		for _, name := range shimInstallNames(spec, aliases) {
-			path := filepath.Join(absDir, name)
-			if !force {
-				if _, err := os.Lstat(path); err == nil {
-					return fmt.Errorf("%s already exists; pass --force to overwrite", path)
-				} else if !os.IsNotExist(err) {
-					return err
-				}
-			}
-			if err := os.WriteFile(path, []byte(renderShimScript(exe, absDir, name)), 0o700); err != nil {
-				return err
-			}
-		}
-	}
 	if !quiet {
-		fmt.Printf("installed agentchute shims to %s\n", absDir)
+		fmt.Printf("installed agentchute dispatcher `ac` to %s\n", absDir)
+		if len(removed) > 0 {
+			fmt.Printf("removed %d legacy launcher shim(s): %s\n", len(removed), strings.Join(removed, ", "))
+		}
 		if !pathContains(absDir, os.Getenv("PATH")) {
 			fmt.Printf("warning: %s is not on PATH; add it to PATH\n", absDir)
 			fmt.Println("\nRecommended: run `agentchute setup` to wire PATH and lifecycle hooks automatically.")
@@ -110,7 +135,7 @@ func cmdShimsInstall(args []string) error {
 	return nil
 }
 
-func shimInstallNames(spec shimSpec, aliases bool) []string {
+func shimInstallNames(spec wrapperSpec, aliases bool) []string {
 	names := []string{spec.Name}
 	if aliases {
 		names = append(names, spec.Aliases...)
@@ -120,16 +145,16 @@ func shimInstallNames(spec shimSpec, aliases bool) []string {
 
 func allShimCommandNames(aliases bool) []string {
 	var names []string
-	for _, spec := range shimSpecs {
+	for _, spec := range wrapperSpecs {
 		names = append(names, shimInstallNames(spec, aliases)...)
 	}
 	return names
 }
 
-func selectShimSpecs(wrapper string) ([]shimSpec, error) {
+func selectShimSpecs(wrapper string) ([]wrapperSpec, error) {
 	wrapper = strings.TrimSpace(wrapper)
 	if wrapper == "" || wrapper == "all" {
-		return shimSpecs, nil
+		return wrapperSpecs, nil
 	}
 	wanted := map[string]bool{}
 	for _, part := range strings.Split(wrapper, ",") {
@@ -142,9 +167,9 @@ func selectShimSpecs(wrapper string) ([]shimSpec, error) {
 	if len(wanted) == 0 {
 		return nil, fmt.Errorf("--wrapper must not be empty")
 	}
-	var selected []shimSpec
+	var selected []wrapperSpec
 	matched := map[string]bool{}
-	for _, spec := range shimSpecs {
+	for _, spec := range wrapperSpecs {
 		if wanted[spec.Name] || wanted[spec.AgentID] || wantedAny(wanted, spec.Aliases) {
 			selected = append(selected, spec)
 			if wanted[spec.Name] {
@@ -185,6 +210,101 @@ exec "$AGENTCHUTE_BIN" shims exec --name %s --shim-dir %s -- "$@"
 `, shellQuote(agentchuteBin), shellQuote(name), shellQuote(shimDir))
 }
 
+// renderDispatcherScript renders the single `ac` dispatcher that setup /
+// `shims install` writes. It is wrapper-agnostic: it execs `agentchute dispatch`,
+// which routes `ac <command>` and `ac run <wrapper>` (parsed in dispatch.go). The
+// --shim-dir argument lets dispatch exclude a stale same-name alias shim inside
+// the shim dir during the transition. Mirrors renderShimScript's AGENTCHUTE_BIN
+// override + shellQuote discipline.
+func renderDispatcherScript(agentchuteBin, shimDir string) string {
+	return fmt.Sprintf(`#!/bin/sh
+# agentchute dispatcher v1
+AGENTCHUTE_BIN=${AGENTCHUTE_BIN:-%s}
+exec "$AGENTCHUTE_BIN" dispatch --shim-dir %s -- "$@"
+`, shellQuote(agentchuteBin), shellQuote(shimDir))
+}
+
+// isAgentchuteDispatcher reports whether path is an agentchute-owned `ac`
+// dispatcher: a REGULAR file (never a symlink) whose content carries both the
+// `dispatch --shim-dir` exec line and the AGENTCHUTE_BIN override marker. A
+// missing file, a symlink, or any file lacking the markers returns false, so the
+// collision guard refuses to overwrite it.
+func isAgentchuteDispatcher(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect dispatcher %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read dispatcher %s: %w", path, err)
+	}
+	text := string(data)
+	return strings.Contains(text, "dispatch --shim-dir") && strings.Contains(text, "AGENTCHUTE_BIN="), nil
+}
+
+// installDispatcher writes the single `ac` dispatcher into absDir. It REFUSES to
+// replace a symlink or a non-agentchute regular file at absDir/ac (collision
+// guard — never clobber a user-owned `ac`; the system /usr/sbin/ac lives outside
+// absDir and is never touched). An existing agentchute-owned dispatcher is
+// overwritten only with force (idempotent setup re-runs pass force=true). The
+// script is written 0o700.
+func installDispatcher(absDir, agentchuteBin string, force bool) error {
+	if err := loop.EnsurePrivateDir(absDir); err != nil {
+		return err
+	}
+	path := filepath.Join(absDir, "ac")
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to overwrite non-agentchute ac at %s", path)
+		}
+		owned, derr := isAgentchuteDispatcher(path)
+		if derr != nil {
+			return derr
+		}
+		if !owned {
+			return fmt.Errorf("refusing to overwrite non-agentchute ac at %s", path)
+		}
+		if !force {
+			return fmt.Errorf("%s already exists; pass --force to overwrite", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, []byte(renderDispatcherScript(agentchuteBin, absDir)), 0o700)
+}
+
+// removeLegacyWrapperShims removes the generated per-wrapper ac-* launchers (and
+// their legacy same-name aliases) that the single `ac` dispatcher supersedes. It
+// removes ONLY marker-matching agentchute shims (isAgentchuteShim) and silently
+// skips non-existent and user-owned same-name files. Returns the removed names.
+func removeLegacyWrapperShims(absDir string) ([]string, error) {
+	if strings.TrimSpace(absDir) == "" {
+		return nil, nil
+	}
+	var removed []string
+	for _, name := range allShimCommandNames(true) {
+		path := filepath.Join(absDir, name)
+		owned, err := isAgentchuteShim(path)
+		if err != nil {
+			return removed, err
+		}
+		if !owned {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return removed, fmt.Errorf("remove legacy shim %s: %w", path, err)
+		}
+		removed = append(removed, name)
+	}
+	return removed, nil
+}
+
 func cmdShimsExec(args []string) error {
 	fs := flag.NewFlagSet("shims exec", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -194,7 +314,7 @@ func cmdShimsExec(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return shimsUsage(err)
 	}
-	spec, ok := shimSpecForName(name)
+	spec, ok := wrapperSpecForName(name)
 	if !ok {
 		return fmt.Errorf("unknown shim name %q", name)
 	}
@@ -239,9 +359,9 @@ func cmdShimsExec(args []string) error {
 	return execReplace(agentchuteBin, runArgs, os.Environ())
 }
 
-func shimSpecForName(name string) (shimSpec, bool) {
+func wrapperSpecForName(name string) (wrapperSpec, bool) {
 	name = strings.TrimSpace(filepath.Base(name))
-	for _, spec := range shimSpecs {
+	for _, spec := range wrapperSpecs {
 		if spec.Name == name {
 			return spec, true
 		}
@@ -251,10 +371,10 @@ func shimSpecForName(name string) (shimSpec, bool) {
 			}
 		}
 	}
-	return shimSpec{}, false
+	return wrapperSpec{}, false
 }
 
-func resolveRealWrapper(spec shimSpec, shimDir string) (string, error) {
+func resolveRealWrapper(spec wrapperSpec, shimDir string) (string, error) {
 	absShimDir := ""
 	if shimDir != "" {
 		if abs, err := filepath.Abs(shimDir); err == nil {
@@ -397,13 +517,13 @@ func shimsHelpErr() error {
 func shimsHelp() string {
 	return strings.TrimSpace(`
 Usage:
-  agentchute shims install [--dir <path>] [--wrapper <name[,name...]>] [--aliases] [--force] [--quiet]
+  agentchute shims install [--dir <path>] [--force] [--quiet]
   agentchute shims exec --name <wrapper> --shim-dir <dir> -- [args...]
 
-Wrapper keys: claude-code, codex, gemini-cli, grok (or all).
-
-Launcher shims install namespaced commands such as ac-codex. They route through
-agentchute run inside initialized pools and pass through to the real wrapper
-elsewhere. Pass --aliases to also install legacy same-name wrapper aliases.
+` + "`shims install`" + ` installs the single ` + "`ac`" + ` dispatcher (default
+$HOME/.agentchute/bin/ac) and removes any legacy per-wrapper ac-* launchers it
+supersedes. The dispatcher routes ` + "`ac <command>`" + ` to agentchute and
+` + "`ac run <wrapper>`" + ` to the runner. --wrapper/--aliases are accepted for
+back-compat but no longer generate per-wrapper files.
 `)
 }

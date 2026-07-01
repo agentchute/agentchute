@@ -101,7 +101,7 @@ func cmdRun(args []string) error {
 	}
 	opts.Vendor = strings.TrimSpace(opts.Vendor)
 	if opts.Vendor == "" {
-		if spec, ok := shimSpecForName(filepath.Base(opts.WrapperArgs[0])); ok {
+		if spec, ok := wrapperSpecForName(filepath.Base(opts.WrapperArgs[0])); ok {
 			opts.Vendor = spec.Vendor
 		}
 	}

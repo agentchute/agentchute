@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,6 +249,206 @@ func snapshotDir(t *testing.T, dir string) map[string]string {
 		out[e.Name()] = string(data)
 	}
 	return out
+}
+
+// Task 3: a wrapper process whose ancestry includes an enrolled runner (the
+// runner launched it: agentchute run -> wrapper -> ... -> vendor binary) must NOT
+// be reported as unenrolled, while a truly raw wrapper still is.
+func TestScanUnenrolledWrappers_SuppressesRunnerChildren(t *testing.T) {
+	cfg, root := presencePoolCfg(t)
+
+	// An enrolled agent with a live local runner (runner.json binds RunnerPID).
+	enrolled := &loop.Registration{
+		AgentID:     "codex",
+		Vendor:      "openai",
+		ControlRepo: root,
+		LastSeen:    time.Now().UTC(),
+		Status:      loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), enrolled); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.SaveRunnerState(cfg, loop.RunnerState{
+		AgentID:   "codex",
+		Host:      localHostname(),
+		RunnerPID: 5000,
+		Status:    "running",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stubPresenceListers(t)
+	listProcesses = func() []processPresenceEntry {
+		return []processPresenceEntry{
+			{PID: 8848, Command: "codex", Cwd: root}, // child of the runner -> suppressed
+			{PID: 7777, Command: "codex", Cwd: root}, // truly raw -> reported
+		}
+	}
+
+	oldParent, oldCmd := processParentPID, setupProcessCommandLine
+	oldAlive, oldUID := setupProcessAlive, processOwnerUID
+	processParentPID = func(pid int) int {
+		switch pid {
+		case 8848:
+			return 8000
+		case 8000:
+			return 5000 // the runner ancestor
+		case 7777:
+			return 1 // raw: ancestry hits init with no runner
+		default:
+			return 1
+		}
+	}
+	// The ancestor 5000 is revalidated DIRECTLY: a live, same-user `agentchute run`
+	// for THIS pool. A recorded runner.json pid is never trusted on its own.
+	setupProcessCommandLine = func(pid int) string {
+		if pid == 5000 {
+			return "/usr/local/bin/agentchute run --vendor openai --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir + " --shim-name ac -- /usr/bin/codex"
+		}
+		return ""
+	}
+	setupProcessAlive = func(pid int) bool { return pid == 5000 }
+	processOwnerUID = func(int) (int, bool) { return os.Getuid(), true }
+	t.Cleanup(func() {
+		processParentPID = oldParent
+		setupProcessCommandLine = oldCmd
+		setupProcessAlive = oldAlive
+		processOwnerUID = oldUID
+	})
+
+	got, err := scanUnenrolledWrappers(cfg)
+	if err != nil {
+		t.Fatalf("scanUnenrolledWrappers: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want exactly the raw process reported, got %d: %+v", len(got), got)
+	}
+	if got[0].Kind != "process" || !strings.Contains(got[0].Hint, "7777") {
+		t.Fatalf("expected only the raw pid-7777 process, got %+v", got[0])
+	}
+}
+
+// Security (codex Gate-3 review): a STALE/reused runner.json pid must NOT suppress
+// a raw wrapper. The ancestor pid is recorded but is no longer an agentchute run,
+// so it must not count — the raw child is reported.
+func TestScanUnenrolledWrappers_StalePIDDoesNotSuppress(t *testing.T) {
+	cfg, root := presencePoolCfg(t)
+	enrolled := &loop.Registration{AgentID: "codex", Vendor: "openai", ControlRepo: root, LastSeen: time.Now().UTC(), Status: loop.StatusActive}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), enrolled); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.SaveRunnerState(cfg, loop.RunnerState{AgentID: "codex", Host: localHostname(), RunnerPID: 5000, Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	stubPresenceListers(t)
+	listProcesses = func() []processPresenceEntry {
+		return []processPresenceEntry{{PID: 8848, Command: "codex", Cwd: root}}
+	}
+	oldParent, oldCmd := processParentPID, setupProcessCommandLine
+	oldAlive, oldUID := setupProcessAlive, processOwnerUID
+	processParentPID = func(pid int) int {
+		if pid == 8848 {
+			return 5000
+		}
+		return 1
+	}
+	// 5000 is the recorded RunnerPID but has been reused as an unrelated process.
+	setupProcessCommandLine = func(int) string { return "/usr/bin/node /some/other/app.js" }
+	setupProcessAlive = func(int) bool { return true }
+	processOwnerUID = func(int) (int, bool) { return os.Getuid(), true }
+	t.Cleanup(func() {
+		processParentPID = oldParent
+		setupProcessCommandLine = oldCmd
+		setupProcessAlive = oldAlive
+		processOwnerUID = oldUID
+	})
+	got, err := scanUnenrolledWrappers(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0].Hint, "8848") {
+		t.Fatalf("a stale runner.json pid must NOT suppress; want pid-8848 reported, got %+v", got)
+	}
+}
+
+// Security (codex Gate-3 review): an ancestor whose cmdline IS an agentchute run
+// for this pool but owned by ANOTHER user must NOT suppress (no cross-user trust).
+func TestScanUnenrolledWrappers_CrossUserAncestorDoesNotSuppress(t *testing.T) {
+	cfg, root := presencePoolCfg(t)
+	stubPresenceListers(t)
+	listProcesses = func() []processPresenceEntry {
+		return []processPresenceEntry{{PID: 8850, Command: "codex", Cwd: root}}
+	}
+	oldParent, oldCmd := processParentPID, setupProcessCommandLine
+	oldAlive, oldUID := setupProcessAlive, processOwnerUID
+	processParentPID = func(pid int) int {
+		if pid == 8850 {
+			return 9100
+		}
+		return 1
+	}
+	setupProcessCommandLine = func(pid int) string {
+		if pid == 9100 {
+			return "/usr/local/bin/agentchute run --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
+		}
+		return ""
+	}
+	setupProcessAlive = func(int) bool { return true }
+	processOwnerUID = func(int) (int, bool) { return os.Getuid() + 1, true } // different user
+	t.Cleanup(func() {
+		processParentPID = oldParent
+		setupProcessCommandLine = oldCmd
+		setupProcessAlive = oldAlive
+		processOwnerUID = oldUID
+	})
+	got, err := scanUnenrolledWrappers(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0].Hint, "8850") {
+		t.Fatalf("a cross-user runner ancestor must NOT suppress; want pid-8850 reported, got %+v", got)
+	}
+}
+
+// Task 3 fallback: an ancestor that is an `agentchute run` for this pool (matched
+// by cmdline) also suppresses the child, even without a runner.json pid binding.
+func TestScanUnenrolledWrappers_SuppressesViaRunnerCmdlineAncestor(t *testing.T) {
+	cfg, root := presencePoolCfg(t)
+
+	stubPresenceListers(t)
+	listProcesses = func() []processPresenceEntry {
+		return []processPresenceEntry{{PID: 8850, Command: "codex", Cwd: root}}
+	}
+	oldParent, oldCmd := processParentPID, setupProcessCommandLine
+	oldAlive, oldUID := setupProcessAlive, processOwnerUID
+	processParentPID = func(pid int) int {
+		if pid == 8850 {
+			return 9100
+		}
+		return 1
+	}
+	setupProcessCommandLine = func(pid int) string {
+		if pid == 9100 {
+			return "/usr/local/bin/agentchute run --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
+		}
+		return ""
+	}
+	setupProcessAlive = func(int) bool { return true }
+	processOwnerUID = func(int) (int, bool) { return os.Getuid(), true }
+	t.Cleanup(func() {
+		processParentPID = oldParent
+		setupProcessCommandLine = oldCmd
+		setupProcessAlive = oldAlive
+		processOwnerUID = oldUID
+	})
+
+	got, err := scanUnenrolledWrappers(cfg)
+	if err != nil {
+		t.Fatalf("scanUnenrolledWrappers: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("a child of an `agentchute run` ancestor must be suppressed, got %+v", got)
+	}
 }
 
 func TestDoctor_UnenrolledPresenceWarnsNeverBlocks(t *testing.T) {
