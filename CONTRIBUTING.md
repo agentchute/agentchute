@@ -26,7 +26,7 @@ go test ./...
 go build ./...
 ```
 
-Requires Go 1.21+. Tests that exercise tmux should use a fake `tmux` shimmed onto `PATH`; a real tmux server should not be required for automated test runs.
+Requires Go 1.21+. Tests are hermetic — they run against temp loop directories and stubbed wrappers; no external daemon is required.
 
 No new third-party dependencies beyond the existing PTY runner dependency (`github.com/creack/pty`) without a strong reason.
 
@@ -40,7 +40,7 @@ No new third-party dependencies beyond the existing PTY runner dependency (`gith
 
 ## What's in scope
 
-- Bug fixes (frontmatter parsing edge cases, wake-adapter quirks — currently tmux — race conditions in archive moves).
+- Bug fixes (frontmatter parsing edge cases, race conditions in archive moves, runner/poller edge cases).
 - Additional integration tests.
 - Better error messages.
 - Documentation improvements (especially in `AGENTCHUTE.md` worked examples).
@@ -87,7 +87,6 @@ Open a GitHub issue with:
 
 - agentchute version (release tag, or commit hash if built from source).
 - macOS or Linux + version.
-- `tmux -V` output.
 - Minimal reproduction (the registration files and command sequence that surface the bug).
 - Expected vs actual behavior.
 

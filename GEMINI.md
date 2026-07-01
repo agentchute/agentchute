@@ -67,7 +67,7 @@ Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGEN
 
 ## Coordination & Identity
 
-- **Identity Resolution**: Identity resolves via explicit `--as`, then `AGENTCHUTE_AGENT_ID`, then an existing tmux-pane registration, then a contextual `<wrapper>-<folder>` default when `--vendor` is provided. The contextual default adopts an existing same-pane same-vendor registration if one exists (preventing duplicate IDs on concurrent startup) and only adds suffixes (`-2`, `-3`) for genuine conflicts in different lanes. Use `AGENTCHUTE_AGENT_ID` only for custom stable lane names.
+- **Identity Resolution**: Identity resolves in this exact order, first match wins: explicit `--as`, then `AGENTCHUTE_AGENT_ID`, then a contextual `<wrapper>-<folder>` default (suffixed `-2`, `-3`, … past live conflicts in different lanes). Pull-only registrations carry no wake target, so there is no pane to map back to — id comes from `--as` / `$AGENTCHUTE_AGENT_ID` or the contextual default. Use `AGENTCHUTE_AGENT_ID` only for custom stable lane names.
 - **4-Way Verification**: High-consequence changes (e.g. protocol fixes, namespace migrations) require a "4-way verify" loop across the primary fleet lanes: `claude-code` (implementation), `codex` (shell/wire safety), `gemini-cli` (UX/Docs), and `grok` (manual/no-hooks flow). Do not merge until all four lanes are green.
 
 > Self-description (interests, working style, etc.) belongs in this agent's
