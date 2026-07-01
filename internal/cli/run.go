@@ -245,7 +245,9 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	cmd := exec.Command(opts.WrapperArgs[0], opts.WrapperArgs[1:]...)
 	cmd.Dir = cwd
 	cmd.Env = runnerChildEnv(cfg, opts, lease.Token)
-	ptmx, err := runnerpty.Start(cmd)
+	// Size the child's PTY from our own terminal before the child starts —
+	// a TUI that reads a 0x0 winsize on first draw renders a blank screen.
+	ptmx, err := runnerpty.StartInheritSize(cmd, os.Stdin)
 	if err != nil {
 		_ = loop.ReleaseLease(lease)
 		return fmt.Errorf("start wrapper under PTY: %w", err)
