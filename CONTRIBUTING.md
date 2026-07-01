@@ -36,7 +36,7 @@ No new third-party dependencies beyond the existing PTY runner dependency (`gith
 - `go vet ./...` clean.
 - Stdlib `flag` for argument parsing, not cobra or kingpin.
 - Prefer integration tests over deep unit-test scaffolding.
-- Keep commands as flat root files (`register.go`, `send.go`, etc.) — no `cmd/` subdirectory unless the binary materially grows.
+- Command implementations live as flat files in `internal/cli/` (`register.go`, `send.go`, etc.); the repo root is a thin `main.go` that embeds the root assets and delegates to `internal/cli`. Keep the CLI package flat — no per-command `cmd/` subpackages unless the binary materially grows.
 
 ## What's in scope
 
