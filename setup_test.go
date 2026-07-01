@@ -76,35 +76,28 @@ func TestSetupRunnerInstallsAllFourShimsRegardlessOfDetection(t *testing.T) {
 
 func TestNormalizeSetupWakeCombinations(t *testing.T) {
 	cases := []struct {
-		in        string
-		want      string
-		deprecate bool
-		wantErr   bool
+		in      string
+		want    string
+		wantErr bool
 	}{
-		// Pull-only redesign: runner is the only installable wake path. tmux/herdr
-		// (alone or in a combo) are rejected; all/both are deprecated aliases that
-		// now resolve to runner only.
+		// Pull-only redesign: runner is the only installable wake path. Every other
+		// value — including the removed all/both/tmux/herdr aliases and any combo —
+		// is rejected.
 		{in: "runner", want: "runner"},
 		{in: "RUNNER", want: "runner"}, // case-insensitive
 		{in: " runner ", want: "runner"},
-		{in: "runner,runner", want: "runner"},        // dedup
-		{in: "all", want: "runner", deprecate: true}, // legacy keyword → runner
-		{in: "both", want: "runner", deprecate: true},
-		{in: "tmux", wantErr: true},        // adapter removed
-		{in: "herdr", wantErr: true},       // adapter removed
-		{in: "runner,tmux", wantErr: true}, // combo with removed adapter
-		{in: "tmux,runner", wantErr: true},
-		{in: "runner,tmux,herdr", wantErr: true},
+		{in: "runner,runner", wantErr: true}, // combos no longer accepted
+		{in: "all", wantErr: true},           // removed alias
+		{in: "both", wantErr: true},          // removed alias
+		{in: "tmux", wantErr: true},          // adapter removed
+		{in: "herdr", wantErr: true},         // adapter removed
+		{in: "runner,tmux", wantErr: true},
 		{in: "", wantErr: true},
 		{in: ",", wantErr: true},
-		{in: "runner,", wantErr: true},    // trailing comma → empty token
-		{in: "runner,,", wantErr: true},   // doubled comma → empty token
-		{in: "all, ,both", wantErr: true}, // whitespace-only token
 		{in: "bogus", wantErr: true},
-		{in: "runner,bogus", wantErr: true},
 	}
 	for _, tc := range cases {
-		got, deprecation, err := normalizeSetupWake(tc.in)
+		got, err := normalizeSetupWake(tc.in)
 		if tc.wantErr {
 			if err == nil {
 				t.Errorf("normalizeSetupWake(%q): expected error, got %q", tc.in, got)
@@ -117,9 +110,6 @@ func TestNormalizeSetupWakeCombinations(t *testing.T) {
 		}
 		if got != tc.want {
 			t.Errorf("normalizeSetupWake(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-		if (deprecation != "") != tc.deprecate {
-			t.Errorf("normalizeSetupWake(%q) deprecation = %q, want deprecate=%v", tc.in, deprecation, tc.deprecate)
 		}
 	}
 }
@@ -194,22 +184,19 @@ esac
 	}
 }
 
-func TestSetupShimWrappersForWakeCombinations(t *testing.T) {
-	wrappers := []string{"claude-code", "codex", "gemini-cli", "grok"}
-	// runner anywhere in the set installs all four shims.
-	for _, wake := range []string{"runner", "runner,tmux", "runner,tmux,herdr"} {
-		if got := setupShimWrappers(wake, wrappers); len(got) != 4 {
-			t.Errorf("setupShimWrappers(%q) = %v, want all 4", wake, got)
-		}
-		if !setupNeedsShims(wake) {
-			t.Errorf("setupNeedsShims(%q) = false, want true", wake)
-		}
+func TestSetupShimWrappersForWake(t *testing.T) {
+	// runner is the only wake path: it installs all four shims.
+	if got := setupShimWrappers("runner"); len(got) != 4 {
+		t.Errorf(`setupShimWrappers("runner") = %v, want all 4`, got)
 	}
-	// tmux/herdr without runner installs hookless shims only (grok).
-	for _, wake := range []string{"tmux", "herdr", "tmux,herdr"} {
-		got := setupShimWrappers(wake, wrappers)
-		if len(got) != 1 || got[0] != "grok" {
-			t.Errorf("setupShimWrappers(%q) = %v, want [grok]", wake, got)
+	if !setupNeedsShims("runner") {
+		t.Errorf(`setupNeedsShims("runner") = false, want true`)
+	}
+	// Any non-runner value installs nothing (and is rejected upstream by
+	// normalizeSetupWake anyway).
+	for _, wake := range []string{"", "tmux", "herdr", "bogus"} {
+		if got := setupShimWrappers(wake); got != nil {
+			t.Errorf("setupShimWrappers(%q) = %v, want nil", wake, got)
 		}
 		if setupNeedsShims(wake) {
 			t.Errorf("setupNeedsShims(%q) = true, want false", wake)
@@ -217,35 +204,10 @@ func TestSetupShimWrappersForWakeCombinations(t *testing.T) {
 	}
 }
 
-// Legacy installs persisted Wake:"both" (a runner-equivalent that installed all
-// shims). Read-time canonicalization must normalize it to a runner-equivalent so
-// previousSetupShimWrappers reports the full shim set the old install actually
-// wrote — not just the detected wrapper list — otherwise a re-setup orphans
-// shims. Post pull-only redesign "both" canonicalizes to "runner" (which still
-// resolves to all four shims because runner installs them all).
-func TestPersistedBothWakeCanonicalizedForShimCleanup(t *testing.T) {
-	if got := canonicalizePersistedWake("both"); got != "runner" {
-		t.Fatalf(`canonicalizePersistedWake("both") = %q, want "runner"`, got)
-	}
-	canon := setupGlobalState{Wake: canonicalizePersistedWake("both"), Wrappers: []string{"codex"}, ShimsInstalled: true}
-	if got := previousSetupShimWrappers(canon); len(got) != 4 {
-		t.Fatalf("previousSetupShimWrappers(canonicalized both) = %v, want all 4 setup wrappers", got)
-	}
-	// Document the bug canonicalization prevents: raw "both" falls back to the
-	// detected wrapper list (1), so the other 3 prior shims would be orphaned.
-	raw := setupGlobalState{Wake: "both", Wrappers: []string{"codex"}, ShimsInstalled: true}
-	if got := previousSetupShimWrappers(raw); len(got) == 4 {
-		t.Fatalf("raw \"both\" unexpectedly resolved all 4 (%v); canonicalization would be redundant", got)
-	}
-	// Invalid/empty persisted values pass through untouched.
-	if got := canonicalizePersistedWake(""); got != "" {
-		t.Fatalf(`canonicalizePersistedWake("") = %q, want ""`, got)
-	}
-}
-
-// Pins the read-time canonicalization in BOTH state readers — not just the
-// helper. If the `state.Wake = canonicalizePersistedWake(...)` assignments are
-// removed, these reads return raw "both" and this fails.
+// Pins the read-time wake normalization in BOTH state readers: runner is the only
+// wake path, so a legacy persisted `wake:"both"` (or any other value) resolves to
+// runner on read. If the `state.Wake = setupWakeRunner` assignments are removed,
+// these reads return raw "both" and this fails.
 func TestReadSetupStateCanonicalizesLegacyBothWake(t *testing.T) {
 	// Pool state reader.
 	root := t.TempDir()
@@ -342,21 +304,6 @@ func TestSetupHelpAndInvalidWakeRunnerOnly(t *testing.T) {
 			t.Fatalf("invalid wake error should name runner as the only supported path, got %v", err)
 		}
 	})
-}
-
-func TestSetupHerdrPlanLabelsHooklessShim(t *testing.T) {
-	var out strings.Builder
-	printSetupPlan(&out, "/repo", setupOptions{
-		Wake:      setupWakeHerdr,
-		Wrappers:  "grok",
-		ShimDir:   "/shim",
-		NoProfile: true,
-	}, []string{"grok"}, map[string]string{"grok": "/usr/bin/grok"})
-
-	text := out.String()
-	if !strings.Contains(text, "shim wrappers: grok (hookless startup enrollment)") {
-		t.Fatalf("herdr plan should label hookless shim wrappers:\n%s", text)
-	}
 }
 
 func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
@@ -506,8 +453,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v20 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v20 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v21 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v21 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)

@@ -316,25 +316,6 @@ func TestDoctorAsBlocksWhenActingWrapperHookDiverged(t *testing.T) {
 // hook and shadowing is not applicable. Regression for the pre-fix `wake ==
 // tmux || wake == herdr` equality, which failed any multi-token set and emitted
 // false shadowing WARNs.
-func TestDoctorShadowingSkipsHookableWrapperForTmuxHerdrSet(t *testing.T) {
-	cfg := newDoctorCfg(t)
-	// Cover BOTH the base id and the contextual id real setups enroll with —
-	// the contextual case is the one the exact-match bug missed.
-	for _, agentID := range []string{"codex", "codex-agentchute", "claude-code-agentchute"} {
-		for _, wake := range []string{"tmux", "herdr", "tmux,herdr"} {
-			got := checkWrapperShadowing(cfg, agentID, doctorOptions{PoolState: &setupPoolState{Wake: wake}})
-			if got.Severity != severitySkip {
-				t.Fatalf("wrapper_shadowing severity = %q for agent %q wake %q, want SKIP; msg=%q", got.Severity, agentID, wake, got.Message)
-			}
-		}
-		// When runner is in the set, shims ARE required on PATH, so never skip.
-		got := checkWrapperShadowing(cfg, agentID, doctorOptions{PoolState: &setupPoolState{Wake: "runner,tmux"}})
-		if got.Severity == severitySkip {
-			t.Fatalf("wrapper_shadowing must not skip for agent %q when runner is in the set; msg=%q", agentID, got.Message)
-		}
-	}
-}
-
 // The v0.8.8 ac_dispatcher check: OK when the `ac` dispatcher resolves from the
 // shim dir ahead of any other `ac` (e.g. the system /usr/sbin/ac), WARN when a
 // non-shim-dir `ac` shadows it or the shim dir is absent from PATH.
