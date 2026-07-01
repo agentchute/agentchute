@@ -1,10 +1,15 @@
 # Changelog
 
-All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTCHUTE.md`](AGENTCHUTE.md)) tracks its own version (Working Draft v1).
+All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTCHUTE.md`](AGENTCHUTE.md)) tracks its own version (Protocol v2 — stable as of v0.10.0).
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
-## Unreleased
+## v0.10.0 (2026-07-01) — the finish line
+
+The release that completes the protocol. The finish-line worklist from the independent 0.9.1 post-release audit, executed end-to-end by the five-agent team (every PR developed by one agent and review-looped by two seniors until all happy; unanimous 5-way final review), plus a high-severity runner fix found by the tmux verification team. **Protocol v2 is declared STABLE as of this release** — the primitives, envelope, filename/identity grammar, lifecycle guarantees, and conformance invariants are now covenants, changed only through the deprecation & versioning policy (CONTRIBUTING.md) that also takes effect with this release.
+
+**Runner fix (high severity) — wrappers no longer boot on a 0×0 PTY**
+- `ac serve` started the child before any winsize was set; fast-booting TUIs drew a blank frame and the healing SIGWINCH raced their resize-handler install — intermittently permanently-blank panes (grok/codex/gemini observed). The child PTY is now sized from the runner's terminal **before exec** (`StartInheritSize`), with a clean fallback when the runner has no terminal. Found, root-caused (with a deterministic repro), and fixed by the tmux verification team; report at `docs/fix-runner-pty-initial-size.md`.
 
 **Retention model for `archive/` + `malformed/` (C/P2)**
 - retention model specified for archive/+malformed/ (caller-managed, outside the delivery guarantee) + documented cleanup one-liner; no code/command added.
@@ -24,6 +29,16 @@ The repo follows a release-squash convention: each release lands on `main` as a 
 - `removeSetupShimsForWrapper` now uses a static map keyed by setup wrapper name (`claude-code`, `codex`, `gemini-cli`, `grok`) to remove only that dropped wrapper's legacy `ac-*` and same-name shims.
 - Deleted the `selectShimSpecs`/`shimInstallNames` selector helpers; cleanup still marker-checks files, preserves the `ac` dispatcher, and leaves user-owned same-name files untouched.
 - Removed the now-satisfied §13.1 deferred ledger row from `AGENTCHUTE.md`.
+
+**Deprecation & versioning policy (D/P3)**
+- New `CONTRIBUTING.md` section, in force from v0.10.0 onward: patch releases are fixes-only; minor releases may remove/rename CLI surface after one deprecation window; timelines are binding unless the owner logs an explicit CHANGELOG exception (retroactively applied to the early v0.9.1 `run`-alias removal); the enrollment-marker-bump contract is stated.
+- Also fixed the web/blog featured excerpt to note `self-poll`/`doctor --generate-service` were removed in v0.9.0 (they were presented as current).
+
+**Implementation guidance now linked (E/P4)**
+- README links `EXTENSIONS.md`; `EXTENSIONS.md` points to `AGENTCHUTE.md` Appendix C's copy-pasteable hand-protocol walkthrough. No new content — the guide already existed, just wasn't discoverable from README.
+
+**Spec reads as the current contract (F/P6a)**
+- The six historical "DONE in v0.9.x" migration paragraphs moved verbatim from §13.1 into a new Appendix D (compatibility history); §13.1 is now an empty deferred-cleanup ledger pointing there.
 
 ## v0.9.1 (2026-07-01) — the lean release, finished
 

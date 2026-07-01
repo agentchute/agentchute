@@ -1,6 +1,6 @@
 # AGENTCHUTE.md
 
-*Open spec for inbox-based agent coordination. Protocol working draft v1 (pull-only / protocol-v2); reference CLI implementation.*
+*Open spec for inbox-based agent coordination. Protocol v2 (pull-only) — **STABLE** as of v0.10.0; reference CLI implementation. The primitives (§1), envelope (§6.4), filename/identity grammar (§6.1), lifecycle guarantees (§6.3, §11.1), and the conformance invariants are covenants: they change only through the versioned deprecation process in [`CONTRIBUTING.md`](CONTRIBUTING.md).*
 
 > **Executable spec.** The normative invariants below are encoded as a runnable
 > conformance suite in [`conformance/`](conformance/) — seven invariants
