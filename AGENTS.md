@@ -98,7 +98,7 @@ The pitch is intentionally narrow: agents sharing one inbox medium (typically ru
 ## Reading order on first session
 
 1. `README.md` — 2 minutes, orients you. The public-facing pitch and quickstart.
-2. `HANDOFF.md` — current state, pending work, decisions log, what NOT to do. Read this BEFORE touching anything.
+2. `docs/internal/HANDOFF.md` — current state, pending work, decisions log, what NOT to do. Read this BEFORE touching anything.
 3. `AGENTCHUTE.md` — the protocol spec. Source of truth for any reimplementation.
 4. `EXTENSIONS.md` — community-extension space (cross-folder enrollment, alternate substrates/transports, cross-pool agents); informs which changes belong in the core spec vs. an extension.
 5. `CONTRIBUTING.md` — PR process, style details, scope criteria, bug-report template.
@@ -200,4 +200,4 @@ These rules govern task messages between agents on the bus. They exist because r
 - **R7 (MAY/MUST)** You MAY reshape the envelope for your own model per your wrapper profile, but MUST preserve the semantics of GOAL, CONSTRAINTS, ACCEPTANCE, OUTPUT, and ACTION MODE.
 
 ### Recipient profile (presentation overlay)
-- **R8 (MAY)** When composing a task, the sender MAY apply the recipient's vendor profile as a **presentation overlay** over this canonical envelope — reshaping wording, density, and order only, while preserving the semantics of GOAL, CONTEXT, CONSTRAINTS, ACCEPTANCE, OUTPUT, and ACTION MODE (the same invariant R7 requires of the recipient). A profile is never a per-vendor schema: it never adds, drops, or renames the required sections. Resolve the recipient's `vendor` from its registration; an unknown or missing vendor means compose the generic canonical envelope with no overlay. Profiles never appear on the wire and never affect delivery, ordering, liveness, gates, or reply obligations. See [`docs/design/agentchute-prompting-profiles-v2.md`](docs/design/agentchute-prompting-profiles-v2.md) for the per-vendor overlay summary.
+- **R8 (MAY)** When composing a task, the sender MAY apply the recipient's vendor profile as a **presentation overlay** over this canonical envelope — reshaping wording, density, and order only, while preserving the semantics of GOAL, CONTEXT, CONSTRAINTS, ACCEPTANCE, OUTPUT, and ACTION MODE (the same invariant R7 requires of the recipient). A profile is never a per-vendor schema: it never adds, drops, or renames the required sections. Resolve the recipient's `vendor` from its registration; an unknown or missing vendor means compose the generic canonical envelope with no overlay. Profiles never appear on the wire and never affect delivery, ordering, liveness, gates, or reply obligations. See [`docs/decisions/agentchute-prompting-profiles-v2.md`](docs/decisions/agentchute-prompting-profiles-v2.md) for the per-vendor overlay summary.
