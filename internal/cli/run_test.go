@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -77,6 +80,28 @@ func TestRunnerMakeRawNoopsForNonTerminal(t *testing.T) {
 	}
 	if err := restore(); err != nil {
 		t.Fatalf("restore err = %v", err)
+	}
+}
+
+func TestRunnerDiagnosticsLogFileOnlyDuringRawWindow(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	rt.diag = newRunnerDiagnostics(cfg, "runner-test")
+	defer rt.diag.close()
+
+	stderr := captureStderr(t, func() {
+		rt.injectPrompt()
+	})
+	if stderr != "" {
+		t.Fatalf("raw-window diagnostic wrote stderr: %q", stderr)
+	}
+	log := readRunnerLog(t, cfg, "runner-test")
+	if !strings.Contains(log, "agentchute serve: inject prompt:") {
+		t.Fatalf("runner.log missing inject diagnostic:\n%s", log)
 	}
 }
 
@@ -178,6 +203,81 @@ func TestRunnerPollShutsDownWhenFenced(t *testing.T) {
 	}
 	if rt.drainWake() {
 		t.Fatal("fenced runner enqueued a wake instead of shutting down")
+	}
+}
+
+func TestRunnerFencedShutdownLogsAndBuffersFatal(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	rt.diag = newRunnerDiagnostics(cfg, "runner-test")
+	defer rt.diag.close()
+	lease, err := loop.AcquireServeLease(cfg, "runner-test")
+	if err != nil {
+		t.Fatalf("acquire lease: %v", err)
+	}
+	rt.lease = lease
+
+	reclaimed := loop.ServeClaim{
+		ID:         "runner-test",
+		Host:       "other-host",
+		PID:        os.Getpid(),
+		ServeToken: "ffffffffffffffffffffffffffffffff",
+		StartedAt:  time.Now().UTC(),
+		LastSeen:   time.Now().UTC(),
+	}
+	data, err := json.Marshal(reclaimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(cfg.AgentStateDir("runner-test"), "serve.claim"), data)
+
+	stderr := captureStderr(t, func() {
+		rt.pollOnce(true)
+	})
+	if stderr != "" {
+		t.Fatalf("fenced shutdown wrote raw stderr: %q", stderr)
+	}
+	if !rt.shutdownRequested.Load() {
+		t.Fatal("fenced runner did not request shutdown")
+	}
+	log := readRunnerLog(t, cfg, "runner-test")
+	want := "agentchute serve: serve lease reclaimed (fenced); shutting down"
+	if !strings.Contains(log, want) {
+		t.Fatalf("runner.log missing fenced fatal:\n%s", log)
+	}
+
+	var postRestore bytes.Buffer
+	restoreRunnerTerminal(func() error { return nil }, rt.diag, &postRestore)
+	if got := postRestore.String(); got != want+"\n" {
+		t.Fatalf("post-restore fatal = %q, want %q", got, want+"\n")
+	}
+}
+
+func TestRestoreRunnerTerminalBuffersRestoreFailure(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	diag := newRunnerDiagnostics(cfg, "runner-test")
+	defer diag.close()
+
+	var stderr bytes.Buffer
+	restoreRunnerTerminal(func() error {
+		return errors.New("raw mode still active")
+	}, diag, &stderr)
+
+	want := "agentchute serve: restore terminal: raw mode still active"
+	if got := stderr.String(); got != want+"\n" {
+		t.Fatalf("restore fatal = %q, want %q", got, want+"\n")
+	}
+	log := readRunnerLog(t, cfg, "runner-test")
+	if !strings.Contains(log, want) {
+		t.Fatalf("runner.log missing restore fatal:\n%s", log)
 	}
 }
 
@@ -312,6 +412,34 @@ func (r *runnerRuntime) drainWake() bool {
 	default:
 	}
 	return pending
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+	fn()
+	_ = w.Close()
+	t.Cleanup(func() { _ = r.Close() })
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+func readRunnerLog(t *testing.T, cfg *loop.Config, agentID string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(cfg.AgentStateDir(agentID), "runner.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 // A malformed/skipped inbox file (parse failure) must still wake the runner:
