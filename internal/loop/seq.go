@@ -13,9 +13,9 @@ import (
 // seq.go — the protocol-v2 identity tuple + the durable, monotonic,
 // per-(sender,recipient) sequence allocator.
 //
-// GATE 2: PURELY ADDITIVE. Nothing here is wired into send/check/run/gate
-// (that is Gates 3-6). The live inbox.go path (timestamp+nonce filenames) is
-// UNTOUCHED; this file introduces the NEW `(to,from,seq)` identity alongside it.
+// The `(to,from,seq)` identity is the canonical inbox format: filenames are
+// `from-<from>_seq-<020d>.md` (see ListInboxMessages in inbox.go); this file owns
+// the per-(sender,recipient) seq allocator + writer.
 //
 // The committed identity is the full delivery key (to,from,seq) — NOT a bare
 // seq and NOT a sender-asserted message_id (protocol-v2 TEAM-DECISION §2). The

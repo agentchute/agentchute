@@ -131,13 +131,14 @@ func QuarantineInboxFile(srcPath, malformedDir, recipient string, now time.Time)
 }
 
 // ListInboxMessages returns inbox messages for a recipient, sorted oldest-first
-// by filename (which is timestamp-prefixed). Skips temp files (.tmp_ prefix),
+// by filename (canonical `from-<from>_seq-<020d>` — lexicographic = per-sender
+// seq FIFO). Skips temp files (.tmp_ prefix),
 // dotfiles (e.g., .DS_Store), and any file whose name does not parse per
 // §6.1. Returns an empty slice if the inbox dir is missing or empty.
 //
 // Use ListInboxMessagesWithSkipped when callers need to surface filenames that
 // look like message attempts but failed parsing (e.g., to warn an operator
-// about a peer that's hand-writing files with malformed nonces).
+// about a peer that's hand-writing files with malformed names).
 func ListInboxMessages(inboxDir string) ([]Message, error) {
 	msgs, _, err := ListInboxMessagesWithSkipped(inboxDir)
 	return msgs, err

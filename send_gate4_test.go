@@ -8,11 +8,9 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// TestSendWritesSeqFormatNotNonce is the Gate 4 writer-migration guard: cmdSend
-// must land the message under the canonical (to,from,seq) filename, NOT the
-// legacy crypto/rand nonce format. This locks the compile-gate intent ("no nonce
-// WRITER on the live send path") behaviorally.
-func TestSendWritesSeqFormatNotNonce(t *testing.T) {
+// TestSendWritesSeqFormat guards that cmdSend lands the message under the
+// canonical (to,from,seq) filename `from-<from>_seq-<020d>.md`.
+func TestSendWritesSeqFormat(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	withCwd(t, root, func() {
 		t.Setenv("AGENTCHUTE_AGENT_ID", "codex")
@@ -39,7 +37,7 @@ func TestSendWritesSeqFormatNotNonce(t *testing.T) {
 	name := files[0]
 	from, seq, ok := loop.ParseSeqFilename(name)
 	if !ok {
-		t.Fatalf("inbox file %q is not seq-format; the nonce writer is still live on the send path", name)
+		t.Fatalf("inbox file %q is not seq-format", name)
 	}
 	if from != "codex" {
 		t.Fatalf("seq filename from = %q, want codex", from)
@@ -47,11 +45,7 @@ func TestSendWritesSeqFormatNotNonce(t *testing.T) {
 	if seq != 1 {
 		t.Fatalf("first message seq = %d, want 1", seq)
 	}
-	if strings.Contains(name, "_msg-") {
-		t.Fatalf("inbox file %q still carries the legacy _msg- nonce marker", name)
-	}
-
-	// And the dual-read lister consumes it (not quarantined).
+	// And the lister consumes it (not quarantined).
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inbox)
 	if err != nil {
 		t.Fatal(err)
