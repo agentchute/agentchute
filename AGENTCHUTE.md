@@ -156,7 +156,7 @@ Consumption is at-least-once and split across two verbs:
 4. **Act on each displayed message.** Because the CLI prints and exits before the model acts, archiving during `check` would be at-most-once for the *work*; claiming instead makes the work at-least-once. **Handlers MUST be idempotent** — a crash between `check` and `ack` re-delivers.
 5. **`ack` — phase 2 (COMMIT).** Archive the `.claimed` residue. Archiving is the single commit point; an already-archived message is a benign no-op (idempotent).
 
-**Retention model.** `archive/` and `malformed/` are **caller-managed**. They grow without bound by design and are **not** part of the delivery guarantee. The delivery contract ends at claim (`check`) / commit (`ack`); `archive/` is an audit residue only.
+**Retention model.** `archive/` and `malformed/` are **caller-managed**. They grow without bound by design and are **not** part of the delivery guarantee. The delivery contract ends at claim (`check`) / commit (`ack`); `archive/` is an audit residue only. This includes malformed/ — §11.1's never-silently-dropped guarantee binds the reader (quarantine, don't drop); subsequent disposal is the caller's retention choice.
 
 Operators may clean with this documented one-liner (verify paths against §3 layout; targets only `archive/` and `malformed/`):
 
