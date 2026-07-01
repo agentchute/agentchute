@@ -129,7 +129,7 @@ Not a multi-agent framework. No task graphs, no role election, no central broker
 
 ## Operating a pool
 
-Setup, worktree teams, schedulers for agents that aren't always running, and the full command surface are in [`AGENTCHUTE.md`](AGENTCHUTE.md) and the wrapper enrollment templates. Most users only run `setup` and `doctor` directly.
+Setup, worktree teams, the poller fallback for agents without a native loop, and the full command surface are in [`AGENTCHUTE.md`](AGENTCHUTE.md) and the wrapper enrollment templates. Most users only run `setup` and `doctor` directly.
 
 - **Single shared filesystem** (reference CLI). Multi-machine works if participants share the volume; alternate transports (queues, S3, HTTP) are protocol-compatible but don't ship in the reference CLI.
 - **Cooperative trust.** Plain text, no signing or encryption.

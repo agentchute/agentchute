@@ -228,7 +228,7 @@ Every agent participates in keeping the pool healthy.
 ### 11.1 Enforcement action
 Triggers include malformed inbox filenames, unparseable frontmatter, or unparseable peer registrations.
 1. **Quarantine**: atomic move to `.agentchute/loop/malformed/`.
-2. **Notify offender**: send a corrective message (Task: `protocol correction`, Status: `findings`) to the inferred sender. Sender inference order: filename capture → frontmatter `from:` → no notify.
+2. **Notify offender**: send a corrective message to the inferred sender (the correction is plain body text; `task`/`status` are no longer normative wire fields). Sender inference order: filename capture → frontmatter `from:` → no notify.
 3. **Continue**: do NOT block the sender or the turn.
 
 A well-formed canonical seq file is never quarantined; only a genuinely-unrecognized name is enforced on.
@@ -248,11 +248,11 @@ A well-formed canonical seq file is never quarantined; only a genuinely-unrecogn
 
 ### 13.1 Compatibility & deprecations (scheduled removals)
 
-One-release compatibility carried from v0.8.0. Each has an in-code `// COMPAT(remove-in: vX.Y[, gate: name]): …` marker so removal is a grep-delete, not a judgment call. **Re-listing is not retiring:** if a gated item's gate is unmet at its target branch-cut, escalate — do not silently re-defer.
+A deferred-cleanup ledger. The one-release, marker-backed compat items carried from v0.8.0 have all been removed (see the DONE notes below); what remains is a single internal cleanup that is NOT a mechanical grep-delete and has no `// COMPAT` marker. **Re-listing is not retiring:** if an item's gate stays unmet release after release, escalate — do not silently re-defer.
 
-| Item | Location | Target | Gate |
-|------|----------|--------|------|
-| `selectShimSpecs`/`shimInstallNames` selectors → static legacy-name list | `internal/cli/shims.go`, `internal/cli/setup.go` | later | **NOT a safe mechanical swap** — the `--wrapper` filtering is still wired via `removeSetupShimsForWrapper(dir, wrapper)` for the dropped-wrapper cleanup path (`droppedWrappers`), so replacing the selectors with a static "all" list would change cleanup behavior. Defer until that path is provably dead. |
+| Item | Location | Target | Gate / why deferred |
+|------|----------|--------|---------------------|
+| `selectShimSpecs`/`shimInstallNames` selectors → static legacy-name list | `internal/cli/shims.go`, `internal/cli/setup.go` | when unblocked | **NOT a safe mechanical swap** — the `--wrapper` filtering is still wired via `removeSetupShimsForWrapper(dir, wrapper)` for the dropped-wrapper cleanup path (`droppedWrappers`), so replacing the selectors with a static "all" list would change cleanup behavior. Defer until that path is provably dead. |
 
 **DONE in v0.9.1 — dead shim-generation code removed (clean delete).** `renderShimScript` (the legacy per-wrapper shim generator) had zero production callers and moved to a test-only `legacyShimScript` fixture helper. `removeSetupAliasShimsForWrapper` was deleted outright (zero callers — the same-name alias cleanup is unreachable now that aliases are never installed). The misnamed `gitignoreBeginV1`/`gitignoreEndV1` constants (they held the current `v3` marker) were renamed `gitignoreBegin`/`gitignoreEnd`.
 
