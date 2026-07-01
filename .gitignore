@@ -12,7 +12,7 @@
 # The init marker pair below lets `agentchute init` upgrade the stanza
 # idempotently on future runs.
 
-# agentchute-gitignore v2 begin
+# agentchute-gitignore v3 begin
 .agentchute/loop/agents/*.md
 !.agentchute/loop/agents/*.example.md
 !.agentchute/loop/agents/README.md
@@ -21,8 +21,7 @@
 .agentchute/loop/malformed/
 .agentchute/loop/state/
 .agentchute/loop/scratch-*
-.agentchute/loop/watchdog.log
-# agentchute-gitignore v2 end
+# agentchute-gitignore v3 end
 
 # Local scratch (spike runs) — never commit
 proposal_spike_run/

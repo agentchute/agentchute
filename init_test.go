@@ -283,7 +283,7 @@ func TestInitCreatesGitignoreInGitWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, ".gitignore", "create v2")
+	expectAction(t, plan, ".gitignore", "create v3")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, ".gitignore"))
@@ -387,10 +387,10 @@ func TestInitGitignoreFailsOnMalformedMarker(t *testing.T) {
 }
 
 // .gitignore with future-version marker → skip with warn (don't downgrade).
-// Gitignore version is currently 1; v2 here is "newer than current."
+// Gitignore version is currently 3; v4 here is "newer than current."
 func TestInitGitignoreSkipsNewerVersion(t *testing.T) {
 	root := t.TempDir()
-	future := "# agentchute-gitignore v3 begin\nstuff\n# agentchute-gitignore v3 end\n"
+	future := "# agentchute-gitignore v4 begin\nstuff\n# agentchute-gitignore v4 end\n"
 	mustWrite(t, filepath.Join(root, ".gitignore"), []byte(future))
 
 	plan, err := computeInitPlan(root, "agentchute", true)

@@ -95,10 +95,10 @@ func mustWriteSeqInbox(t *testing.T, inboxDir, from string, seq uint64, content 
 }
 
 // mustWriteAgedInbox writes an inbox file and back-dates its filesystem mtime
-// to `arrival`. The watchdog now derives message age from mtime (arrival on
-// this host), not the sender-encoded filename timestamp, so tests that need an
-// inbox file aged past the message-age threshold must control its mtime rather
-// than rely on a past filename timestamp.
+// to `arrival`. The inbox lister derives a message's arrival time from its
+// mtime (arrival on this host) — a seq filename carries no embedded timestamp —
+// so tests that need an inbox file aged to a specific arrival time must control
+// its mtime rather than rely on a filename timestamp.
 func mustWriteAgedInbox(t *testing.T, path string, arrival time.Time) {
 	t.Helper()
 	mustWrite(t, path, []byte("hi"))

@@ -179,7 +179,7 @@ func wipePathApproved(loopDir, target string) bool {
 }
 
 // isWipeRootLeftoverName reports whether a loop-ROOT entry is a known runtime
-// leftover safe to delete: scratch dirs, the watchdog/poller/runner logs, and
+// leftover safe to delete: scratch dirs, the poller/runner logs, and
 // stray sockets/pid files. Everything else at the loop root (README.md,
 // .gitignore, the runtime subdirs themselves) is preserved.
 func isWipeRootLeftoverName(name string) bool {
@@ -187,7 +187,7 @@ func isWipeRootLeftoverName(name string) bool {
 		return true
 	}
 	switch name {
-	case "watchdog.log", "poller.log", "runner.log":
+	case "poller.log", "runner.log":
 		return true
 	}
 	return strings.HasSuffix(name, ".sock") || strings.HasSuffix(name, ".pid")

@@ -209,11 +209,6 @@ func (c *Config) EnsureRunnerSocketDir(socketPath string) error {
 	return ensurePrivateDir(dir)
 }
 
-// WatchdogLogPath returns the watchdog log path.
-func (c *Config) WatchdogLogPath() string {
-	return filepath.Join(c.LoopDir, "watchdog.log")
-}
-
 func discoverControlRepo(opts DiscoverOpts) (controlRepo, origin string, shadowed []string, err error) {
 	// 1. Explicit --control-repo flag wins.
 	if strings.TrimSpace(opts.ControlRepoFlag) != "" {

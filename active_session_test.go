@@ -73,8 +73,8 @@ func TestActiveSessionAliveAllowsRecentHeartbeatOnlyTemporarily(t *testing.T) {
 
 // WI-4 Fix 3: a future-dated (clock-skewed) active-session heartbeat must not
 // be treated as dead. The freshness check clamps a small negative age to 0,
-// matching PollerFreshness/watchdog/recipient_liveness. (No live PID here, so
-// the heartbeat-freshness branch is what proves liveness.)
+// matching PollerFreshness. (No live PID here, so the heartbeat-freshness
+// branch is what proves liveness.)
 func TestActiveSession_FutureTimestampNotDead(t *testing.T) {
 	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
 	session := &loop.ActiveSession{

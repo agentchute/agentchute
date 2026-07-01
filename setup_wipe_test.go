@@ -145,7 +145,6 @@ func populateRuntime(t *testing.T, cfg *loop.Config) (survive, gone []string) {
 		filepath.Join(ld, "malformed", "bad.md"),
 		filepath.Join(ld, "live", "claude-code.live"),
 		filepath.Join(ld, "state", "claude-code", "poller.json"),
-		filepath.Join(ld, "watchdog.log"),
 		filepath.Join(ld, "poller.log"),
 		filepath.Join(ld, "scratch-abc", "x"),
 	}

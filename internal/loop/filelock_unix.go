@@ -25,8 +25,8 @@ const agentLockRetryInterval = 25 * time.Millisecond
 // withAgentLock runs fn while holding an exclusive advisory lock scoped to a
 // single agent's local state directory (<loop>/state/<agent>/.lock). It
 // serializes the read-modify-write sequences over an agent's registration and
-// ledger files so concurrent processes (runner poll loop, hook commands,
-// watchdog) cannot lose updates to each other.
+// ledger files so concurrent processes (runner poll loop, hook commands)
+// cannot lose updates to each other.
 //
 // CRITICAL — flock is per (process, file) but a second LOCK_EX from the SAME
 // process on a SECOND fd for the same file deadlocks. Callers must never nest

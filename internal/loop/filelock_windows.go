@@ -25,8 +25,8 @@ const agentLockRetryInterval = 25 * time.Millisecond
 // withAgentLock runs fn while holding an exclusive OS advisory lock scoped to a
 // single agent's local state directory (<loop>/state/<agent>/.lock). It
 // serializes the read-modify-write sequences over an agent's registration and
-// ledger files so concurrent processes (runner poll loop, hook commands,
-// watchdog) cannot lose updates to each other.
+// ledger files so concurrent processes (runner poll loop, hook commands)
+// cannot lose updates to each other.
 //
 // The lock is acquired via LockFileEx with LOCKFILE_EXCLUSIVE_LOCK |
 // LOCKFILE_FAIL_IMMEDIATELY in a bounded retry loop honoring agentLockTimeout
