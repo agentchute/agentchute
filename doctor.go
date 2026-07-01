@@ -192,7 +192,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 		checks = append(checks, doctorCheck{
 			Name:     "agent_specific_checks",
 			Severity: severitySkip,
-			Message:  "no --as / $AGENTCHUTE_AGENT_ID; skipped per-agent checks (registration freshness, inbox state, ledger state, wake target validity)",
+			Message:  "no --as / $AGENTCHUTE_AGENT_ID; skipped per-agent checks (registration freshness, inbox state, ledger state)",
 		})
 	}
 
@@ -832,7 +832,7 @@ Usage: agentchute doctor [--as <id>] [--json]
 
 Diagnostic aggregator. Runs an ordered set of checks against the local
 loop directory, the calling environment, and (if --as is provided) the
-named agent's registration / inbox / ledger / wake target / recipient
+named agent's registration / inbox / ledger / recipient
 liveness. Reports each check with a severity (BLOCKER / WARN / OK / SKIP)
 and exits nonzero when any BLOCKER is found.
 

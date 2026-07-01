@@ -17,7 +17,7 @@ func TestAckSelfGatesOnFinishBlocker(t *testing.T) {
 		t.Helper()
 		withCwd(t, root, func() {
 			if err := cmdSend([]string{"--from", "alice", "--to", "bob",
-				"--body", body, "--no-wake"}); err != nil {
+				"--body", body}); err != nil {
 				t.Fatalf("cmdSend(%q): %v", body, err)
 			}
 		})

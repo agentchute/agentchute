@@ -12,18 +12,18 @@ import (
 )
 
 // setupSendFixture registers claude-code + codex in a fresh control repo
-// and returns the loop config. Both agents become each other's reachable
-// peers so the wake receipt has something to report on.
+// and returns the loop config. Pull-only: sends deliver by writing the inbox
+// unconditionally.
 func setupSendFixture(t *testing.T) (string, *loop.Config) {
 	t.Helper()
 	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
 	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
-		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--host", "peer-host", "--wake-method", "tmux", "--wake-target", "%1"}); err != nil {
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--host", "peer-host"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai", "--wake-method", "tmux", "--wake-target", "%2"}); err != nil {
+		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -78,8 +78,7 @@ func TestSendAskSetsReplyRequiredAndHeading(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
-			"--task", "review", "--ask", "--body", "look at the diff",
-			"--no-wake"}); err != nil {
+			"--task", "review", "--ask", "--body", "look at the diff"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -99,8 +98,7 @@ func TestSendAskPreservesExistingAskHeading(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
-			"--task", "review", "--ask", "--body", "## ASK\n\nalready has heading",
-			"--no-wake"}); err != nil {
+			"--task", "review", "--ask", "--body", "## ASK\n\nalready has heading"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -132,7 +130,7 @@ func TestSendReplyToClearsPendingLedgerEntry(t *testing.T) {
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
 			"--task", "review-reply", "--reply-to", pendingMsgID,
-			"--body", "my reply", "--no-wake"}); err != nil {
+			"--body", "my reply"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -188,7 +186,7 @@ func TestSendReplyToMismatchedRecipientLeavesLedgerPending(t *testing.T) {
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "gemini-cli",
 			"--task", "unrelated", "--reply-to", pendingMsgID,
-			"--body", "different recipient", "--no-wake"}); err != nil {
+			"--body", "different recipient"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -213,7 +211,7 @@ func TestSendAskWithMisleadingTaskValueStillSetsFrontmatter(t *testing.T) {
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
 			"--task", "reply_required: audit", "--ask",
-			"--body", "test body", "--no-wake"}); err != nil {
+			"--body", "test body"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -296,7 +294,7 @@ func TestSend_ReplyToTerminalFirstStillDischargesPendingDuplicate(t *testing.T) 
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
 			"--task", "second-reply", "--reply-to", sharedMsgID,
-			"--body", "discharging the duplicate", "--no-wake"}); err != nil {
+			"--body", "discharging the duplicate"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -354,7 +352,7 @@ func TestSend_ReplyToDoesNotClearOtherSendersObligation(t *testing.T) {
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
 			"--task", "codex-reply", "--reply-to", sharedMsgID,
-			"--body", "to codex only", "--no-wake"}); err != nil {
+			"--body", "to codex only"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -429,7 +427,7 @@ func TestSend_ReplyToInverseOrder_DischargesIntendedSenderWhenNotFirstRow(t *tes
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
 			"--task", "codex-reply", "--reply-to", sharedMsgID,
-			"--body", "to codex", "--no-wake"}); err != nil {
+			"--body", "to codex"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -488,7 +486,7 @@ func TestSend_ReplyToThirdPartyMessageIDLeavesPending(t *testing.T) {
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
 			"--task", "unrelated", "--reply-to", msgID,
-			"--body", "threading via gemini's id", "--no-wake"}); err != nil {
+			"--body", "threading via gemini's id"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -510,33 +508,9 @@ func TestSendReplyToWithoutMatchingEntryIsSilent(t *testing.T) {
 	withCwd(t, root, func() {
 		err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
 			"--task", "x", "--reply-to", "2026-01-01T00:00:00.000000Z",
-			"--body", "b", "--no-wake"})
+			"--body", "b"})
 		if err != nil {
 			t.Errorf("err = %v, want nil (unmatched --reply-to is a benign threading hint)", err)
-		}
-	})
-}
-
-// Send output emits the wake receipt (wake_attempted, wake_result). Pull-only
-// (Gate 6c): the wake_method line was dropped; senders never poke.
-func TestSendEmitsWakeReceipt(t *testing.T) {
-	root, _ := setupSendFixture(t)
-	withCwd(t, root, func() {
-		out, err := captureStdout(t, func() error {
-			return cmdSend([]string{"--from", "claude-code", "--to", "codex",
-				"--task", "x", "--body", "b", "--no-wake"})
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, want := range []string{"wake_attempted:", "wake_result:"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("output missing %q:\n%s", want, out)
-			}
-		}
-		// Senders never poke; the receipt is always "none (pull)".
-		if !strings.Contains(out, "none (pull)") {
-			t.Errorf("output missing pull-only wake receipt:\n%s", out)
 		}
 	})
 }
@@ -546,7 +520,7 @@ func TestSendJSONShape(t *testing.T) {
 	withCwd(t, root, func() {
 		out, err := captureStdout(t, func() error {
 			return cmdSend([]string{"--from", "claude-code", "--to", "codex",
-				"--task", "x", "--body", "b", "--no-wake", "--json"})
+				"--task", "x", "--body", "b", "--json"})
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -560,14 +534,6 @@ func TestSendJSONShape(t *testing.T) {
 		}
 		if got.MessageID == "" {
 			t.Error("MessageID empty")
-		}
-		// Pull-only (Gate 6c): the wake_method JSON field was dropped; the receipt
-		// reports no poke.
-		if got.WakeAttempted {
-			t.Error("WakeAttempted = true; pull-only senders never poke")
-		}
-		if got.WakeResult != "none (pull)" {
-			t.Errorf("WakeResult = %q, want \"none (pull)\"", got.WakeResult)
 		}
 	})
 }
@@ -615,7 +581,7 @@ func TestSendWarnsOnUnclearedLedgerForRecipient(t *testing.T) {
 
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
-			"--task", "unrelated", "--body", "no reply-to", "--no-wake"}); err != nil {
+			"--task", "unrelated", "--body", "no reply-to"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -664,8 +630,7 @@ func TestSendWarnsOnSelfSendWithAsk(t *testing.T) {
 
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "claude-code",
-			"--task", "self-test", "--ask", "--body", "self-obligation",
-			"--no-wake"}); err != nil {
+			"--task", "self-test", "--ask", "--body", "self-obligation"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -686,7 +651,7 @@ func TestSendReplyToWithoutAskDoesNotSetReplyRequired(t *testing.T) {
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
 			"--task", "ack", "--reply-to", "2026-05-19T00:00:00.000000Z",
-			"--body", "thanks", "--no-wake"}); err != nil {
+			"--body", "thanks"}); err != nil {
 			t.Fatal(err)
 		}
 	})

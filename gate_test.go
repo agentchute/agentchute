@@ -510,7 +510,7 @@ func TestGateRequiresPhaseFlag(t *testing.T) {
 func TestGateFinishAcceptsActiveSessionHeartbeat(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
-		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--wake-target", ""}); err != nil {
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})

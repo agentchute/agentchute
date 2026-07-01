@@ -16,7 +16,7 @@ func TestSendWritesSeqFormatNotNonce(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	withCwd(t, root, func() {
 		t.Setenv("AGENTCHUTE_AGENT_ID", "codex")
-		if err := cmdSend([]string{"--to", "claude-code", "--task", "gate4 seq write", "--body", "hi", "--no-wake"}); err != nil {
+		if err := cmdSend([]string{"--to", "claude-code", "--task", "gate4 seq write", "--body", "hi"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -71,7 +71,7 @@ func TestSendToUnregisteredRecipientNoSeqBurn(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	withCwd(t, root, func() {
 		t.Setenv("AGENTCHUTE_AGENT_ID", "codex")
-		err := cmdSend([]string{"--to", "ghost", "--body", "x", "--no-wake"})
+		err := cmdSend([]string{"--to", "ghost", "--body", "x"})
 		if err == nil {
 			t.Fatal("expected error sending to unregistered recipient")
 		}
@@ -81,7 +81,7 @@ func TestSendToUnregisteredRecipientNoSeqBurn(t *testing.T) {
 		// A legitimate send to a real recipient must still start at seq 1,
 		// proving the failed send did not advance codex's (codex,ghost) — and,
 		// more importantly, that no seq leaked onto the live path.
-		if err := cmdSend([]string{"--to", "claude-code", "--body", "ok", "--no-wake"}); err != nil {
+		if err := cmdSend([]string{"--to", "claude-code", "--body", "ok"}); err != nil {
 			t.Fatal(err)
 		}
 	})

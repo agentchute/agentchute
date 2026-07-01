@@ -18,10 +18,10 @@ import (
 // the gate; "replied" and "deferred" do not.
 //
 // The ledger is strictly recipient-owned. Peers never read another agent's
-// state dir — wake-side visibility into the obligation comes from the
-// `status` command, which reads only the local agent's own ledger. Anything
-// a sender needs to know about its delivered messages is recorded
-// sender-side (currently just the wake-attempt receipt in `send` output).
+// state dir — visibility into the obligation comes from the `status` command,
+// which reads only the local agent's own ledger. Anything a sender needs to
+// know about its delivered messages is recorded sender-side (e.g., the `.owed`
+// obligation ledger for --ask sends).
 
 // PendingReplyStatus enumerates ledger entry lifecycle states.
 type PendingReplyStatus string

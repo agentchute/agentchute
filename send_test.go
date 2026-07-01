@@ -10,11 +10,9 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// Simple-again Gate 6a (pull-only): TestComputeWakeReceipt_RefusesUnboundRunnerSocket
-// and TestComputeWakeReceipt_UnownedRunnerPrimary_NoBackup_StillRefused were
-// removed. Their subject — the sender-side wake-poke owned-check refusal — no
-// longer exists: senders deliver by writing the inbox file and never poke, so
-// computeWakeReceipt always reports "none (pull)".
+// Simple-again Gate 6a (pull-only): the sender-side wake-poke owned-check tests
+// were removed. Their subject no longer exists — senders deliver by writing the
+// inbox file and never poke a wake target.
 
 func TestSendFailsForUnregisteredRecipient(t *testing.T) {
 	root := t.TempDir()
@@ -57,7 +55,7 @@ func TestSendNonFatalMissingRegistrationButExistingInbox(t *testing.T) {
 		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "recipient")
 		mustMkdir(t, inboxDir)
 
-		// Send should succeed (delivery) but print a warning (skipped poke)
+		// Send should succeed (delivery is unconditional under pull-only).
 		args := []string{"--from", "sender", "--to", "recipient", "--body", "hello"}
 		if err := cmdSend(args); err != nil {
 			t.Fatalf("cmdSend should be non-fatal if inbox dir exists: %v", err)
@@ -85,7 +83,7 @@ func TestSendFencedByServeTokenMismatch(t *testing.T) {
 		if err := cmdRegister([]string{"--as", "sender", "--vendor", "test"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := cmdRegister([]string{"--as", "recipient", "--vendor", "test", "--wake-target", ""}); err != nil {
+		if err := cmdRegister([]string{"--as", "recipient", "--vendor", "test"}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -122,10 +120,10 @@ func TestSendRejectsNewlineInFrontmatterFlags(t *testing.T) {
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
-		if err := cmdRegister([]string{"--as", "sender", "--vendor", "test", "--wake-target", ""}); err != nil {
+		if err := cmdRegister([]string{"--as", "sender", "--vendor", "test"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := cmdRegister([]string{"--as", "recipient", "--vendor", "test", "--wake-target", ""}); err != nil {
+		if err := cmdRegister([]string{"--as", "recipient", "--vendor", "test"}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -155,7 +153,7 @@ func TestSendSucceedsForRegisteredRecipient(t *testing.T) {
 		if err := cmdRegister([]string{"--as", "sender", "--vendor", "test"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := cmdRegister([]string{"--as", "recipient", "--vendor", "test", "--wake-target", ""}); err != nil {
+		if err := cmdRegister([]string{"--as", "recipient", "--vendor", "test"}); err != nil {
 			t.Fatal(err)
 		}
 
