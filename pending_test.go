@@ -18,8 +18,8 @@ func pendingArgs(extra ...string) []string {
 	return append(base, extra...)
 }
 
-// readFrontmatter is the shared hook-safe peek helper used by pending, boot,
-// self-poll, and watch. It must refuse to read a peer-planted file that
+// readFrontmatter is the shared hook-safe peek helper used by pending and boot.
+// It must refuse to read a peer-planted file that
 // exceeds the inbox cap, matching the capped consume path in check.go — a
 // validly named but oversized inbox file must not be slurped unbounded just
 // to peek frontmatter (codex review finding, 2026-06-16).

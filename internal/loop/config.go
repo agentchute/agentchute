@@ -151,7 +151,7 @@ func (c *Config) PendingRepliesPath(agentID string) string {
 // PollerHeartbeatPath returns the per-agent poller heartbeat path. This is
 // recipient-owned liveness state: senders never rely on it for delivery, but
 // local lifecycle checks use it to prove that a non-pokable recipient has a
-// self-poll loop running.
+// poller loop running.
 func (c *Config) PollerHeartbeatPath(agentID string) string {
 	return filepath.Join(c.AgentStateDir(agentID), "poller.json")
 }

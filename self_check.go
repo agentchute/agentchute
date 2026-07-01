@@ -13,7 +13,7 @@ import (
 )
 
 // cmdSelfCheck is the active, hook-safe "I am alive" operation. Unlike
-// pending/self-poll, it intentionally writes registration state: last_seen and
+// pending, it intentionally writes registration state: last_seen and
 // host are reconciled with the current process environment. It never archives
 // inbox mail.
 func cmdSelfCheck(args []string) error {

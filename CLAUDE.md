@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-<!-- agentchute-enrollment v16 begin -->
+<!-- agentchute-enrollment v17 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 Canonical enrollment spec: [`AGENTS.md`](AGENTS.md) (full identity precedence, polling, hooks). This file is a thin pointer.
@@ -51,7 +51,7 @@ agentchute gate --before finish --as "$AGENTCHUTE_AGENT_ID"
 Consume unread mail with `agentchute check --as "$AGENTCHUTE_AGENT_ID"` (CLAIMS + displays — at-least-once; a crash before `ack` re-delivers), `ack` to commit, then answer each obligation or release it with `agentchute defer --as "$AGENTCHUTE_AGENT_ID" --message <message-id> --reason "..."` until the gate is clear. The Stop hook runs `ack` then the gate for you.
 
 Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v16 end -->
+<!-- agentchute-enrollment v17 end -->
 
 ---
 
