@@ -288,7 +288,7 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 
 func sendUsage(err error) error {
 	return fmt.Errorf(`%w
-usage: agentchute send --from <sender> --to <recipient> [--task <text>] [--status <status>] [--reply-to <msg-id>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
+usage: agentchute send --from <sender> --to <recipient> [--task <text>] [--status <status>] [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
 
   Ways to provide the body (pick one):
     --body "literal text"             short replies
