@@ -104,8 +104,8 @@ type selfPollResult struct {
 	MalformedCount int
 }
 
-// computeSelfPollResult is the read-only inbox/ledger scan that decides whether
-// a poller tick should wake the wrapper. It is strictly side-effect-free.
+// computeSelfPollResult is the read-only inbox scan that computes whether a
+// poller tick should wake the wrapper. It is strictly side-effect-free.
 func computeSelfPollResult(cfg *loop.Config, agentID string) (selfPollResult, error) {
 	// Detect missing self registration / inbox dir BEFORE the listing read. A
 	// first-run poller (before the agent has ever booted) needs a wakeable

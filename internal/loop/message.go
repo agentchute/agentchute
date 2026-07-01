@@ -13,26 +13,19 @@ import (
 // regardless of the input.
 //
 // protocol-v2 envelope cut (TEAM-DECISION §4): the emitted envelope is now
-// `from`, optional `in_reply_to`, plus `message_id` retained for the compat
-// window (display-only). `to` is dropped — the inbox directory location encodes
-// the recipient — and the `task`/`status` workflow-vocabulary fields move to a
+// `from` plus an optional `in_reply_to`. `to` is dropped — the inbox directory
+// location encodes the recipient — and the `task`/`status` workflow-vocabulary fields move to a
 // body convention, so neither is emitted. The `to`/`task`/`status` parameters
 // are retained on the signature for one release so callers (send, announce,
 // corrective) need no change during the transition; the inbox parser still
 // READS all of these from any older message in flight.
 func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string) []byte {
+	_ = now    // no longer seeds a message_id (dropped v0.9.0); param kept for signature stability.
 	_ = to     // recipient is encoded by the inbox directory; not emitted (compat param).
 	_ = task   // workflow vocabulary → body convention; not emitted (compat param).
 	_ = status // workflow vocabulary → body convention; not emitted (compat param).
 	var b strings.Builder
 	b.WriteString("---\n")
-	// COMPAT(remove-in: v0.8.9): message_id is compat-only frontmatter — the wire
-	// identity is (to, from, seq). It is now display-only (boot.go, pending.go,
-	// sendResult); reply threading rides `in_reply_to` (the canonical
-	// (to,from,seq) ref) and the asker-owned `.owed` ledger, neither of which
-	// keys on message_id. Swap the remaining display readers to the (to,from,seq)
-	// triple before removing. See AGENTCHUTE.md "Compatibility & Deprecations".
-	fmt.Fprintf(&b, "message_id: %s\n", FormatMessageID(now))
 	fmt.Fprintf(&b, "from: %s\n", from)
 	if replyTo != "" {
 		fmt.Fprintf(&b, "in_reply_to: %s\n", quoteIfNeeded(replyTo))
@@ -41,17 +34,6 @@ func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string)
 	b.WriteString(strings.TrimRight(body, "\n"))
 	b.WriteString("\n")
 	return []byte(b.String())
-}
-
-// FormatMessageID returns the recommended frontmatter `message_id` format
-// (RFC 3339 UTC with microsecond precision and `:` separators preserved).
-// Distinct from filename timestamps which use `-` for filesystem portability.
-func FormatMessageID(t time.Time) string {
-	t = t.UTC()
-	return fmt.Sprintf("%04d-%02d-%02dT%02d:%02d:%02d.%06dZ",
-		t.Year(), int(t.Month()), t.Day(),
-		t.Hour(), t.Minute(), t.Second(),
-		t.Nanosecond()/1000)
 }
 
 // AnnounceResult is the outcome of AnnounceEnrollment: how many peers were

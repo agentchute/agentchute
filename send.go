@@ -140,7 +140,6 @@ func cmdSend(args []string) error {
 		return fmt.Errorf("stat own registration: %w", err)
 	}
 
-	messageID := loop.FormatMessageID(now)
 	content := loop.ComposeMessage(now, fromID, toID, taskField, statusField, replyTo, body)
 	if ask {
 		content = applyReplyRequiredFrontmatter(content)
@@ -176,8 +175,8 @@ func cmdSend(args []string) error {
 		}
 		return fmt.Errorf("write inbox message: %w", err)
 	}
-	// message_id stays emitted as a COMPAT frontmatter field (ComposeMessage)
-	// for one release; the on-wire identity is now (to,from,seq).
+	// The on-wire identity is (to,from,seq): `to` is the inbox directory, (from,seq)
+	// the filename. No sender-asserted message_id is emitted (v0.9.0).
 	msg := loop.Message{Filename: id.Filename(), Path: filepath.Join(inboxDir, id.Filename())}
 
 	// Asker-owned obligation (protocol-v2 / Gate 5): when we ASK for a reply,
@@ -202,11 +201,10 @@ func cmdSend(args []string) error {
 	// obligation discharges when they consume this reply (ClearOwed, check.go).
 	// There is NO recipient-side ledger to mutate here.
 	result := sendResult{
-		Filename:  msg.Filename,
-		Path:      msg.Path,
-		From:      fromID,
-		To:        toID,
-		MessageID: messageID,
+		Filename: msg.Filename,
+		Path:     msg.Path,
+		From:     fromID,
+		To:       toID,
 	}
 
 	if jsonOut {
@@ -222,11 +220,10 @@ func cmdSend(args []string) error {
 // sendResult is the structured shape of `send`'s output (the same fields
 // drive both text and --json modes).
 type sendResult struct {
-	Filename  string `json:"filename"`
-	Path      string `json:"path"`
-	From      string `json:"from"`
-	To        string `json:"to"`
-	MessageID string `json:"message_id"`
+	Filename string `json:"filename"`
+	Path     string `json:"path"`
+	From     string `json:"from"`
+	To       string `json:"to"`
 }
 
 func emitSendText(r sendResult) {
@@ -291,7 +288,7 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 
 func sendUsage(err error) error {
 	return fmt.Errorf(`%w
-usage: agentchute send --from <sender> --to <recipient> [--task <text>] [--status <status>] [--reply-to <msg-id>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
+usage: agentchute send --from <sender> --to <recipient> [--task <text>] [--status <status>] [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
 
   Ways to provide the body (pick one):
     --body "literal text"             short replies
