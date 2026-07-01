@@ -33,20 +33,8 @@ Commands:
   status         print registry overview, inbox depths, and .live presence freshness
   doctor         diagnostic aggregator: scaffold, hook content, registration, inbox, .live presence
 
-Advanced / internal:
-  boot           session-start ritual: register + peek inbox + owed-reply summary (use in SessionStart hooks)
-  register       create or update a live registration for an agent
-  gate           lifecycle gate: block declaring done while unread inbox mail is outstanding
-  pending        peek unread messages (read-only; safe for lifecycle hooks)
-  poller         recipient-side poller heartbeat/run/status that keeps .live fresh
-  self-check     refresh own registration/last_seen and .live presence (pull-only: no wake target to reconcile)
-  hooks          install canonical hook templates into .claude/ / .codex/ / .gemini/ (v0.2.1)
-  shims          install/pass-through launcher shims for known wrappers
-  prepare-pool   prepare one or more folders as pool participants (writes pointer file + enrollment blocks)
-  identity       resolve and print the contextual agent identity (alias of default-id)
-  default-id     print the contextual default agent id for a wrapper/vendor
-  update         self-update the binary to a release, then re-sync this repo's setup
-  run            deprecated alias of 'serve' (removed in v0.10.0)
+Advanced / internal (mostly hook- or setup-driven; run 'agentchute <cmd> --help' for any):
+  boot · register · gate · pending · poller · self-check · hooks · shims · prepare-pool · identity · default-id · update · run (deprecated alias of serve)
 
 Run 'agentchute <command> --help' for command-specific flags.
 See AGENTCHUTE.md for the full spec.
