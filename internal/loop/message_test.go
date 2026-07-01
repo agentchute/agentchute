@@ -8,33 +8,28 @@ import (
 	"time"
 )
 
-func TestComposeMessageQuotesOptionalScalars(t *testing.T) {
-	now := time.Date(2026, 5, 9, 16, 32, 0, 123456000, time.UTC)
+func TestComposeMessageQuotesInReplyTo(t *testing.T) {
 	msg := string(ComposeMessage(
-		now,
 		"codex",
-		"claude-code",
-		"review README: API",
-		"info # note",
 		"2026-05-09T16:00:00.000000Z\nforged: true",
 		"body",
 	))
 
-	// in_reply_to is the surviving optional scalar and must still be quoted when
-	// its value contains a newline/colon (injection-safety).
+	// in_reply_to is the one optional scalar and must still be quoted when its
+	// value contains a newline/colon (injection-safety).
 	if want := `in_reply_to: "2026-05-09T16:00:00.000000Z\nforged: true"`; !strings.Contains(msg, want) {
 		t.Fatalf("message missing %q:\n%s", want, msg)
 	}
 
-	// protocol-v2 envelope cut (TEAM-DECISION §4): `to`, `task`, and `status` are
-	// no longer EMITTED even when passed (the parser still reads them off the wire
-	// for older messages). Assert no frontmatter line carries those bare keys
+	// Envelope minimality (AGENTCHUTE.md §6.4, P1 residue cleanup): `to`,
+	// `task`, `status` are gone from ComposeMessage's signature entirely, not
+	// just unemitted — assert no frontmatter line carries those bare keys
 	// (line-scoped so it does not false-match `in_reply_to:`).
 	for _, line := range strings.Split(msg, "\n") {
 		key, _, _ := strings.Cut(strings.TrimSpace(line), ":")
 		switch key {
 		case "to", "task", "status":
-			t.Fatalf("message unexpectedly still emits %q line:\n%s", key, msg)
+			t.Fatalf("message unexpectedly emits %q line:\n%s", key, msg)
 		}
 	}
 }

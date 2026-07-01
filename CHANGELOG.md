@@ -4,6 +4,15 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## Unreleased
+
+**Removed the `task`/`status` workflow-vocabulary residue (P1 of the 0.9.1 post-release finish-line worklist)**
+- Deleted `send`'s `--task`/`--status` flags outright — they had been silently discarded by `ComposeMessage` since v0.9.0's protocol-v2 envelope cut and carried no wire meaning.
+- `ComposeMessage`'s signature dropped its four dead compat parameters (`now`, `to`, `task`, `status`); it now takes just `(from, replyTo, body)`.
+- **User-visible output change**: `pending`/`boot` no longer display a message's legacy `task:` frontmatter value (the trailing `— <task>` on unread-message lines/JSON `task` field). That was the one still-live compat-read path; task/status are now fully gone, not just unemitted.
+- `AGENTCHUTE.md` §6.4 updated: `to`/`task`/`status` no longer get special-case compat framing — they're unrecognized fields, ignored per §6.5 like any other.
+- No replacement field added. A message's subject, if any, remains a body convention (first Markdown line) per the RFC's leanest option.
+
 ## v0.9.1 (2026-07-01) — the lean release, finished
 
 A fast-follow that completes the v0.9.0 subtraction: remove all remaining legacy not in the current protocol spirit, then relocate the code into a clean shape. No new features; no wire-format change. Six dual-gated PRs (five code + one release-prep), each reviewed by codex + sonnet, plus a full 4-way docs sweep.

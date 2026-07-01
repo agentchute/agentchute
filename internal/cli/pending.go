@@ -124,11 +124,10 @@ func cmdPending(args []string) error {
 			Filename:  msg.Filename,
 			Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano),
 		}
-		// Parse frontmatter for reply_required / priority / task.
+		// Parse frontmatter for reply_required / priority.
 		// Body intentionally not read unless --show-body.
 		fm, body, ferr := readFrontmatter(msg.Path)
 		if ferr == nil {
-			entry.Task = fm["task"]
 			entry.Priority = fm["priority"]
 			if v := strings.ToLower(strings.TrimSpace(fm["reply_required"])); v == "true" {
 				entry.ReplyRequired = true
@@ -183,7 +182,6 @@ func needsBootMessage(agentID string) string {
 // message_id (v0.9.0).
 type pendingEntry struct {
 	From          string `json:"from"`
-	Task          string `json:"task,omitempty"`
 	Filename      string `json:"filename"`
 	Timestamp     string `json:"timestamp"`
 	Priority      string `json:"priority,omitempty"`
@@ -225,9 +223,6 @@ func emitPendingText(entries []pendingEntry, owed []loop.OwedEntry, malformed in
 				flags += " [stale]"
 			}
 			fmt.Printf("  %s from %s", e.Timestamp, e.From)
-			if e.Task != "" {
-				fmt.Printf(" — %s", e.Task)
-			}
 			fmt.Println(flags)
 		}
 	}
@@ -296,9 +291,6 @@ func buildPendingContext(entries []pendingEntry, owed []loop.OwedEntry, malforme
 			fmt.Fprintf(&ctx, "agentchute: %d unread message(s) in your inbox:\n", len(entries))
 			for _, e := range entries {
 				fmt.Fprintf(&ctx, "  - %s from %s", e.Timestamp, e.From)
-				if e.Task != "" {
-					fmt.Fprintf(&ctx, " — %s", e.Task)
-				}
 				if e.ReplyRequired {
 					ctx.WriteString(" [REPLY-REQUIRED]")
 				}

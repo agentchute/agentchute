@@ -151,7 +151,7 @@ Apply to every response, all contexts:
 agentchute dogfoods itself: agents working on agentchute coordinate through agentchute. The loop lives at `.agentchute/loop/`. **The project is the communication boundary**: agents by default only see and talk to peers in the same pool. Enrollment commands are at the top of this file. After enrolling:
 
 - **Each turn:** run `agentchute check --vendor <vendor>` first (claims + displays), or pass `--as <id>` for a custom/non-wrapper lane. If it says you are not registered, immediately run `agentchute boot --vendor <vendor>` plus `agentchute poller ensure --vendor <vendor>`, then rerun `check`. Process any messages, then `agentchute ack` to commit (the Stop hook does this for you).
-- **Sending:** `agentchute send --to <peer> --task ... --body ...` from a registered lane, or pass `--from <id>` explicitly (or follow `AGENTCHUTE.md` §6 directly — the binary just makes it ergonomic). Sending only writes the recipient's inbox; it never wakes them.
+- **Sending:** `agentchute send --to <peer> --body ...` from a registered lane, or pass `--from <id>` explicitly (or follow `AGENTCHUTE.md` §6 directly — the binary just makes it ergonomic). Sending only writes the recipient's inbox; it never wakes them.
 - **No watchdog / cooperative waking:** coordination is pull-only. There is no watchdog and no sender-side or cooperative poke — a recipient discovers its own mail via the runner / its native loop, and a dead recipient is detected via stale `.live` + the asker's expired `.owed` (not by a liveness daemon). The `watchdog` command was removed.
 - **Gitignore check:** `git check-ignore .agentchute/loop/agents/<your-id>.md` should print the path.
 

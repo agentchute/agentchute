@@ -117,7 +117,6 @@ func cmdBoot(args []string) error {
 			Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano),
 		}
 		if fm, _, ferr := readFrontmatter(msg.Path); ferr == nil {
-			entry.Task = fm["task"]
 			entry.Priority = fm["priority"]
 			if v := strings.ToLower(strings.TrimSpace(fm["reply_required"])); v == "true" {
 				entry.ReplyRequired = true
@@ -206,7 +205,7 @@ func emitBootText(s bootStatus, quiet bool) {
 			if u.ReplyRequired {
 				flags = " [REPLY-REQUIRED]"
 			}
-			fmt.Printf("    %s from %s — %s%s\n", u.Timestamp, u.From, u.Task, flags)
+			fmt.Printf("    %s from %s%s\n", u.Timestamp, u.From, flags)
 		}
 	}
 	if s.MalformedCount > 0 {
@@ -249,7 +248,7 @@ func writeBootContext(w io.Writer, s bootStatus) {
 			if u.ReplyRequired {
 				flags = " [REPLY-REQUIRED]"
 			}
-			fmt.Fprintf(w, "\n  - unread: %s from %s — %s%s", u.Timestamp, u.From, u.Task, flags)
+			fmt.Fprintf(w, "\n  - unread: %s from %s%s", u.Timestamp, u.From, flags)
 		}
 		fmt.Fprintf(w, "\n\nRun `agentchute check --as %s` to consume unread; reply via `agentchute send --from %s --to <peer> --reply-to <ref> --body \"...\"`.", s.Agent, s.Agent)
 	}
