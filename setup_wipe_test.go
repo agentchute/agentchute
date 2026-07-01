@@ -192,7 +192,7 @@ func TestWipeStatePreservesSetupJSON(t *testing.T) {
 	setupJSON := filepath.Join(cfg.LoopDir, "state", "setup.json")
 	mustWrite(t, setupJSON, []byte(`{"version":1}`))
 	// other per-agent state must be removed.
-	other := filepath.Join(cfg.LoopDir, "state", "claude-code", "pending-replies.json")
+	other := filepath.Join(cfg.LoopDir, "state", "claude-code", "owed.json")
 	mustWrite(t, other, []byte("x"))
 
 	plan, err := computeWipePlan(cfg, root)

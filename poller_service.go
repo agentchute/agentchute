@@ -10,9 +10,9 @@ import (
 )
 
 // This file holds the poller's internal support helpers: the wrapper-invocation
-// builder and the read-only inbox/ledger scan that decides whether a `poller
-// run` tick should wake the wrapper. These helpers were previously shared with
-// the standalone poll/scheduler command surfaces that v0.9.0 removed; only the
+// builder and the read-only inbox scan that decides whether a `poller run` tick
+// should wake the wrapper. These helpers were previously shared with the
+// standalone poll/scheduler command surfaces that v0.9.0 removed; only the
 // poller consumes them now.
 
 // serviceKindScript is the only launch kind the poller emits: an inline-sh
@@ -77,7 +77,7 @@ func wrapperInvocation(p serviceParams) string {
 		vendor = "<vendor>" // unreachable: poller refuses launch for an unknown-agent unless --command set
 	}
 	prompt := fmt.Sprintf(
-		"Process agentchute mail. Start with: agentchute boot --as %s --vendor %s (idempotent). Reply to obligations using send --reply-to or release them using defer --message. Do not declare done until your inbox is empty.",
+		"Process agentchute mail. Start with: agentchute boot --as %s --vendor %s (idempotent). Reply to messages using send --reply-to. Do not declare done until your inbox is empty.",
 		p.AgentID, vendor,
 	)
 	// Each wrapper has its own flag for non-interactive prompt input.
@@ -101,7 +101,6 @@ type selfPollResult struct {
 	ShouldWake     bool
 	NeedsBoot      bool
 	UnreadCount    int
-	RepliesPending int
 	MalformedCount int
 }
 
@@ -139,18 +138,15 @@ func computeSelfPollResult(cfg *loop.Config, agentID string) (selfPollResult, er
 			}
 		}
 	}
-	ledger, err := loop.LoadPendingLedger(cfg, agentID)
-	if err != nil {
-		return selfPollResult{}, fmt.Errorf("load pending-reply ledger: %w", err)
-	}
-	pendingReplies := ledger.PendingEntries()
-
+	// Reply obligations are asker-owned only (v0.9.0): the poller must NOT wake
+	// merely because this agent is OWED replies (a non-blocking dead-recipient
+	// signal, not deliverable inbound work). Wake is driven purely by needs-boot,
+	// unread mail, and malformed inbox files.
 	return selfPollResult{
 		Agent:          agentID,
-		ShouldWake:     needsBoot || len(msgs) > 0 || len(pendingReplies) > 0 || len(skipped) > 0,
+		ShouldWake:     needsBoot || len(msgs) > 0 || len(skipped) > 0,
 		NeedsBoot:      needsBoot,
 		UnreadCount:    len(msgs),
-		RepliesPending: len(pendingReplies),
 		MalformedCount: len(skipped),
 	}, nil
 }

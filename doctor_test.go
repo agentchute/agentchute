@@ -250,7 +250,7 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 
 	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 
-	for _, name := range []string{"self_registration", "registration_freshness", "inbox_state", "ledger_state"} {
+	for _, name := range []string{"self_registration", "registration_freshness", "inbox_state"} {
 		c := findCheck(t, r, name)
 		if c.Severity == "" {
 			t.Errorf("%s has empty severity", name)

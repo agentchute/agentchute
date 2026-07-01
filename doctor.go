@@ -187,13 +187,12 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 			checkSelfRegistration(cfg, agentID),
 			checkRegistrationFreshness(cfg, agentID, opts.Now),
 			checkInboxState(cfg, agentID),
-			checkLedgerState(cfg, agentID),
 		)
 	} else {
 		checks = append(checks, doctorCheck{
 			Name:     "agent_specific_checks",
 			Severity: severitySkip,
-			Message:  "no --as / $AGENTCHUTE_AGENT_ID; skipped per-agent checks (registration freshness, inbox state, ledger state)",
+			Message:  "no --as / $AGENTCHUTE_AGENT_ID; skipped per-agent checks (registration freshness, inbox state)",
 		})
 	}
 
@@ -753,22 +752,6 @@ func checkInboxState(cfg *loop.Config, agentID string) doctorCheck {
 	return doctorCheck{Name: "inbox_state", Severity: severityOK, Message: "inbox clear"}
 }
 
-func checkLedgerState(cfg *loop.Config, agentID string) doctorCheck {
-	ledger, err := loop.LoadPendingLedger(cfg, agentID)
-	if err != nil {
-		return doctorCheck{Name: "ledger_state", Severity: severityBlocker, Message: fmt.Sprintf("pending-reply ledger unreadable: %v", err)}
-	}
-	pending := ledger.PendingEntries()
-	if len(pending) > 0 {
-		return doctorCheck{
-			Name:     "ledger_state",
-			Severity: severityWarn,
-			Message:  fmt.Sprintf("%d pending reply obligation(s); will block `gate --before finish` until cleared via `send --reply-to` or `defer`", len(pending)),
-		}
-	}
-	return doctorCheck{Name: "ledger_state", Severity: severityOK, Message: "no pending reply obligations"}
-}
-
 // Simple-again Gate 6a (pull-only): checkWakeTargetValidity and
 // checkRunnerSocketStaleness were removed. Both probed a recipient's wake
 // endpoint for reachability — a push-era concern that no longer exists once
@@ -833,12 +816,12 @@ Usage: agentchute doctor [--as <id>] [--json]
 
 Diagnostic aggregator. Runs an ordered set of checks against the local
 loop directory, the calling environment, and (if --as is provided) the
-named agent's registration / inbox / ledger / recipient
-liveness. Reports each check with a severity (BLOCKER / WARN / OK / SKIP)
-and exits nonzero when any BLOCKER is found.
+named agent's registration / inbox / recipient liveness. Reports each
+check with a severity (BLOCKER / WARN / OK / SKIP) and exits nonzero when
+any BLOCKER is found.
 
 Doctor diagnoses setup readiness. boot/gate own the blocking surface for
-unread mail, pending replies, and recipient liveness during normal operation.
+unread mail and recipient liveness during normal operation.
 
 Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID); optional

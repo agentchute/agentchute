@@ -411,7 +411,7 @@ func TestSetupResetsRuntimeStateButPreservesPendingReplies(t *testing.T) {
 	mustWrite(t, filepath.Join(stateDir, "poller.json"), []byte(`{"agent_id":"codex-agentchute","method":"poller-run","host":"`+localHostname()+`","pid":111,"interval_seconds":30,"last_seen":"2026-01-01T00:00:00Z"}`+"\n"))
 	mustWrite(t, filepath.Join(stateDir, "runner.json"), []byte(`{"agent_id":"codex-agentchute","runner_pid":222,"socket_path":"`+filepath.Join(stateDir, "runner.sock")+`","started_at":"2026-01-01T00:00:00Z","status":"active"}`+"\n"))
 	mustWrite(t, filepath.Join(stateDir, "session.json"), []byte(`{"agent_id":"codex-agentchute","source":"self-check","host":"`+localHostname()+`","pid":333,"last_seen":"2026-01-01T00:00:00Z"}`+"\n"))
-	mustWrite(t, filepath.Join(stateDir, "pending-replies.json"), []byte(`{"pending":[]}`+"\n"))
+	mustWrite(t, filepath.Join(stateDir, "owed.json"), []byte(`{"owed":[]}`+"\n"))
 	mustWrite(t, filepath.Join(stateDir, "poller.log"), []byte("keep log\n"))
 
 	oldAlive, oldCommandLine, oldSignal := setupProcessAlive, setupProcessCommandLine, setupSignalProcess
@@ -456,7 +456,7 @@ func TestSetupResetsRuntimeStateButPreservesPendingReplies(t *testing.T) {
 			t.Fatalf("%s should be removed by setup reset: %v", removed, err)
 		}
 	}
-	for _, keep := range []string{"pending-replies.json", "poller.log"} {
+	for _, keep := range []string{"owed.json", "poller.log"} {
 		if _, err := os.Stat(filepath.Join(stateDir, keep)); err != nil {
 			t.Fatalf("%s should be preserved: %v", keep, err)
 		}

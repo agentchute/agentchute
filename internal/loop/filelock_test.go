@@ -1,7 +1,6 @@
 package loop
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,14 +38,16 @@ func writeTestRegistration(t *testing.T, cfg *Config, agentID string, status Sta
 }
 
 // TestWithAgentLock_SerializesConcurrentLedgerAppends drives 50 goroutines, each
-// recording a DISTINCT message_id+filename for the same agent. Without a
-// per-agent lock the load->append->save sequence races and loses updates; with
-// the lock all 50 entries must survive.
+// recording a DISTINCT `.owed` obligation (distinct seq) for the same asker.
+// Without a per-agent lock the load->append->save sequence races and loses
+// updates; with the lock all 50 entries must survive. RecordOwed uses the same
+// withAgentLock path the removed pending-reply ledger did.
 func TestWithAgentLock_SerializesConcurrentLedgerAppends(t *testing.T) {
 	cfg := newLockTestConfig(t)
 	const agentID = "claude-code"
 	const n = 50
 	now := time.Date(2026, 5, 19, 17, 54, 30, 0, time.UTC)
+	by := now.Add(30 * time.Minute)
 
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
@@ -54,15 +55,8 @@ func TestWithAgentLock_SerializesConcurrentLedgerAppends(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			entry := PendingReplyEntry{
-				MessageID:        fmt.Sprintf("2026-05-19T17:53:59.%06dZ", i),
-				From:             "codex",
-				To:               agentID,
-				Task:             "R1 protocol",
-				OriginalFilename: fmt.Sprintf("msg-%04d_from-codex.md", i),
-				ArchivePath:      ".agentchute/loop/archive/example.md",
-			}
-			if err := RecordPendingReply(cfg, agentID, entry, now); err != nil {
+			key := MsgID{To: "codex", From: agentID, Seq: uint64(i + 1)}
+			if err := RecordOwed(cfg, agentID, key, by, now); err != nil {
 				errs <- err
 			}
 		}(i)
@@ -70,24 +64,23 @@ func TestWithAgentLock_SerializesConcurrentLedgerAppends(t *testing.T) {
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		t.Fatalf("RecordPendingReply: %v", err)
+		t.Fatalf("RecordOwed: %v", err)
 	}
 
-	ledger, err := LoadPendingLedger(cfg, agentID)
+	ledger, err := LoadOwedLedger(cfg, agentID)
 	if err != nil {
-		t.Fatalf("LoadPendingLedger: %v", err)
+		t.Fatalf("LoadOwedLedger: %v", err)
 	}
-	if len(ledger.Pending) != n {
-		t.Fatalf("ledger has %d entries, want %d (lost update under concurrency)", len(ledger.Pending), n)
+	if len(ledger.Owed) != n {
+		t.Fatalf("ledger has %d entries, want %d (lost update under concurrency)", len(ledger.Owed), n)
 	}
-	seen := make(map[string]bool, n)
-	for _, e := range ledger.Pending {
-		seen[e.MessageID] = true
+	seen := make(map[uint64]bool, n)
+	for _, e := range ledger.Owed {
+		seen[e.Seq] = true
 	}
 	for i := 0; i < n; i++ {
-		id := fmt.Sprintf("2026-05-19T17:53:59.%06dZ", i)
-		if !seen[id] {
-			t.Fatalf("missing ledger entry for message_id %q", id)
+		if !seen[uint64(i+1)] {
+			t.Fatalf("missing owed entry for seq %d", i+1)
 		}
 	}
 }

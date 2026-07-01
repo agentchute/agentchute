@@ -14,13 +14,12 @@ import (
 //
 // protocol-v2 envelope cut (TEAM-DECISION §4): the emitted envelope is now
 // `from`, optional `in_reply_to`, plus `message_id` retained for the compat
-// window (the recipient pending-reply ledger + --reply-to threading still read
-// it). `to` is dropped — the inbox directory location encodes the recipient —
-// and the `task`/`status` workflow-vocabulary fields move to a body convention,
-// so neither is emitted. The `to`/`task`/`status` parameters are retained on the
-// signature for one release so callers (send, defer, announce, corrective) need
-// no change during the transition; the inbox parser still READS all of these
-// from any older message in flight.
+// window (display-only). `to` is dropped — the inbox directory location encodes
+// the recipient — and the `task`/`status` workflow-vocabulary fields move to a
+// body convention, so neither is emitted. The `to`/`task`/`status` parameters
+// are retained on the signature for one release so callers (send, announce,
+// corrective) need no change during the transition; the inbox parser still
+// READS all of these from any older message in flight.
 func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string) []byte {
 	_ = to     // recipient is encoded by the inbox directory; not emitted (compat param).
 	_ = task   // workflow vocabulary → body convention; not emitted (compat param).
@@ -28,12 +27,11 @@ func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string)
 	var b strings.Builder
 	b.WriteString("---\n")
 	// COMPAT(remove-in: v0.8.9): message_id is compat-only frontmatter — the wire
-	// identity is (to, from, seq). Before removing, migrate every reader off it:
-	// (1) reply threading — --reply-to and the recipient pending-reply ledger key
-	// on message_id (FirstPendingByMessageID, defer.go); (2) display-only readers
-	// that print the id (boot.go, pending.go, and
-	// sendResult/reply_message_id) — swap them to the (to,from,seq) triple rather
-	// than blanking it. See AGENTCHUTE.md "Compatibility & Deprecations".
+	// identity is (to, from, seq). It is now display-only (boot.go, pending.go,
+	// sendResult); reply threading rides `in_reply_to` (the canonical
+	// (to,from,seq) ref) and the asker-owned `.owed` ledger, neither of which
+	// keys on message_id. Swap the remaining display readers to the (to,from,seq)
+	// triple before removing. See AGENTCHUTE.md "Compatibility & Deprecations".
 	fmt.Fprintf(&b, "message_id: %s\n", FormatMessageID(now))
 	fmt.Fprintf(&b, "from: %s\n", from)
 	if replyTo != "" {
@@ -166,7 +164,7 @@ func ExtractMessageBody(content []byte) string {
 //
 // Mirrors the in-package parser used by `pending` / `check` so the
 // hot-path peek (pending.readFrontmatter) and the consume path
-// (check.recordReplyObligation) cannot disagree on what counts as a
+// (check.displayConsumed) cannot disagree on what counts as a
 // well-formed frontmatter block.
 func ParseMessageFrontmatter(content []byte) map[string]string {
 	out := map[string]string{}
