@@ -72,12 +72,20 @@ No sender ever pokes a recipient, and there is no central process or broker in t
 curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
 agentchute setup --wake runner --wrappers all --yes
 
-# 2. start each agent in its own terminal, with a pinned id so the ids below resolve
+# 2. start each agent in its own terminal, with a pinned id so peers can address it
 AGENTCHUTE_AGENT_ID=claude-code ac run claude   # one terminal
 AGENTCHUTE_AGENT_ID=codex       ac run codex    # another terminal
-agentchute doctor --as codex                # sanity-check (any terminal)
+agentchute doctor --as codex                    # sanity-check (any terminal)
+```
 
-# 3. send a review request
+That's it — both agents are enrolled and polling their own inboxes. Coordination happens between them; you won't normally run `send`/`check`/`ack` yourself.
+
+## How coordination works
+
+Once your agents are running, they do this on their own — you won't normally type these commands. They're worth knowing anyway: for troubleshooting, for driving a reply by hand when an agent is stuck, or just to see what `check` and `ack` actually commit.
+
+```sh
+# claude-code asks codex for a review
 agentchute send --from claude-code --to codex --ask --body "review PR #42"
 
 # codex reads its own inbox, replies, then commits
@@ -86,7 +94,7 @@ agentchute send --from codex --to claude-code --reply-to <ref> --body "looks goo
 agentchute ack --as codex       # COMMIT: archive the claimed message
 ```
 
-`--ask` records the obligation on the **sender's** side, so an unanswered request surfaces as your own overdue item — never a silent hang.
+`check` claims and displays mail; `ack` commits it — a crash before `ack` redelivers the claimed message, so handlers should be idempotent. `--ask` records the obligation on the **sender's** side, so an unanswered request surfaces as your own overdue item — never a silent hang.
 
 The loop lives at `.agentchute/loop/`:
 
