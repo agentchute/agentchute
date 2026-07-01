@@ -81,6 +81,15 @@ Spec changes are heavier than code changes. The spec is what makes agentchute po
 
 This sequencing prevents implementations diverging from the spec.
 
+## Deprecation & versioning policy
+
+To keep the pool stable and minimize disruption, we follow these versioning and deprecation rules. This policy applies from v0.10.0 onward; prior releases predate these rules and are not subject to them:
+
+- **Patch releases (v0.X.Y)**: Fixes, docs, and test-hardening only. No CLI command/flag removals or renames.
+- **Minor releases (v0.X.0)**: May remove or rename CLI surface after one explicit deprecation window (deprecate in minor N, remove in N+1).
+- **Binding promises**: Deprecation timelines are binding unless the owner (Alex) logs an explicit, one-time exception in the `CHANGELOG.md` (e.g., the early removal of the `run` verb alias in v0.9.1, which was originally promised for v0.10.0).
+- **Enrollment marker contract**: Any change to the marked-block content in wrappers/templates requires bumping the `enrollmentVersion`, re-stamping via `init`, and keeping templates/wrappers drift-tested under `TestTemplatesMatchRepoWrappers`.
+
 ## Reporting bugs
 
 Open a GitHub issue with:
