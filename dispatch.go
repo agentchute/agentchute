@@ -18,7 +18,6 @@ var commandHandlers = map[string]func([]string) error{
 	"register":     cmdRegister,
 	"boot":         cmdBoot,
 	"gate":         cmdGate,
-	"defer":        cmdDefer,
 	"send":         cmdSend,
 	"check":        cmdCheck,
 	"ack":          cmdAck,

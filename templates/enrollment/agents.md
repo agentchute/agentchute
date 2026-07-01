@@ -1,4 +1,4 @@
-<!-- agentchute-enrollment v17 begin -->
+<!-- agentchute-enrollment v18 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 **1. Setup / Startup Path**
@@ -59,7 +59,7 @@ agentchute doctor --as <your-id>
 ```
 
 **2. Lifecycle Hooks (Required for Context and Gates)**
-`agentchute setup` installs lifecycle hooks for hook-capable wrappers. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox/ledger context per turn and block finish while obligations remain. Hookless wrappers rely on the `ac` dispatcher (`ac run <wrapper>`) for startup enrollment.
+`agentchute setup` installs lifecycle hooks for hook-capable wrappers. If you are not using setup, run `agentchute hooks install` once per control repo. Hooks surface inbox context per turn and block finish while unread mail remains. Hookless wrappers rely on the `ac` dispatcher (`ac run <wrapper>`) for startup enrollment.
 
 **3. Recipient Polling Fallback**
 Senders only deliver to your inbox (pull-only; nobody pokes you). If you are not launched through `agentchute run`, keep recipient polling alive so your `.live` presence stays fresh:
@@ -70,13 +70,13 @@ Senders only deliver to your inbox (pull-only; nobody pokes you). If you are not
 **4. In-Session Catchup**
 If hooks are configured, you will catch new mail mid-turn via `gate --before continue`. Consumption is two-phase: `agentchute check` CLAIMS each message (moves it to `inbox/<id>/.claimed/`) and displays it — it does NOT archive; `agentchute ack` commits (archives) the claimed mail. A crash between `check` and `ack` re-delivers (at-least-once), so handlers must be idempotent. You do NOT archive by hand (manual `mv` to `archive/` is only for the no-binary hand-protocol in §5).
 
-**STOP / finish gate**: do not declare consensus, sign off, tag a release, or report completion until the finish gate passes. Use the gate, not a bare `check` — `check` only claims mail and does not surface pending required-replies:
+**STOP / finish gate**: do not declare consensus, sign off, tag a release, or report completion until the finish gate passes. Use the gate, not a bare `check` — `check` only claims mail, while the gate is the read-only STOP verdict (unread/malformed mail, unregistered self):
 
 ```sh
 agentchute gate --before finish --as <your-id>
 ```
 
-The gate (read-only) blocks `finish` on unread direct mail, pending required-replies in your ledger, or an unregistered self; it does NOT check `.live` at `finish`/`continue` (a stale/absent `.live` blocks only the `commit`/`release` gates). Outstanding/expired asker-owned reply obligations (`.owed`) surface as non-blocking warnings. Clear the gate by consuming mail with `agentchute check --as <your-id>` (then `ack`) and either replying to each obligation or releasing it with `agentchute defer --as <your-id> --message <message-id> --reason "..."`.
+The gate (read-only) blocks `finish` on unread direct mail or an unregistered self; it does NOT check `.live` at `finish`/`continue` (a stale/absent `.live` blocks only the `commit`/`release` gates). Reply obligations are asker-owned only: outstanding/expired `.owed` obligations surface as non-blocking warnings, and a `reply_required` message never blocks the recipient. Clear the gate by consuming mail with `agentchute check --as <your-id>` (then `ack`); reply to any message that needs one with `agentchute send --reply-to <ref>`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v17 end -->
+<!-- agentchute-enrollment v18 end -->

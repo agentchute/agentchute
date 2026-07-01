@@ -9,35 +9,27 @@ import (
 	"time"
 )
 
-// owed.go — the ASKER-OWNED obligation ledger (protocol-v2 TEAM-DECISION §3).
+// owed.go — the ASKER-OWNED obligation ledger, the SOLE reply-obligation
+// mechanism (v0.9.0 `.owed` redesign; protocol-v2 TEAM-DECISION §3).
 //
-// The reply obligation is flipped to the asker: "I am owed a reply to
-// (to,from,seq) from <recipient> by <T>." Held as an asker-LOCAL `.owed` ledger
-// (single-writer, atomic rename), mirroring ledger.go's
-// load->mutate->save-under-lock shape — but as NEW functions; ledger.go is
-// UNTOUCHED. The gate reads ONLY its own `.owed`; it never scans peers.
+// The reply obligation is asker-owned only: "I am owed a reply to (to,from,seq)
+// from <recipient> by <T>." Held as an asker-LOCAL `.owed` ledger
+// (single-writer, atomic rename). The gate reads ONLY its own `.owed`; it never
+// scans peers. It is NON-BLOCKING: an outstanding/expired obligation surfaces as
+// a gate WARNING, never a finish blocker.
 //
-// A dead recipient surfaces TWICE OVER — the asker's expired obligation (here)
-// AND the recipient's stale `.live` (live.go) — so the gate never deadlocks on a
-// corpse. Recipient-side reply_required stays advisory.
+// v0.9.0 subtraction: the recipient-side pending-reply ledger AND the `defer`
+// command were REMOVED. Recipients are NEVER blocked at finish by a
+// reply_required message — delivery is best-effort pull, with no forcing
+// function once delivered. Reply obligations live exclusively on the asker side.
 //
-// GATE 2: PURELY ADDITIVE. record-on-ask / clear-on-reply / expiry are wired
-// into send/check/gate in Gate 5; nothing here is wired yet.
+// A dead recipient still surfaces TWICE OVER — the asker's expired obligation
+// (here) AND the recipient's stale `.live` (live.go) — so the asker never waits
+// on a corpse.
 //
-// DESIGN NOTE — `.owed` is NOT a drop-in replacement for the recipient-side
-// pending-reply ledger's finish-gate block (ledger.go). Do NOT "make `.owed` the
-// sole reply-obligation authority" by dropping that block: `.owed` is
-// asker-owned and non-blocking, while the recipient's finish gate MUST block on
-// recipient-LOCAL state (peers never read each other's state dir) — so the block
-// cannot move to the asker's `.owed`. Removing it breaks the "never a silent
-// hang" guarantee. Any unification is a REDESIGN that relocates the block, not a
-// deletion; if trimming real duplication, target PendingReplyEntry.message_id.
-// See AGENTCHUTE.md "Compatibility & Deprecations".
-//
-// KEY: the primary key is the trusted committed identity MsgID{To,From,Seq} —
-// exactly as ledger.go keys on the trusted OriginalFilename rather than a
-// sender-asserted id. From == the asker (== the ledger owner); To == the
-// recipient the asker is owed a reply by.
+// KEY: the primary key is the trusted committed identity MsgID{To,From,Seq}.
+// From == the asker (== the ledger owner); To == the recipient the asker is owed
+// a reply by.
 
 // MaxOwedLedgerBytes caps the on-disk `.owed` file (refuses runaway/hand-corrupted state).
 const MaxOwedLedgerBytes = 4 << 20
@@ -76,9 +68,9 @@ func owedPath(cfg *Config, asker string) string {
 
 // LoadOwedLedger reads the asker's ledger. A missing file is not an error
 // (returns an empty ledger). Parse errors, oversized files, and NON-CANONICAL
-// entries (invalid agent_ids, seq==0) are surfaced — defense-in-depth mirroring
-// LoadPendingLedger, so a hand-edited/peer-corrupted state file can't reach the
-// gate with a path-escaping value.
+// entries (invalid agent_ids, seq==0) are surfaced — defense-in-depth so a
+// hand-edited/peer-corrupted state file can't reach the gate with a
+// path-escaping value.
 func LoadOwedLedger(cfg *Config, asker string) (*OwedLedger, error) {
 	if err := ValidateAgentID(asker); err != nil {
 		return nil, err
@@ -136,8 +128,8 @@ func SaveOwedLedger(cfg *Config, asker string, ledger *OwedLedger) error {
 
 // RecordOwed records an obligation when asker sends a reply_required message
 // keyed (To=recipient, From=asker, Seq). Idempotent on the MsgID key (re-record
-// is a no-op, like RecordPendingReply's filename-keyed idempotency). Runs under
-// withAgentLock(asker). `now` is injectable for deterministic recorded_at.
+// is a no-op). Runs under withAgentLock(asker). `now` is injectable for
+// deterministic recorded_at.
 func RecordOwed(cfg *Config, asker string, key MsgID, by, now time.Time) error {
 	if err := ValidateAgentID(asker); err != nil {
 		return err

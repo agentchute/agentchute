@@ -21,7 +21,7 @@ func TestGateHelpDocumentsBlockersAndHookExitCodes(t *testing.T) {
 	help := gateHelp()
 	for _, want := range []string{
 		"malformed inbox files",
-		"corrupt or unreadable pending-reply ledger",
+		"asker-owned only",
 		"blocked in text/--json modes",
 		"--codex-hook Stop",
 		"--gemini-hook AfterAgent",
@@ -33,10 +33,12 @@ func TestGateHelpDocumentsBlockersAndHookExitCodes(t *testing.T) {
 	}
 }
 
-// Reply-obligation ledger half: gate --before consensus blocks when
-// a pending-reply ledger entry exists, then clears after the entry transitions
-// to replied/deferred.
-func TestGateConsensusBlocksOnPendingReply(t *testing.T) {
+// v0.9.0 `.owed` redesign: reply obligations are asker-owned only. A recipient
+// is NEVER blocked at finish by a reply_required message — an asker-owned `.owed`
+// obligation surfaces as a non-blocking gate warning, so gate --before consensus
+// (and finish) must CLEAR even with an outstanding owed obligation and an empty
+// inbox.
+func TestGateDoesNotBlockOnOwedObligation(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
 		t.Setenv("TMUX_PANE", "%1")
@@ -48,32 +50,26 @@ func TestGateConsensusBlocksOnPendingReply(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		entry := loop.PendingReplyEntry{
-			MessageID:        "2026-05-19T17:53:59.561894Z",
-			From:             "codex",
-			To:               "claude-code",
-			Task:             "review",
-			OriginalFilename: "2026-05-19T17-53-59-561894Z_from-codex_msg-aaaa.md",
-			ArchivePath:      "archive/x.md",
-		}
-		if err := loop.RecordPendingReply(cfg, "claude-code", entry, time.Now().UTC()); err != nil {
-			t.Fatal(err)
-		}
 		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 
-		// gate --before consensus must exit 2.
-		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("consensus")) })
-		if !errors.Is(err, errBlocked) {
-			t.Fatalf("gate consensus err = %v, want errBlocked", err)
-		}
-
-		// Clear the ledger entry; gate must now pass.
-		if err := loop.MarkPendingReplied(cfg, "claude-code", entry.MessageID, entry.From, "reply-msg-1", time.Now().UTC()); err != nil {
+		// Seed an asker-owned obligation (we are owed a reply BY codex).
+		now := time.Now().UTC()
+		key := loop.MsgID{To: "codex", From: "claude-code", Seq: 1}
+		if err := loop.RecordOwed(cfg, "claude-code", key, now.Add(30*time.Minute), now); err != nil {
 			t.Fatal(err)
 		}
-		_, err = captureStdout(t, func() error { return cmdGate(gateArgs("consensus")) })
+
+		// gate --before consensus must CLEAR (owed is a warning, not a blocker).
+		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("consensus")) })
 		if err != nil {
-			t.Errorf("gate consensus after reply err = %v, want nil", err)
+			t.Fatalf("gate consensus with owed obligation err = %v, want nil (clear)", err)
+		}
+		if !strings.Contains(out, "clear") {
+			t.Errorf("gate output = %q, want clear", out)
+		}
+		// finish must clear too.
+		if _, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish")) }); err != nil {
+			t.Errorf("gate finish with owed obligation err = %v, want nil (clear)", err)
 		}
 	})
 }
@@ -312,13 +308,11 @@ func TestGateRejectsUnknownPhase(t *testing.T) {
 	})
 }
 
-// TestGate_CorruptLedgerBlocksWithQuarantineNotFatal: a corrupt/unparseable
-// pending-replies.json must NOT brick the gate with a fatal command error
-// (which would block EVERY phase until a human edits state), and must NOT be
-// silently treated as "no obligations" (that would false-clear finish).
-// Instead the gate BLOCKS (errBlocked) with an actionable, quarantine-style
-// remediation, mirroring the malformed-inbox handling.
-func TestGate_CorruptLedgerBlocksWithQuarantineNotFatal(t *testing.T) {
+// v0.9.0 `.owed` redesign: a corrupt asker-owned `.owed` ledger must NOT block
+// the gate — it is a NON-BLOCKING warning (gate is read-only and must never
+// deadlock). (The removed recipient-side pending-reply ledger used to block on
+// corruption; that ledger no longer exists.)
+func TestGate_CorruptOwedLedgerIsWarningNotBlocker(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
 		t.Setenv("TMUX_PANE", "%1")
@@ -329,12 +323,10 @@ func TestGate_CorruptLedgerBlocksWithQuarantineNotFatal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Fresh poller heartbeat so liveness does not independently block — we
-		// want to prove the corrupt ledger is the (only) blocking reason.
 		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 
-		// Corrupt the ledger on disk (unparseable JSON).
-		path := cfg.PendingRepliesPath("claude-code")
+		// Corrupt the asker-owned .owed ledger on disk (unparseable JSON).
+		path := filepath.Join(cfg.AgentStateDir("claude-code"), "owed.json")
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -343,59 +335,14 @@ func TestGate_CorruptLedgerBlocksWithQuarantineNotFatal(t *testing.T) {
 		}
 
 		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish")) })
-		if !errors.Is(err, errBlocked) {
-			t.Fatalf("gate finish on corrupt ledger err = %v, want errBlocked (blocked, not fatal, not clear)", err)
-		}
-		// The blocking reason must be actionable and quarantine-flavored — not a
-		// generic "0 pending" clear and not a raw parse error crash.
-		if !strings.Contains(out, "blocked") {
-			t.Errorf("gate output should show blocked; got:\n%s", out)
-		}
-		lower := strings.ToLower(out)
-		if !strings.Contains(lower, "ledger") {
-			t.Errorf("blocking reason should reference the ledger; got:\n%s", out)
-		}
-		if !strings.Contains(lower, "corrupt") && !strings.Contains(lower, "quarantine") && !strings.Contains(lower, "unreadable") {
-			t.Errorf("blocking reason should be a corrupt/quarantine remediation; got:\n%s", out)
-		}
-	})
-}
-
-// TestGate_CorruptLedgerJSONOutputReportsBlocked: the --json shape must report
-// blocked:true with a reason for a corrupt ledger (not crash, not clear).
-func TestGate_CorruptLedgerJSONOutputReportsBlocked(t *testing.T) {
-	root := setupBootFixture(t)
-	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "%1")
-		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("gate finish on corrupt owed ledger err = %v, want nil (warning, not blocker)", err)
 		}
-		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
-		path := cfg.PendingRepliesPath("claude-code")
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
+		if !strings.Contains(out, "clear") {
+			t.Errorf("gate output should be clear; got:\n%s", out)
 		}
-		if err := os.WriteFile(path, []byte("not json at all"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-
-		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("finish", "--json")) })
-		if !errors.Is(err, errBlocked) {
-			t.Fatalf("gate finish --json on corrupt ledger err = %v, want errBlocked", err)
-		}
-		var status gateStatus
-		if jerr := json.Unmarshal([]byte(out), &status); jerr != nil {
-			t.Fatalf("unmarshal gate JSON: %v\n%s", jerr, out)
-		}
-		if !status.Blocked {
-			t.Errorf("status.Blocked = false on corrupt ledger; want true\n%s", out)
-		}
-		if len(status.Reasons) == 0 {
-			t.Errorf("status.Reasons empty on corrupt ledger; want a remediation reason\n%s", out)
+		if !strings.Contains(strings.ToLower(out), "owed") {
+			t.Errorf("expected a non-blocking owed-ledger warning; got:\n%s", out)
 		}
 	})
 }
@@ -493,8 +440,8 @@ func TestGateFinishAcceptsActiveSessionHeartbeat(t *testing.T) {
 }
 
 // v0.2: gate --before continue is a sibling of finish, identical
-// predicate (unread / malformed / pending-replies), different output
-// framing for in-session continuation hooks.
+// predicate (unread / malformed), different output framing for in-session
+// continuation hooks.
 func TestGateContinuePhaseSamePredicateAsFinish(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {

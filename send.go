@@ -15,17 +15,15 @@ import (
 
 // cmdSend writes an inbound message to a recipient's inbox. Pull-only: delivery
 // is unconditional (write the inbox file); senders never poke a wake target.
-// Messaging extensions (AGENTCHUTE.md §6.2/§6.4 reply obligations):
-//   - --ask:        sets reply_required: true frontmatter and prepends a
-//     `## ASK` body heading if not already present.
-//   - --reply-to:   when the message_id matches a pending entry in OUR
-//     pending-reply ledger, transitions that entry to
-//     "replied" with reply_sent_at + reply_message_id.
-//   - --json:       structured output (filename, path, ledger transition record).
-//
-// Warns (to stderr) if the sender's OWN pending-reply ledger has any entries
-// from <to> and --reply-to is not provided — catches "agent forgot to clear
-// the ledger when replying" (the reply-obligation defense, AGENTCHUTE.md §6.4).
+// Messaging extensions (AGENTCHUTE.md §6 reply obligations):
+//   - --ask:        sets reply_required: true frontmatter, prepends a `## ASK`
+//     body heading if not already present, and records an ASKER-OWNED `.owed`
+//     obligation (the sole reply-obligation mechanism, v0.9.0).
+//   - --reply-to:   emits the `in_reply_to` frontmatter ref. When the asker
+//     consumes this reply, their `.owed` obligation for the referenced
+//     (to,from,seq) discharges (ClearOwed, check.go). There is NO recipient-side
+//     ledger — reply obligations are asker-owned only.
+//   - --json:       structured output (filename, path).
 func cmdSend(args []string) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -38,7 +36,7 @@ func cmdSend(args []string) error {
 	fs.StringVar(&taskField, "task", "", "short task descriptor for the message frontmatter (recommended)")
 	fs.StringVar(&statusField, "status", "", "message status frontmatter field (e.g., request, signoff, info)")
 	fs.StringVar(&body, "body", "", "message body markdown; if empty, body is read from stdin")
-	fs.StringVar(&replyTo, "reply-to", "", "prior message_id this is replying to (clears matching pending-reply ledger entry)")
+	fs.StringVar(&replyTo, "reply-to", "", "prior message ref this is replying to (emitted as in_reply_to; discharges the asker's .owed obligation when they consume it)")
 	fs.BoolVar(&ask, "ask", false, "set reply_required: true and prepend `## ASK` heading to the body")
 	fs.DurationVar(&replyBy, "reply-by", 0, "with --ask: override the owed-reply deadline (e.g. 1h; default 30m)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
@@ -125,21 +123,6 @@ func cmdSend(args []string) error {
 		}
 	}
 
-	// Pre-send: warn if our own pending-reply ledger has entries from this
-	// recipient but --reply-to wasn't passed. Best-effort signal — does not
-	// block the send (AGENTCHUTE.md §6.4).
-	ledgerWarning := ""
-	if strings.TrimSpace(replyTo) == "" {
-		if senderLedger, lerr := loop.LoadPendingLedger(cfg, fromID); lerr == nil {
-			for _, e := range senderLedger.PendingEntries() {
-				if e.From == toID {
-					ledgerWarning = fmt.Sprintf("warning: you have %d pending reply obligation(s) from %s; consider --reply-to <msg-id> to clear them on send", countFrom(senderLedger.PendingEntries(), toID), toID)
-					break
-				}
-			}
-		}
-	}
-
 	now := time.Now().UTC()
 
 	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse to send
@@ -214,76 +197,16 @@ func cmdSend(args []string) error {
 		}
 	}
 
-	// --reply-to ledger clearing: if our own ledger has a pending entry
-	// matching this reply-to message_id AND the outbound recipient matches
-	// the entry's original sender (i.e., we're actually replying TO whoever
-	// asked us), transition the entry to replied. A mismatched recipient
-	// (threading via a third party's msg-id while delivering elsewhere)
-	// must NOT clear the obligation — the contract per AGENTCHUTE.md §6.4
-	// is that the reply is owed to the sender of the reply_required message
-	// (codex review on 89ad2d9).
-	ledgerTransition := ""
-	if strings.TrimSpace(replyTo) != "" {
-		ledger, lerr := loop.LoadPendingLedger(cfg, fromID)
-		if lerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to read pending-reply ledger: %v\n", lerr)
-		} else {
-			// The obligation we may discharge is the one owed to the recipient
-			// we are actually replying TO (toID — KNOWN, not inferred from the
-			// ledger). Scope every decision by toID: message_id is
-			// sender-controlled and reusable, so a reply to one peer must NEVER
-			// clear an obligation owed to a DIFFERENT peer (WI-2 follow-up).
-			//
-			// CRITICAL (rev2): NOTHING here keys on FindByMessageID's first bare
-			// row. EntriesByMessageIDFrom(replyTo, toID) returns exactly the rows
-			// owed to us BY toID (any status), so inverse ordering — toID's row
-			// not being the first bare match — can no longer short-circuit the
-			// discharge. FindByMessageID is consulted ONLY to distinguish
-			// "threading via another peer's id" from "no such message_id at all"
-			// when toID owns nothing under this id.
-			scoped := ledger.EntriesByMessageIDFrom(replyTo, toID)
-			switch {
-			case len(scoped) == 0:
-				if other, exists := ledger.FindByMessageID(replyTo); exists {
-					// A message_id entry exists but NOT from toID → threading via
-					// another peer's id while delivering to toID. Do NOT clear the
-					// other peer's obligation.
-					fmt.Fprintf(os.Stderr, "warning: --reply-to %s names a message from %q, but this send is to %q; obligation left pending\n", replyTo, other.From, toID)
-				}
-				// else: no such message_id at all → silent OK. --reply-to is a
-				// freeform threading hint; the agent may be threading to a
-				// message that never carried reply_required: true.
-			case mismatchedTo(scoped, fromID):
-				// Mirror cmdDefer's recipient-owned-ledger invariant. The ledger
-				// is OURS; if a corrupted state file has any scoped entry.To
-				// pointing at someone other than fromID, refuse to act on it
-				// (codex review on aa5f0d9 / check.go integration).
-				fmt.Fprintf(os.Stderr, "warning: --reply-to %s has a ledger entry whose to does not match --from %q; refusing to clear a mismatched obligation\n", replyTo, fromID)
-			case len(ledger.PendingByMessageIDFrom(replyTo, toID)) == 0:
-				// toID owns ≥1 row under this message_id, but every one is
-				// already terminal. Idempotent no-op note rather than a
-				// re-transition.
-				ledgerTransition = fmt.Sprintf("note: pending-reply ledger entry %s was already in a terminal status; not re-transitioned", replyTo)
-			default:
-				// toID owns ≥1 PENDING row. Discharge every pending obligation
-				// scoped to (replyTo, toID); a terminal duplicate cannot strand
-				// a still-pending one (MarkPendingReplied skips terminals).
-				if merr := loop.MarkPendingReplied(cfg, fromID, replyTo, toID, messageID, now); merr != nil {
-					fmt.Fprintf(os.Stderr, "warning: failed to update pending-reply ledger for %s: %v\n", replyTo, merr)
-				} else {
-					ledgerTransition = fmt.Sprintf("cleared pending-reply ledger entry %s", replyTo)
-				}
-			}
-		}
-	}
-
+	// Reply obligations are asker-owned only (v0.9.0): --reply-to carries the
+	// `in_reply_to` ref (emitted by ComposeMessage above) so the ASKER's `.owed`
+	// obligation discharges when they consume this reply (ClearOwed, check.go).
+	// There is NO recipient-side ledger to mutate here.
 	result := sendResult{
-		Filename:       msg.Filename,
-		Path:           msg.Path,
-		From:           fromID,
-		To:             toID,
-		MessageID:      messageID,
-		ReplyToCleared: ledgerTransition,
+		Filename:  msg.Filename,
+		Path:      msg.Path,
+		From:      fromID,
+		To:        toID,
+		MessageID: messageID,
 	}
 
 	if jsonOut {
@@ -293,22 +216,17 @@ func cmdSend(args []string) error {
 	} else {
 		emitSendText(result)
 	}
-
-	if ledgerWarning != "" {
-		fmt.Fprintln(os.Stderr, ledgerWarning)
-	}
 	return nil
 }
 
 // sendResult is the structured shape of `send`'s output (the same fields
 // drive both text and --json modes).
 type sendResult struct {
-	Filename       string `json:"filename"`
-	Path           string `json:"path"`
-	From           string `json:"from"`
-	To             string `json:"to"`
-	MessageID      string `json:"message_id"`
-	ReplyToCleared string `json:"reply_to_cleared,omitempty"`
+	Filename  string `json:"filename"`
+	Path      string `json:"path"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	MessageID string `json:"message_id"`
 }
 
 func emitSendText(r sendResult) {
@@ -316,42 +234,12 @@ func emitSendText(r sendResult) {
 	fmt.Printf("  from:           %s\n", r.From)
 	fmt.Printf("  to:             %s\n", r.To)
 	fmt.Printf("  path:           %s\n", r.Path)
-	if r.ReplyToCleared != "" {
-		fmt.Printf("  reply_to:       %s\n", r.ReplyToCleared)
-	}
 }
 
 func emitSendJSON(r sendResult) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(r)
-}
-
-// countFrom is a small helper for the pre-send ledger warning. Linear scan
-// over a slice that's small in practice (single-digit pending entries per
-// agent).
-func countFrom(entries []loop.PendingReplyEntry, from string) int {
-	n := 0
-	for _, e := range entries {
-		if e.From == from {
-			n++
-		}
-	}
-	return n
-}
-
-// mismatchedTo reports whether ANY scoped ledger entry has a `to` that is not
-// fromID. The ledger is recipient-owned, so every legitimate entry's To must
-// name us (fromID); a single mismatch means a corrupted state file and the
-// whole sender-scoped discharge must be refused (rev2 recipient-owned invariant,
-// keyed on the scoped set rather than the first bare row).
-func mismatchedTo(entries []loop.PendingReplyEntry, fromID string) bool {
-	for _, e := range entries {
-		if e.To != fromID {
-			return true
-		}
-	}
-	return false
 }
 
 // applyAskHeading prepends a `## ASK` heading if the body doesn't already

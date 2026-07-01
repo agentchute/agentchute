@@ -22,9 +22,8 @@ const StaleRegThreshold = 30 * time.Minute
 //
 // The `continue` phase (v0.2) is a sibling of `finish` optimized for
 // in-session catchup: "should the wrapper immediately continue into another
-// turn?" Identical blocking predicate as `finish` (unread / malformed /
-// pending-replies / corrupt ledger) — diverges only when a wrapper-specific
-// hook envelope is requested.
+// turn?" Identical blocking predicate as `finish` (unread / malformed) —
+// diverges only when a wrapper-specific hook envelope is requested.
 const (
 	gatePhaseConsensus = "consensus"
 	gatePhaseCommit    = "commit"
@@ -155,29 +154,14 @@ func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackSt
 		}
 	}
 
-	// Pending-reply ledger — entries owed a reply. A corrupt / oversized /
-	// unparseable ledger must NOT be fatal: returning the parse error here would
-	// brick EVERY gate phase until a human edits pending-replies.json. It must
-	// also NOT be silently treated as "no obligations" — that would false-clear
-	// finish past a ledger we can no longer trust. Instead we BLOCK with an
-	// actionable, quarantine-style remediation (mirrors the malformed-inbox
-	// surface below) so the agent can't falsely finish but other diagnostics
-	// (unread mail, registration, liveness) still run.
-	var pendingReplies []loop.PendingReplyEntry
-	ledgerCorrupt := false
-	ledger, err := loop.LoadPendingLedger(cfg, agentID)
-	if err != nil {
-		ledgerCorrupt = true
-	} else {
-		pendingReplies = ledger.PendingEntries()
-	}
-
-	// Asker-owned `.owed` ledger (protocol-v2 / Gate 5) — the NEW obligation
-	// surface. NON-BLOCKING for one release: RepliesPending (recipient-owned)
-	// stays the blocking authority for compat, while the asker's outstanding /
-	// expired obligations are surfaced as warnings (dead-recipient detection — an
-	// expired entry means the recipient may be dead). A corrupt `.owed` is a
-	// warning too, never fatal: gate stays read-only and must never deadlock.
+	// Asker-owned `.owed` ledger (protocol-v2) — the SOLE reply-obligation
+	// surface (v0.9.0). NON-BLOCKING by design: reply obligations are asker-owned
+	// only, so the recipient's finish gate is NEVER blocked by a reply_required
+	// message (best-effort pull delivery, no forcing function once delivered).
+	// The asker's own outstanding / expired obligations are surfaced here as
+	// warnings (dead-recipient detection — an expired entry means the recipient
+	// may be dead). A corrupt `.owed` is a warning too, never fatal: gate stays
+	// read-only and must never deadlock.
 	owedOutstanding, owedExpired := 0, 0
 	owedCorrupt := false
 	if owed, oerr := loop.LoadOwedLedger(cfg, agentID); oerr != nil {
@@ -240,8 +224,6 @@ func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackSt
 		Phase:           phase,
 		UnreadCount:     len(msgs),
 		MalformedCount:  len(skipped),
-		RepliesPending:  len(pendingReplies),
-		LedgerCorrupt:   ledgerCorrupt,
 		StaleReg:        staleReg,
 		MissingReg:      missingReg,
 		StaleRegAge:     staleRegAge,
@@ -262,7 +244,8 @@ func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackSt
 		status.Warnings = append(status.Warnings, fmt.Sprintf("%d legacy nonce-named message(s) pending drain (one-release migration window)", n))
 	}
 	// Asker-owned `.owed` obligations (protocol-v2): NON-BLOCKING dead-recipient
-	// signal. RepliesPending stays the blocking authority for one release.
+	// signal. This is the sole reply-obligation surface (v0.9.0); the recipient
+	// is never blocked at finish by a reply_required message.
 	if status.OwedOutstanding > 0 {
 		w := fmt.Sprintf("%d outstanding owed reply obligation(s) awaiting a reply", status.OwedOutstanding)
 		if status.OwedExpired > 0 {
@@ -284,8 +267,7 @@ func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackSt
 
 // finishGateClear reports whether `agentchute gate --before finish` would clear,
 // using the EXACT SAME predicate (evaluateGate over the finish phase): unread
-// inbox / malformed inbox / pending-reply ledger / corrupt pending-reply ledger /
-// missing registration. Read-only.
+// inbox / malformed inbox / missing registration. Read-only.
 //
 // By construction NON-BLOCKING here (so `ack` can always commit its OWN
 // just-claimed mail once real blockers clear): uncommitted `.claimed` residue and
@@ -306,8 +288,6 @@ type gateStatus struct {
 	Phase           string   `json:"phase"`
 	UnreadCount     int      `json:"unread_count"`
 	MalformedCount  int      `json:"malformed_count"`
-	RepliesPending  int      `json:"replies_pending"`
-	LedgerCorrupt   bool     `json:"ledger_corrupt,omitempty"` // pending-reply ledger unparseable/oversized (blocks; quarantine remediation)
 	StaleReg        bool     `json:"stale_reg"`
 	MissingReg      bool     `json:"missing_reg,omitempty"` // own registration absent (subset of StaleReg)
 	StaleRegAge     string   `json:"stale_reg_age,omitempty"`
@@ -342,26 +322,16 @@ func phaseChecksStaleReg(phase string) bool {
 func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg bool) ([]string, []string) {
 	var reasons, warnings []string
 
-	// Every phase blocks on unread direct mail, malformed inbox files, and
-	// pending replies. Malformed files signal a §11 quarantine obligation
-	// that gate refuses to clear past — `check` is what discharges it.
+	// Every phase blocks on unread direct mail and malformed inbox files.
+	// Malformed files signal a §11 quarantine obligation that gate refuses to
+	// clear past — `check` is what discharges it. Reply obligations are
+	// asker-owned only (v0.9.0): a reply_required message NEVER blocks the
+	// recipient's finish gate (best-effort pull delivery).
 	if s.UnreadCount > 0 {
 		reasons = append(reasons, fmt.Sprintf("%d unread direct message(s) in inbox", s.UnreadCount))
 	}
 	if s.MalformedCount > 0 {
 		reasons = append(reasons, fmt.Sprintf("%d malformed inbox file(s); run `agentchute check --as %s` to quarantine + notify (§11)", s.MalformedCount, s.Agent))
-	}
-	if s.RepliesPending > 0 {
-		reasons = append(reasons, fmt.Sprintf("%d pending reply obligation(s) in ledger", s.RepliesPending))
-	}
-	// A corrupt/unparseable pending-reply ledger blocks every phase: we cannot
-	// trust it to be empty, so we refuse to clear past it rather than crash
-	// (fatal) or false-clear (treat as 0 obligations). Quarantine-style
-	// remediation: the operator inspects/repairs/moves the file, then re-runs.
-	if s.LedgerCorrupt {
-		reasons = append(reasons, fmt.Sprintf(
-			"pending-reply ledger is corrupt or unreadable; inspect or quarantine the file and re-run (`agentchute pending --as %s`)",
-			s.Agent))
 	}
 
 	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): every phase blocks
@@ -485,9 +455,11 @@ Phases:
 Outstanding work / trust blockers (all phases):
   - unread direct mail in the inbox
   - malformed inbox files that require check quarantine + corrective notice
-  - pending required-reply ledger entries
-  - corrupt or unreadable pending-reply ledger state
   - missing self-registration
+
+Reply obligations are asker-owned only (v0.9.0): a reply_required message
+never blocks the recipient's finish gate. The asker's own outstanding/expired
+.owed obligations surface here as non-blocking warnings.
 
 All phases block if this agent is not registered.
 

@@ -81,7 +81,7 @@ func TestBootFreshRegistrationExitsZero(t *testing.T) {
 		if !got.Refreshed {
 			t.Errorf("Refreshed = false on fresh enrollment; refreshed is true on every successful registration write")
 		}
-		if got.UnreadCount != 0 || got.RepliesPending != 0 || got.Blocked {
+		if got.UnreadCount != 0 || got.Blocked {
 			t.Errorf("status = %+v; want clean state", got)
 		}
 	})
@@ -147,46 +147,41 @@ func TestBootWithUnreadMailReturnsBlocked(t *testing.T) {
 	})
 }
 
-// Test 8 line 4: 1 pending-reply ledger entry → boot exits 2.
-func TestBootWithPendingReplyLedgerReturnsBlocked(t *testing.T) {
+// v0.9.0 `.owed` redesign: reply obligations are asker-owned only; the
+// recipient-side pending-reply ledger was removed, so boot NEVER blocks on a
+// reply_required message. A reply_required unread message blocks only as unread
+// mail (covered by TestBootWithUnreadMailReturnsBlocked); once consumed, boot
+// clears even though the asker is still owed a reply. Boot's Blocked term is
+// now len(unread) > 0 only.
+func TestBootDoesNotBlockOnOwedReplies(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
 		t.Setenv("TMUX_PANE", "%1")
-		// Register first.
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
-
-		// Seed a pending-reply ledger entry directly via the loop package.
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
 		}
-		entry := loop.PendingReplyEntry{
-			MessageID:        "2026-05-19T17:53:59.561894Z",
-			From:             "codex",
-			To:               "claude-code",
-			Task:             "review",
-			OriginalFilename: "2026-05-19T17-53-59-561894Z_from-codex_msg-aaaa.md",
-			ArchivePath:      "archive/some-path.md",
-		}
-		if err := loop.RecordPendingReply(cfg, "claude-code", entry, time.Now().UTC()); err != nil {
+		// Seed an asker-owned obligation (we are owed a reply BY codex). This
+		// MUST NOT block boot — it is a non-blocking asker-side signal.
+		now := time.Now().UTC()
+		key := loop.MsgID{To: "codex", From: "claude-code", Seq: 1}
+		if err := loop.RecordOwed(cfg, "claude-code", key, now.Add(30*time.Minute), now); err != nil {
 			t.Fatal(err)
 		}
 
 		out, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) })
-		if !errors.Is(err, errBlocked) {
-			t.Fatalf("err = %v, want errBlocked", err)
+		if err != nil {
+			t.Fatalf("boot with an owed obligation should NOT block; err = %v", err)
 		}
 		var got bootStatus
 		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
 			t.Fatalf("unmarshal: %v\n%s", jerr, out)
 		}
-		if got.RepliesPending != 1 {
-			t.Errorf("RepliesPending = %d, want 1", got.RepliesPending)
-		}
-		if !got.Blocked {
-			t.Error("Blocked = false on pending reply")
+		if got.Blocked {
+			t.Error("Blocked = true with only an owed (asker-side) obligation; want false")
 		}
 	})
 }
@@ -234,11 +229,12 @@ func TestBootContextOnlyNeverBlocks(t *testing.T) {
 		if !strings.Contains(out, "unread") {
 			t.Errorf("--context-only output should mention unread: %q", out)
 		}
-		if !strings.Contains(out, `--reply-to <message-id> --body "..."`) {
+		if !strings.Contains(out, `--reply-to <ref> --body "..."`) {
 			t.Errorf("--context-only output missing runnable reply hint:\n%s", out)
 		}
-		if !strings.Contains(out, `--message <message-id> --reason "..."`) {
-			t.Errorf("--context-only output missing runnable defer hint:\n%s", out)
+		// v0.9.0: the removed `defer` command must NOT be suggested.
+		if strings.Contains(out, "agentchute defer") {
+			t.Errorf("--context-only output must not mention the removed defer command:\n%s", out)
 		}
 	})
 }
@@ -268,11 +264,12 @@ func TestBootCodexHookSessionStartGuidanceIsRunnable(t *testing.T) {
 			t.Fatalf("unmarshal codex hook output: %v\n%s", jerr, out)
 		}
 		ctx := wrap.HookSpecificOutput.AdditionalContext
-		if !strings.Contains(ctx, `--reply-to <message-id> --body "..."`) {
+		if !strings.Contains(ctx, `--reply-to <ref> --body "..."`) {
 			t.Errorf("SessionStart context missing runnable reply hint:\n%s", ctx)
 		}
-		if !strings.Contains(ctx, `--message <message-id> --reason "..."`) {
-			t.Errorf("SessionStart context missing runnable defer hint:\n%s", ctx)
+		// v0.9.0: the removed `defer` command must NOT be suggested.
+		if strings.Contains(ctx, "agentchute defer") {
+			t.Errorf("SessionStart context must not mention the removed defer command:\n%s", ctx)
 		}
 	})
 }

@@ -16,12 +16,12 @@ import (
 // pending + a status summary. Designed for SessionStart hooks (where it
 // runs in --context-only or --codex-hook mode and always exits 0) and for
 // interactive enrollment at the top of a turn (where exit 2 signals "you
-// still have inbox or pending-reply obligations to clear").
+// still have unread inbox mail to consume").
 //
 // Spec: AGENTCHUTE.md §5 (Registration), §5.3 (enforced enrollment).
-// Implementation reuses performRegister (shared
-// with cmdRegister) for the registration phase and the same inbox / ledger
-// reads `pending` + `gate` use.
+// Implementation reuses performRegister (shared with cmdRegister) for the
+// registration phase and the same side-effect-free inbox peek `pending` +
+// `gate` use.
 func cmdBoot(args []string) error {
 	fs := flag.NewFlagSet("boot", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -127,13 +127,9 @@ func cmdBoot(args []string) error {
 		unread = append(unread, entry)
 	}
 
-	// Pending-reply ledger — entries the recipient still owes a reply on.
-	ledger, err := loop.LoadPendingLedger(cfg, agentID)
-	if err != nil {
-		return fmt.Errorf("load pending-reply ledger: %w", err)
-	}
-	pendingReplies := ledger.PendingEntries()
-
+	// Reply obligations are asker-owned only (v0.9.0): the recipient is never
+	// blocked at finish by a reply_required message, so boot no longer reads a
+	// recipient-side pending-reply ledger. Blocking is purely on unread mail.
 	status := bootStatus{
 		Agent:          agentID,
 		Vendor:         opts.Vendor,
@@ -141,12 +137,10 @@ func cmdBoot(args []string) error {
 		ExistingFound:  result.ExistingFound,
 		UnreadCount:    len(unread),
 		Unread:         unread,
-		RepliesPending: len(pendingReplies),
-		PendingReplies: pendingReplies,
 		MalformedCount: len(skipped),
 		Host:           result.ResolvedHost,
 		Warnings:       result.Warnings,
-		Blocked:        len(unread) > 0 || len(pendingReplies) > 0,
+		Blocked:        len(unread) > 0,
 	}
 
 	// Output dispatch. context-only / codex-hook NEVER block; interactive
@@ -178,15 +172,13 @@ type bootStatus struct {
 	// ExistingFound is internal-only (not serialized) — drives the text-mode
 	// "Refreshed" vs "Registered" verb choice without affecting the spec-defined
 	// JSON wire shape.
-	ExistingFound  bool                     `json:"-"`
-	UnreadCount    int                      `json:"unread_count"`
-	Unread         []pendingEntry           `json:"unread,omitempty"`
-	RepliesPending int                      `json:"replies_pending"`
-	PendingReplies []loop.PendingReplyEntry `json:"pending_replies,omitempty"`
-	MalformedCount int                      `json:"malformed_count,omitempty"`
-	Host           string                   `json:"host,omitempty"`
-	Warnings       []string                 `json:"warnings,omitempty"`
-	Blocked        bool                     `json:"blocked"`
+	ExistingFound  bool           `json:"-"`
+	UnreadCount    int            `json:"unread_count"`
+	Unread         []pendingEntry `json:"unread,omitempty"`
+	MalformedCount int            `json:"malformed_count,omitempty"`
+	Host           string         `json:"host,omitempty"`
+	Warnings       []string       `json:"warnings,omitempty"`
+	Blocked        bool           `json:"blocked"`
 
 	// StaleReg reserved for forward-compat with the boot JSON wire shape's
 	// `stale_reg` field (AGENTCHUTE.md §5). Always false after a successful boot
@@ -218,9 +210,6 @@ func emitBootText(s bootStatus, quiet bool) {
 			fmt.Printf("    %s from %s — %s%s\n", u.Timestamp, u.From, u.Task, flags)
 		}
 	}
-	if s.RepliesPending > 0 {
-		fmt.Printf("  replies_pending: %d obligation(s) (gate --before finish blocks while open)\n", s.RepliesPending)
-	}
 	if s.MalformedCount > 0 {
 		fmt.Printf("  malformed: %d file(s) need quarantine — run `agentchute check --as %s`\n", s.MalformedCount, s.Agent)
 	}
@@ -230,16 +219,10 @@ func emitBootText(s bootStatus, quiet bool) {
 }
 
 func blockedSummary(s bootStatus) string {
-	switch {
-	case s.UnreadCount == 0 && s.RepliesPending == 0:
-		return "inbox clear, no pending replies"
-	case s.UnreadCount > 0 && s.RepliesPending > 0:
-		return fmt.Sprintf("%d unread / %d pending replies", s.UnreadCount, s.RepliesPending)
-	case s.UnreadCount > 0:
-		return fmt.Sprintf("%d unread", s.UnreadCount)
-	default:
-		return fmt.Sprintf("%d pending replies", s.RepliesPending)
+	if s.UnreadCount == 0 {
+		return "inbox clear"
 	}
+	return fmt.Sprintf("%d unread", s.UnreadCount)
 }
 
 func emitBootJSON(s bootStatus) error {
@@ -258,8 +241,8 @@ func emitBootJSON(s bootStatus) error {
 // byte-identical once the single trailing newline is added by the caller.
 func writeBootContext(w io.Writer, s bootStatus) {
 	switch {
-	case s.UnreadCount == 0 && s.RepliesPending == 0:
-		fmt.Fprintf(w, "agentchute: %s enrolled (%s). Inbox clear; no pending reply obligations.", s.Agent, s.Vendor)
+	case s.UnreadCount == 0:
+		fmt.Fprintf(w, "agentchute: %s enrolled (%s). Inbox clear.", s.Agent, s.Vendor)
 	default:
 		fmt.Fprintf(w, "agentchute: %s enrolled (%s). %s.", s.Agent, s.Vendor, blockedSummary(s))
 		for _, u := range s.Unread {
@@ -269,10 +252,7 @@ func writeBootContext(w io.Writer, s bootStatus) {
 			}
 			fmt.Fprintf(w, "\n  - unread: %s from %s — %s%s", u.Timestamp, u.From, u.Task, flags)
 		}
-		for _, p := range s.PendingReplies {
-			fmt.Fprintf(w, "\n  - pending reply: %s from %s — %s", p.MessageID, p.From, p.Task)
-		}
-		fmt.Fprintf(w, "\n\nRun `agentchute check --as %s` to consume unread; reply via `agentchute send --from %s --to <peer> --reply-to <message-id> --body \"...\"` or `agentchute defer --as %s --message <message-id> --reason \"...\"`.", s.Agent, s.Agent, s.Agent)
+		fmt.Fprintf(w, "\n\nRun `agentchute check --as %s` to consume unread; reply via `agentchute send --from %s --to <peer> --reply-to <ref> --body \"...\"`.", s.Agent, s.Agent)
 	}
 	if s.MalformedCount > 0 {
 		fmt.Fprintf(w, "\nagentchute: %d malformed file(s) await quarantine — run `agentchute check --as %s`.", s.MalformedCount, s.Agent)
@@ -323,13 +303,13 @@ func bootHelp() string {
 	return strings.TrimSpace(`
 Usage: agentchute boot --vendor <vendor> [--as <id>] [flags]
 
-Session-start ritual: register/refresh + side-effect-free inbox peek + pending
-reply summary, in one command. Replaces the three-step register+pending+status
-sequence at the top of a turn.
+Session-start ritual: register/refresh + side-effect-free inbox peek, in one
+command. Replaces the three-step register+pending+status sequence at the top
+of a turn.
 
 Exit codes (interactive mode):
-  0  registration fresh + no unread mail + no pending replies
-  2  unread direct mail OR pending reply obligations present
+  0  registration fresh + no unread mail
+  2  unread direct mail present
   1  command failure (binary error, filesystem error, etc.)
 
 Exit codes (--context-only / --codex-hook): always 0 unless command failure.

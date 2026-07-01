@@ -27,9 +27,8 @@ Commands:
   init           scaffold a project for agentchute (writes AGENTCHUTE.md, loop dirs, enrollment blocks)
   prepare-pool   prepare one or more folders as pool participants (writes pointer file + enrollment blocks)
   register       create or update a live registration for an agent
-  boot           session-start ritual: register + peek inbox + pending-reply summary (use in SessionStart hooks)
-  gate           lifecycle gate: block declaring done while inbox/replies are outstanding
-  defer          explicitly defer a pending-reply obligation (clears the gate; notifies sender)
+  boot           session-start ritual: register + peek inbox + owed-reply summary (use in SessionStart hooks)
+  gate           lifecycle gate: block declaring done while unread inbox mail is outstanding
   send           send a message from one agent to another
   check          claim + display messages addressed to me (at-least-once; run ack to commit)
   ack            commit messages claimed by check (archive the .claimed residue)
@@ -43,7 +42,7 @@ Commands:
   identity       resolve and print the contextual agent identity (alias of default-id)
   shims          install/pass-through launcher shims for known wrappers
   status         print registry overview, inbox depths, and .live presence freshness
-  doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, .live presence
+  doctor         diagnostic aggregator: scaffold, hook content, registration, inbox, .live presence
   hooks          install canonical hook templates into .claude/ / .codex/ / .gemini/ (v0.2.1)
 
 Run 'agentchute <command> --help' for command-specific flags.
@@ -53,10 +52,10 @@ See AGENTCHUTE.md for the full spec.
 var version = "dev"
 
 // errBlocked is the canonical "lifecycle gate blocked" sentinel for v0.1.1.
-// Returned by `boot` (interactive mode, when unread mail or pending replies
-// exist) and `gate` (when --before <phase> finds an obligation). Mapped to
-// exit code 2 by main, matching codex Stop-hook and gemini emergency-brake
-// conventions. Distinct from errFailIfAny which is `pending`-specific.
+// Returned by `boot` (interactive mode, when unread mail exists) and `gate`
+// (when --before <phase> finds an obligation). Mapped to exit code 2 by main,
+// matching codex Stop-hook and gemini emergency-brake conventions. Distinct
+// from errFailIfAny which is `pending`-specific.
 var errBlocked = fmt.Errorf("agentchute: lifecycle gate blocked")
 
 func main() {

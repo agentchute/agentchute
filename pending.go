@@ -96,14 +96,16 @@ func cmdPending(args []string) error {
 		}
 	}
 
-	// Pending-reply ledger — surface alongside the inbox count so per-turn
-	// hook context shows the full obligation picture, not just unread mail.
-	// LoadPendingLedger is also strictly read-only.
-	ledger, err := loop.LoadPendingLedger(cfg, agentID)
-	if err != nil {
-		return fmt.Errorf("load pending-reply ledger: %w", err)
+	// Asker-owned `.owed` obligations — replies WE are owed by peers (v0.9.0:
+	// the sole reply-obligation surface). Surfaced alongside the inbox count so
+	// per-turn hook context shows the full picture. NON-BLOCKING (asker-owned,
+	// dead-recipient signal); LoadOwedLedger is strictly read-only. A corrupt
+	// `.owed` is not fatal here — gate/boot own blocking, so pending stays a
+	// best-effort peek and reports zero owed rather than crashing.
+	var owedEntries []loop.OwedEntry
+	if owed, oerr := loop.LoadOwedLedger(cfg, agentID); oerr == nil {
+		owedEntries = owed.OutstandingOwed()
 	}
-	pendingReplies := ledger.PendingEntries()
 
 	var staleThreshold time.Duration
 	if staleAfter != "" {
@@ -148,20 +150,22 @@ func cmdPending(args []string) error {
 	// context for that hook event. They never exit nonzero — the hook is
 	// for information, not lifecycle gating.
 	if claudeHook == "UserPromptSubmit" {
-		return emitClaudeUserPromptSubmit(entries, pendingReplies, len(skipped), needsBoot, agentID)
+		return emitClaudeUserPromptSubmit(entries, owedEntries, len(skipped), needsBoot, agentID)
 	}
 	if codexHook == "UserPromptSubmit" {
-		return emitCodexUserPromptSubmit(entries, pendingReplies, len(skipped), needsBoot, agentID)
+		return emitCodexUserPromptSubmit(entries, owedEntries, len(skipped), needsBoot, agentID)
 	}
 	if jsonOut {
-		return emitPendingJSON(entries, pendingReplies, len(skipped), needsBoot, agentID)
+		return emitPendingJSON(entries, owedEntries, len(skipped), needsBoot, agentID)
 	}
-	emitPendingText(entries, pendingReplies, len(skipped), needsBoot, agentID)
+	emitPendingText(entries, owedEntries, len(skipped), needsBoot, agentID)
 
-	// Exit code: 0 by default. With --fail-if-any, exit 2 if EITHER the
-	// inbox OR the ledger has unfinished obligations, OR the agent needs
-	// boot — all three are reasons a scheduler should wake the wrapper.
-	if failIfAny && (needsBoot || len(entries) > 0 || len(pendingReplies) > 0) {
+	// Exit code: 0 by default. With --fail-if-any, exit 2 if the inbox has
+	// unread mail OR the agent needs boot — the reasons a scheduler should wake
+	// the wrapper. Owed obligations are asker-owned and NON-BLOCKING (v0.9.0):
+	// they never force a wake (mirrors gate not blocking + poller not waking on
+	// owed), so they are surfaced but excluded from the --fail-if-any predicate.
+	if failIfAny && (needsBoot || len(entries) > 0) {
 		return errFailIfAny
 	}
 	return nil
@@ -192,14 +196,15 @@ type pendingEntry struct {
 // main.go's error handler maps this to exit code 2.
 var errFailIfAny = fmt.Errorf("agentchute-pending: unread messages exist")
 
-// emitPendingText prints the human-readable pending summary.
-func emitPendingText(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int, needsBoot bool, agentID string) {
+// emitPendingText prints the human-readable pending summary. `owed` are the
+// asker-owned obligations WE are awaiting a reply on (non-blocking).
+func emitPendingText(entries []pendingEntry, owed []loop.OwedEntry, malformed int, needsBoot bool, agentID string) {
 	if needsBoot {
 		fmt.Println(needsBootMessage(agentID))
 	}
-	if len(entries) == 0 && len(replies) == 0 {
+	if len(entries) == 0 && len(owed) == 0 {
 		if !needsBoot {
-			fmt.Println("(no unread messages; no pending reply obligations)")
+			fmt.Println("(no unread messages; no owed reply obligations)")
 		}
 		if malformed > 0 {
 			fmt.Printf("(%d malformed file(s) skipped; run `agentchute check --as %s` to quarantine + notify)\n", malformed, agentID)
@@ -226,10 +231,10 @@ func emitPendingText(entries []pendingEntry, replies []loop.PendingReplyEntry, m
 			fmt.Println(flags)
 		}
 	}
-	if len(replies) > 0 {
-		fmt.Printf("%d pending reply obligation(s):\n", len(replies))
-		for _, r := range replies {
-			fmt.Printf("  %s from %s — %s\n", r.MessageID, r.From, r.Task)
+	if len(owed) > 0 {
+		fmt.Printf("%d owed reply obligation(s) (awaiting a reply from a peer; non-blocking):\n", len(owed))
+		for _, o := range owed {
+			fmt.Printf("  %s\n", owedLine(o))
 		}
 	}
 	if malformed > 0 {
@@ -237,23 +242,30 @@ func emitPendingText(entries []pendingEntry, replies []loop.PendingReplyEntry, m
 	}
 }
 
-// emitPendingJSON prints the structured JSON form.
-func emitPendingJSON(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int, needsBoot bool, agentID string) error {
+// owedLine renders a single asker-owned obligation: the peer we are awaiting a
+// reply from and the canonical (to,from,seq) ref the reply must echo.
+func owedLine(o loop.OwedEntry) string {
+	return fmt.Sprintf("awaiting reply from %s — %s", o.To, o.Key().RefString())
+}
+
+// emitPendingJSON prints the structured JSON form. `owed` are the asker-owned
+// obligations WE are awaiting a reply on (non-blocking).
+func emitPendingJSON(entries []pendingEntry, owed []loop.OwedEntry, malformed int, needsBoot bool, agentID string) error {
 	out := struct {
-		Count          int                      `json:"count"`
-		Malformed      int                      `json:"malformed_skipped"`
-		RepliesPending int                      `json:"replies_pending"`
-		NeedsBoot      bool                     `json:"needs_boot,omitempty"`
-		BootHint       string                   `json:"boot_hint,omitempty"`
-		Messages       []pendingEntry           `json:"messages"`
-		PendingReplies []loop.PendingReplyEntry `json:"pending_replies,omitempty"`
+		Count           int              `json:"count"`
+		Malformed       int              `json:"malformed_skipped"`
+		OwedOutstanding int              `json:"owed_outstanding"`
+		NeedsBoot       bool             `json:"needs_boot,omitempty"`
+		BootHint        string           `json:"boot_hint,omitempty"`
+		Messages        []pendingEntry   `json:"messages"`
+		Owed            []loop.OwedEntry `json:"owed,omitempty"`
 	}{
-		Count:          len(entries),
-		Malformed:      malformed,
-		RepliesPending: len(replies),
-		NeedsBoot:      needsBoot,
-		Messages:       entries,
-		PendingReplies: replies,
+		Count:           len(entries),
+		Malformed:       malformed,
+		OwedOutstanding: len(owed),
+		NeedsBoot:       needsBoot,
+		Messages:        entries,
+		Owed:            owed,
 	}
 	if needsBoot {
 		out.BootHint = needsBootMessage(agentID)
@@ -268,16 +280,16 @@ func emitPendingJSON(entries []pendingEntry, replies []loop.PendingReplyEntry, m
 // the same regardless of wrapper — only the surrounding JSON envelope
 // differs (and even that converged: Claude Code and codex-cli both accept
 // the same `hookSpecificOutput.additionalContext` nested shape).
-func buildPendingContext(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int, needsBoot bool, agentID string) string {
+func buildPendingContext(entries []pendingEntry, owed []loop.OwedEntry, malformed int, needsBoot bool, agentID string) string {
 	var ctx strings.Builder
 	if needsBoot {
 		ctx.WriteString(needsBootMessage(agentID))
 		ctx.WriteString("\n")
 	}
 	switch {
-	case len(entries) == 0 && len(replies) == 0:
+	case len(entries) == 0 && len(owed) == 0:
 		if !needsBoot {
-			ctx.WriteString("agentchute: no unread messages; no pending reply obligations.")
+			ctx.WriteString("agentchute: no unread messages; no owed reply obligations.")
 		}
 	default:
 		if len(entries) > 0 {
@@ -293,13 +305,13 @@ func buildPendingContext(entries []pendingEntry, replies []loop.PendingReplyEntr
 				ctx.WriteString("\n")
 			}
 		}
-		if len(replies) > 0 {
-			fmt.Fprintf(&ctx, "agentchute: %d pending reply obligation(s):\n", len(replies))
-			for _, r := range replies {
-				fmt.Fprintf(&ctx, "  - %s from %s — %s\n", r.MessageID, r.From, r.Task)
+		if len(owed) > 0 {
+			fmt.Fprintf(&ctx, "agentchute: %d owed reply obligation(s) awaiting a reply from a peer (non-blocking):\n", len(owed))
+			for _, o := range owed {
+				fmt.Fprintf(&ctx, "  - %s\n", owedLine(o))
 			}
 		}
-		fmt.Fprintf(&ctx, "Run `agentchute check --as %s` to read and archive, reply via `agentchute send --from %s --to <peer> --reply-to <message-id> --body \"...\"`, or defer with `agentchute defer --as %s --message <message-id> --reason \"...\"`.", agentID, agentID, agentID)
+		fmt.Fprintf(&ctx, "Run `agentchute check --as %s` to read and archive, and reply via `agentchute send --from %s --to <peer> --reply-to <ref> --body \"...\"`.", agentID, agentID)
 	}
 	if malformed > 0 {
 		fmt.Fprintf(&ctx, "\n(%d malformed file(s) need quarantine; run `agentchute check --as %s`.)", malformed, agentID)
@@ -311,8 +323,8 @@ func buildPendingContext(entries []pendingEntry, replies []loop.PendingReplyEntr
 // JSON shape that injects the pending summary into model-visible developer
 // context. Always exits 0 (returned error nil) so the hook never fails the
 // turn just because mail is pending.
-func emitCodexUserPromptSubmit(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int, needsBoot bool, agentID string) error {
-	return emitHookContextJSON("UserPromptSubmit", buildPendingContext(entries, replies, malformed, needsBoot, agentID))
+func emitCodexUserPromptSubmit(entries []pendingEntry, owed []loop.OwedEntry, malformed int, needsBoot bool, agentID string) error {
+	return emitHookContextJSON("UserPromptSubmit", buildPendingContext(entries, owed, malformed, needsBoot, agentID))
 }
 
 // emitClaudeUserPromptSubmit emits the Claude-Code-specific hook JSON shape
@@ -323,8 +335,8 @@ func emitCodexUserPromptSubmit(entries []pendingEntry, replies []loop.PendingRep
 // is currently zero. Kept as a distinct emitter so future wrapper-specific
 // fields (Claude's `sessionTitle`, codex's `statusMessage`, etc.) can
 // diverge without forcing a callsite change.
-func emitClaudeUserPromptSubmit(entries []pendingEntry, replies []loop.PendingReplyEntry, malformed int, needsBoot bool, agentID string) error {
-	return emitHookContextJSON("UserPromptSubmit", buildPendingContext(entries, replies, malformed, needsBoot, agentID))
+func emitClaudeUserPromptSubmit(entries []pendingEntry, owed []loop.OwedEntry, malformed int, needsBoot bool, agentID string) error {
+	return emitHookContextJSON("UserPromptSubmit", buildPendingContext(entries, owed, malformed, needsBoot, agentID))
 }
 
 // emitHookContextJSON writes the canonical hookSpecificOutput envelope to

@@ -1,4 +1,4 @@
-<!-- agentchute-enrollment v17 begin -->
+<!-- agentchute-enrollment v18 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 Canonical enrollment spec: [`AGENTS.md`](AGENTS.md) (full identity precedence, polling, hooks). This file is a thin pointer.
@@ -40,13 +40,13 @@ agentchute boot --as "$AGENTCHUTE_AGENT_ID" --vendor {{VENDOR}}
 agentchute poller ensure --as "$AGENTCHUTE_AGENT_ID" --vendor {{VENDOR}}
 ```
 
-**STOP / finish gate**: don't sign off, tag, or report completion until you PASS the finish gate (read-only; catches unread mail and pending required-replies — `check` alone is consume-only and misses the latter; the finish gate does NOT check `.live`, which gates only `commit`/`release`):
+**STOP / finish gate**: don't sign off, tag, or report completion until you PASS the finish gate (read-only; blocks on unread/malformed mail or an unregistered self — `check` claims mail but the gate is the read-only STOP verdict; the finish gate does NOT check `.live`, which gates only `commit`/`release`):
 
 ```sh
 agentchute gate --before finish --as "$AGENTCHUTE_AGENT_ID"
 ```
 
-Consume unread mail with `agentchute check --as "$AGENTCHUTE_AGENT_ID"` (CLAIMS + displays — at-least-once; a crash before `ack` re-delivers), `ack` to commit, then answer each obligation or release it with `agentchute defer --as "$AGENTCHUTE_AGENT_ID" --message <message-id> --reason "..."` until the gate is clear. The Stop hook runs `ack` then the gate for you.
+Consume unread mail with `agentchute check --as "$AGENTCHUTE_AGENT_ID"` (CLAIMS + displays — at-least-once; a crash before `ack` re-delivers), then `ack` to commit — that clears the finish gate (which blocks only on unread/malformed mail). Reply to any message that needs one with `agentchute send --reply-to <ref>`; reply obligations are asker-owned (`.owed`) and never block the recipient. The Stop hook runs `ack` then the gate for you.
 
 Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v17 end -->
+<!-- agentchute-enrollment v18 end -->

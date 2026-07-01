@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,20 +34,14 @@ func TestReadFrontmatterRejectsOversizeFile(t *testing.T) {
 	}
 }
 
-// AGENTCHUTE.md §6.4: pending --json now reports pending-reply ledger entries
-// alongside the unread inbox count, so per-turn hook context surfaces the
-// full obligation picture.
-func TestPendingJSONIncludesPendingReplies(t *testing.T) {
+// v0.9.0 `.owed` redesign: pending --json reports the ASKER-OWNED `.owed`
+// obligations (replies WE are owed by peers) alongside the unread inbox count.
+// The removed recipient-side pending-reply ledger no longer exists.
+func TestPendingJSONIncludesOwed(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	entry := loop.PendingReplyEntry{
-		MessageID:        "msg-1",
-		From:             "codex",
-		To:               "claude-code",
-		Task:             "review",
-		OriginalFilename: "msg-1_from-codex_msg-aaaa.md",
-		ArchivePath:      "archive/x.md",
-	}
-	if err := loop.RecordPendingReply(cfg, "claude-code", entry, time.Now().UTC()); err != nil {
+	now := time.Now().UTC()
+	key := loop.MsgID{To: "codex", From: "claude-code", Seq: 1}
+	if err := loop.RecordOwed(cfg, "claude-code", key, now.Add(30*time.Minute), now); err != nil {
 		t.Fatal(err)
 	}
 	withCwd(t, root, func() {
@@ -57,13 +50,12 @@ func TestPendingJSONIncludesPendingReplies(t *testing.T) {
 			t.Fatal(err)
 		}
 		var got struct {
-			Count          int `json:"count"`
-			RepliesPending int `json:"replies_pending"`
-			PendingReplies []struct {
-				MessageID string `json:"message_id"`
-				From      string `json:"from"`
-				Task      string `json:"task"`
-			} `json:"pending_replies"`
+			Count           int `json:"count"`
+			OwedOutstanding int `json:"owed_outstanding"`
+			Owed            []struct {
+				To  string `json:"to"`
+				Seq uint64 `json:"seq"`
+			} `json:"owed"`
 		}
 		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
 			t.Fatalf("unmarshal: %v\n%s", jerr, out)
@@ -71,50 +63,40 @@ func TestPendingJSONIncludesPendingReplies(t *testing.T) {
 		if got.Count != 0 {
 			t.Errorf("Count = %d, want 0 (no inbox messages)", got.Count)
 		}
-		if got.RepliesPending != 1 {
-			t.Errorf("RepliesPending = %d, want 1", got.RepliesPending)
+		if got.OwedOutstanding != 1 {
+			t.Errorf("OwedOutstanding = %d, want 1", got.OwedOutstanding)
 		}
-		if len(got.PendingReplies) != 1 || got.PendingReplies[0].MessageID != "msg-1" {
-			t.Errorf("PendingReplies = %+v, want [msg-1]", got.PendingReplies)
+		if len(got.Owed) != 1 || got.Owed[0].To != "codex" || got.Owed[0].Seq != 1 {
+			t.Errorf("Owed = %+v, want [{to:codex seq:1}]", got.Owed)
 		}
 	})
 }
 
-// --fail-if-any now triggers on pending replies too (was inbox-only).
-func TestPendingFailIfAnyTriggersOnLedger(t *testing.T) {
+// v0.9.0: --fail-if-any does NOT trigger on owed obligations. Owed is
+// asker-owned and NON-BLOCKING (mirrors gate not blocking + poller not waking on
+// owed), so an owed obligation with an empty inbox exits 0.
+func TestPendingFailIfAnyDoesNotTriggerOnOwed(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	entry := loop.PendingReplyEntry{
-		MessageID:        "msg-1",
-		From:             "codex",
-		To:               "claude-code",
-		Task:             "review",
-		OriginalFilename: "msg-1_from-codex_msg-aaaa.md",
-		ArchivePath:      "archive/x.md",
-	}
-	if err := loop.RecordPendingReply(cfg, "claude-code", entry, time.Now().UTC()); err != nil {
+	now := time.Now().UTC()
+	key := loop.MsgID{To: "codex", From: "claude-code", Seq: 1}
+	if err := loop.RecordOwed(cfg, "claude-code", key, now.Add(30*time.Minute), now); err != nil {
 		t.Fatal(err)
 	}
 	withCwd(t, root, func() {
 		_, err := captureStdout(t, func() error { return cmdPending(pendingArgs("--fail-if-any")) })
-		if !errors.Is(err, errFailIfAny) {
-			t.Fatalf("err = %v, want errFailIfAny", err)
+		if err != nil {
+			t.Fatalf("err = %v, want nil (owed obligations do not force a wake)", err)
 		}
 	})
 }
 
-// Codex UserPromptSubmit hook output now mentions pending-reply
-// obligations explicitly, not just unread mail.
-func TestPendingCodexHookSurfacesLedger(t *testing.T) {
+// v0.9.0: codex UserPromptSubmit hook output surfaces owed obligations
+// (replies WE are owed), not a recipient-side reply-obligation ledger.
+func TestPendingCodexHookSurfacesOwed(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	entry := loop.PendingReplyEntry{
-		MessageID:        "msg-1",
-		From:             "codex",
-		To:               "claude-code",
-		Task:             "review",
-		OriginalFilename: "msg-1_from-codex_msg-aaaa.md",
-		ArchivePath:      "archive/x.md",
-	}
-	if err := loop.RecordPendingReply(cfg, "claude-code", entry, time.Now().UTC()); err != nil {
+	now := time.Now().UTC()
+	key := loop.MsgID{To: "codex", From: "claude-code", Seq: 1}
+	if err := loop.RecordOwed(cfg, "claude-code", key, now.Add(30*time.Minute), now); err != nil {
 		t.Fatal(err)
 	}
 	withCwd(t, root, func() {
@@ -133,17 +115,14 @@ func TestPendingCodexHookSurfacesLedger(t *testing.T) {
 			t.Fatalf("unmarshal: %v\n%s", jerr, out)
 		}
 		ctx := wrap.HookSpecificOutput.AdditionalContext
-		if !strings.Contains(ctx, "pending reply obligation") {
-			t.Errorf("codex hook context missing pending-reply mention:\n%s", ctx)
+		if !strings.Contains(ctx, "owed reply obligation") {
+			t.Errorf("codex hook context missing owed-reply mention:\n%s", ctx)
 		}
-		if !strings.Contains(ctx, "agentchute defer") {
-			t.Errorf("codex hook context missing defer hint:\n%s", ctx)
+		if strings.Contains(ctx, "agentchute defer") {
+			t.Errorf("codex hook context must NOT mention the removed defer command:\n%s", ctx)
 		}
-		if !strings.Contains(ctx, `--reply-to <message-id> --body "..."`) {
+		if !strings.Contains(ctx, `--reply-to <ref> --body "..."`) {
 			t.Errorf("codex hook context missing runnable reply hint:\n%s", ctx)
-		}
-		if !strings.Contains(ctx, `--message <message-id> --reason "..."`) {
-			t.Errorf("codex hook context missing runnable defer hint:\n%s", ctx)
 		}
 	})
 }
@@ -162,8 +141,8 @@ func TestPendingCleanCodexHookText(t *testing.T) {
 		if !strings.Contains(out, "no unread messages") {
 			t.Errorf("clean state missing canonical empty phrasing:\n%s", out)
 		}
-		if !strings.Contains(out, "no pending reply obligations") {
-			t.Errorf("clean state missing pending-reply empty phrasing:\n%s", out)
+		if !strings.Contains(out, "no owed reply obligations") {
+			t.Errorf("clean state missing owed-reply empty phrasing:\n%s", out)
 		}
 	})
 }
@@ -174,15 +153,9 @@ func TestPendingCleanCodexHookText(t *testing.T) {
 // wrappers accept the same envelope today.
 func TestPendingClaudeHookUserPromptSubmitShape(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	entry := loop.PendingReplyEntry{
-		MessageID:        "msg-1",
-		From:             "codex",
-		To:               "claude-code",
-		Task:             "review",
-		OriginalFilename: "msg-1_from-codex_msg-aaaa.md",
-		ArchivePath:      "archive/x.md",
-	}
-	if err := loop.RecordPendingReply(cfg, "claude-code", entry, time.Now().UTC()); err != nil {
+	now := time.Now().UTC()
+	key := loop.MsgID{To: "codex", From: "claude-code", Seq: 1}
+	if err := loop.RecordOwed(cfg, "claude-code", key, now.Add(30*time.Minute), now); err != nil {
 		t.Fatal(err)
 	}
 	withCwd(t, root, func() {
@@ -204,14 +177,11 @@ func TestPendingClaudeHookUserPromptSubmitShape(t *testing.T) {
 		if wrap.HookSpecificOutput.HookEventName != "UserPromptSubmit" {
 			t.Errorf("HookEventName = %q, want UserPromptSubmit", wrap.HookSpecificOutput.HookEventName)
 		}
-		if !strings.Contains(wrap.HookSpecificOutput.AdditionalContext, "pending reply obligation") {
-			t.Errorf("AdditionalContext missing pending-reply mention:\n%s", wrap.HookSpecificOutput.AdditionalContext)
+		if !strings.Contains(wrap.HookSpecificOutput.AdditionalContext, "owed reply obligation") {
+			t.Errorf("AdditionalContext missing owed-reply mention:\n%s", wrap.HookSpecificOutput.AdditionalContext)
 		}
-		if !strings.Contains(wrap.HookSpecificOutput.AdditionalContext, `--reply-to <message-id> --body "..."`) {
+		if !strings.Contains(wrap.HookSpecificOutput.AdditionalContext, `--reply-to <ref> --body "..."`) {
 			t.Errorf("AdditionalContext missing runnable reply hint:\n%s", wrap.HookSpecificOutput.AdditionalContext)
-		}
-		if !strings.Contains(wrap.HookSpecificOutput.AdditionalContext, `--message <message-id> --reason "..."`) {
-			t.Errorf("AdditionalContext missing runnable defer hint:\n%s", wrap.HookSpecificOutput.AdditionalContext)
 		}
 	})
 }
@@ -371,8 +341,8 @@ func osWriteFile(path string, data []byte) error {
 }
 
 // Verify the inbox-only path still reports unread without false-flagging
-// the ledger as having entries.
-func TestPendingInboxOnlyReportsZeroLedger(t *testing.T) {
+// the owed ledger as having entries.
+func TestPendingInboxOnlyReportsZeroOwed(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	inbox := cfg.AgentInboxDir("claude-code")
 	if _, err := loop.WriteInboxMessage(inbox, time.Now().UTC(), "codex",
@@ -385,8 +355,8 @@ func TestPendingInboxOnlyReportsZeroLedger(t *testing.T) {
 			t.Fatal(err)
 		}
 		var got struct {
-			Count          int `json:"count"`
-			RepliesPending int `json:"replies_pending"`
+			Count           int `json:"count"`
+			OwedOutstanding int `json:"owed_outstanding"`
 		}
 		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
 			t.Fatalf("unmarshal: %v\n%s", jerr, out)
@@ -394,8 +364,8 @@ func TestPendingInboxOnlyReportsZeroLedger(t *testing.T) {
 		if got.Count != 1 {
 			t.Errorf("Count = %d, want 1", got.Count)
 		}
-		if got.RepliesPending != 0 {
-			t.Errorf("RepliesPending = %d, want 0", got.RepliesPending)
+		if got.OwedOutstanding != 0 {
+			t.Errorf("OwedOutstanding = %d, want 0", got.OwedOutstanding)
 		}
 	})
 	// Silence the unused-import warning for filepath if no other test needs it.
