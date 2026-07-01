@@ -122,9 +122,8 @@ func TestSendCorrectiveWritesMessageAndSkipsPokeForEmptyTarget(t *testing.T) {
 	newReg(t, cfg, "claude-code", "anthropic", "", "")    // self
 	offender := newReg(t, cfg, "codex", "openai", "", "") // offender (pull-only: delivery is inbox-write only, no poke)
 
-	now := time.Date(2026, 5, 12, 4, 0, 0, 0, time.UTC)
 	msg, err := SendCorrective(cfg, "claude-code", offender.AgentID,
-		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1", now)
+		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +149,7 @@ func TestAnnounceEnrollmentNoPeers(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
 	self := newReg(t, cfg, "claude-code", "anthropic", "", "I do synthesis.")
 
-	result, err := AnnounceEnrollment(cfg, self, time.Now().UTC())
+	result, err := AnnounceEnrollment(cfg, self)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +170,7 @@ func TestAnnounceEnrollmentSendsToPeersSkipsSelfAndExamples(t *testing.T) {
 	// .example.md files exist alongside live registrations; must be skipped.
 	mustWrite(t, filepath.Join(cfg.AgentsDir(), "codex.example.md"), []byte("---\nagent_id: codex\nvendor: openai\ncontrol_repo: "+cfg.ControlRepo+"\nlast_seen: 2026-05-09T16:08:36Z\nstatus: active\n---\n"))
 
-	result, err := AnnounceEnrollment(cfg, self, time.Now().UTC())
+	result, err := AnnounceEnrollment(cfg, self)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +221,7 @@ func TestAnnounceEnrollmentMissingInboxIsWarningNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := AnnounceEnrollment(cfg, self, time.Now().UTC())
+	result, err := AnnounceEnrollment(cfg, self)
 	if err != nil {
 		t.Fatalf("missing inbox should not be fatal: %v", err)
 	}

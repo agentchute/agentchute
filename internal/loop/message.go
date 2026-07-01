@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // ComposeMessage builds an outbound message's bytes (frontmatter + body)
@@ -49,7 +48,7 @@ type AnnounceResult struct {
 // Per-peer failures (missing inbox, malformed registration) are collected as
 // Warnings; the function does not abort on them. A returned error means the
 // agents directory itself could not be read.
-func AnnounceEnrollment(cfg *Config, self *Registration, now time.Time) (AnnounceResult, error) {
+func AnnounceEnrollment(cfg *Config, self *Registration) (AnnounceResult, error) {
 	entries, err := os.ReadDir(cfg.AgentsDir())
 	if err != nil {
 		return AnnounceResult{}, fmt.Errorf("read agents dir: %w", err)
@@ -182,7 +181,7 @@ func CorrectiveBody(malformedItem, reason, sectionRef string) string {
 // and the offender picks it up on its own poll — there is no poke. If the
 // offender's inbox dir doesn't exist, the corrective send fails — the caller
 // leaves the file quarantined and logs locally without retrying.
-func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionRef string, now time.Time) (Message, error) {
+func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionRef string) (Message, error) {
 	body := CorrectiveBody(malformedItem, reason, sectionRef)
 	content := ComposeMessage(from, "", body)
 

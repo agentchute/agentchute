@@ -112,7 +112,7 @@ func cmdCheck(args []string) error {
 				continue
 			}
 			if _, err := loop.SendCorrective(cfg, agentID, offender,
-				quarantined, "filename does not match §6.1", "§6.1", now); err != nil {
+				quarantined, "filename does not match §6.1", "§6.1"); err != nil {
 				fmt.Fprintf(os.Stderr, "  corrective send to %s failed: %v\n", offender, err)
 				continue
 			}
@@ -191,7 +191,7 @@ func cmdCheck(args []string) error {
 			}
 			reason := fmt.Sprintf("frontmatter block is syntactically malformed: %v", err)
 			if _, serr := loop.SendCorrective(cfg, agentID, msg.Sender,
-				quarantined, reason, "§6.4", now); serr != nil {
+				quarantined, reason, "§6.4"); serr != nil {
 				fmt.Fprintf(os.Stderr, "  corrective send to %s failed: %v\n", msg.Sender, serr)
 				claimed++
 				continue
