@@ -27,6 +27,13 @@ func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string)
 	_ = status // workflow vocabulary → body convention; not emitted (compat param).
 	var b strings.Builder
 	b.WriteString("---\n")
+	// COMPAT(remove-in: v0.8.9): message_id is compat-only frontmatter — the wire
+	// identity is (to, from, seq). Before removing, migrate every reader off it:
+	// (1) reply threading — --reply-to and the recipient pending-reply ledger key
+	// on message_id (FirstPendingByMessageID, defer.go); (2) display-only readers
+	// that print the id (boot.go, pending.go, self_poll.go, watch.go, and
+	// sendResult/reply_message_id) — swap them to the (to,from,seq) triple rather
+	// than blanking it. See AGENTCHUTE.md "Compatibility & Deprecations".
 	fmt.Fprintf(&b, "message_id: %s\n", FormatMessageID(now))
 	fmt.Fprintf(&b, "from: %s\n", from)
 	if replyTo != "" {

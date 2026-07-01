@@ -178,7 +178,7 @@ Reply obligations are **owned by the asker**, not the recipient:
 - When the asker later consumes a reply whose `in_reply_to` references that `(to,from,seq)`, the obligation is cleared (idempotent).
 - The asker's gate surfaces **outstanding** and **expired** obligations as **non-blocking warnings**. An expired obligation is the asker-side dead-recipient signal: a dead recipient shows up twice over — the asker's expired `.owed` AND the recipient's stale `.live` — so the gate never deadlocks on a corpse.
 
-> **One-release compatibility (legacy recipient ledger still blocks).** The recipient-side `pending-replies.json` ledger is **legacy compat**: any entries *already on it* still block the recipient's finish gate for one release (until replied or deferred). But `check` no longer records a recipient-side obligation on consume — consuming a `reply_required` message records nothing on the recipient and merely **prints the reply-ref command** (`reply_required` is advisory on the wire; the binding obligation is the asker's `.owed`, §6.4/§6.6 above). So NEW `reply_required` consumes create no recipient-side blocker; only pre-existing ledger entries do. Making `.owed` the sole authority (and dropping the legacy recipient ledger) is a deferred follow-up.
+> **One-release compatibility (legacy recipient ledger still blocks).** The recipient-side `pending-replies.json` ledger is **legacy compat**: any entries *already on it* still block the recipient's finish gate for one release (until replied or deferred). But `check` no longer records a recipient-side obligation on consume — consuming a `reply_required` message records nothing on the recipient and merely **prints the reply-ref command** (`reply_required` is advisory on the wire; the binding obligation is the asker's `.owed`, §6.4/§6.6 above). So NEW `reply_required` consumes create no recipient-side blocker; only pre-existing ledger entries do. Making `.owed` the sole authority (and dropping the recipient ledger entirely) is a **future redesign item, not a scheduled removal** — it interacts with the recipient-side finish-gate block and needs a design pass to settle what must be preserved rather than a straight delete (see §13.1).
 
 ## 7. Coordination defaults
 
@@ -247,6 +247,21 @@ A well-formed canonical seq file is never quarantined (the dual-read lister reco
 - Coordinator/router agents.
 - Opt-in transcript export / shared-log audit profile (the `log` binding in [`conformance/`](conformance/) is the first-class opt-in profile).
 - Handshake / version negotiation beyond the registration `v:` field.
+
+### 13.1 Compatibility & deprecations (scheduled removals)
+
+One-release compatibility carried from v0.8.0. Each has an in-code `// COMPAT(remove-in: vX.Y[, gate: name]): …` marker so removal is a grep-delete, not a judgment call. **Re-listing is not retiring:** if a gated item's gate is unmet at its target branch-cut, escalate — do not silently re-defer.
+
+| Item | Location | Target | Gate |
+|------|----------|--------|------|
+| `message_id` frontmatter emission (wire identity is `(to,from,seq)`) | `internal/loop/message.go` (`ComposeMessage`) | v0.8.9 | migrate ALL readers off `message_id` first: reply threading (`--reply-to` + the recipient pending-reply ledger) AND the display-only readers (`boot`/`pending`/`self_poll`/`watch`/`sendResult`) → `(to,from,seq)` |
+| Legacy-nonce inbox reader + writer (dual-read/write of `<ts>_from-<s>_msg-<nonce>.md`) | `internal/loop/inbox.go` — READ: `inboxFilenameRE`/`inboxFilenameShapeRE`, `InferSenderFromFilename` legacy branch, `LegacyNonce` classifier, `ParseInboxFilename` legacy path, `CountLegacyNonce`; WRITE (test-only callers): `WriteInboxMessage`/`generateNonce`/`formatInboxFilename` (remove together — `WriteInboxMessage` calls `ParseInboxFilename`; migrate ~30 test fixtures) | v0.8.9 | **legacy-gauge-zero pool-wide, INCLUDING `.claimed/` residue** — extend `CountLegacyNonce` to scan `inbox/<id>/.claimed/` (`ListClaimedMessages`) first; it reads inbox listings only today, so a legacy message parked in `.claimed/` would make "zero" a false negative |
+| `run` verb → `serve` | `run.go` | `serve` ships v0.8.9 with `run` as a deprecated alias; alias removed the release after | `serve` shipped + one release elapsed |
+| `renderShimScript` (legacy shim generator) | `shims.go` | v0.8.9 | **none** — zero production callers; migrate its 3 test-fixture callers to inline legacy content |
+| `selectShimSpecs`/`shimInstallNames` selectors → static legacy-name list | `shims.go`, `setup.go` | v0.8.9 | **none** — behavior-preserving swap; the cleanup only needs the legacy `ac-*` name set, not generation logic |
+| `shims install --wrapper`/`--aliases` + `setup --aliases` no-op flags | `shims.go`, `setup.go` | after cutover | live pool confirmed running the `ac` dispatcher (v0.8.8+), not merely "dispatcher code exists" — old scripts/muscle-memory may still pass them |
+
+**Redesign-required — NOT a scheduled removal:** unifying the asker-owned `.owed` ledger with the recipient-side pending-reply ledger. `.owed` is asker-local and non-blocking; the recipient finish-gate block must stay recipient-local (peers never read each other's state dir). Making `.owed` the sole authority by *dropping* the recipient block would break the "never a silent hang" guarantee — any unification must **relocate** the block, not delete it. If trimming real duplication, target `PendingReplyEntry.message_id`. See the design note in `internal/loop/owed.go`.
 
 ## 14. Namespace
 State lives under the fixed `.agentchute/loop` directory. `AGENTCHUTE.md` is shared; reference-implementation notes live in `.agentchute/loop/README.md`. (Earlier drafts used a vendor-namespaced `.<vendor>/loop/` dotdir and a `.rehumanlabs/` legacy namespace; both are gone — the namespace is now fixed. `reHuman Labs` remains the maker's credit in `README.md`; that's brand, not a namespace.)
