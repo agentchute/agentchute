@@ -4,6 +4,27 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
 
+## v0.8.8 (2026-07-01) — single `ac` dispatcher + clean install
+
+A small, additive follow-up to v0.8.0. **No protocol changes** — the pull-only wire contract and the conformance suite are unchanged. Direct jump 0.8.0 → 0.8.8; there are no intermediate 0.8.x releases.
+
+**One launcher, not four**
+- `setup` now installs a single **`ac` dispatcher** instead of the four generated `ac-claude`/`ac-codex`/`ac-gemini`/`ac-grok` shims. `ac run <wrapper>` launches a wrapper (`ac run codex`); `ac <command>` routes to the matching agentchute command (`ac doctor`, `ac check`). A bounded parser resolves intent unambiguously — a known command always wins, `run <wrapper>` launches, ambiguous input fails closed, no PATH inference. Existing `ac-*` shims are removed on setup by marker match (never a user file of the same name); the dispatcher is installed **before** the legacy cleanup, and it refuses to overwrite a non-agentchute `ac` or a symlink. `setup.json` records `dispatcher_installed`.
+
+**Clean install**
+- The guarded **clean-all** audit runs as a phase of **`setup --reset --wipe-state`** (and `install.sh --fresh`, which drives it) — there is no standalone `--clean-all` flag. It audits and removes stale install remains (orphaned binary backups) under strict guards: allowlisted roots only, no symlinks (`Lstat`), regular files, current-user-owned, individual `os.Remove` (never recursive), and it refuses a live bus. Orphaned processes and PATH shadows are **reported, not touched** (clean-all never kills a process or edits PATH). The system `/usr/sbin/ac` is never affected.
+
+**Docs & enrollment**
+- README gains an explicit **upgrade box** for users on v0.7.x and below — one command to re-install and re-enroll, no instruction hunting. Enrollment marker bumped **v15 → v16**; templates and all wrapper files stay drift-consistent (`TestTemplatesMatchRepoWrappers`).
+
+**Hardening (from adversarial review)**
+- Runner attribution no longer depends on `--as` (runners launch without it): matched by `runner.json` binding + liveness + pool, with **exact** `--control-repo`/`--loop-dir` value comparison (a sibling-prefix path can no longer be mistakenly signalled), stopping at `--` (wrapper argv ignored).
+- ppid-walk suppression revalidates the ancestor is live + same-user + a genuine pool runner before trusting it; stale `runner.json` pids can't suppress or misattribute.
+
+**Compatibility**
+- The crown-jewel PTY submit/injection byte sequences are **unchanged** (the only `run.go` change is a `shimSpecForName` → `wrapperSpecForName` vendor-resolution rename; `TestPromptInjectionBytes*` guard it). After upgrading, open a new shell (or `hash -r`) and relaunch wrappers with `ac run <wrapper>`.
+- **All v0.8.0 deferred follow-ups remain deferred** (unchanged in this release): the `run` verb is not yet renamed to `serve` (`run.go` present, no `serve.go`); `message_id` is still emitted as a compat frontmatter field; the legacy nonce inbox reader is retained; `.owed` still runs alongside the recipient-side pending-reply ledger.
+
 ## v0.8.0 (2026-06-30) — "simple again" + protocol-v2
 
 A correctness-driven redesign to **pull-only** coordination. Senders only ever write files; nothing pokes a recipient. ~4,800 net lines of code removed (+6,640 / −11,422 across the redesign). The protocol's invariants now ship as an executable conformance suite. The redesign was staged across eight compile-green gates (g0–g7); the release also folds in clean wipe-and-reinstall, prompting-profile overlays, and a conformance fix.
