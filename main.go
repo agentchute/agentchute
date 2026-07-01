@@ -39,14 +39,11 @@ Commands:
   setup          one-command control-repo setup; installs the runner wake path (the only supported path)
   update         self-update the binary to a release, then re-sync this repo's setup
   self-check     refresh own registration/last_seen and .live presence (pull-only: no wake target to reconcile)
-  self-poll      "should I wake the wrapper?" — read-only by default; optional poller heartbeat
   poller         recipient-side poller heartbeat/run/status that keeps .live fresh
   identity       resolve and print the contextual agent identity (alias of default-id)
   shims          install/pass-through launcher shims for known wrappers
   status         print registry overview, inbox depths, and .live presence freshness
   doctor         diagnostic aggregator: scaffold, hook content, registration, ledger, .live presence
-  watch          recipient-side persistent watcher: fire OS notification / print / exec on new mail
-  presenced      OPT-IN host presence daemon: discover + auto-enroll high-confidence wrappers (off by default; never auto-started)
   hooks          install canonical hook templates into .claude/ / .codex/ / .gemini/ (v0.2.1)
 
 Run 'agentchute <command> --help' for command-specific flags.

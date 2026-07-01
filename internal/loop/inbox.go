@@ -299,7 +299,7 @@ func ListInboxMessages(inboxDir string) ([]Message, error) {
 
 // ErrInboxMissing is returned by ListInboxMessages* when the recipient's
 // inbox directory does not exist on disk. Callers that act AS the agent
-// (check, send, watch, gate, self-poll) should treat this as "not
+// (check, send, gate) should treat this as "not
 // enrolled" — i.e., the agent never ran boot. Callers operating on a
 // peer's inbox (watchdog, status overview, peer liveness) should map it
 // to "no mail observable" and continue without failing the whole pass.
@@ -406,7 +406,7 @@ func isRegularDirEntry(entry os.DirEntry) (bool, time.Time, error) {
 // For a legacy name the embedded sender-side timestamp is the Timestamp. A seq
 // name has NO embedded timestamp, so modTime (the file mtime) is used as the
 // ADVISORY Timestamp — load-bearing for staleness (pending) and display
-// (self_poll/boot/watch); never an ordering key. A zero/forgotten Timestamp
+// (boot); never an ordering key. A zero/forgotten Timestamp
 // would render every seq message ancient and print 0001-01-01.
 func parseAnyInboxName(name string, modTime time.Time) (Message, bool) {
 	if t, sender, _, err := ParseInboxFilename(name); err == nil {

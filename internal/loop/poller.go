@@ -40,7 +40,7 @@ func SavePollerHeartbeat(cfg *Config, hb PollerHeartbeat) error {
 		return fmt.Errorf("poller interval must be >= %d seconds", MinPollerIntervalSeconds)
 	}
 	if hb.Method == "" {
-		hb.Method = "self-poll"
+		hb.Method = "poller"
 	}
 	if hb.LastSeen.IsZero() {
 		hb.LastSeen = time.Now().UTC()

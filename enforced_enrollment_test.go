@@ -193,24 +193,6 @@ func TestPendingFailIfAnyReturnsExit2OnNeedsBoot(t *testing.T) {
 	})
 }
 
-func TestWatchRefusesMissingSelfRegistration(t *testing.T) {
-	root := setupBootFixture(t)
-	withCwd(t, root, func() {
-		_, err := captureStdout(t, func() error {
-			return cmdWatch([]string{"--as", "claude-code", "--print"})
-		})
-		if err == nil {
-			t.Fatal("watch should refuse for unregistered agent; got nil")
-		}
-		if !strings.Contains(err.Error(), "not registered") {
-			t.Errorf("error missing 'not registered' wording: %v", err)
-		}
-		if !strings.Contains(err.Error(), "agentchute boot --as claude-code") {
-			t.Errorf("error missing boot pointer: %v", err)
-		}
-	})
-}
-
 func TestPendingClaudeHookStaysExit0OnNeedsBoot(t *testing.T) {
 	// codex guardrail: hook-envelope modes inject context but never
 	// fail the turn. needs_boot lands in additionalContext, exit 0.

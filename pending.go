@@ -350,7 +350,7 @@ func emitHookContextJSON(event, additionalContext string) error {
 // (codex final-pass note on 0d468fa).
 func readFrontmatter(path string) (map[string]string, string, error) {
 	// Cap the read at the inbox message limit, matching the consume path
-	// (check.go). pending/boot/self-poll/watch are hook-safe peek paths; a
+	// (check.go). pending/boot are hook-safe peek paths; a
 	// peer could plant a validly named but oversized inbox file, and reading
 	// it unbounded just to inspect frontmatter would let that peer OOM the
 	// consumer.

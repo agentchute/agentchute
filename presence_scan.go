@@ -196,12 +196,10 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 
 	var out []UnenrolledProcess
 
-	// Shared enumeration + in-pool cwd gate for the two high-confidence-capable
+	// Enumeration + in-pool cwd gate for the two high-confidence-capable
 	// sources (herdr panes + runner sockets). The per-source CREATE exclusion of
-	// already-registered ids is applied below; only the enumeration + gating is
-	// shared with reachablePresencesByID (presenced.go), which runs the SAME
-	// enumeration but keeps every registered id (it identifies + indexes them for
-	// REPAIR rather than excluding them).
+	// already-registered ids is applied below; the enumeration + gating itself
+	// lives in enumerateInPoolHerdrRunnerPresences.
 	hrPresences := enumerateInPoolHerdrRunnerPresences(cfg)
 
 	// herdr agents: enrolled when the name is a registered herdr wake target or
@@ -291,22 +289,18 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 // enumerateInPoolHerdrRunnerPresences enumerates the two presence sources that
 // can ever reach HIGH confidence — herdr panes and runner sockets — that belong
 // to THIS pool, as raw (Kind/Hint/Cwd) UnenrolledProcess values. It applies ONLY
-// the enumeration + in-pool cwd gate that scanUnenrolledWrappers and
-// reachablePresencesByID share verbatim:
+// the enumeration + in-pool cwd gate:
 //
 //   - herdr: each live pane's name (trimmed, non-empty) whose foreground cwd
 //     maps to this pool via cwdMapsToPool;
 //   - runner sockets: each answering socket's agent id (trimmed, non-empty),
 //     in-pool by construction (the socket lives under cfg.LoopDir), so no cwd
-//     gate is applied — matching both callers.
+//     gate is applied.
 //
-// It deliberately does NOT apply the caller-specific filtering, which is the
-// residual difference between the two callers and stays in each: it does NOT
-// exclude already-registered ids (scanUnenrolledWrappers does that for its CREATE
-// candidates) and it does NOT run identifyHighConfidencePresence
-// (reachablePresencesByID does that to index REPAIR candidates by derived id). No
-// Suggestion is set; a caller that needs one builds it itself. herdr entries are
-// emitted before runner entries to preserve both callers' original ordering.
+// It deliberately does NOT apply caller-specific filtering: it does NOT exclude
+// already-registered ids (scanUnenrolledWrappers does that for its CREATE
+// candidates). No Suggestion is set; a caller that needs one builds it itself.
+// herdr entries are emitted before runner entries to preserve caller ordering.
 // STRICTLY READ-ONLY.
 func enumerateInPoolHerdrRunnerPresences(cfg *loop.Config) []UnenrolledProcess {
 	var out []UnenrolledProcess

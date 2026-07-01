@@ -31,7 +31,7 @@ func ComposeMessage(now time.Time, from, to, task, status, replyTo, body string)
 	// identity is (to, from, seq). Before removing, migrate every reader off it:
 	// (1) reply threading — --reply-to and the recipient pending-reply ledger key
 	// on message_id (FirstPendingByMessageID, defer.go); (2) display-only readers
-	// that print the id (boot.go, pending.go, self_poll.go, watch.go, and
+	// that print the id (boot.go, pending.go, and
 	// sendResult/reply_message_id) — swap them to the (to,from,seq) triple rather
 	// than blanking it. See AGENTCHUTE.md "Compatibility & Deprecations".
 	fmt.Fprintf(&b, "message_id: %s\n", FormatMessageID(now))

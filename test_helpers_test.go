@@ -183,7 +183,7 @@ func mustWriteFreshPollerHeartbeat(t *testing.T, cfg *loop.Config, agentID strin
 
 // mustExampleRepo / readExampleReg were relocated here from the deleted
 // herdr_state_test.go (simple-again Gate 6c). They are shared fixture helpers
-// used by presence/register/presenced tests, unrelated to the retired herdr probe.
+// used by presence/register tests, unrelated to the retired herdr probe.
 func mustExampleRepo(t *testing.T, root string) {
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))

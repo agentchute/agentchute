@@ -90,12 +90,6 @@ const (
 	LaunchedByHook   = "hook"   // a SessionStart-class lifecycle hook ran boot/self-check.
 	LaunchedByManual = "manual" // a hand-run `agentchute register` (or raw/passthrough enroll).
 	LaunchedByPoller = "poller" // enrolled/refreshed by a recipient-side poller.
-
-	// LaunchedByPresenced marks a registration the OPT-IN host presence daemon
-	// (`agentchute presenced`, WI-E4) created or repaired with zero agent
-	// cooperation. Distinct from `manual` (a human-run `register`) so verify
-	// views can tell a daemon-discovered enrollment from a hand-run one.
-	LaunchedByPresenced = "presenced"
 )
 
 // ReadRegistration parses an agentchute live registration file.

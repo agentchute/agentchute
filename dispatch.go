@@ -27,15 +27,12 @@ var commandHandlers = map[string]func([]string) error{
 	"setup":        cmdSetup,
 	"update":       cmdUpdate,
 	"self-check":   cmdSelfCheck,
-	"self-poll":    cmdSelfPoll,
 	"poller":       cmdPoller,
 	"default-id":   cmdIdentity,
 	"identity":     cmdIdentity,
 	"shims":        cmdShims,
 	"status":       cmdStatus,
 	"doctor":       cmdDoctor,
-	"watch":        cmdWatch,
-	"presenced":    cmdPresenced,
 	"hooks":        cmdHooks,
 }
 

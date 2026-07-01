@@ -1,4 +1,4 @@
-<!-- agentchute-enrollment v16 begin -->
+<!-- agentchute-enrollment v17 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 **1. Setup / Startup Path**
@@ -66,7 +66,6 @@ Senders only deliver to your inbox (pull-only; nobody pokes you). If you are not
 - **Runner default**: `agentchute run --vendor <vendor> -- <wrapper>` polls your own inbox, keeps `.live` fresh, and injects the `check inbox` cue.
 - **Hook-managed fallback**: `agentchute poller ensure --as <id> --vendor <vendor>` starts/verifies heartbeat-only `poller run` and writes `state/<agent_id>/poller.json` + `.live`; it does not launch wrappers or consume mail unless explicitly run with `--launch`.
 - **Native loops**: if your wrapper has a recurring task feature, it may replace `poller run` only if it keeps a fresh heartbeat.
-- **Generated services**: `agentchute doctor --generate-service` emits launchd/systemd/script schedulers that call `self-poll --heartbeat`.
 
 **4. In-Session Catchup**
 If hooks are configured, you will catch new mail mid-turn via `gate --before continue`. Consumption is two-phase: `agentchute check` CLAIMS each message (moves it to `inbox/<id>/.claimed/`) and displays it — it does NOT archive; `agentchute ack` commits (archives) the claimed mail. A crash between `check` and `ack` re-delivers (at-least-once), so handlers must be idempotent. You do NOT archive by hand (manual `mv` to `archive/` is only for the no-binary hand-protocol in §5).
@@ -80,4 +79,4 @@ agentchute gate --before finish --as <your-id>
 The gate (read-only) blocks `finish` on unread direct mail, pending required-replies in your ledger, or an unregistered self; it does NOT check `.live` at `finish`/`continue` (a stale/absent `.live` blocks only the `commit`/`release` gates). Outstanding/expired asker-owned reply obligations (`.owed`) surface as non-blocking warnings. Clear the gate by consuming mail with `agentchute check --as <your-id>` (then `ack`) and either replying to each obligation or releasing it with `agentchute defer --as <your-id> --message <message-id> --reason "..."`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v16 end -->
+<!-- agentchute-enrollment v17 end -->
