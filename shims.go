@@ -196,20 +196,12 @@ func wantedAny(wanted map[string]bool, values []string) bool {
 	return false
 }
 
-func renderShimScript(agentchuteBin, shimDir, name string) string {
-	return fmt.Sprintf(`#!/bin/sh
-# agentchute shim v1
-AGENTCHUTE_BIN=${AGENTCHUTE_BIN:-%s}
-exec "$AGENTCHUTE_BIN" shims exec --name %s --shim-dir %s -- "$@"
-`, shellQuote(agentchuteBin), shellQuote(name), shellQuote(shimDir))
-}
-
 // renderDispatcherScript renders the single `ac` dispatcher that setup /
 // `shims install` writes. It is wrapper-agnostic: it execs `agentchute dispatch`,
 // which routes `ac <command>` and `ac serve <wrapper>` (parsed in dispatch.go). The
 // --shim-dir argument lets dispatch exclude a stale same-name alias shim inside
-// the shim dir during the transition. Mirrors renderShimScript's AGENTCHUTE_BIN
-// override + shellQuote discipline.
+// the shim dir during the transition (AGENTCHUTE_BIN override + shellQuote
+// discipline).
 func renderDispatcherScript(agentchuteBin, shimDir string) string {
 	return fmt.Sprintf(`#!/bin/sh
 # agentchute dispatcher v1

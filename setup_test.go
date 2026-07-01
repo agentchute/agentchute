@@ -475,7 +475,7 @@ func TestSetupRemovesOwnedSameNameAliasesOnly(t *testing.T) {
 
 	shimDir := filepath.Join(home, ".agentchute", "bin")
 	mustMkdir(t, shimDir)
-	mustWrite(t, filepath.Join(shimDir, "codex"), []byte(renderShimScript("/usr/local/bin/agentchute", shimDir, "codex")))
+	mustWrite(t, filepath.Join(shimDir, "codex"), []byte(legacyShimScript("/usr/local/bin/agentchute", shimDir, "codex")))
 	mustWrite(t, filepath.Join(shimDir, "claude"), []byte("#!/bin/sh\nexit 0\n"))
 	if err := os.Chmod(filepath.Join(shimDir, "codex"), 0o755); err != nil {
 		t.Fatal(err)

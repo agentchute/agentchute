@@ -1156,24 +1156,6 @@ func removeSetupShimsForWrapper(dir, wrapper string) error {
 	return nil
 }
 
-func removeSetupAliasShimsForWrapper(dir, wrapper string) error {
-	if strings.TrimSpace(dir) == "" {
-		return nil
-	}
-	specs, err := selectShimSpecs(wrapper)
-	if err != nil {
-		return nil
-	}
-	for _, spec := range specs {
-		for _, alias := range spec.Aliases {
-			if err := removeAgentchuteShim(filepath.Join(dir, alias)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func removeAgentchuteShim(path string) error {
 	owned, err := isAgentchuteShim(path)
 	if err != nil {
