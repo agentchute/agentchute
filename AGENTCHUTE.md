@@ -65,8 +65,8 @@ Coordination state lives under a fixed dotdir at the repo root:
     inbox/<agent-id>/              # per-recipient inbox (gitignored)
     inbox/<agent-id>/.claimed/     # phase-1 CLAIMED, not-yet-committed messages
     live/<agent-id>.live           # presence fact (last_seen + advisory busy)
-    archive/                       # consumed (committed) messages (gitignored)
-    malformed/                     # quarantined files (gitignored)
+    archive/                       # consumed (committed) messages (gitignored; caller-managed, §6.3)
+    malformed/                     # quarantined files (gitignored; caller-managed, §6.3)
     state/<agent-id>/              # asker-owned runtime state (gitignored)
       owed.json                    # asker-owned reply obligations — sole reply mechanism (§6.6)
       seq/<recipient>.json         # durable per-(sender,recipient) seq counter
@@ -155,6 +155,12 @@ Consumption is at-least-once and split across two verbs:
 3. **`check` — phase 1 (CLAIM + display).** First re-display any uncommitted `.claimed` residue from a crashed/un-acked prior turn, each tagged with a **`REDELIVERED`** banner. Then, for each new message: validate envelope/body (quarantine if malformed, §11), CLAIM it (move `inbox/<id>/<name>` → `inbox/<id>/.claimed/<name>` under its canonical name), and display it. `check` does **not** archive.
 4. **Act on each displayed message.** Because the CLI prints and exits before the model acts, archiving during `check` would be at-most-once for the *work*; claiming instead makes the work at-least-once. **Handlers MUST be idempotent** — a crash between `check` and `ack` re-delivers.
 5. **`ack` — phase 2 (COMMIT).** Archive the `.claimed` residue. Archiving is the single commit point; an already-archived message is a benign no-op (idempotent).
+
+**Retention model.** `archive/` and `malformed/` are **caller-managed**. They grow without bound by design and are **not** part of the delivery guarantee. The delivery contract ends at claim (`check`) / commit (`ack`); `archive/` is an audit residue only.
+
+Operators may clean with this documented one-liner (verify paths against §3 layout; targets only `archive/` and `malformed/`):
+
+    find .agentchute/loop/archive -type f -mtime +30 -delete && find .agentchute/loop/malformed -type f -mtime +30 -delete
 
 The reference CLI's Stop hook runs `ack` (commit the prior turn's work) and then the read-only finish gate. A same-`(to,from,seq)` resend that re-lands while the original is already claimed is dropped as a benign duplicate.
 
