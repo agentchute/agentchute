@@ -1,4 +1,4 @@
-<!-- agentchute-enrollment v17 begin -->
+<!-- agentchute-enrollment v18 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 Canonical enrollment spec: [`AGENTS.md`](AGENTS.md) (full identity precedence, polling, hooks). This file is a thin pointer.
@@ -49,4 +49,4 @@ agentchute gate --before finish --as "$AGENTCHUTE_AGENT_ID"
 Consume unread mail with `agentchute check --as "$AGENTCHUTE_AGENT_ID"` (CLAIMS + displays — at-least-once; a crash before `ack` re-delivers), then `ack` to commit — that clears the finish gate (which blocks only on unread/malformed mail). Reply to any message that needs one with `agentchute send --reply-to <ref>`; reply obligations are asker-owned (`.owed`) and never block the recipient. The Stop hook runs `ack` then the gate for you.
 
 Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v17 end -->
+<!-- agentchute-enrollment v18 end -->
