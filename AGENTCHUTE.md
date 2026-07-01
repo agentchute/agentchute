@@ -252,7 +252,7 @@ One-release compatibility carried from v0.8.0. Each has an in-code `// COMPAT(re
 
 | Item | Location | Target | Gate |
 |------|----------|--------|------|
-| `selectShimSpecs`/`shimInstallNames` selectors → static legacy-name list | `shims.go`, `setup.go` | later | **NOT a safe mechanical swap** — the `--wrapper` filtering is still wired via `removeSetupShimsForWrapper(dir, wrapper)` for the dropped-wrapper cleanup path (`droppedWrappers`), so replacing the selectors with a static "all" list would change cleanup behavior. Defer until that path is provably dead. |
+| `selectShimSpecs`/`shimInstallNames` selectors → static legacy-name list | `internal/cli/shims.go`, `internal/cli/setup.go` | later | **NOT a safe mechanical swap** — the `--wrapper` filtering is still wired via `removeSetupShimsForWrapper(dir, wrapper)` for the dropped-wrapper cleanup path (`droppedWrappers`), so replacing the selectors with a static "all" list would change cleanup behavior. Defer until that path is provably dead. |
 
 **DONE in v0.9.1 — dead shim-generation code removed (clean delete).** `renderShimScript` (the legacy per-wrapper shim generator) had zero production callers and moved to a test-only `legacyShimScript` fixture helper. `removeSetupAliasShimsForWrapper` was deleted outright (zero callers — the same-name alias cleanup is unreachable now that aliases are never installed). The misnamed `gitignoreBeginV1`/`gitignoreEndV1` constants (they held the current `v3` marker) were renamed `gitignoreBegin`/`gitignoreEnd`.
 
