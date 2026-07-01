@@ -147,8 +147,8 @@ func ListInboxMessages(inboxDir string) ([]Message, error) {
 // ErrInboxMissing is returned by ListInboxMessages* when the recipient's
 // inbox directory does not exist on disk. Callers that act AS the agent
 // (check, send, gate) should treat this as "not
-// enrolled" — i.e., the agent never ran boot. Callers operating on a
-// peer's inbox (watchdog, status overview, peer liveness) should map it
+// enrolled" — i.e., the agent never ran boot. Callers scanning a
+// peer's inbox (the status overview, peer enumeration) should map it
 // to "no mail observable" and continue without failing the whole pass.
 //
 // Wrap with errors.Is to detect:

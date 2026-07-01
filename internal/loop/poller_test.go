@@ -9,7 +9,7 @@ import (
 // stale. Previously PollerFreshness returned `age >= 0 && age <= threshold`,
 // so a heartbeat with a slightly-future last_seen yielded a negative age and
 // was treated as stale — false-blocking the gate. A small negative age is
-// clamped to fresh, matching watchdog.go and recipient_liveness.go.
+// clamped to fresh.
 func TestPollerFreshness_FutureTimestampIsFresh(t *testing.T) {
 	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
 	hb := &PollerHeartbeat{

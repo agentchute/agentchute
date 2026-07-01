@@ -558,10 +558,10 @@ func (e RegistrationReadError) Error() string {
 // the existing layout convention).
 //
 // Use this when one bad registration must NOT abort a multi-peer scan —
-// notably the watchdog (§10.1) and cooperative waking (§10.2), where the
-// spec requires per-peer errors to log/warn and continue. Strict callers
-// (single-registration ops, the `status` command) should keep using
-// ReadRegistration directly.
+// notably contextual-identity allocation (`identity`) and the update/setup
+// re-sync (`update`), which enumerate every peer and must log/warn a single
+// unparseable entry and continue. Strict callers (single-registration ops,
+// the `status` command) should keep using ReadRegistration directly.
 //
 // A nil-or-missing dir returns (nil, nil) for callers that want to treat
 // "no agents/ yet" as a clean empty result; any other dir-level error is

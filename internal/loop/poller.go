@@ -87,8 +87,7 @@ func PollerFreshness(hb *PollerHeartbeat, now time.Time) (fresh bool, age, thres
 	age = now.UTC().Sub(hb.LastSeen.UTC())
 	threshold = PollerFreshnessThreshold(hb.IntervalSeconds)
 	// Clamp a small negative age (a future-dated, clock-skewed heartbeat) to
-	// fresh — same as watchdog.go and recipient_liveness.go clamp negative
-	// ages to 0. Without this, a heartbeat a few seconds in the future reads
+	// fresh. Without this, a heartbeat a few seconds in the future reads
 	// stale and false-blocks the gate.
 	if age < 0 {
 		age = 0

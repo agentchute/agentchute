@@ -119,7 +119,7 @@ func activeSessionAliveAtWithReason(session *loop.ActiveSession, now time.Time) 
 	}
 	// WI-4 Fix 3: clamp a small negative age (future-dated / clock-skewed
 	// heartbeat) to 0 so a future timestamp is not treated as dead — matching
-	// PollerFreshness, watchdog.go, and recipient_liveness.go.
+	// PollerFreshness.
 	age := now.UTC().Sub(session.LastSeen.UTC())
 	if age < 0 {
 		age = 0
