@@ -96,7 +96,7 @@ func cmdSend(args []string) error {
 	}
 	fromID, err = resolveAgentID(fromID, "", cfg)
 	if err != nil {
-		return fmt.Errorf("missing --from; pass explicitly, set AGENTCHUTE_AGENT_ID, or run from a registered herdr/tmux pane")
+		return fmt.Errorf("missing --from; pass --from explicitly or set AGENTCHUTE_AGENT_ID")
 	}
 	if err := loop.ValidateAgentID(fromID); err != nil {
 		return fmt.Errorf("--from: %w", err)

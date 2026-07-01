@@ -2,12 +2,9 @@
 agent_id: gemini-cli
 vendor: google
 control_repo: /Users/alex/code/agentchute
-working_repos:
-  - /Users/alex/code/agentchute
 host: macbook-pro.local
-wake_method: tmux
-wake_target: "%2"
-last_seen: 2026-05-10T00:00:00Z
+last_seen: "2026-05-10T00:00:00Z"
+status: active
 ---
 
 # gemini-cli (this session)

@@ -4,7 +4,7 @@ Thanks for considering it. Three things up-front:
 
 1. **The spec is the source of truth.** [`AGENTCHUTE.md`](AGENTCHUTE.md) defines the wire format, file conventions, and behavior. If a PR changes any of that, propose the spec change first (open an issue or draft PR for the spec only). Don't sneak protocol changes into a code PR.
 
-2. **The binary is intentionally small.** agentchute's pitch is "a few markdown files and an optional wake poke." If a PR adds a dependency, a config file, a new subcommand category, or a feature that requires explanation, the bar is high. We'd rather ship less.
+2. **The binary is intentionally small.** agentchute's pitch is "a few markdown files and a pull-only inbox." If a PR adds a dependency, a config file, a new subcommand category, or a feature that requires explanation, the bar is high. We'd rather ship less.
 
 3. **Test what you change.** If you fix a bug, add a test that fails without the fix. If you add a feature, integration tests > unit tests for v0.1.0. Run the full pre-commit ritual before sending the PR:
 
@@ -26,7 +26,7 @@ go test ./...
 go build ./...
 ```
 
-Requires Go 1.21+. Tests that exercise tmux should use a fake `tmux` shimmed onto `PATH`; a real tmux server should not be required for automated test runs.
+Requires Go 1.21+. Tests are hermetic — they run against temp loop directories and stubbed wrappers; no external daemon is required.
 
 No new third-party dependencies beyond the existing PTY runner dependency (`github.com/creack/pty`) without a strong reason.
 
@@ -40,7 +40,7 @@ No new third-party dependencies beyond the existing PTY runner dependency (`gith
 
 ## What's in scope
 
-- Bug fixes (frontmatter parsing edge cases, wake-adapter quirks — currently tmux — race conditions in archive moves).
+- Bug fixes (frontmatter parsing edge cases, race conditions in archive moves, runner/poller edge cases).
 - Additional integration tests.
 - Better error messages.
 - Documentation improvements (especially in `AGENTCHUTE.md` worked examples).
@@ -87,7 +87,6 @@ Open a GitHub issue with:
 
 - agentchute version (release tag, or commit hash if built from source).
 - macOS or Linux + version.
-- `tmux -V` output.
 - Minimal reproduction (the registration files and command sequence that surface the bug).
 - Expected vs actual behavior.
 

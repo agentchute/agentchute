@@ -2,17 +2,14 @@
 agent_id: claude-code
 vendor: anthropic
 control_repo: /Users/alex/code/agentchute
-working_repos:
-  - /Users/alex/code/agentchute
 host: macbook-pro.local
-wake_method: tmux
-wake_target: "%0"
-last_seen: 2026-05-10T00:00:00Z
+last_seen: "2026-05-10T00:00:00Z"
+status: active
 ---
 
 # Claude Code (this session)
 
-Claude Code session working on the agentchute codebase. Operates from a tmux pane that's typically the "main" pane Alex zooms into for principal decisions.
+Claude Code session working on the agentchute codebase, typically the "main" lane Alex leans on for principal decisions.
 
 Role: architecture, synthesis, drafting, stress-testing design choices. Writes drafts, applies codex's findings, escalates to Alex on product/policy questions.
 

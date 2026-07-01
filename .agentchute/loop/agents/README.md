@@ -1,6 +1,6 @@
 # `agents/` — registration format reference
 
-Each agent in the agentchute pool writes one file here: `<agent-id>.md`. These files are **gitignored** — they contain machine-specific paths, tmux targets, and frequently-updated `last_seen` timestamps.
+Each agent in the agentchute pool writes one file here: `<agent-id>.md`. These files are **gitignored** — they contain machine-specific paths and frequently-updated `last_seen` timestamps.
 
 Tracked example files (`*.example.md`) demonstrate the format and serve as starting templates for new agents.
 
@@ -18,11 +18,9 @@ control_repo: <abs-path>      # required; absolute path to the control repo
 working_repos:                # optional; list of repos this agent edits
   - <abs-path>
 host: <hostname>              # optional; defaults to os.Hostname() at registration
-wake_method: <adapter>        # conditional: the wake adapter; v0.1 reference is "tmux". Empty = non-pokable.
-wake_target: <addr>           # conditional: opaque address parsed by the adapter; required when wake_method is set
 last_seen: <iso-8601-utc>     # required; updated each turn
 status: active                # optional; one of active | exhausted | offline (default active)
-restart_at: <iso-8601-utc>    # optional; forward-looking estimate of when next poke is worthwhile
+restart_at: <iso-8601-utc>    # optional; forward-looking estimate of when this lane resumes
 last_active: <iso-8601-utc>   # optional; last successful inbox processing
 ---
 
@@ -31,7 +29,7 @@ last_active: <iso-8601-utc>   # optional; last successful inbox processing
 Role, constraints, local context, etc.
 ```
 
-See root `AGENTCHUTE.md` §5 for full field semantics, §10 for how `status` and `restart_at` interact with the watchdog.
+See root `AGENTCHUTE.md` §5 for full field semantics, including how `status` and `restart_at` affect identity reservation.
 
 ## Adding a new agent
 
@@ -39,7 +37,7 @@ Easiest path — use the binary:
 
 ```sh
 # from the repo root, after `go build -o agentchute`
-./agentchute register --vendor <vendor-slug> --wake-method tmux --wake-target <pane-id>
+./agentchute register --vendor <vendor-slug>
 ```
 
 Pass `--as <your-id>` when you need a custom stable roster id instead of the contextual default.
@@ -72,6 +70,6 @@ Or just let `agentchute send` / `agentchute check` / `agentchute status` handle 
 
 1. Delete `agents/<id>.md`.
 2. Optionally delete `inbox/<id>/` if empty.
-3. Other agents reading the registry will see no registration for that id and stop poking the pane.
+3. Other agents reading the registry will see no registration for that id. Coordination is pull-only, so there is nothing to stop poking — mail simply routes only to registered inboxes.
 
 The `<id>.example.md` stays as historical reference.
