@@ -74,10 +74,10 @@ func LoadRunnerState(cfg *Config, agentID string) (*RunnerState, error) {
 // endpoint to dial — "reachable by poke" no longer exists. Reachability now
 // means LIVENESS: the agent's `.live` presence fact is fresh (loop.IsLive, R1).
 // An absent/stale/unreadable `.live` reads not-reachable, which is the safe
-// direction. The timeout parameter is retained for signature compatibility with
-// the vestigial callers (status REACHABLE column, register runner-primary
-// selection, poller ensure) but is unused; those callers keep compiling and
-// their wake-field reads are stripped in Gate 6c.
+// direction. The timeout parameter is retained for signature compatibility but
+// is unused. The sole remaining caller is poller ensure; the status REACHABLE
+// column and register's runner-primary selection that also called it were both
+// removed (Gate 6c stripped every registration wake-field read).
 func RegistrationReachable(cfg *Config, reg *Registration, _ time.Duration) bool {
 	if cfg == nil || reg == nil {
 		return false

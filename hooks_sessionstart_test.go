@@ -12,8 +12,8 @@ import (
 // is the engine of the contextual-identity duplicate race: two writes resolve
 // the same base before either is visible. The fix removes self-check from
 // SessionStart (boot owns it there) while keeping it on the per-turn hook
-// (UserPromptSubmit / BeforeAgent), where no boot runs and last_seen/wake still
-// need active reconciliation.
+// (UserPromptSubmit / BeforeAgent), where no boot runs and last_seen/.live
+// presence still need active reconciliation.
 //
 // This pins the contract against the embedded templates `hooks install` ships.
 func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
@@ -64,7 +64,7 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 			}
 		}
 		if !sawTurnSelfCheck {
-			t.Errorf("%s: %s dropped self-check; per-turn wake reconciliation still needs it", c.wrapper, c.turnEvent)
+			t.Errorf("%s: %s dropped self-check; per-turn last_seen/.live reconciliation still needs it", c.wrapper, c.turnEvent)
 		}
 	}
 }

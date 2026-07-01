@@ -445,9 +445,9 @@ func emitGateCodexStop(s gateStatus) error {
 // decision JSON. Current shipped Gemini hooks use BeforeAgent + --json.
 // On block: `{"decision":"deny","reason":"..."}` forces another turn.
 // On clear: `{"decision":"allow"}` lets the session end. Always exits 0
-// (the JSON is the signal). v0.2 wake-method R&D: this is the in-session
-// continuation surface for gemini-cli without an external scheduler;
-// typically paired with `--before continue`.
+// (the JSON is the signal). This is the in-session continuation surface for
+// gemini-cli without an external scheduler; typically paired with
+// `--before continue`.
 func emitGateGeminiAfterAgent(s gateStatus) error {
 	if !s.Blocked {
 		out := map[string]any{"decision": "allow"}

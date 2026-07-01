@@ -144,7 +144,7 @@ func cmdSend(args []string) error {
 
 	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse to send
 	// from an unregistered agent. The outbound message would carry a
-	// `from:` field naming an agent that peers can't discover, wake, or
+	// `from:` field naming an agent that peers can't discover or
 	// reply to.
 	selfPath := cfg.AgentRegistrationPath(fromID)
 	if _, err := os.Stat(selfPath); err == nil {

@@ -57,8 +57,9 @@ var (
 //     bare `check` in a hook, binary unresolvable for declared hook template).
 //   - WARN:    operational signal; surface but do not fail (stale reg,
 //     unread mail, /tmp binary, hook file absent for installed wrapper).
-//   - SKIP:    check is not applicable in this context (cross-host wake
-//     target; --as not provided so agent-specific check skipped).
+//   - SKIP:    check is not applicable in this context (the setup wake mode
+//     does not include the runner; --as not provided so agent-specific check
+//     skipped).
 //   - OK:      check passed.
 func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)

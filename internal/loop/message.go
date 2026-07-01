@@ -58,7 +58,7 @@ func FormatMessageID(t time.Time) string {
 
 // AnnounceResult is the outcome of AnnounceEnrollment: how many peers were
 // candidates, how many got the message in their inbox, and any per-peer
-// warnings (delivery or poke failures). A non-empty Warnings list is normal
+// delivery (inbox-write) warnings. A non-empty Warnings list is normal
 // and not fatal; register reports them to stderr and exits 0 regardless.
 type AnnounceResult struct {
 	Total    int
@@ -71,9 +71,9 @@ type AnnounceResult struct {
 // tracked *.example.md files, dotfiles, and non-.md entries). It is N direct
 // sends — NOT a broadcast mechanism — and stays within AGENTCHUTE.md §7.1.
 //
-// Per-peer failures (missing inbox, failed wake poke, malformed registration)
-// are collected as Warnings; the function does not abort on them. A returned
-// error means the agents directory itself could not be read.
+// Per-peer failures (missing inbox, malformed registration) are collected as
+// Warnings; the function does not abort on them. A returned error means the
+// agents directory itself could not be read.
 func AnnounceEnrollment(cfg *Config, self *Registration, now time.Time) (AnnounceResult, error) {
 	entries, err := os.ReadDir(cfg.AgentsDir())
 	if err != nil {
@@ -200,14 +200,13 @@ func CorrectiveBody(malformedItem, reason, sectionRef string) string {
 }
 
 // SendCorrective is the §11 enforcement send: composes a "protocol correction"
-// message and writes it to the offender's inbox, then pokes their tmux pane if
-// they have one. Returns the resulting Message on success.
+// message and writes it to the offender's inbox. Returns the resulting Message
+// on success.
 //
-// Per §11.1: best-effort. If the offender's registration is unreadable or has
-// no reachable wake method, the message still lands in the inbox; the poke is
-// skipped. If the offender's inbox dir doesn't exist, the corrective send
-// fails — the caller leaves the file quarantined and logs locally without
-// retrying.
+// Per §11.1: pull-only delivery. The corrective lands in the offender's inbox
+// and the offender picks it up on its own poll — there is no poke. If the
+// offender's inbox dir doesn't exist, the corrective send fails — the caller
+// leaves the file quarantined and logs locally without retrying.
 func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionRef string, now time.Time) (Message, error) {
 	body := CorrectiveBody(malformedItem, reason, sectionRef)
 	content := ComposeMessage(now, from, offender, "protocol correction", "findings", "", body)

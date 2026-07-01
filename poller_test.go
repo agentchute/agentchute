@@ -34,11 +34,11 @@ func TestPollerRunOnceWritesHeartbeat(t *testing.T) {
 	}
 }
 
-// WI-E2: a poller tick re-proves the agent's own wake target and records the
-// cached reachability fact, so a polling (non-runner) lane self-heals off-turn.
-// Gate 6a (pull-only): TestPollerTick_RecordsReachabilityFact was removed.
-// pollerTick no longer reproves or records a reachability fact (the own-wake
-// reprove call was deleted), so there is nothing to assert.
+// WI-E2 (removed): a poller tick used to re-prove the agent's own wake target and
+// record the cached reachability fact, so a polling (non-runner) lane self-healed
+// off-turn. Gate 6a (pull-only): TestPollerTick_RecordsReachabilityFact was
+// removed. pollerTick no longer reproves or records a reachability fact (the
+// own-wake reprove call was deleted), so there is nothing to assert.
 
 func TestPollerStatusBlocksWhenHeartbeatMissing(t *testing.T) {
 	root, _ := setupSendFixture(t)

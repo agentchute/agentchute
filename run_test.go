@@ -315,7 +315,8 @@ func (r *runnerRuntime) drainWake() bool {
 }
 
 // A malformed/skipped inbox file (parse failure) must still wake the runner:
-// gate blocks until `check` quarantines it, so the repair turn needs a poke.
+// gate blocks until `check` quarantines it, so the runner must still enqueue a
+// wake (inject the check-inbox cue) to drive the repair turn.
 func TestRunnerPoll_WakesOnMalformedFile(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
@@ -370,11 +371,11 @@ func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 	}
 }
 
-// WI-E2: the runner's off-turn poll loop re-proves its OWN wake target each tick
-// and records a cached reachability fact (ReachableAt) in its registration.
-// Gate 6a (pull-only): TestRunnerPollLoop_WritesReachableAt was removed.
-// pollOnce no longer reproves or records ReachableAt (the own-wake reprove call
-// at run.go's poll tick was deleted), so there is nothing to assert.
+// WI-E2 (removed): the runner's off-turn poll loop used to re-prove its OWN wake
+// target each tick and record a cached reachability fact (ReachableAt) in its
+// registration. Gate 6a (pull-only): TestRunnerPollLoop_WritesReachableAt was
+// removed. pollOnce no longer reproves or records ReachableAt (the own-wake
+// reprove call at run.go's poll tick was deleted), so there is nothing to assert.
 
 func setupShortRunFixture(t *testing.T) string {
 	t.Helper()

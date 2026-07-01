@@ -75,8 +75,8 @@ type Registration struct {
 	// are truthful and the launch-bypass warning can detect a raw launch. Absent
 	// = old behavior (every pre-upgrade registration); the fields are only
 	// emitted when populated, so a plain registration serializes byte-identically
-	// to the pre-upgrade format. None of these gate delivery or the structural
-	// poke — they are diagnostic only.
+	// to the pre-upgrade format. None of these gate delivery — they are
+	// diagnostic only.
 	LaunchedBy string // one of runner|hook|manual|poller (empty = unknown/legacy).
 	ShimName   string // the ac-* launcher shim that fronted this lane, when known.
 	HookEvent  string // the hook lifecycle event that enrolled (e.g. boot, self-check).
