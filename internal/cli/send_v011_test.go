@@ -170,6 +170,40 @@ func TestSendAskReplyDischargesAskerOwedViaCheck(t *testing.T) {
 	}
 }
 
+// Codex review (89ad2d9), retargeted post-P1: applyReplyRequiredFrontmatter's
+// idempotence check must be line/key scoped, not substring scoped. P1 removed
+// --task (the original vector), but --reply-to's value still flows into the
+// composed frontmatter's in_reply_to line — quoted (it contains a colon), so
+// it stays on one line, but the substring "reply_required:" is still present
+// inside it. That must not fool the splice into skipping the real
+// top-level reply_required: true field.
+func TestSendAskWithMisleadingReplyToValueStillSetsFrontmatter(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	withCwd(t, root, func() {
+		if err := cmdSend([]string{"--from", "claude-code", "--to", "codex",
+			"--reply-to", "reply_required: audit", "--ask",
+			"--body", "test body"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	body := readMostRecentInboxMessage(t, cfg, "codex")
+
+	// The frontmatter must contain the real reply_required: true line, not
+	// just the substring inside the quoted in_reply_to value.
+	lines := strings.Split(body, "\n")
+	foundActualField := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "reply_required: true" {
+			foundActualField = true
+			break
+		}
+	}
+	if !foundActualField {
+		t.Errorf("frontmatter missing top-level `reply_required: true` line (substring match on in_reply_to value confused the splice):\n%s", body)
+	}
+}
+
 // --reply-to with no outstanding obligation is silent OK (the reference is
 // just a threading hint; there is no recipient-side ledger, and an asker with
 // no matching `.owed` entry simply delivers the reply with in_reply_to).

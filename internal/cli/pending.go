@@ -349,7 +349,7 @@ func emitHookContextJSON(event, additionalContext string) error {
 // helpers use the trimmed-delimiter semantics shared with
 // loop.ValidateMessageFrontmatter, so `pending` / `boot` hook context
 // surfaces the same fields the consume path records — a hand-protocol
-// message with `---   \n` no longer shows blank task / reply_required just
+// message with `---   \n` no longer shows a blank reply_required just
 // because of trailing whitespace on the delimiter (codex final-pass note on
 // 0d468fa).
 func readFrontmatter(path string) (map[string]string, string, error) {

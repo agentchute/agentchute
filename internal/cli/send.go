@@ -269,11 +269,12 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 	fm := rest[:closeIdx]
 	body := rest[closeIdx:]
 	// Line/key-scoped idempotence: scanning for the substring
-	// "reply_required:" anywhere in fm would false-positive if a scalar
-	// value ever happened to contain that text. Walk the frontmatter line
-	// by line and check only the bare key (codex review on 89ad2d9; the
-	// task/status fields that originally motivated this are gone, P1, but
-	// the defensive line-scoping still guards in_reply_to/idempotency_key).
+	// "reply_required:" anywhere in fm would false-positive when
+	// in_reply_to's value contains that text — e.g. a --reply-to value of
+	// "reply_required: audit" is quoted onto one line (`in_reply_to:
+	// "reply_required: audit"`) but still contains the substring. Walk the
+	// frontmatter line by line and check only the bare key (codex review
+	// on 89ad2d9; see TestSendAskWithMisleadingReplyToValueStillSetsFrontmatter).
 	for _, line := range strings.Split(fm, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "reply_required:") {
