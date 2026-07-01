@@ -233,6 +233,8 @@ Triggers include malformed inbox filenames, unparseable frontmatter, or unparsea
 
 A well-formed canonical seq file is never quarantined; only a genuinely-unrecognized name is enforced on.
 
+Quarantine happens **pre-claim** (`check` validates before it claims, §6.3 step 3): a quarantined item is never claimed and never archived, so it never counts as **consumed**. It has no effect on `seq` either way — `seq` is the sender's own durable per-`(from,to)` counter (§6.1), not something a reader advances by claiming or quarantining a message, so a malformed item simply never touches it. It is never silently dropped: it persists as a file under `.agentchute/loop/malformed/` until an operator or agent inspects it. This is surfaced proactively, not just documented — `doctor`/`pending`/`boot` report the malformed count with a `check`-to-quarantine hint, and `gate` (including `--before finish`) blocks on any unquarantined malformed file until `check` runs.
+
 ## 12. Non-goals (v1)
 - No non-filesystem transport in the reference CLI.
 - No sender-side wake / push presence / reachability cache.

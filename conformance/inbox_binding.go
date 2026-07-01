@@ -24,12 +24,13 @@ type inboxBinding struct {
 	inbox     map[string][]Msg     // id -> ordered messages
 	seen      map[string]time.Time // id -> last_seen  (the .live fact)
 	delivered map[string]bool      // "to|from|seq" -> already landed (EEXIST dedup)
+	malformed map[string][]string  // id -> quarantined item names (§11.1)
 	window    time.Duration        // freshness window for "alive"
 	crash     bool                 // C1 fault: panic after act, before commit
 }
 
 func newInbox() *inboxBinding {
-	return &inboxBinding{inbox: map[string][]Msg{}, seen: map[string]time.Time{}, delivered: map[string]bool{}, window: 30 * time.Second}
+	return &inboxBinding{inbox: map[string][]Msg{}, seen: map[string]time.Time{}, delivered: map[string]bool{}, malformed: map[string][]string{}, window: 30 * time.Second}
 }
 
 func (b *inboxBinding) Name() string { return "inbox (N private inboxes)" }
@@ -180,4 +181,40 @@ func (b *inboxBinding) deliverSlow(to string, m Msg, staged chan<- struct{}, com
 	b.inbox[to] = append(b.inbox[to], m) // atomic make-visible
 	b.mu.Unlock()
 	return nil
+}
+
+// DeliverRaw models §11.1 quarantine at the substrate boundary: an inbound
+// item either decodes into a Msg (m != nil — same as Deliver) or it doesn't
+// (m == nil), in which case it is quarantined rather than delivered. This is
+// deliberately NOT part of the Binding interface: malformed-ness is a
+// wire/filename-grammar concern specific to the FS+frontmatter substrate, not
+// one of the seven substrate-agnostic invariants (a log-model record is
+// already-typed Go data with nothing analogous to a bad filename or
+// unparseable YAML — see logBinding, which has no DeliverRaw).
+//
+// Real reference behavior this stands in for (internal/loop.QuarantineInboxFile
+// + check.go): quarantine is a pure directory move done BEFORE any seq/consume
+// bookkeeping runs, so it never advances a seq counter and never occupies a
+// delivery/consume slot — modeled here by routing straight to the `malformed`
+// bucket instead of `inbox[to]`, touching no seq/delivered state at all.
+func (b *inboxBinding) DeliverRaw(to, item string, m *Msg) error {
+	if m == nil {
+		// §11.1.1 (quarantine) + §11.1.3 (continue): record it where it stays
+		// observable — never silently dropped — and do not block delivery of
+		// any other item to this or any other recipient.
+		b.mu.Lock()
+		b.malformed[to] = append(b.malformed[to], item)
+		b.mu.Unlock()
+		return nil
+	}
+	return b.Deliver(to, *m)
+}
+
+// MalformedItems returns the quarantined item names for id, oldest-first.
+func (b *inboxBinding) MalformedItems(id string) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]string, len(b.malformed[id]))
+	copy(out, b.malformed[id])
+	return out
 }
