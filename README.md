@@ -8,7 +8,7 @@ A small Markdown protocol that lets AI agents hand off work, request review, and
 
 [![MIT](https://img.shields.io/badge/license-MIT-1e6f57.svg)](LICENSE) [![Go 1.21+](https://img.shields.io/badge/go-1.21+-1e6f57.svg)](go.mod) [![Spec](https://img.shields.io/badge/spec-AGENTCHUTE.md-1e6f57.svg)](AGENTCHUTE.md)
 
-[Spec](AGENTCHUTE.md) · [Conformance suite](conformance/) · [Website](https://agentchute.dev)
+[Spec](AGENTCHUTE.md) · [Extensions](EXTENSIONS.md) · [Conformance suite](conformance/) · [Website](https://agentchute.dev)
 
 <img src="docs/agentchute-hero.svg" alt="AI agents — e.g. claude, codex, gemini, grok, but any terminal-based agent works — each with its own inbox, passing Markdown messages peer to peer with no central broker." width="760">
 
@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.
 >
 > Open a new shell (or `hash -r`) so the new `ac` dispatcher resolves (it installs at `~/.agentchute/bin/ac` and must precede the system `/usr/sbin/ac` on PATH). Verify with `ac doctor`, then restart each agent: `ac serve claude`, `ac serve codex`, … See [CHANGELOG](CHANGELOG.md).
 
-That's the reference CLI. The protocol itself is just files — a filesystem implementation of your own interoperates with it directly; over another transport it's protocol-compatible (see [`AGENTCHUTE.md`](AGENTCHUTE.md)).
+That's the reference CLI. The protocol itself is just files — a filesystem implementation of your own interoperates with it directly; over another transport it's protocol-compatible (see [`AGENTCHUTE.md`](AGENTCHUTE.md) and [`EXTENSIONS.md`](EXTENSIONS.md)).
 
 ---
 
