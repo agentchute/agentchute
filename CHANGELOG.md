@@ -6,6 +6,9 @@ The repo follows a release-squash convention: each release lands on `main` as a 
 
 ## Unreleased
 
+**Retention model for `archive/` + `malformed/` (C/P2)**
+- retention model specified for archive/+malformed/ (caller-managed, outside the delivery guarantee) + documented cleanup one-liner; no code/command added.
+
 **Removed the `task`/`status` workflow-vocabulary residue (P1 of the 0.9.1 post-release finish-line worklist)**
 - Deleted `send`'s `--task`/`--status` flags outright — they had been silently discarded by `ComposeMessage` since v0.9.0's protocol-v2 envelope cut and carried no wire meaning.
 - `ComposeMessage`'s signature dropped its four dead compat parameters (`now`, `to`, `task`, `status`); it now takes just `(from, replyTo, body)`.
