@@ -18,10 +18,7 @@ import (
 )
 
 const (
-	setupWakeTmux   = "tmux"
-	setupWakeHerdr  = "herdr"
 	setupWakeRunner = "runner"
-	setupWakeBoth   = "both"
 
 	setupPathBlockBegin = "# >>> agentchute setup PATH >>>"
 	setupPathBlockEnd   = "# <<< agentchute setup PATH <<<"
@@ -82,7 +79,7 @@ func cmdSetup(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	var opts setupOptions
-	fs.StringVar(&opts.Wake, "wake", "", "wake path to install: runner (the only supported value; all/both are deprecated aliases for runner)")
+	fs.StringVar(&opts.Wake, "wake", "", "wake path to install: runner (the only supported value)")
 	fs.StringVar(&opts.Wrappers, "wrappers", "all", "all (detected on PATH), none, or comma list: claude-code,codex,gemini-cli,grok")
 	fs.StringVar(&opts.ControlRepo, "control-repo", "", "control repo path (default: env or current git/cwd root)")
 	fs.StringVar(&opts.ShimDir, "shim-dir", "", "launcher shim directory (default: $HOME/.agentchute/bin)")
@@ -134,14 +131,11 @@ func cmdSetup(args []string) error {
 		}
 		opts.Wake = wake
 	}
-	canonWake, wakeDeprecation, err := normalizeSetupWake(opts.Wake)
+	canonWake, err := normalizeSetupWake(opts.Wake)
 	if err != nil {
 		return err
 	}
 	opts.Wake = canonWake
-	if wakeDeprecation != "" {
-		fmt.Println(wakeDeprecation)
-	}
 	if err := guardSetupInitRoot(root, opts); err != nil {
 		return err
 	}
@@ -210,9 +204,7 @@ ac dispatcher (e.g. ac serve codex); peers deliver by writing the inbox and neve
 
 Flags:
   --wake runner          install the runner wake path (the only supported value;
-                         prompted when omitted). "all"/"both" are deprecated
-                         aliases that now install runner only; tmux/herdr are
-                         rejected.
+                         prompted when omitted).
   --wrappers <set>       all (detected on PATH), none, or comma list
                          (claude-code,codex,gemini-cli,grok; default all)
   --control-repo <path>  repo to initialize (default env or current git/cwd root)
@@ -260,54 +252,15 @@ func defaultSetupShimDir() (string, error) {
 	return filepath.Join(home, ".agentchute", "bin"), nil
 }
 
-// wakeSetContains reports whether the canonical comma-joined wake set includes
-// method. Retained for the legacy-persisted-state cleanup/diagnostic paths
-// (previousSetupShimWrappers, doctor's wake check), which still read older
-// setup.json records that named tmux/herdr.
-func wakeSetContains(wake, method string) bool {
-	for _, m := range strings.Split(wake, ",") {
-		if strings.TrimSpace(m) == method {
-			return true
-		}
+// normalizeSetupWake validates a raw --wake value. After the pull-only redesign
+// the tmux/herdr wake adapters were removed and `runner` is the only installable
+// wake path; every other value (including the old `all`/`both`/`tmux`/`herdr`
+// aliases) is rejected. Empty is handled by the caller (interactive prompt).
+func normalizeSetupWake(raw string) (string, error) {
+	if strings.ToLower(strings.TrimSpace(raw)) == setupWakeRunner {
+		return setupWakeRunner, nil
 	}
-	return false
-}
-
-// normalizeSetupWake parses a raw --wake value into the single supported wake
-// path. After the pull-only redesign (simple-again) the tmux/herdr wake adapters
-// were removed, so `runner` is the only installable wake path. `all`/`both`
-// (which historically meant runner+tmux+herdr) are accepted as DEPRECATED
-// aliases that now install runner only; `tmux`/`herdr` (alone or in a combo) are
-// rejected with a clear message. Returns the canonical value ("runner") and an
-// optional deprecation note to surface to the user.
-func normalizeSetupWake(raw string) (string, string, error) {
-	raw = strings.ToLower(strings.TrimSpace(raw))
-	unrecognized := func(tok string) error {
-		return fmt.Errorf("--wake %q is not recognized; the only supported wake path is runner", tok)
-	}
-	if raw == "" {
-		return "", "", unrecognized("")
-	}
-	var deprecation string
-	for _, part := range strings.Split(raw, ",") {
-		tok := strings.TrimSpace(part)
-		switch tok {
-		case "":
-			// Reject empty tokens (stray/leading/trailing commas) for CLI typo safety.
-			return "", "", unrecognized(raw)
-		case setupWakeRunner:
-			// The one supported path.
-		case "all", setupWakeBoth:
-			// Legacy aliases: historically runner+tmux+herdr. The tmux/herdr
-			// adapters are gone, so they now install runner only.
-			deprecation = fmt.Sprintf("note: --wake %q is deprecated; the tmux/herdr wake adapters were removed — installing runner only", tok)
-		case setupWakeTmux, setupWakeHerdr:
-			return "", "", fmt.Errorf("--wake %q is no longer supported: the tmux/herdr wake adapters were removed in the pull-only redesign; use --wake runner", tok)
-		default:
-			return "", "", unrecognized(tok)
-		}
-	}
-	return setupWakeRunner, deprecation, nil
+	return "", fmt.Errorf("--wake %q is not recognized; the only supported wake path is runner", strings.TrimSpace(raw))
 }
 
 func guardSetupInitRoot(root string, opts setupOptions) error {
@@ -502,7 +455,7 @@ func findExecutableOutsideDir(name, skipDir string) string {
 }
 
 func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []string, detected map[string]string) {
-	shimWrappers := setupShimWrappers(opts.Wake, wrappers)
+	shimWrappers := setupShimWrappers(opts.Wake)
 	hookWrappers := setupHookableWrappers(wrappers)
 
 	fmt.Fprintln(w, "agentchute setup")
@@ -552,19 +505,14 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 }
 
 func setupNeedsShims(wake string) bool {
-	return wakeSetContains(wake, setupWakeRunner)
+	return strings.TrimSpace(wake) == setupWakeRunner
 }
 
-func setupShimWrappers(wake string, wrappers []string) []string {
+func setupShimWrappers(wake string) []string {
 	if setupNeedsShims(wake) {
-		// INVARIANT: Install all known wrappers when runner is among the wake
-		// paths so that a later install of a real binary works immediately.
+		// INVARIANT: runner is the only wake path — install all known wrappers so
+		// a later install of a real binary works immediately.
 		return setupWrapperNames()
-	}
-	if wakeSetContains(wake, setupWakeTmux) || wakeSetContains(wake, setupWakeHerdr) {
-		// INVARIANT: In tmux/herdr-only mode, we must install shims for hookless
-		// wrappers (grok) so they can enroll on startup via the shim.
-		return compactSetupWrappers(wrappers, func(w setupWrapper) bool { return !w.Hookable })
 	}
 	return nil
 }
@@ -605,7 +553,7 @@ func setupWrapperByName(name string) (setupWrapper, bool) {
 }
 
 func previousSetupShimWrappers(state setupGlobalState) []string {
-	wrappers := setupShimWrappers(state.Wake, state.Wrappers)
+	wrappers := setupShimWrappers(state.Wake)
 	if len(wrappers) == 0 && state.ShimsInstalled {
 		return state.Wrappers
 	}
@@ -693,7 +641,7 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			}
 		}
 
-		currentShimWrappers := setupShimWrappers(opts.Wake, wrappers)
+		currentShimWrappers := setupShimWrappers(opts.Wake)
 		currentNeedsShims := len(currentShimWrappers) > 0
 		for _, wrapper := range droppedWrappers(previousSetupShimWrappers(globalState), currentShimWrappers) {
 			if err := removeSetupShimsForWrapper(globalState.ShimDir, wrapper); err != nil {
@@ -1279,20 +1227,6 @@ func setupGlobalStatePath() (string, error) {
 	return filepath.Join(base, "agentchute", "setup.json"), nil
 }
 
-// canonicalizePersistedWake best-effort normalizes a wake value read back from
-// saved setup state so legacy/non-canonical values map to the same set the
-// set-aware predicates expect. Critically, pre-combination installs persisted
-// `Wake: "both"`; without this, setupShimWrappers("both", …) returns nil and
-// previousSetupShimWrappers mis-computes the prior shim set, orphaning shims on
-// a narrowing re-setup. Invalid or empty values are left untouched (callers that
-// require a wake mode validate separately).
-func canonicalizePersistedWake(wake string) string {
-	if canon, _, err := normalizeSetupWake(wake); err == nil {
-		return canon
-	}
-	return wake
-}
-
 func readSetupGlobalState() (setupGlobalState, error) {
 	path, err := setupGlobalStatePath()
 	if err != nil {
@@ -1306,7 +1240,9 @@ func readSetupGlobalState() (setupGlobalState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return setupGlobalState{}, err
 	}
-	state.Wake = canonicalizePersistedWake(state.Wake)
+	// runner is the only wake path — any persisted value (incl. a pre-redesign
+	// "both"/"all"/"tmux"/"herdr" or an absent field) resolves to runner.
+	state.Wake = setupWakeRunner
 	return state, nil
 }
 
@@ -1319,7 +1255,9 @@ func readSetupPoolState(cfg *loop.Config) (setupPoolState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return setupPoolState{}, err
 	}
-	state.Wake = canonicalizePersistedWake(state.Wake)
+	// runner is the only wake path — any persisted value (incl. a pre-redesign
+	// "both"/"all"/"tmux"/"herdr" or an absent field) resolves to runner.
+	state.Wake = setupWakeRunner
 	return state, nil
 }
 

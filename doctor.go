@@ -320,16 +320,6 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 		shimDir = filepath.Join(home, ".agentchute", "bin")
 	}
 
-	// Set-aware: the lifecycle-hook skip applies only when runner is NOT among
-	// the wake paths (runner requires the dispatcher on PATH). A legacy
-	// tmux/herdr-only set — single or combined ("tmux,herdr") — relies on the
-	// hookable wrapper's lifecycle hook, so the dispatcher is optional there.
-	if !setupNeedsShims(wake) && (wakeSetContains(wake, setupWakeTmux) || wakeSetContains(wake, setupWakeHerdr)) {
-		if _, hookable := hookWrapperForAgent(agentID); hookable {
-			return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("%s wake uses lifecycle hooks for this wrapper; ac dispatcher is optional", wake)}
-		}
-	}
-
 	pathEnv := opts.PathEnv
 	if pathEnv == "" {
 		pathEnv = os.Getenv("PATH")

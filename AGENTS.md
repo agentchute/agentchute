@@ -4,11 +4,11 @@ This file follows the [AGENTS.md](https://agents.md) convention. Any AI agent �
 
 ---
 
-<!-- agentchute-enrollment v20 begin -->
+<!-- agentchute-enrollment v21 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 **1. Setup / Startup Path**
-Run `agentchute setup` once per control repo. `runner` is the only supported wake path: coordination is pull-only, so senders write your inbox and never poke you, and the runner polls your own inbox to wake you. (`--wake all`/`both` are deprecated aliases for `runner`; `tmux`/`herdr` adapters were removed.) The canonical post-install step is:
+Run `agentchute setup` once per control repo. `runner` is the only supported wake path: coordination is pull-only, so senders write your inbox and never poke you, and the runner polls your own inbox to wake you. The canonical post-install step is:
 
 ```sh
 agentchute setup --wake runner --wrappers all --yes
@@ -85,7 +85,7 @@ agentchute gate --before finish --as <your-id>
 The gate (read-only) blocks `finish` on unread direct mail or an unregistered self; it does NOT check `.live` at `finish`/`continue` (a stale/absent `.live` blocks only the `commit`/`release` gates). Reply obligations are asker-owned only: outstanding/expired `.owed` obligations surface as non-blocking warnings, and a `reply_required` message never blocks the recipient. Clear the gate by consuming mail with `agentchute check --as <your-id>` (then `ack`); reply to any message that needs one with `agentchute send --reply-to <ref>`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v20 end -->
+<!-- agentchute-enrollment v21 end -->
 
 ---
 
