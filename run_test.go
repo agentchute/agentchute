@@ -182,7 +182,7 @@ func TestRunnerPollShutsDownWhenFenced(t *testing.T) {
 }
 
 // The runner exports its active serve_token to the child via the environment so
-// the child's sends are fenced (send.go/defer.go read AGENTCHUTE_SERVE_TOKEN).
+// the child's sends are fenced (send.go reads AGENTCHUTE_SERVE_TOKEN).
 func TestRunnerChildEnvCarriesServeToken(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})

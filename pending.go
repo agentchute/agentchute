@@ -120,16 +120,14 @@ func cmdPending(args []string) error {
 	entries := make([]pendingEntry, 0, len(msgs))
 	for _, msg := range msgs {
 		entry := pendingEntry{
-			MessageID: "",
 			From:      msg.Sender,
 			Filename:  msg.Filename,
 			Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano),
 		}
-		// Parse frontmatter for reply_required / priority / task / message_id.
+		// Parse frontmatter for reply_required / priority / task.
 		// Body intentionally not read unless --show-body.
 		fm, body, ferr := readFrontmatter(msg.Path)
 		if ferr == nil {
-			entry.MessageID = fm["message_id"]
 			entry.Task = fm["task"]
 			entry.Priority = fm["priority"]
 			if v := strings.ToLower(strings.TrimSpace(fm["reply_required"])); v == "true" {
@@ -179,9 +177,11 @@ func needsBootMessage(agentID string) string {
 	return fmt.Sprintf("agentchute: agent %q is not registered yet. Run agentchute boot --as %s --vendor <vendor> before processing mail (AGENTCHUTE.md §5.3).", agentID, agentID)
 }
 
-// pendingEntry is the structured record for a single unread message.
+// pendingEntry is the structured record for a single unread message. The
+// canonical (to,from,seq) identity is surfaced via Filename (`from-<from>_seq-<seq>`)
+// plus From and the inbox owner (= the agent listing) — there is no sender-asserted
+// message_id (v0.9.0).
 type pendingEntry struct {
-	MessageID     string `json:"message_id,omitempty"`
 	From          string `json:"from"`
 	Task          string `json:"task,omitempty"`
 	Filename      string `json:"filename"`
@@ -357,9 +357,9 @@ func emitHookContextJSON(event, additionalContext string) error {
 // helpers use the trimmed-delimiter semantics shared with
 // loop.ValidateMessageFrontmatter, so `pending` / `boot` hook context
 // surfaces the same fields the consume path records — a hand-protocol
-// message with `---   \n` no longer shows blank message_id / task /
-// reply_required just because of trailing whitespace on the delimiter
-// (codex final-pass note on 0d468fa).
+// message with `---   \n` no longer shows blank task / reply_required just
+// because of trailing whitespace on the delimiter (codex final-pass note on
+// 0d468fa).
 func readFrontmatter(path string) (map[string]string, string, error) {
 	// Cap the read at the inbox message limit, matching the consume path
 	// (check.go). pending/boot are hook-safe peek paths; a

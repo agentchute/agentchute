@@ -117,7 +117,6 @@ func cmdBoot(args []string) error {
 			Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano),
 		}
 		if fm, _, ferr := readFrontmatter(msg.Path); ferr == nil {
-			entry.MessageID = fm["message_id"]
 			entry.Task = fm["task"]
 			entry.Priority = fm["priority"]
 			if v := strings.ToLower(strings.TrimSpace(fm["reply_required"])); v == "true" {

@@ -233,8 +233,8 @@ func TestSendJSONShape(t *testing.T) {
 		if got.From != "claude-code" || got.To != "codex" {
 			t.Errorf("from/to mismatch: %+v", got)
 		}
-		if got.MessageID == "" {
-			t.Error("MessageID empty")
+		if got.Filename == "" {
+			t.Error("Filename empty")
 		}
 	})
 }

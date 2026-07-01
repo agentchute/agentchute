@@ -213,14 +213,13 @@ func TestPendingClaudeAndCodexHooksAreCurrentlyConvergent(t *testing.T) {
 
 // Codex follow-up on 0d468fa: pending's frontmatter peek must use the
 // same lenient delimiter semantics as the validator/recorder. A
-// hand-protocol message with `---   \n` must surface its message_id,
-// task, and reply_required flag in the unread display — not blank
-// fields just because of trailing whitespace on the delimiter line.
+// hand-protocol message with `---   \n` must surface its task and
+// reply_required flag in the unread display — not blank fields just
+// because of trailing whitespace on the delimiter line.
 func TestPendingReadsWhitespaceTolerantFrontmatter(t *testing.T) {
 	root, cfg := setupSendFixture(t)
 	inbox := cfg.AgentInboxDir("claude-code")
 	body := "---   \n" +
-		"message_id: ws-pending-test\n" +
 		"from: codex\n" +
 		"to: claude-code\n" +
 		"reply_required: true\n" +
@@ -238,7 +237,6 @@ func TestPendingReadsWhitespaceTolerantFrontmatter(t *testing.T) {
 		}
 		var got struct {
 			Messages []struct {
-				MessageID     string `json:"message_id"`
 				Task          string `json:"task"`
 				ReplyRequired bool   `json:"reply_required"`
 			} `json:"messages"`
@@ -250,9 +248,6 @@ func TestPendingReadsWhitespaceTolerantFrontmatter(t *testing.T) {
 			t.Fatalf("Messages = %d, want 1", len(got.Messages))
 		}
 		m := got.Messages[0]
-		if m.MessageID != "ws-pending-test" {
-			t.Errorf("MessageID = %q, want ws-pending-test (lenient delimiters not honored)", m.MessageID)
-		}
 		if m.Task != "whitespace-pending" {
 			t.Errorf("Task = %q, want whitespace-pending", m.Task)
 		}
