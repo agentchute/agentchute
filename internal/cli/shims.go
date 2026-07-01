@@ -30,6 +30,15 @@ var wrapperSpecs = []wrapperSpec{
 	{Key: "grok", Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
 }
 
+var legacyShimNamesBySetupWrapper = map[string][]string{
+	"claude-code": {"ac-claude", "claude", "claude-code"},
+	"codex":       {"ac-codex", "codex"},
+	"gemini-cli":  {"ac-gemini", "gemini", "gemini-cli", "agy"},
+	"grok":        {"ac-grok", "grok"},
+}
+
+var legacyShimSetupWrapperOrder = []string{"claude-code", "codex", "gemini-cli", "grok"}
+
 // wrapperForToken resolves a dispatcher wrapper token (`ac serve <token>`) by
 // canonical Key or alias. It deliberately does NOT match the legacy ac-* Name —
 // the dispatcher addresses wrappers, not generated shim filenames.
@@ -129,71 +138,20 @@ func cmdShimsInstall(args []string) error {
 	return nil
 }
 
-func shimInstallNames(spec wrapperSpec, aliases bool) []string {
-	names := []string{spec.Name}
-	if aliases {
-		names = append(names, spec.Aliases...)
+func legacyShimNamesForSetupWrapper(wrapper string) []string {
+	names := legacyShimNamesBySetupWrapper[strings.TrimSpace(wrapper)]
+	if len(names) == 0 {
+		return nil
 	}
-	return names
+	return append([]string(nil), names...)
 }
 
-func allShimCommandNames(aliases bool) []string {
+func allLegacyShimNames() []string {
 	var names []string
-	for _, spec := range wrapperSpecs {
-		names = append(names, shimInstallNames(spec, aliases)...)
+	for _, wrapper := range legacyShimSetupWrapperOrder {
+		names = append(names, legacyShimNamesBySetupWrapper[wrapper]...)
 	}
 	return names
-}
-
-func selectShimSpecs(wrapper string) ([]wrapperSpec, error) {
-	wrapper = strings.TrimSpace(wrapper)
-	if wrapper == "" || wrapper == "all" {
-		return wrapperSpecs, nil
-	}
-	wanted := map[string]bool{}
-	for _, part := range strings.Split(wrapper, ",") {
-		key := strings.TrimSpace(part)
-		if key == "" {
-			continue
-		}
-		wanted[key] = true
-	}
-	if len(wanted) == 0 {
-		return nil, fmt.Errorf("--wrapper must not be empty")
-	}
-	var selected []wrapperSpec
-	matched := map[string]bool{}
-	for _, spec := range wrapperSpecs {
-		if wanted[spec.Name] || wanted[spec.AgentID] || wantedAny(wanted, spec.Aliases) {
-			selected = append(selected, spec)
-			if wanted[spec.Name] {
-				matched[spec.Name] = true
-			}
-			if wanted[spec.AgentID] {
-				matched[spec.AgentID] = true
-			}
-			for _, alias := range spec.Aliases {
-				if wanted[alias] {
-					matched[alias] = true
-				}
-			}
-		}
-	}
-	for key := range wanted {
-		if !matched[key] {
-			return nil, fmt.Errorf("--wrapper %q is not recognized; known: claude-code, codex, gemini-cli, grok, all", key)
-		}
-	}
-	return selected, nil
-}
-
-func wantedAny(wanted map[string]bool, values []string) bool {
-	for _, v := range values {
-		if wanted[v] {
-			return true
-		}
-	}
-	return false
 }
 
 // renderDispatcherScript renders the single `ac` dispatcher that setup /
@@ -274,7 +232,7 @@ func removeLegacyWrapperShims(absDir string) ([]string, error) {
 		return nil, nil
 	}
 	var removed []string
-	for _, name := range allShimCommandNames(true) {
+	for _, name := range allLegacyShimNames() {
 		path := filepath.Join(absDir, name)
 		owned, err := isAgentchuteShim(path)
 		if err != nil {

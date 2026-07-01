@@ -29,21 +29,16 @@ func TestShimsInstallGrok(t *testing.T) {
 }
 
 func TestShimsAllIncludesGrok(t *testing.T) {
-	specs, err := selectShimSpecs("all")
-	if err != nil {
-		t.Fatal(err)
+	spec, ok := wrapperSpecForName("ac-grok")
+	if !ok {
+		t.Fatal("ac-grok legacy shim spec is missing")
 	}
-	var found bool
-	for _, s := range specs {
-		if s.Name == "ac-grok" {
-			found = true
-			if s.AgentID != "grok" || s.Vendor != "xai" {
-				t.Errorf("grok shim spec = %+v, want AgentID=grok Vendor=xai", s)
-			}
-		}
+	if spec.AgentID != "grok" || spec.Vendor != "xai" {
+		t.Errorf("grok shim spec = %+v, want AgentID=grok Vendor=xai", spec)
 	}
-	if !found {
-		t.Error("`shims install --wrapper all` does not include grok")
+	names := legacyShimNamesForSetupWrapper("grok")
+	if !stringSliceContains(names, "ac-grok") || !stringSliceContains(names, "grok") {
+		t.Errorf("grok legacy cleanup names = %v, want ac-grok and grok", names)
 	}
 }
 

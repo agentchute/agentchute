@@ -20,6 +20,11 @@ The repo follows a release-squash convention: each release lands on `main` as a 
 - `AGENTCHUTE.md` §11.1 now states the invariants that were previously only implicit in the code: a quarantined message is never claimed/archived (never counts as consumed), never touches `seq` (a sender-owned counter quarantine has no path to), and is never silently dropped — it persists under `.agentchute/loop/malformed/` until inspected. Cites the existing `doctor`/`pending`/`boot`/`gate` surfacing rather than inventing new UX.
 - **Executable-spec change, not a docs pass**: added a malformed-quarantine invariant to `conformance/` (previously zero coverage there). Inbox-only by design — quarantine is a wire/filename-grammar concern specific to the FS+frontmatter substrate; the shared-log binding has no analogous concept (a log record is already-typed data, nothing like a bad filename can occur once it's in the stream), so it's not run via `eachBinding`, matching the existing `TestInbox_PostConsumeResendRelandsThenKeyDedup` precedent. Extends `inboxBinding` with a `DeliverRaw`/`MalformedItems` test-only affordance rather than the shared `Binding` interface — malformed-ness isn't one of the seven substrate-agnostic invariants.
 
+**Replaced the dropped-wrapper legacy shim selector cleanup (D2 of the 0.9.1 post-release finish-line worklist)**
+- `removeSetupShimsForWrapper` now uses a static map keyed by setup wrapper name (`claude-code`, `codex`, `gemini-cli`, `grok`) to remove only that dropped wrapper's legacy `ac-*` and same-name shims.
+- Deleted the `selectShimSpecs`/`shimInstallNames` selector helpers; cleanup still marker-checks files, preserves the `ac` dispatcher, and leaves user-owned same-name files untouched.
+- Removed the now-satisfied §13.1 deferred ledger row from `AGENTCHUTE.md`.
+
 ## v0.9.1 (2026-07-01) — the lean release, finished
 
 A fast-follow that completes the v0.9.0 subtraction: remove all remaining legacy not in the current protocol spirit, then relocate the code into a clean shape. No new features; no wire-format change. Six dual-gated PRs (five code + one release-prep), each reviewed by codex + sonnet, plus a full 4-way docs sweep.
