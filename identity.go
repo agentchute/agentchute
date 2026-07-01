@@ -67,14 +67,6 @@ func resolveAgentIDRaw(flagID, vendor string, cfg *loop.Config) (string, error) 
 	return id, nil
 }
 
-func resolveRegisteredAgentID(flagID string, cfg *loop.Config) (string, error) {
-	id, err := resolveAgentID(flagID, "", cfg)
-	if err != nil {
-		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, or run with --vendor for a contextual id")
-	}
-	return id, nil
-}
-
 func contextualIdentityBase(flagID, vendor string) (string, bool, error) {
 	if strings.TrimSpace(flagID) != "" || strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID")) != "" {
 		return "", false, nil

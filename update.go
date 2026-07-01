@@ -508,9 +508,8 @@ func printRestartWarning(tag string, active []string, done bool) {
 	} else {
 		fmt.Fprintf(os.Stderr, "agentchute is updating to %s and will re-run setup.\n\n", tag)
 	}
-	fmt.Fprintln(os.Stderr, "setup stops local agentchute pollers/runners, clears live registrations,")
-	fmt.Fprintln(os.Stderr, "and releases repo Herdr names where possible. Until each wrapper restarts")
-	fmt.Fprintln(os.Stderr, "and re-enrolls, peers CANNOT wake it.")
+	fmt.Fprintln(os.Stderr, "setup stops local agentchute pollers/runners and clears live registrations.")
+	fmt.Fprintln(os.Stderr, "Each wrapper re-enrolls on its next start; until then it is absent from the pool.")
 	if len(active) > 0 {
 		fmt.Fprintf(os.Stderr, "\nRESTART every active agent now (%d): %s\n", len(active), strings.Join(active, ", "))
 	}

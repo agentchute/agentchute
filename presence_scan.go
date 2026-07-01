@@ -202,8 +202,8 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 	// lives in enumerateInPoolHerdrRunnerPresences.
 	hrPresences := enumerateInPoolHerdrRunnerPresences(cfg)
 
-	// herdr agents: enrolled when the name is a registered herdr wake target or
-	// matches an agent id outright.
+	// herdr agents: registrations carry no wake target, so a herdr pane counts as
+	// enrolled only when its bound name matches a registered agent id outright.
 	for _, p := range hrPresences {
 		if p.Kind != "herdr" {
 			continue
@@ -220,7 +220,9 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 		})
 	}
 
-	// tmux panes: enrolled when the pane id is a registered tmux wake target.
+	// tmux panes: detected by enumerating panes and their cwds (`tmux list-panes`).
+	// A pane id has no registration link, so every in-pool pane surfaces as
+	// present-but-not-enrolled.
 	for _, p := range listTmuxSafe() {
 		pane := strings.TrimSpace(p.PaneID)
 		if pane == "" {

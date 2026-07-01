@@ -137,8 +137,9 @@ func TestDeferTransitionsLedgerAndAcksSender(t *testing.T) {
 	})
 }
 
-// captureStderr mirrors captureStdout for the deferral-ack poke warning, which
-// is written to stderr (best-effort poke failures are non-fatal warnings).
+// captureStderr mirrors captureStdout for the deferral-ack delivery warning,
+// which is written to stderr (a best-effort inbox-write failure is a non-fatal
+// warning).
 func captureStderr(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -160,17 +161,13 @@ func captureStderr(t *testing.T, fn func() error) (string, error) {
 	return buf.String(), cmdErr
 }
 
-// TestDeferAck_RefusesUnownedRunnerSocket: when the deferral-ack's recipient
-// (the original sender) advertises a runner wake_target it does not own, the
-// poke is REFUSED (recipient-binding) without dialing. The defer still succeeds
-// and the ack still lands; only the poke is skipped, with a stderr warning
-// whose "refused" wording proves the refusal short-circuited ahead of any dial.
-// Gate 6a (pull-only): defer delivers the deferral-ack by writing the sender's
-// inbox file and NEVER pokes a wake target. Even when the ack recipient
-// advertises a junk runner socket, defer ignores the wake fields entirely — no
-// poke, no "refused" warning — and still transitions the ledger and lands the
-// ack. (Adjusted from TestDeferAck_RefusesUnownedRunnerSocket, whose subject —
-// the sender-side poke refusal — was removed.)
+// TestDeferAck_DeliversByFileWriteNoPoke: defer delivers the deferral-ack by
+// writing the original sender's inbox file and NEVER pokes a wake target
+// (pull-only, Gate 6a). Even when the ack recipient's registration carries junk
+// runner fields, defer ignores them entirely — no poke, no "refused" warning —
+// and still transitions the ledger and lands the ack. (Adjusted from the former
+// TestDeferAck_RefusesUnownedRunnerSocket, whose subject — the sender-side poke
+// refusal — was removed.)
 func TestDeferAck_DeliversByFileWriteNoPoke(t *testing.T) {
 	msgID, cfg := setupDeferFixture(t)
 	root := os.Getenv("TEST_DEFER_ROOT")

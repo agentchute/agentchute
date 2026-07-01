@@ -124,8 +124,8 @@ func TestCorrectiveBodyFormat(t *testing.T) {
 
 func TestSendCorrectiveWritesMessageAndSkipsPokeForEmptyTarget(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
-	newReg(t, cfg, "claude-code", "anthropic", "", "")    // self, non-pokable
-	offender := newReg(t, cfg, "codex", "openai", "", "") // also non-pokable so poke is a no-op
+	newReg(t, cfg, "claude-code", "anthropic", "", "")    // self
+	offender := newReg(t, cfg, "codex", "openai", "", "") // offender (pull-only: delivery is inbox-write only, no poke)
 
 	now := time.Date(2026, 5, 12, 4, 0, 0, 0, time.UTC)
 	msg, err := SendCorrective(cfg, "claude-code", offender.AgentID,

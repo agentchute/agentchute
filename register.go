@@ -272,14 +272,11 @@ func cmdRegister(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	var agentID, vendor, host, controlRepo, loopDir, bio string
-	var deprecatedWake string // accepted-but-ignored under pull-only (registrations carry no wake state)
 	var announce bool
 	var workingRepos repoListFlag
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, local, human)")
 	fs.StringVar(&host, "host", "", "host this agent runs on (defaults to OS hostname)")
-	fs.StringVar(&deprecatedWake, "wake-method", "", "deprecated/ignored: pull-only registrations publish no wake state")
-	fs.StringVar(&deprecatedWake, "wake-target", "", "deprecated/ignored: pull-only registrations publish no wake state")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.StringVar(&bio, "bio", "", "short self-description for the registration body (markdown allowed)")

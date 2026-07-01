@@ -26,7 +26,8 @@ import (
 //  3. Transition the entry to status=deferred via MarkPendingDeferred.
 //  4. Compose and send an auto-acknowledgment back to the original sender
 //     (task: deferred-reply, status: info, in_reply_to set) with the reason
-//     in the body. Best-effort poke if the sender is pokable.
+//     in the body. Delivery is a best-effort write to the sender's inbox;
+//     the sender picks it up on its own poll (pull-only, no poke).
 //
 // Step 4 is best-effort: if the sender's registration is missing or their
 // inbox dir doesn't exist (offline / never enrolled), we still committed

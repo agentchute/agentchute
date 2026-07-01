@@ -579,16 +579,16 @@ func pollerHelp() string {
 	return strings.TrimSpace(`
 Usage: agentchute poller <run|ensure|status> [flags]
 
-Recipient-side poller for agents without a reachable wake adapter. By default
+Recipient-side poller for agents that are not otherwise live. By default
 it is heartbeat-only: it proves this host can see the inbox but does not launch
 or consume wrapper mail. Pass --launch when an off-turn wrapper launch should
 process pending mail.
 
 Subcommands:
   run      long-lived poll loop; with --launch, launches the wrapper on work
-  ensure   no-op when any reachable wake target exists (tmux, herdr, or the
-           agentchute-run socket), an active wrapper session, or a fresh
-           poller heartbeat is present; otherwise start a heartbeat poller
+  ensure   no-op when the agent is already live (.live fresh), an active
+           wrapper session exists, or a fresh poller heartbeat is present;
+           otherwise start a heartbeat poller
   status   report whether the poller heartbeat is fresh
 
 Common flags:

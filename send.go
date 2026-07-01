@@ -13,22 +13,15 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// cmdSend writes an inbound message to a recipient's inbox and (best-effort)
-// pokes their wake target. Messaging extensions (AGENTCHUTE.md §6.2/§6.4 reply
-// obligations, §8 wake adapters):
+// cmdSend writes an inbound message to a recipient's inbox. Pull-only: delivery
+// is unconditional (write the inbox file); senders never poke a wake target.
+// Messaging extensions (AGENTCHUTE.md §6.2/§6.4 reply obligations):
 //   - --ask:        sets reply_required: true frontmatter and prepends a
 //     `## ASK` body heading if not already present.
 //   - --reply-to:   when the message_id matches a pending entry in OUR
 //     pending-reply ledger, transitions that entry to
 //     "replied" with reply_sent_at + reply_message_id.
-//   - --json:       structured output (filename, path, wake receipt, ledger
-//     transition record).
-//   - --no-wake:    explicit opt-out of the poke side effect.
-//
-// Always emits a wake-attempt receipt (wake_attempted, wake_result) for
-// sender-side visibility. Pull-only (Gate 6c): senders never poke, so the
-// receipt always reports no wake. Independent of --json: text mode adds it;
-// JSON mode includes it.
+//   - --json:       structured output (filename, path, ledger transition record).
 //
 // Warns (to stderr) if the sender's OWN pending-reply ledger has any entries
 // from <to> and --reply-to is not provided — catches "agent forgot to clear
@@ -38,7 +31,7 @@ func cmdSend(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	var fromID, toID, taskField, statusField, body, replyTo, controlRepo, loopDir string
-	var ask, jsonOut, noWake bool
+	var ask, jsonOut bool
 	var replyBy time.Duration
 	fs.StringVar(&fromID, "from", "", "sender agent id (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&toID, "to", "", "recipient agent id")
@@ -49,7 +42,6 @@ func cmdSend(args []string) error {
 	fs.BoolVar(&ask, "ask", false, "set reply_required: true and prepend `## ASK` heading to the body")
 	fs.DurationVar(&replyBy, "reply-by", 0, "with --ask: override the owed-reply deadline (e.g. 1h; default 30m)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
-	fs.BoolVar(&noWake, "no-wake", false, "skip the wake poke (delivery only)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 
@@ -152,7 +144,7 @@ func cmdSend(args []string) error {
 
 	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse to send
 	// from an unregistered agent. The outbound message would carry a
-	// `from:` field naming an agent that peers can't discover, wake, or
+	// `from:` field naming an agent that peers can't discover or
 	// reply to.
 	selfPath := cfg.AgentRegistrationPath(fromID)
 	if _, err := os.Stat(selfPath); err == nil {
@@ -221,10 +213,6 @@ func cmdSend(args []string) error {
 			return fmt.Errorf("record owed obligation for %s: %w", id.Filename(), err)
 		}
 	}
-
-	// Wake the recipient (or explicitly skip via --no-wake). Capture the
-	// outcome for the sender-side receipt regardless of success.
-	receipt := computeWakeReceipt(cfg, toID, noWake)
 
 	// --reply-to ledger clearing: if our own ledger has a pending entry
 	// matching this reply-to message_id AND the outbound recipient matches
@@ -295,8 +283,6 @@ func cmdSend(args []string) error {
 		From:           fromID,
 		To:             toID,
 		MessageID:      messageID,
-		WakeAttempted:  receipt.attempted,
-		WakeResult:     receipt.result,
 		ReplyToCleared: ledgerTransition,
 	}
 
@@ -322,25 +308,7 @@ type sendResult struct {
 	From           string `json:"from"`
 	To             string `json:"to"`
 	MessageID      string `json:"message_id"`
-	WakeAttempted  bool   `json:"wake_attempted"`
-	WakeResult     string `json:"wake_result"`
 	ReplyToCleared string `json:"reply_to_cleared,omitempty"`
-}
-
-type wakeReceipt struct {
-	method    string
-	attempted bool
-	result    string // "ok" | "failed" | "skipped (no method declared)" | "skipped (--no-wake)" | "skipped (recipient unregistered)"
-}
-
-// computeWakeReceipt returns the wake receipt for a send.
-//
-// Simple-again Gate 6a (pull-only): senders deliver by writing the recipient's
-// inbox file and NEVER poke a wake target. The receipt is retained only so the
-// send result / JSON shape stays stable; it always reports no wake attempted.
-// cfg, toID and noWake are unused now that there is no poke to compute.
-func computeWakeReceipt(_ *loop.Config, _ string, _ bool) wakeReceipt {
-	return wakeReceipt{method: "none", attempted: false, result: "none (pull)"}
 }
 
 func emitSendText(r sendResult) {
@@ -348,8 +316,6 @@ func emitSendText(r sendResult) {
 	fmt.Printf("  from:           %s\n", r.From)
 	fmt.Printf("  to:             %s\n", r.To)
 	fmt.Printf("  path:           %s\n", r.Path)
-	fmt.Printf("  wake_attempted: %s\n", yesno(r.WakeAttempted))
-	fmt.Printf("  wake_result:    %s\n", r.WakeResult)
 	if r.ReplyToCleared != "" {
 		fmt.Printf("  reply_to:       %s\n", r.ReplyToCleared)
 	}
@@ -359,13 +325,6 @@ func emitSendJSON(r sendResult) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(r)
-}
-
-func yesno(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
 }
 
 // countFrom is a small helper for the pre-send ledger warning. Linear scan
@@ -444,7 +403,7 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 
 func sendUsage(err error) error {
 	return fmt.Errorf(`%w
-usage: agentchute send --from <sender> --to <recipient> [--task <text>] [--status <status>] [--reply-to <msg-id>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--no-wake] [--control-repo <path>] [--loop-dir <path>]
+usage: agentchute send --from <sender> --to <recipient> [--task <text>] [--status <status>] [--reply-to <msg-id>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
 
   Ways to provide the body (pick one):
     --body "literal text"             short replies

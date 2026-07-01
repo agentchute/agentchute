@@ -235,11 +235,6 @@ func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackSt
 			}
 		}
 	}
-	// Pull-only (Gate 6c): registrations carry no wake state, so there are no
-	// pokable peers to find stale. WakeStale/WakeStaleCount stay in the JSON
-	// shape (always 0) for wire-shape stability with downstream parsers.
-	wakeStaleCount := 0
-
 	status := gateStatus{
 		Agent:           agentID,
 		Phase:           phase,
@@ -250,8 +245,6 @@ func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackSt
 		StaleReg:        staleReg,
 		MissingReg:      missingReg,
 		StaleRegAge:     staleRegAge,
-		WakeStale:       wakeStaleCount > 0,
-		WakeStaleCount:  wakeStaleCount,
 		OwedOutstanding: owedOutstanding,
 		OwedExpired:     owedExpired,
 		OwedCorrupt:     owedCorrupt,
@@ -259,7 +252,7 @@ func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackSt
 	}
 
 	// Apply the phase predicates to build the blocking-reasons list and
-	// any non-blocking warnings (e.g., wake_stale on release).
+	// any non-blocking warnings.
 	status.Reasons, status.Warnings = evaluateGatePhase(phase, status, requireConfirm, ackStaleReg)
 	// Gate 4 drain gauge (ADVISORY only — never blocks): surface legacy
 	// nonce-named files still present so the one-release migration window is
@@ -318,15 +311,13 @@ type gateStatus struct {
 	StaleReg        bool     `json:"stale_reg"`
 	MissingReg      bool     `json:"missing_reg,omitempty"` // own registration absent (subset of StaleReg)
 	StaleRegAge     string   `json:"stale_reg_age,omitempty"`
-	WakeStale       bool     `json:"wake_stale"`
-	WakeStaleCount  int      `json:"wake_stale_count,omitempty"`
 	OwedOutstanding int      `json:"owed_outstanding,omitempty"` // asker-owned obligations awaiting a reply (non-blocking)
 	OwedExpired     int      `json:"owed_expired,omitempty"`     // subset past deadline (dead-recipient signal; non-blocking)
 	OwedCorrupt     bool     `json:"owed_corrupt,omitempty"`     // .owed ledger unreadable (non-blocking warning)
 	ClaimedResidue  int      `json:"claimed_residue,omitempty"`  // messages claimed by check, not yet acked (non-blocking)
 	Blocked         bool     `json:"blocked"`
 	Reasons         []string `json:"reasons,omitempty"`
-	Warnings        []string `json:"warnings,omitempty"` // non-blocking signals (e.g., wake_stale on release)
+	Warnings        []string `json:"warnings,omitempty"` // non-blocking signals
 }
 
 func isValidGatePhase(phase string) bool {
@@ -445,9 +436,9 @@ func emitGateCodexStop(s gateStatus) error {
 // decision JSON. Current shipped Gemini hooks use BeforeAgent + --json.
 // On block: `{"decision":"deny","reason":"..."}` forces another turn.
 // On clear: `{"decision":"allow"}` lets the session end. Always exits 0
-// (the JSON is the signal). v0.2 wake-method R&D: this is the in-session
-// continuation surface for gemini-cli without an external scheduler;
-// typically paired with `--before continue`.
+// (the JSON is the signal). This is the in-session continuation surface for
+// gemini-cli without an external scheduler; typically paired with
+// `--before continue`.
 func emitGateGeminiAfterAgent(s gateStatus) error {
 	if !s.Blocked {
 		out := map[string]any{"decision": "allow"}
@@ -485,7 +476,7 @@ never pokes peers.
 Phases:
   consensus  blocks on outstanding work
   commit     same as consensus + flags stale registration (> 30m)
-  release    same as commit + warns on wake_stale peer registrations
+  release    same as commit
   finish     blocks on outstanding work
              (strongest gate; for end-of-turn use)
   continue   same predicate as finish; for in-session decision hooks

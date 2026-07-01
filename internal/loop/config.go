@@ -171,9 +171,11 @@ func (c *Config) RunnerStatePath(agentID string) string {
 }
 
 // RunnerSocketPath returns the default local Unix socket path for the
-// agentchute-run wake adapter. When the in-state path is too long for a Unix
-// socket address (the sun_path limit is ~104 bytes on darwin/108 on linux), it
-// falls back to a per-user temp directory; see runnerSocketTempPath.
+// agentchute-run runner. Pull-only (Gate 6b) no longer binds this socket; the
+// path is retained only so reset can clean up a socket left by a pre-pull-only
+// runner. When the in-state path is too long for a Unix socket address (the
+// sun_path limit is ~104 bytes on darwin/108 on linux), it falls back to a
+// per-user temp directory; see runnerSocketTempPath.
 func (c *Config) RunnerSocketPath(agentID string) string {
 	inState := c.runnerSocketInStatePath(agentID)
 	if len(inState) < 100 {

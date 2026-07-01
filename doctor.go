@@ -57,8 +57,9 @@ var (
 //     bare `check` in a hook, binary unresolvable for declared hook template).
 //   - WARN:    operational signal; surface but do not fail (stale reg,
 //     unread mail, /tmp binary, hook file absent for installed wrapper).
-//   - SKIP:    check is not applicable in this context (cross-host wake
-//     target; --as not provided so agent-specific check skipped).
+//   - SKIP:    check is not applicable in this context (the setup wake mode
+//     does not include the runner; --as not provided so agent-specific check
+//     skipped).
 //   - OK:      check passed.
 func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
@@ -192,7 +193,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 		checks = append(checks, doctorCheck{
 			Name:     "agent_specific_checks",
 			Severity: severitySkip,
-			Message:  "no --as / $AGENTCHUTE_AGENT_ID; skipped per-agent checks (registration freshness, inbox state, ledger state, wake target validity)",
+			Message:  "no --as / $AGENTCHUTE_AGENT_ID; skipped per-agent checks (registration freshness, inbox state, ledger state)",
 		})
 	}
 
@@ -832,7 +833,7 @@ Usage: agentchute doctor [--as <id>] [--json]
 
 Diagnostic aggregator. Runs an ordered set of checks against the local
 loop directory, the calling environment, and (if --as is provided) the
-named agent's registration / inbox / ledger / wake target / recipient
+named agent's registration / inbox / ledger / recipient
 liveness. Reports each check with a severity (BLOCKER / WARN / OK / SKIP)
 and exits nonzero when any BLOCKER is found.
 

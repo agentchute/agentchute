@@ -428,50 +428,6 @@ func TestGateBlocksOnMalformedInbox(t *testing.T) {
 	})
 }
 
-// Pull-only (Gate 6c): there are no pokable peers, so `release` never raises a
-// WAKE_STALE warning. The wake_stale field stays in the gate JSON shape (always
-// false) for wire-shape stability; release must still clear (not block) even with
-// a backdated peer present.
-func TestGateReleaseNoWakeStaleUnderPullOnly(t *testing.T) {
-	root := setupBootFixture(t)
-	withCwd(t, root, func() {
-		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
-			t.Fatal(err)
-		}
-		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
-			t.Fatal(err)
-		}
-
-		// Backdate codex's last_seen past the stale threshold — under pull-only it
-		// is not pokable, so this never produces a wake_stale signal.
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		codexPath := cfg.AgentRegistrationPath("codex")
-		reg, err := loop.ReadRegistration(codexPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		reg.LastSeen = time.Now().UTC().Add(-2 * StaleRegThreshold)
-		if err := loop.WriteRegistration(codexPath, reg); err != nil {
-			t.Fatal(err)
-		}
-
-		out, err := captureStdout(t, func() error { return cmdGate(gateArgs("release", "--json")) })
-		if err != nil {
-			t.Errorf("err = %v, want nil (release must clear)", err)
-		}
-		var got gateStatus
-		if jerr := json.Unmarshal([]byte(out), &got); jerr != nil {
-			t.Fatalf("unmarshal: %v\n%s", jerr, out)
-		}
-		if got.WakeStale || got.WakeStaleCount != 0 {
-			t.Errorf("WakeStale=%v count=%d; want false/0 under pull-only", got.WakeStale, got.WakeStaleCount)
-		}
-	})
-}
-
 // Codex review (c17e310): missing-registration must report a distinct
 // reason from "registration is stale (age N > threshold)", since the
 // missing case has no age to cite — leaking "age 0s > 30m" was misleading.
@@ -510,7 +466,7 @@ func TestGateRequiresPhaseFlag(t *testing.T) {
 func TestGateFinishAcceptsActiveSessionHeartbeat(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
-		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic", "--wake-target", ""}); err != nil {
+		if err := cmdRegister([]string{"--as", "claude-code", "--vendor", "anthropic"}); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})

@@ -16,8 +16,7 @@ import (
 // turn boundary, and a "crash" is simply NOT calling ack between two checks.
 
 // setupConsumeFixture registers alice + bob in a fresh control repo and returns
-// the loop config. Both are pokable peers so sends have a wake target; tests
-// pass --no-wake to keep the poke out of the way.
+// the loop config. Pull-only: sends deliver by writing the inbox unconditionally.
 func setupConsumeFixture(t *testing.T) (string, *loop.Config) {
 	t.Helper()
 	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
@@ -25,11 +24,11 @@ func setupConsumeFixture(t *testing.T) (string, *loop.Config) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
 		// alice gets an explicit (different) host so registering bob on this host
-		// does not prune alice as a stale same-host tmux peer.
-		if err := cmdRegister([]string{"--as", "alice", "--vendor", "anthropic", "--host", "peer-host", "--wake-method", "tmux", "--wake-target", "%1"}); err != nil {
+		// does not prune alice as a stale same-host peer.
+		if err := cmdRegister([]string{"--as", "alice", "--vendor", "anthropic", "--host", "peer-host"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := cmdRegister([]string{"--as", "bob", "--vendor", "openai", "--wake-method", "tmux", "--wake-target", "%2"}); err != nil {
+		if err := cmdRegister([]string{"--as", "bob", "--vendor", "openai"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -71,7 +70,7 @@ func TestConsumeBoundary_ClaimRedeliverAck(t *testing.T) {
 
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "alice", "--to", "bob",
-			"--task", "greet", "--body", "hello bob", "--no-wake"}); err != nil {
+			"--task", "greet", "--body", "hello bob"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -158,7 +157,7 @@ func TestConsumeBoundary_ClaimRedeliverAck(t *testing.T) {
 func TestConsumeBoundary_NoArchiveDoesNotClaim(t *testing.T) {
 	root, cfg := setupConsumeFixture(t)
 	withCwd(t, root, func() {
-		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "dry run", "--no-wake"}); err != nil {
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "dry run"}); err != nil {
 			t.Fatal(err)
 		}
 		out, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob", "--no-archive"}) })
@@ -187,7 +186,7 @@ func TestOwedFlip_RecordClearExpireGateWarn(t *testing.T) {
 	// alice ASKS bob → alice records an owed obligation keyed (to=bob, from=alice, seq=1).
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "alice", "--to", "bob",
-			"--task", "review", "--ask", "--body", "please review", "--no-wake"}); err != nil {
+			"--task", "review", "--ask", "--body", "please review"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -208,7 +207,7 @@ func TestOwedFlip_RecordClearExpireGateWarn(t *testing.T) {
 	// bob replies, echoing the ref as in_reply_to (via --reply-to).
 	withCwd(t, root, func() {
 		if err := cmdSend([]string{"--from", "bob", "--to", "alice",
-			"--task", "review-reply", "--reply-to", ref, "--body", "done", "--no-wake"}); err != nil {
+			"--task", "review-reply", "--reply-to", ref, "--body", "done"}); err != nil {
 			t.Fatal(err)
 		}
 	})

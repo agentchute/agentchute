@@ -146,7 +146,7 @@ The reference encoding is the canonical filename `from-<from>_seq-<020d>.md` (`s
 1. Compose body (UTF-8).
 2. Allocate the next durable `seq` for `(from, to)` (write-ahead). The active serve token, if any, is fence-verified first.
 3. **Deliver into the inbox with the no-overwrite guarantee** under the canonical `(to, from, seq)` name (unique-temp + atomic `link()`; `EEXIST` = this exact message already landed = success).
-4. **No wake.** The sender does not poke or signal the recipient. (`send` retains a wake-receipt field in its output only for output-shape stability; it always reports no wake.)
+4. **No wake.** The sender does not poke or signal the recipient — it only writes the message into the recipient's inbox. The recipient discovers it on its own poll.
 
 ### 6.3 Recipient flow — two-phase consume (act-then-archive)
 Consumption is at-least-once and split across two verbs:
