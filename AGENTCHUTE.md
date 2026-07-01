@@ -252,10 +252,11 @@ One-release compatibility carried from v0.8.0. Each has an in-code `// COMPAT(re
 
 | Item | Location | Target | Gate |
 |------|----------|--------|------|
-| `run` verb → `serve` alias removal | `dispatch.go` (`commandHandlers["run"]`), `run.go` | v0.10.0 — `serve` shipped in v0.9.0 with `run` as a deprecated working alias (no stderr/stdout deprecation spam; the docs/help carry it); delete the `"run": cmdServe` alias entry and its `COMPAT` marker | one release elapsed since v0.9.0 (v0.10.0 branch-cut) |
 | `renderShimScript` (legacy shim generator) | `shims.go` | v0.8.9 | **none** — zero production callers; migrate its 3 test-fixture callers to inline legacy content |
 | `selectShimSpecs`/`shimInstallNames` selectors → static legacy-name list | `shims.go`, `setup.go` | v0.8.9 | **none** — behavior-preserving swap; the cleanup only needs the legacy `ac-*` name set, not generation logic |
 | `shims install --wrapper`/`--aliases` + `setup --aliases` no-op flags | `shims.go`, `setup.go` | after cutover | live pool confirmed running the `ac` dispatcher (v0.8.8+), not merely "dispatcher code exists" — old scripts/muscle-memory may still pass them |
+
+**DONE in v0.9.1 — `run` verb alias + redundant `default-id` command removed (clean delete).** Pulled forward from the v0.10.0 target: `serve` is now the only launch verb (the `"run": cmdServe` dispatch entry, its `COMPAT` marker, and the run-alias pool attribution in `setup_reset.go` are gone; `agentchute run` / `ac run <wrapper>` now error as unknown). `identity` is the single id-resolution command — the `"default-id"` alias was dropped (`identity` is what the enrollment docs use). Enrollment marker bumped v19 → v20.
 
 **DONE in v0.9.0 — legacy-nonce inbox reader + writer removed (clean delete).** The one-release dual-read window is over: the live-bus gauge reported zero legacy `<ts>_from-<sender>_msg-<nonce>.md` files pool-wide, so both the reader (`inboxFilenameRE`/`inboxFilenameShapeRE`, the `InferSenderFromFilename` legacy branch, the `LegacyNonce` classifier + struct field, `ParseInboxFilename`, `CountLegacyNonce`) and the test-only writer (`WriteInboxMessage`/`generateNonce`/`formatInboxFilename`) were deleted. The canonical `from-<from>_seq-<020d>.md` is now the only inbox filename format; a stray legacy-named file is simply skipped as unrecognized (and quarantined by `check` like any other malformed name). The non-blocking `gate`/`doctor` drain gauges were removed with it.
 

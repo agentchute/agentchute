@@ -21,7 +21,7 @@ points so you don't call them by hand:
 Coordination is **pull-only**: senders write to an inbox and never poke a recipient. Each
 agent runs under the `ac` dispatcher (`ac serve <wrapper>` → `agentchute serve`), a per-agent supervisor that polls
 the agent's own inbox and injects `check inbox`. There is no tmux/herdr wake and no
-watchdog — those were removed in 0.8. (`run` is a deprecated alias for `serve`, removed in v0.10.0.)
+watchdog — those were removed in 0.8.
 
 ```sh
 # install + wire the repo once

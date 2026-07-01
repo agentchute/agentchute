@@ -427,7 +427,7 @@ func TestSetupResetsRuntimeStateButPreservesPendingReplies(t *testing.T) {
 		case 111:
 			return filepath.Join(home, "agentchute") + " poller run --as codex-agentchute --control-repo " + root + " --loop-dir " + loopDir
 		case 222:
-			return filepath.Join(home, "agentchute") + " run --as codex-agentchute --control-repo " + root + " --loop-dir " + loopDir + " -- codex"
+			return filepath.Join(home, "agentchute") + " serve --as codex-agentchute --control-repo " + root + " --loop-dir " + loopDir + " -- codex"
 		default:
 			return ""
 		}
@@ -506,8 +506,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v19 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v19 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v20 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v20 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)

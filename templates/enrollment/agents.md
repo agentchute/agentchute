@@ -1,4 +1,4 @@
-<!-- agentchute-enrollment v19 begin -->
+<!-- agentchute-enrollment v20 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 **1. Setup / Startup Path**
@@ -8,9 +8,9 @@ Run `agentchute setup` once per control repo. `runner` is the only supported wak
 agentchute setup --wake runner --wrappers all --yes
 ```
 
-> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the single `ac` dispatcher (`ac serve <wrapper>`; `run` is a deprecated alias for `serve`, removed in v0.10.0).
+> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the single `ac` dispatcher (`ac serve <wrapper>`).
 
-Start sessions with `ac serve <wrapper>` from a control repo (`run` is a deprecated alias for `serve`, removed in v0.10.0). The dispatcher routes through `agentchute serve`, which registers you, acquires a serve lease (id-uniqueness + fencing token), refreshes `last_seen` and your `.live` presence, polls your OWN inbox, exports your resolved id as `AGENTCHUTE_AGENT_ID` into the wrapper, and injects `[agentchute] check inbox` when mail arrives. The runner publishes no wake target — peers never poke it (pull-only). Hookless wrappers such as Grok still need the dispatcher for startup because they have no lifecycle hook that can run `boot`; `ac serve <wrapper>` enrolls them. Treat the bracketed prefix as machine metadata: the injection is only a CUE — you must actually RUN `agentchute check --as "$AGENTCHUTE_AGENT_ID"` to claim mail (then `ack` to commit); the runner does NOT consume it for you.
+Start sessions with `ac serve <wrapper>` from a control repo. The dispatcher routes through `agentchute serve`, which registers you, acquires a serve lease (id-uniqueness + fencing token), refreshes `last_seen` and your `.live` presence, polls your OWN inbox, exports your resolved id as `AGENTCHUTE_AGENT_ID` into the wrapper, and injects `[agentchute] check inbox` when mail arrives. The runner publishes no wake target — peers never poke it (pull-only). Hookless wrappers such as Grok still need the dispatcher for startup because they have no lifecycle hook that can run `boot`; `ac serve <wrapper>` enrolls them. Treat the bracketed prefix as machine metadata: the injection is only a CUE — you must actually RUN `agentchute check --as "$AGENTCHUTE_AGENT_ID"` to claim mail (then `ack` to commit); the runner does NOT consume it for you.
 
 **The project is the communication boundary**: agents by default only see and talk to peers in the same discovered project pool. Unrelated projects on one host or tmux server are isolated because each project has its own pool and, when identity is not explicit, the CLI derives project-scoped IDs from the folder name (for example, `codex-agentchute`).
 
@@ -50,7 +50,7 @@ The IDs above are wrapper bases. With no explicit identity, the reference CLI de
 
 (Pull-only registrations carry no wake target, so there is no longer a herdr/tmux pane to map back to a prior registration — id comes from `--as` / `$AGENTCHUTE_AGENT_ID` or the contextual default.)
 
-**Pin it once.** Resolve your id ONE time at startup and reuse the SAME id on every command. The `ac` dispatcher does this for you (it exports `AGENTCHUTE_AGENT_ID`). Otherwise export it yourself before `boot` (precedence step 2 then shadows the contextual default for the whole session). A bare `--vendor` with no `--as`/env is NOT a stable identity: it re-derives the contextual default (step 3) on every call, so as live lanes come and go the resolved `-N` suffix can change between calls and you silently `check` / `gate` the WRONG inbox. `agentchute identity --vendor <vendor>` (alias `default-id`) prints the currently-resolved id — use it for one-time discovery, not as a per-call identity.
+**Pin it once.** Resolve your id ONE time at startup and reuse the SAME id on every command. The `ac` dispatcher does this for you (it exports `AGENTCHUTE_AGENT_ID`). Otherwise export it yourself before `boot` (precedence step 2 then shadows the contextual default for the whole session). A bare `--vendor` with no `--as`/env is NOT a stable identity: it re-derives the contextual default (step 3) on every call, so as live lanes come and go the resolved `-N` suffix can change between calls and you silently `check` / `gate` the WRONG inbox. `agentchute identity --vendor <vendor>` prints the currently-resolved id — use it for one-time discovery, not as a per-call identity.
 
 **Verify at session start** (read-only — refreshes nothing, archives nothing; confirms you are enrolled AND present via a fresh `.live`):
 
@@ -79,4 +79,4 @@ agentchute gate --before finish --as <your-id>
 The gate (read-only) blocks `finish` on unread direct mail or an unregistered self; it does NOT check `.live` at `finish`/`continue` (a stale/absent `.live` blocks only the `commit`/`release` gates). Reply obligations are asker-owned only: outstanding/expired `.owed` obligations surface as non-blocking warnings, and a `reply_required` message never blocks the recipient. Clear the gate by consuming mail with `agentchute check --as <your-id>` (then `ack`); reply to any message that needs one with `agentchute send --reply-to <ref>`.
 
 Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v19 end -->
+<!-- agentchute-enrollment v20 end -->

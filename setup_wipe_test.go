@@ -375,12 +375,11 @@ func TestSetupCommandMatchesRunnerPool(t *testing.T) {
 		t.Fatalf("runner cmdline without --as but with the pool path must match: %q", runnerNoAs)
 	}
 
-	// The deprecated `run` alias (removed v0.10.0) must be attributed IDENTICALLY to
-	// `serve` — a supervisor launched via `agentchute run` is still a live runner for
-	// this pool.
-	runAlias := "/usr/local/bin/agentchute run --control-repo " + root + " --loop-dir " + cfg.LoopDir
-	if !setupCommandMatchesRunnerPool(runAlias, cfg) {
-		t.Fatalf("deprecated `agentchute run` alias supervisor must still match this pool: %q", runAlias)
+	// The `run` verb was removed (serve is the only launch verb): a supervisor
+	// launched via the old `agentchute run` is no longer attributed to this pool.
+	runVerb := "/usr/local/bin/agentchute run --control-repo " + root + " --loop-dir " + cfg.LoopDir
+	if setupCommandMatchesRunnerPool(runVerb, cfg) {
+		t.Fatalf("removed `agentchute run` verb must NOT match the runner pool: %q", runVerb)
 	}
 
 	// A poller carries --as <id>; the poller matcher still requires it.

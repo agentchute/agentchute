@@ -314,11 +314,7 @@ func setupCommandMatchesPool(cmdline, subcommand string, cfg *loop.Config) bool 
 		}
 	case "serve":
 		// The `ac` dispatcher and the legacy ac-* shim both exec `agentchute serve`.
-		// `agentchute run` remains a working deprecated alias (removed v0.10.0), so a
-		// directly-`run`-launched supervisor must still be attributed identically.
-		serveMatch := strings.Contains(normalized, " agentchute serve ") || strings.Contains(normalized, "/agentchute serve ")
-		runAliasMatch := strings.Contains(normalized, " agentchute run ") || strings.Contains(normalized, "/agentchute run ")
-		if !serveMatch && !runAliasMatch {
+		if !strings.Contains(normalized, " agentchute serve ") && !strings.Contains(normalized, "/agentchute serve ") {
 			return false
 		}
 	default:

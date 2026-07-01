@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-<!-- agentchute-enrollment v19 begin -->
+<!-- agentchute-enrollment v20 begin -->
 ## ENROLLMENT — agentchute coordination loop
 
 Canonical enrollment spec: [`AGENTS.md`](AGENTS.md) (full identity precedence, polling, hooks). This file is a thin pointer.
@@ -31,7 +31,7 @@ agentchute setup --wake runner --wrappers claude-code --yes
 
 `--wrappers claude-code` is single-agent scope (just this wrapper); a shared multi-vendor pool uses `--wrappers all` (see [`AGENTS.md`](AGENTS.md)). `runner` is the only supported wake path: coordination is pull-only, so senders write your inbox and never poke you; the runner polls your own inbox and injects the cue. (The old tmux/herdr wake adapters were removed.)
 
-> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the single `ac` dispatcher. Start runner-mode sessions with `ac serve <wrapper>` (`run` is a deprecated alias for `serve`, removed in v0.10.0).
+> **Note**: A new shell session (or manually sourcing your profile) is required for the PATH changes to take effect. Setup adds the shim directory to PATH and installs the single `ac` dispatcher. Start runner-mode sessions with `ac serve <wrapper>`.
 
 **Wake events** arrive as `[agentchute] check inbox`, injected by your own runner when it sees new mail in your inbox. The bracketed prefix is machine metadata; the instruction is `check inbox` — so actually RUN `agentchute check --as "$AGENTCHUTE_AGENT_ID"`. The runner injects the cue but does NOT auto-consume mail; `check` is what CLAIMS and displays your mail, and `ack` commits it.
 
@@ -51,7 +51,7 @@ agentchute gate --before finish --as "$AGENTCHUTE_AGENT_ID"
 Consume unread mail with `agentchute check --as "$AGENTCHUTE_AGENT_ID"` (CLAIMS + displays — at-least-once; a crash before `ack` re-delivers), then `ack` to commit — that clears the finish gate (which blocks only on unread/malformed mail). Reply to any message that needs one with `agentchute send --reply-to <ref>`; reply obligations are asker-owned (`.owed`) and never block the recipient. The Stop hook runs `ack` then the gate for you.
 
 Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGENTCHUTE.md) §5.
-<!-- agentchute-enrollment v19 end -->
+<!-- agentchute-enrollment v20 end -->
 
 ---
 

@@ -78,7 +78,7 @@ AGENTCHUTE_AGENT_ID=codex       ac serve codex    # another terminal
 agentchute doctor --as codex                      # sanity-check (any terminal)
 ```
 
-`ac serve <wrapper>` is the launch verb; `ac run <wrapper>` still works as a deprecated alias (removed in v0.10.0).
+`ac serve <wrapper>` is the launch verb.
 
 That's it — both agents are enrolled and polling their own inboxes. Coordination happens between them; you won't normally run `send`/`check`/`ack` yourself.
 
