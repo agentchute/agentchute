@@ -129,9 +129,6 @@ func cmdUpdate(args []string) error {
 
 		// The exact setup re-sync, replaying the saved install config.
 		setupArgs = []string{"setup", "--control-repo", cfg.ControlRepo, "--wake", storedWake, "--wrappers", wrappersArg, "--yes"}
-		if pool.Aliases {
-			setupArgs = append(setupArgs, "--aliases")
-		}
 		if sd := strings.TrimSpace(global.ShimDir); sd != "" {
 			setupArgs = append(setupArgs, "--shim-dir", sd)
 		}

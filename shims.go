@@ -77,11 +77,9 @@ func cmdShims(args []string) error {
 func cmdShimsInstall(args []string) error {
 	fs := flag.NewFlagSet("shims install", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var dir, wrapper string
-	var aliases, force, quiet bool
+	var dir string
+	var force, quiet bool
 	fs.StringVar(&dir, "dir", "", "shim directory (default: $HOME/.agentchute/bin)")
-	fs.StringVar(&wrapper, "wrapper", "all", "deprecated, no-op: the `ac` dispatcher is wrapper-agnostic")
-	fs.BoolVar(&aliases, "aliases", false, "deprecated, no-op: the `ac` dispatcher needs no per-wrapper aliases")
 	fs.BoolVar(&force, "force", false, "overwrite an existing agentchute-owned `ac` dispatcher")
 	fs.BoolVar(&quiet, "quiet", false, "suppress status text")
 	if err := fs.Parse(args); err != nil {
@@ -90,10 +88,6 @@ func cmdShimsInstall(args []string) error {
 	if fs.NArg() != 0 {
 		return shimsUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
-	// --wrapper/--aliases are retained so older invocations keep parsing, but the
-	// dispatcher is wrapper-agnostic and no longer generates per-wrapper files.
-	_ = wrapper
-	_ = aliases
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -523,7 +517,6 @@ Usage:
 ` + "`shims install`" + ` installs the single ` + "`ac`" + ` dispatcher (default
 $HOME/.agentchute/bin/ac) and removes any legacy per-wrapper ac-* launchers it
 supersedes. The dispatcher routes ` + "`ac <command>`" + ` to agentchute and
-` + "`ac serve <wrapper>`" + ` to the runner. --wrapper/--aliases are accepted for
-back-compat but no longer generate per-wrapper files.
+` + "`ac serve <wrapper>`" + ` to the runner.
 `)
 }
