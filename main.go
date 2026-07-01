@@ -8,94 +8,42 @@
 // reference implementation of the optional CLI sketched in the spec. The
 // protocol itself does not require this CLI; two agents can coordinate using
 // nothing more than `ln`/`mv` over a shared inbox if they follow the spec.
+//
+// This file is a thin wiring layer: all command logic lives in internal/cli.
+// The //go:embed assets below stay here because //go:embed cannot reference a
+// parent directory (the spec, templates, and hooks live at the repo root), so
+// they are embedded here and injected into cli.Main via cli.Assets.
 package main
 
 import (
-	"errors"
-	"flag"
-	"fmt"
+	"embed"
 	"os"
-	"strings"
+
+	"github.com/agentchute/agentchute/internal/cli"
 )
 
-const usage = `agentchute — pull-only, inbox-based agent coordination via markdown files (senders write inboxes; nobody pokes).
-
-Usage:
-  agentchute <command> [flags]
-
-Commands:
-  setup          one-command control-repo setup; installs the runner wake path (the only supported path)
-  init           scaffold a project for agentchute (writes AGENTCHUTE.md, loop dirs, enrollment blocks)
-  serve          launch a wrapper under the PTY runner (serve lease + inbox polling + check-inbox injection; pull-only, no wake socket)
-  send           send a message from one agent to another
-  check          claim + display messages addressed to me (at-least-once; run ack to commit)
-  ack            commit messages claimed by check (archive the .claimed residue)
-  status         print registry overview, inbox depths, and .live presence freshness
-  doctor         diagnostic aggregator: scaffold, hook content, registration, inbox, .live presence
-
-Advanced / internal (mostly hook- or setup-driven; run 'agentchute <cmd> --help' for any):
-  boot · register · gate · pending · poller · self-check · hooks · shims · prepare-pool · identity · update
-
-Run 'agentchute <command> --help' for command-specific flags.
-See AGENTCHUTE.md for the full spec.
-`
-
+// version is set at build time via -ldflags "-X main.version=..." (see
+// .goreleaser.yaml). It is forwarded to the CLI through cli.Assets.
 var version = "dev"
 
-// errBlocked is the canonical "lifecycle gate blocked" sentinel for v0.1.1.
-// Returned by `boot` (interactive mode, when unread mail exists) and `gate`
-// (when --before <phase> finds an obligation). Mapped to exit code 2 by main,
-// matching codex Stop-hook and gemini emergency-brake conventions. Distinct
-// from errFailIfAny which is `pending`-specific.
-var errBlocked = fmt.Errorf("agentchute: lifecycle gate blocked")
+//go:embed AGENTCHUTE.md
+var spec string
+
+//go:embed templates/enrollment/wrapper.md
+var wrapperTemplate string
+
+//go:embed templates/enrollment/agents.md
+var agentsTemplate string
+
+//go:embed all:examples/hooks
+var hooks embed.FS
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
-	}
-	cmd := os.Args[1]
-	args := os.Args[2:]
-
-	var err error
-	switch cmd {
-	case "-v", "--version", "version":
-		fmt.Printf("agentchute %s\n", version)
-		return
-	case "-h", "--help", "help":
-		fmt.Print(usage)
-		return
-	case "ac", "dispatch":
-		// The `ac` launcher/dispatcher front door (Gate 1). The installed `ac`
-		// script execs `agentchute dispatch -- "$@"`.
-		err = cmdDispatch(args)
-	default:
-		if h, ok := commandHandlers[cmd]; ok {
-			err = h(args)
-		} else {
-			fmt.Fprintf(os.Stderr, "agentchute: unknown command %q\n\n%s", cmd, usage)
-			os.Exit(2)
-		}
-	}
-	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			// Subcommand --help: print the usage portion (skip the wrapping
-			// "flag: help requested" prefix) and exit 0, not 1.
-			msg := err.Error()
-			if i := strings.IndexByte(msg, '\n'); i >= 0 {
-				msg = msg[i+1:]
-			}
-			fmt.Println(msg)
-			return
-		}
-		// Exit code 2 for lifecycle-gate sentinels in ordinary text/--json
-		// modes. Hook-envelope modes such as --codex-hook Stop return nil and
-		// carry block/allow in their JSON payload. Exit code 1 is reserved for
-		// actual command failures.
-		if err == errFailIfAny || err == errBlocked {
-			os.Exit(2)
-		}
-		fmt.Fprintf(os.Stderr, "agentchute %s: %v\n", cmd, err)
-		os.Exit(1)
-	}
+	os.Exit(cli.Main(cli.Assets{
+		Version:         version,
+		Spec:            spec,
+		WrapperTemplate: wrapperTemplate,
+		AgentsTemplate:  agentsTemplate,
+		Hooks:           hooks,
+	}, os.Args[1:]))
 }

@@ -141,7 +141,7 @@ Apply to every response, all contexts:
 ## Style
 
 - Stdlib `flag` for argument parsing. No cobra, no kingpin.
-- Commands are flat root files (`register.go`, `send.go`, `check.go`, etc.). No `cmd/` subdirectory.
+- Commands are flat files in `internal/cli/` (`register.go`, `send.go`, `check.go`, etc.); the repo root is a thin `main.go` wiring layer. No `cmd/` subdirectory.
 - Integration tests > deep unit-test scaffolding.
 - `gofmt -w .` before commit.
 - Comments only when WHY is non-obvious. Don't restate what code does.
