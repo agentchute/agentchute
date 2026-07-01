@@ -2,7 +2,35 @@
 
 All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTCHUTE.md`](AGENTCHUTE.md)) tracks its own version (Working Draft v1).
 
-The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history.
+The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
+
+## v0.9.0 (2026-07-01) — the subtraction release
+
+A pure subtraction toward the target shape — **inbox + Markdown + pull**: a recipient reads its own inbox; no pokes, no checks on others; best-effort only. **Net −8,281 lines** (+1,308 / −9,589) across nine dual-gated PRs. No new features — the wire contract shrinks, the CLI surface shrinks, and the reference implementation gets smaller. New standing guardrail: every release should trend to fewer commands, files, and docs; if a change doesn't remove something, it probably isn't moving toward the goal.
+
+**Reply obligations are asker-owned only**
+- Removed the recipient-side `pending-replies.json` ledger **and** the `defer` command entirely. `.owed` (asker-owned; a non-blocking overdue warning + expiry) is now the sole reply-obligation mechanism; a recipient is **never blocked at finish** by a `reply_required` message (best-effort delivery — no forcing function once a message lands). Gated on the legacy-pending gauge reading zero pool-wide. ~−3,000 lines. `send --reply-to` still threads `in_reply_to`, which discharges the asker's `.owed` on their next `check`.
+
+**Wire-format compatibility removed**
+- Stop emitting the `message_id` frontmatter field — the wire identity is `(to, from, seq)`. Legacy in-flight messages that carry `message_id` still parse (the field is ignored on read).
+- Removed the one-release legacy-nonce inbox reader **and** writer; the canonical `from-<from>_seq-<020d>.md` is now the only inbox filename format (the drain gauge was zero pool-wide).
+
+**Wake surface gone**
+- Removed the last vestiges of the pre-0.8 push apparatus: `send`'s `--no-wake` flag + the wake-receipt output (`wake_attempted`/`wake_result`), the deprecated `--wake-method`/`--wake-target` flags, the dead gate `WakeStale` field, and all stale wake/poke/tmux teaching across docs, comments, scaffold, and example registrations. The runner's injected cue is now verb-agnostic: `[agentchute] check inbox`.
+
+**Vestigial commands dropped**
+- Removed `self-poll` + the generated-scheduler feature (`doctor --generate-service`), `watch`, and `presenced`. `poller` (own-inbox heartbeat fallback) stays; `presence_scan.go` (tmux-pane detection for `doctor`/`status`) stays.
+
+**`run` → `serve`**
+- The launch verb is now `serve` (`ac serve <wrapper>` / `agentchute serve`). `run` remains a **silent deprecated alias** for one release (removed in v0.10.0); the `ac` dispatcher and the legacy shims exec `serve`, and the pool matcher attributes supervisors launched via either verb.
+
+**Leaner CLI + repo**
+- Top-level `agentchute` help is two-tier: the 8 everyday commands (`setup`, `init`, `serve`, `send`, `check`, `ack`, `status`, `doctor`) are prominent; internal/hook-driven commands are demoted to a compact line (all still runnable).
+- Repo cleanup: deleted the committed `proposal/` launch bundle + ephemeral build docs; moved durable design records to `docs/decisions/`; relocated `HANDOFF.md` to `docs/internal/`; added `SECURITY.md`; rewrote the stale `EXTENSIONS.md` for the pull-only world (alternate substrates/transports; the conformance suite is the executable spec).
+
+**Enrollment marker** bumped **v16 → v19** across the release (dispatcher docs, wake/`defer` removals, `run`→`serve`); templates and all wrapper files stay drift-consistent (`TestTemplatesMatchRepoWrappers`).
+
+**Compatibility (one release)** — legacy `message_id` frontmatter still parses (ignored); pre-existing recipient-ledger entries were drained to zero before removal; `run` remains a working alias. **Deferred to a follow-up:** splitting the flat root package into `internal/` (Tier D), and removing the deprecated `--wrapper`/`--aliases` no-op flags (gated on the live-pool cutover to the dispatcher).
 
 ## v0.8.8 (2026-07-01) — single `ac` dispatcher + clean install
 
