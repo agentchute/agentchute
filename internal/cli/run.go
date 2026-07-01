@@ -209,6 +209,7 @@ type runnerRuntime struct {
 	ptmx     *os.File
 	lease    *loop.ServeLease
 	done     <-chan error
+	diag     *runnerDiagnostics
 
 	mu                 sync.Mutex
 	ptmxMu             sync.Mutex
@@ -224,6 +225,108 @@ type runnerRuntime struct {
 
 	wakeCh chan struct{}
 	stopCh chan struct{}
+}
+
+type runnerDiagnostics struct {
+	mu         sync.Mutex
+	file       *os.File
+	dropped    int
+	fatalLines []string
+}
+
+func newRunnerDiagnostics(cfg *loop.Config, agentID string) *runnerDiagnostics {
+	d := &runnerDiagnostics{}
+	stateDir := cfg.AgentStateDir(agentID)
+	if err := loop.EnsurePrivateDir(stateDir); err != nil {
+		d.dropped++
+		return d
+	}
+	logFile, err := os.OpenFile(filepath.Join(stateDir, "runner.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		d.dropped++
+		return d
+	}
+	d.file = logFile
+	return d
+}
+
+func (d *runnerDiagnostics) logf(format string, args ...any) {
+	if d == nil {
+		return
+	}
+	d.write(fmt.Sprintf(format, args...))
+}
+
+func (d *runnerDiagnostics) bufferFatalf(format string, args ...any) {
+	if d == nil {
+		return
+	}
+	msg := strings.TrimRight(fmt.Sprintf(format, args...), "\n")
+	d.logf("%s\n", msg)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.fatalLines = append(d.fatalLines, msg)
+}
+
+func (d *runnerDiagnostics) printBufferedFatal(w io.Writer) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	lines := append([]string(nil), d.fatalLines...)
+	d.fatalLines = nil
+	d.mu.Unlock()
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "%s\n", strings.Join(lines, "; "))
+}
+
+func (d *runnerDiagnostics) close() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.file != nil {
+		_ = d.file.Close()
+		d.file = nil
+	}
+}
+
+func (d *runnerDiagnostics) write(msg string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.file == nil {
+		d.dropped++
+		return
+	}
+	if _, err := io.WriteString(d.file, msg); err != nil {
+		d.dropped++
+		_ = d.file.Close()
+		d.file = nil
+	}
+}
+
+func (r *runnerRuntime) logf(format string, args ...any) {
+	if r == nil || r.diag == nil {
+		return
+	}
+	r.diag.logf(format, args...)
+}
+
+func (r *runnerRuntime) bufferFatalf(format string, args ...any) {
+	if r == nil || r.diag == nil {
+		return
+	}
+	r.diag.bufferFatalf(format, args...)
+}
+
+func restoreRunnerTerminal(restoreTerminal func() error, diag *runnerDiagnostics, stderr io.Writer) {
+	if err := restoreTerminal(); err != nil {
+		diag.bufferFatalf("agentchute serve: restore terminal: %v\n", err)
+	}
+	diag.printBufferedFatal(stderr)
 }
 
 func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
@@ -275,12 +378,12 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		_ = loop.ReleaseLease(lease)
 		return fmt.Errorf("set stdin raw mode: %w", err)
 	}
+	diag := newRunnerDiagnostics(cfg, opts.AgentID)
+	defer diag.close()
 	if rawEnabled {
-		defer func() {
-			if err := restoreTerminal(); err != nil {
-				fmt.Fprintf(os.Stderr, "agentchute serve: restore terminal: %v\n", err)
-			}
-		}()
+		defer restoreRunnerTerminal(restoreTerminal, diag, os.Stderr)
+	} else {
+		defer diag.printBufferedFatal(os.Stderr)
 	}
 
 	rt := &runnerRuntime{
@@ -293,6 +396,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		ptmx:           ptmx,
 		lease:          lease,
 		done:           done,
+		diag:           diag,
 		wakeCh:         make(chan struct{}, 1),
 		stopCh:         make(chan struct{}),
 		seenInboxFiles: make(map[string]struct{}),
@@ -301,7 +405,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	rt.lastOutputUnixNano.Store(nowUnix)
 	rt.lastInputUnixNano.Store(nowUnix)
 	if err := rt.saveState(); err != nil {
-		fmt.Fprintf(os.Stderr, "agentchute serve: write runner state: %v\n", err)
+		rt.logf("agentchute serve: write runner state: %v\n", err)
 	}
 
 	defer func() {
@@ -317,7 +421,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		// (another serve owns the id); releasing would be a no-op and must not
 		// delete the new owner's claim, so it is not an error to report.
 		if err := loop.ReleaseLease(rt.lease); err != nil && !errors.Is(err, loop.ErrFenced) {
-			fmt.Fprintf(os.Stderr, "agentchute serve: release serve lease: %v\n", err)
+			rt.logf("agentchute serve: release serve lease: %v\n", err)
 		}
 	}()
 
@@ -444,15 +548,15 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	if r.lease != nil {
 		if err := loop.RenewLease(r.lease); err != nil {
 			if errors.Is(err, loop.ErrFenced) {
-				fmt.Fprintf(os.Stderr, "agentchute serve: serve lease reclaimed (fenced); shutting down\n")
+				r.bufferFatalf("agentchute serve: serve lease reclaimed (fenced); shutting down\n")
 				r.requestShutdown(syscall.SIGTERM)
 				return
 			}
-			fmt.Fprintf(os.Stderr, "agentchute serve: renew serve lease: %v\n", err)
+			r.logf("agentchute serve: renew serve lease: %v\n", err)
 		}
 	}
 	if err := loop.UpdateLastSeen(r.cfg, r.opts.AgentID, now); err != nil {
-		fmt.Fprintf(os.Stderr, "agentchute serve: update last_seen: %v\n", err)
+		r.logf("agentchute serve: update last_seen: %v\n", err)
 	}
 	// Track a SEEN-filename snapshot across BOTH parsed messages and skipped
 	// (malformed/unparseable) files. Lexicographic-newest tracking misses two
@@ -463,7 +567,7 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	// filename not already in the set is unseen mail and must enqueue a wake.
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(r.cfg.AgentInboxDir(r.opts.AgentID))
 	if err != nil && !errors.Is(err, loop.ErrInboxMissing) {
-		fmt.Fprintf(os.Stderr, "agentchute serve: list inbox: %v\n", err)
+		r.logf("agentchute serve: list inbox: %v\n", err)
 	}
 	r.mu.Lock()
 	if r.seenInboxFiles == nil {
@@ -490,7 +594,7 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	r.lastPoll = now
 	r.mu.Unlock()
 	if err := r.saveState(); err != nil {
-		fmt.Fprintf(os.Stderr, "agentchute serve: write runner state: %v\n", err)
+		r.logf("agentchute serve: write runner state: %v\n", err)
 	}
 }
 
@@ -564,7 +668,7 @@ func (r *runnerRuntime) isIdle() bool {
 
 func (r *runnerRuntime) injectPrompt() {
 	if err := r.writePTY(promptInjectionBytes(r.opts)); err != nil {
-		fmt.Fprintf(os.Stderr, "agentchute serve: inject prompt: %v\n", err)
+		r.logf("agentchute serve: inject prompt: %v\n", err)
 		return
 	}
 	now := time.Now().UTC()
@@ -605,7 +709,7 @@ func (r *runnerRuntime) copyPTYOutput() {
 		if n > 0 {
 			r.lastOutputUnixNano.Store(time.Now().UnixNano())
 			if _, werr := os.Stdout.Write(buf[:n]); werr != nil {
-				fmt.Fprintf(os.Stderr, "agentchute serve: write stdout: %v\n", werr)
+				r.logf("agentchute serve: write stdout: %v\n", werr)
 				return
 			}
 		}
