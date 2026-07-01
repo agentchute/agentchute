@@ -290,10 +290,10 @@ func TestInitCreatesGitignoreInGitWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), gitignoreBeginV1) {
+	if !strings.Contains(string(got), gitignoreBegin) {
 		t.Errorf(".gitignore missing gitignore begin marker:\n%s", got)
 	}
-	if !strings.Contains(string(got), gitignoreEndV1) {
+	if !strings.Contains(string(got), gitignoreEnd) {
 		t.Errorf(".gitignore missing gitignore end marker:\n%s", got)
 	}
 	if !strings.Contains(string(got), ".agentchute/loop/agents/*.md") {

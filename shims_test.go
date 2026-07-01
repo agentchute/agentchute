@@ -1,11 +1,24 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// legacyShimScript renders a pre-dispatcher per-wrapper `ac-*`/same-name shim
+// (the format the removed production renderShimScript emitted). Kept as a
+// test-only fixture generator so cleanup tests can plant legacy shims and assert
+// setup removes them; production no longer generates per-wrapper shims.
+func legacyShimScript(agentchuteBin, shimDir, name string) string {
+	return fmt.Sprintf(`#!/bin/sh
+# agentchute shim v1
+AGENTCHUTE_BIN=${AGENTCHUTE_BIN:-%s}
+exec "$AGENTCHUTE_BIN" shims exec --name %s --shim-dir %s -- "$@"
+`, shellQuote(agentchuteBin), shellQuote(name), shellQuote(shimDir))
+}
 
 func TestShimsInstallWritesDispatcher(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bin")
@@ -206,8 +219,8 @@ func TestRemoveLegacyWrapperShims(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Marker-bearing agentchute shims (a namespaced launcher + a same-name alias).
-	mustWrite(t, filepath.Join(dir, "ac-codex"), []byte(renderShimScript("/bin/agentchute", dir, "ac-codex")))
-	mustWrite(t, filepath.Join(dir, "codex"), []byte(renderShimScript("/bin/agentchute", dir, "codex")))
+	mustWrite(t, filepath.Join(dir, "ac-codex"), []byte(legacyShimScript("/bin/agentchute", dir, "ac-codex")))
+	mustWrite(t, filepath.Join(dir, "codex"), []byte(legacyShimScript("/bin/agentchute", dir, "codex")))
 	// A user-owned same-name file WITHOUT the marker: must be left untouched.
 	userClaude := []byte("#!/bin/sh\n# my own claude wrapper\nexec /opt/claude \"$@\"\n")
 	mustWrite(t, filepath.Join(dir, "claude"), userClaude)

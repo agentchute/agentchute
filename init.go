@@ -32,8 +32,8 @@ var embeddedSpecContent string
 const (
 	enrollmentVersion       = 21
 	gitignoreVersion        = 3
-	gitignoreBeginV1        = "# agentchute-gitignore v3 begin"
-	gitignoreEndV1          = "# agentchute-gitignore v3 end"
+	gitignoreBegin          = "# agentchute-gitignore v3 begin"
+	gitignoreEnd            = "# agentchute-gitignore v3 end"
 	defaultNamespace        = "agentchute"
 	specRecognitionSentinel = "# AGENTCHUTE.md"
 )

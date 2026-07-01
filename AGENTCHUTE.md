@@ -252,8 +252,9 @@ One-release compatibility carried from v0.8.0. Each has an in-code `// COMPAT(re
 
 | Item | Location | Target | Gate |
 |------|----------|--------|------|
-| `renderShimScript` (legacy shim generator) | `shims.go` | v0.8.9 | **none** — zero production callers; migrate its 3 test-fixture callers to inline legacy content |
-| `selectShimSpecs`/`shimInstallNames` selectors → static legacy-name list | `shims.go`, `setup.go` | v0.8.9 | **none** — behavior-preserving swap; the cleanup only needs the legacy `ac-*` name set, not generation logic |
+| `selectShimSpecs`/`shimInstallNames` selectors → static legacy-name list | `shims.go`, `setup.go` | later | **NOT a safe mechanical swap** — the `--wrapper` filtering is still wired via `removeSetupShimsForWrapper(dir, wrapper)` for the dropped-wrapper cleanup path (`droppedWrappers`), so replacing the selectors with a static "all" list would change cleanup behavior. Defer until that path is provably dead. |
+
+**DONE in v0.9.1 — dead shim-generation code removed (clean delete).** `renderShimScript` (the legacy per-wrapper shim generator) had zero production callers and moved to a test-only `legacyShimScript` fixture helper. `removeSetupAliasShimsForWrapper` was deleted outright (zero callers — the same-name alias cleanup is unreachable now that aliases are never installed). The misnamed `gitignoreBeginV1`/`gitignoreEndV1` constants (they held the current `v3` marker) were renamed `gitignoreBegin`/`gitignoreEnd`.
 
 **DONE in v0.9.1 — deprecated no-op flags + `--wake` collapse removed (clean delete).** The `ac` dispatcher cutover is complete (live pool on v0.8.8+), so the accept-and-ignore `shims install --wrapper`/`--aliases` and `setup --aliases` flags were removed outright (passing them now errors), along with the persisted `aliases` field (setupPoolState/setupGlobalState) and update's `--aliases` re-pass. Separately, `--wake` collapsed to runner-only: the `tmux`/`herdr`/`both`/`all` aliases + set machinery (`wakeSetContains`, `normalizeSetupWake`'s multi-value parsing, `canonicalizePersistedWake`) are gone — any persisted legacy wake reads back as `runner`.
 
