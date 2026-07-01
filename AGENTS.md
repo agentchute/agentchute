@@ -183,7 +183,7 @@ These rules govern task messages between agents on the bus. They exist because r
   - `ACCEPTANCE:` a done-condition the recipient can verify without asking. MUST NOT be `none`/`N/A`.
   - `OUTPUT:` the exact required response format. MUST NOT be `none`/`N/A`.
   - `ACTION MODE:` exactly one task mode token: `implement`, `review-only`, `research`, or `decision`.
-  The body sections are authoritative; the frontmatter `task:` field MAY summarize the work but does not replace them. If frontmatter and body conflict, the message is ambiguous.
+  The body sections are authoritative in full — there is no frontmatter field that summarizes or stands in for them.
 - **S2 (MUST)** Every CONTEXT reference is a stable pointer; no deictic references.
 - **S3 (MUST)** Before sending, verify every CONTEXT pointer resolves at send time. If one cannot be verified, remove it or mark it `unverified` in CONTEXT with the reason.
 - **S4 (MUST NOT)** Do not add persona framing, motivational text, chain-of-thought requests, or model-specific stylistic scaffolding. Facts, constraints, and required output only.
