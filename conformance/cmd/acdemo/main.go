@@ -1,8 +1,8 @@
 // acdemo runs a narrated handoff against a chosen MODEL so the §5 fork is
 // visible, not just argued:  go run ./cmd/acdemo inbox   |   go run ./cmd/acdemo log
 //
-// It exercises the protocol at the wire level (no PTY here — that's the serve
-// spike). The point is to SHOW the three places the two models differ:
+// It exercises the protocol at the wire level (no PTY here). The point is to
+// SHOW the three places the two models differ:
 //  1. cross-agent order  (advisory vs real)
 //  2. presence source    (.live file vs cursor advance)
 //  3. body privacy (B1)  (private vs shared)
@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"os"
 
-	ac "agentchute.dev/spike/conformance"
+	ac "agentchute.dev/conformance"
 )
 
 func main() {

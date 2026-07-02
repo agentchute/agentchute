@@ -34,20 +34,21 @@ func must(t *testing.T, err error) {
 // "came back days later, one agent never returned" dead mailbox.
 // Catches: a binding that cannot tell a live agent from a long-gone one.
 func TestR1_Presence(t *testing.T) {
+	v := vectorByID(t, "R1", "presence_freshness")
 	eachBinding(t, func(t *testing.T, b Binding) {
-		if _, _, reg := b.Presence("x"); reg {
+		if _, _, reg := b.Presence(v.Agent); reg {
 			t.Fatal("an unregistered agent must not be registered/present")
 		}
-		must(t, b.Register("x"))
-		alive, _, reg := b.Presence("x")
+		must(t, b.Register(v.Agent))
+		alive, _, reg := b.Presence(v.Agent)
 		if !reg || !alive {
 			t.Fatal("a freshly registered agent must read alive")
 		}
 		// simulate a long-idle / dead agent
 		b.(interface {
 			forceLastSeen(string, time.Time)
-		}).forceLastSeen("x", time.Now().Add(-time.Hour))
-		alive, _, reg = b.Presence("x")
+		}).forceLastSeen(v.Agent, time.Now().Add(-time.Duration(v.StaleSeconds)*time.Second))
+		alive, _, reg = b.Presence(v.Agent)
 		if !reg || alive {
 			t.Fatal("a stale agent must read registered-but-not-alive (the dead mailbox)")
 		}
@@ -58,24 +59,25 @@ func TestR1_Presence(t *testing.T) {
 // invisible to a concurrent reader; after commit it is fully visible.
 // Catches: readers observing torn / half-written messages.
 func TestD1_AtomicVisibility(t *testing.T) {
+	v := vectorByID(t, "D1", "atomic_visibility")
 	eachBinding(t, func(t *testing.T, b Binding) {
-		must(t, b.Register("bob"))
+		must(t, b.Register(v.Recipient))
 		sd := b.(interface {
 			deliverSlow(string, Msg, chan<- struct{}, <-chan struct{}) error
 		})
 		staged := make(chan struct{})
 		commit := make(chan struct{})
 		done := make(chan struct{})
-		go func() { _ = sd.deliverSlow("bob", Msg{From: "alice", Body: "hello"}, staged, commit); close(done) }()
+		go func() { _ = sd.deliverSlow(v.Recipient, v.Message.msg(), staged, commit); close(done) }()
 
 		<-staged // delivery is in-flight but not committed
-		if got, _ := b.Poll("bob"); len(got) != 0 {
+		if got, _ := b.Poll(v.Recipient); len(got) != 0 {
 			t.Fatalf("a staged-but-uncommitted message must be invisible; saw %d", len(got))
 		}
 		close(commit)
 		<-done
-		got, _ := b.Poll("bob")
-		if len(got) != 1 || got[0].Body != "hello" {
+		got, _ := b.Poll(v.Recipient)
+		if len(got) != 1 || got[0].Body != v.Message.Body {
 			t.Fatalf("after commit, exactly the whole message must be visible; got %+v", got)
 		}
 	})
@@ -85,20 +87,20 @@ func TestD1_AtomicVisibility(t *testing.T) {
 // is silently clobbered. (Inbox: ln-no-overwrite+retry. Log: unique append seq.)
 // Catches: dropped coordination messages under load.
 func TestD2_NoOverwrite(t *testing.T) {
+	v := vectorByID(t, "D2", "no_overwrite")
 	eachBinding(t, func(t *testing.T, b Binding) {
-		must(t, b.Register("bob"))
-		const N = 200
+		must(t, b.Register(v.Recipient))
 		var wg sync.WaitGroup
-		for i := 0; i < N; i++ {
+		for i := 0; i < v.Count; i++ {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				_ = b.Deliver("bob", Msg{From: fmt.Sprintf("s%d", i%5), Body: fmt.Sprintf("m%d", i)})
+				_ = b.Deliver(v.Recipient, Msg{From: v.senderFor(i), Body: fmt.Sprintf("%s%d", v.BodyPrefix, i)})
 			}(i)
 		}
 		wg.Wait()
-		if got, _ := b.Poll("bob"); len(got) != N {
-			t.Fatalf("want %d delivered, got %d (clobber / loss)", N, len(got))
+		if got, _ := b.Poll(v.Recipient); len(got) != v.Count {
+			t.Fatalf("want %d delivered, got %d (clobber / loss)", v.Count, len(got))
 		}
 	})
 }
@@ -108,17 +110,18 @@ func TestD2_NoOverwrite(t *testing.T) {
 // fiction the v2 deltas remove. Cross-sender order is arrival order, advisory.
 // Catches: a binding that reorders one sender's own messages.
 func TestO1_PerSenderFIFO(t *testing.T) {
+	v := vectorByID(t, "O1", "per_sender_fifo")
 	eachBinding(t, func(t *testing.T, b Binding) {
-		must(t, b.Register("bob"))
-		for i := 0; i < 10; i++ {
-			must(t, b.Deliver("bob", Msg{From: "alice", Body: fmt.Sprintf("a%d", i)}))
+		must(t, b.Register(v.Recipient))
+		for _, body := range v.Bodies {
+			must(t, b.Deliver(v.Recipient, Msg{From: v.Sender, Body: body}))
 		}
-		got, _ := b.Poll("bob")
-		if len(got) != 10 {
-			t.Fatalf("want 10, got %d", len(got))
+		got, _ := b.Poll(v.Recipient)
+		if len(got) != len(v.Bodies) {
+			t.Fatalf("want %d, got %d", len(v.Bodies), len(got))
 		}
-		for i := 0; i < 10; i++ {
-			if got[i].Body != fmt.Sprintf("a%d", i) {
+		for i, want := range v.Bodies {
+			if got[i].Body != want {
 				t.Fatalf("per-sender FIFO broken at %d: %q", i, got[i].Body)
 			}
 		}
@@ -130,9 +133,10 @@ func TestO1_PerSenderFIFO(t *testing.T) {
 // the duplicate on the receiver side.
 // Catches: at-most-once consume losing a coordination message on a crash.
 func TestC1_AtLeastOnceIdempotent(t *testing.T) {
+	v := vectorByID(t, "C1", "consume_redelivery")
 	eachBinding(t, func(t *testing.T, b Binding) {
-		must(t, b.Register("bob"))
-		must(t, b.Deliver("bob", Msg{From: "alice", Body: "do-it", Key: "k1"}))
+		must(t, b.Register(v.Recipient))
+		must(t, b.Deliver(v.Recipient, v.Message.msg()))
 
 		var acts []string
 		handler := func(m Msg) error { acts = append(acts, m.Body); return nil }
@@ -141,14 +145,14 @@ func TestC1_AtLeastOnceIdempotent(t *testing.T) {
 		b.(interface{ crashAfterActOnce() }).crashAfterActOnce()
 		func() {
 			defer func() { _ = recover() }() // absorb the simulated crash
-			_, _ = b.Consume("bob", handler)
+			_, _ = b.Consume(v.Recipient, handler)
 		}()
 		if len(acts) != 1 {
 			t.Fatalf("handler must have acted once before the crash; got %d", len(acts))
 		}
 
 		// retry: commit never happened, so the message must re-deliver
-		n, _ := b.Consume("bob", handler)
+		n, _ := b.Consume(v.Recipient, handler)
 		if n != 1 || len(acts) != 2 {
 			t.Fatalf("at-least-once: message must re-deliver after crash; acts=%d n=%d", len(acts), n)
 		}
@@ -156,8 +160,8 @@ func TestC1_AtLeastOnceIdempotent(t *testing.T) {
 		// receiver-side idempotency aid: msg_key collapses the duplicate effect
 		d := NewDeduper()
 		effects := 0
-		for range acts { // both carry Key k1
-			_ = d.Once(Msg{Key: "k1"}, func(Msg) error { effects++; return nil })
+		for range acts { // both carry the same Key
+			_ = d.Once(Msg{Key: v.Message.Key}, func(Msg) error { effects++; return nil })
 		}
 		if effects != 1 {
 			t.Fatalf("msg_key dedup must collapse re-delivery to one effect; got %d", effects)
@@ -169,16 +173,17 @@ func TestC1_AtLeastOnceIdempotent(t *testing.T) {
 // Catches: a future field silently breaking old receivers; an anonymous message
 // being accepted.
 func TestE1_Envelope(t *testing.T) {
+	v := vectorByID(t, "E1", "envelope")
 	eachBinding(t, func(t *testing.T, b Binding) {
-		must(t, b.Register("bob"))
+		must(t, b.Register(v.Recipient))
 		// unknown/future fields are carried but ignorable
-		must(t, b.Deliver("bob", Msg{From: "alice", Body: "hi", Extra: map[string]string{"future_field": "v"}}))
-		got, _ := b.Poll("bob")
-		if got[0].From != "alice" || got[0].Body != "hi" {
+		must(t, b.Deliver(v.Recipient, v.Message.msg()))
+		got, _ := b.Poll(v.Recipient)
+		if got[0].From != v.Message.From || got[0].Body != v.Message.Body {
 			t.Fatal("normative fields must survive alongside unknown fields")
 		}
 		// a normative field (From) is required
-		if err := b.Deliver("bob", Msg{Body: "no from"}); err == nil {
+		if err := b.Deliver(v.Recipient, v.InvalidMessage.msg()); err == nil {
 			t.Fatal("a message without From must be refused")
 		}
 	})
@@ -189,10 +194,11 @@ func TestE1_Envelope(t *testing.T) {
 // correct-for-its-model — results. This test never "fails" a model; it PRINTS
 // the privacy posture you are choosing. Run with -v to see the verdict.
 func TestB1_PrivacyFork(t *testing.T) {
+	v := vectorByID(t, "B1", "body_privacy")
 	eachBinding(t, func(t *testing.T, b Binding) {
-		must(t, b.Register("bob"))
-		must(t, b.Deliver("bob", Msg{From: "alice", Body: "secret for bob"}))
-		peerSees := b.PeekBodies("bob", "carol")
+		must(t, b.Register(v.Recipient))
+		must(t, b.Deliver(v.Recipient, v.Message.msg()))
+		peerSees := b.PeekBodies(v.Recipient, v.Reader)
 
 		if b.PrivateBodies() {
 			if len(peerSees) != 0 {
