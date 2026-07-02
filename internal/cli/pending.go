@@ -124,11 +124,10 @@ func cmdPending(args []string) error {
 			Filename:  msg.Filename,
 			Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano),
 		}
-		// Parse frontmatter for reply_required / priority.
+		// Parse frontmatter for reply_required.
 		// Body intentionally not read unless --show-body.
 		fm, body, ferr := readFrontmatter(msg.Path)
 		if ferr == nil {
-			entry.Priority = fm["priority"]
 			if v := strings.ToLower(strings.TrimSpace(fm["reply_required"])); v == "true" {
 				entry.ReplyRequired = true
 			}
@@ -184,7 +183,6 @@ type pendingEntry struct {
 	From          string `json:"from"`
 	Filename      string `json:"filename"`
 	Timestamp     string `json:"timestamp"`
-	Priority      string `json:"priority,omitempty"`
 	ReplyRequired bool   `json:"reply_required,omitempty"`
 	Stale         bool   `json:"stale,omitempty"`
 	Body          string `json:"body,omitempty"`
@@ -215,13 +213,6 @@ func emitPendingText(entries []pendingEntry, owed []loop.OwedEntry, malformed in
 			flags := ""
 			if e.ReplyRequired {
 				flags += " [REPLY-REQUIRED]"
-			}
-			if e.Priority != "" && e.Priority != "normal" {
-				// e.Priority is sourced from the unvalidated frontmatter peek
-				// path (readFrontmatter), so it must be sanitized before
-				// reaching a raw terminal here (N3, deep-analysis-v2) — see
-				// sanitizeControlBytes in check.go.
-				flags += " [priority:" + sanitizeControlBytes(e.Priority) + "]"
 			}
 			if e.Stale {
 				flags += " [stale]"

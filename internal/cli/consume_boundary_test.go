@@ -347,3 +347,87 @@ func TestOwedFlip_ThirdPartyReplyDoesNotClear(t *testing.T) {
 		t.Fatalf("alice .owed has %d entries after bob's reply; want 0", n)
 	}
 }
+
+// TestOwedFlip_UsesFilenameSenderNotFrontmatter pins the exact refactor
+// hazard the N1 fix's safety rests on: the discharge guard at check.go:259
+// must key off msg.Sender (filename-derived, validated by seqFilenameRE) and
+// never off the body frontmatter's `from:` field (unvalidated free text). A
+// hand-crafted message can disagree between the two -- `cmdSend` cannot
+// produce such a message (ComposeMessage always keeps them in sync), so both
+// variants are hand-planted directly, bypassing send.
+func TestOwedFlip_UsesFilenameSenderNotFrontmatter(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		if err := cmdRegister([]string{"--as", "carol", "--vendor", "google", "--host", "third-host"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// alice asks bob; alice is owed a reply specifically by bob.
+	arm := func() loop.MsgID {
+		withCwd(t, root, func() {
+			if err := cmdSend([]string{"--from", "alice", "--to", "bob",
+				"--ask", "--body", "please review"}); err != nil {
+				t.Fatal(err)
+			}
+		})
+		owed, err := loop.LoadOwedLedger(cfg, "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := owed.OutstandingOwed()
+		if len(out) != 1 {
+			t.Fatalf("alice .owed has %d entries after --ask; want 1", len(out))
+		}
+		return out[0].Key()
+	}
+
+	// Variant 1: filename says bob (the true owing agent); frontmatter
+	// falsely claims carol. Discharge trusts the FILENAME, so this MUST
+	// clear -- proving fm["from"] is never consulted by the guard.
+	key1 := arm()
+	withCwd(t, root, func() {
+		body := "---\nfrom: carol\nin_reply_to: " + key1.RefString() + "\n---\n\nspoofed-frontmatter-real-bob-filename\n"
+		mustWriteSeqInbox(t, cfg.AgentInboxDir("alice"), "bob", 1, []byte(body))
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+	})
+	owed, err := loop.LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(owed.OutstandingOwed()); n != 0 {
+		t.Fatalf("variant 1 (filename=bob, frontmatter from=carol) did not clear; alice .owed has %d entries, want 0 -- filename identity must win", n)
+	}
+
+	// Variant 2: filename says carol (NOT the owing agent); frontmatter
+	// falsely claims bob. Discharge must NOT clear -- proving a forged
+	// frontmatter from: cannot impersonate the filename identity. This is
+	// the exact hazard: switching the guard to fm["from"] would flip this.
+	key2 := arm()
+	withCwd(t, root, func() {
+		body := "---\nfrom: bob\nin_reply_to: " + key2.RefString() + "\n---\n\nreal-carol-filename-spoofed-frontmatter\n"
+		mustWriteSeqInbox(t, cfg.AgentInboxDir("alice"), "carol", 1, []byte(body))
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+	})
+	owed, err = loop.LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := owed.OutstandingOwed()
+	if len(out) != 1 {
+		t.Fatalf("variant 2 (filename=carol, frontmatter from=bob) incorrectly cleared; alice .owed has %d entries, want 1", len(out))
+	}
+	if got := out[0].Key(); !got.Equal(key2) {
+		t.Fatalf("remaining owed key after variant 2 = %+v; want %+v", got, key2)
+	}
+}

@@ -243,7 +243,7 @@ func checkSpecFreshness(cfg *loop.Config) doctorCheck {
 	return doctorCheck{
 		Name:     name,
 		Severity: severityWarn,
-		Message: fmt.Sprintf("AGENTCHUTE.md differs from this binary's embedded spec (disk sha256=%s, embedded sha256=%s); re-run `agentchute init`/`setup` or update your checkout",
+		Message: fmt.Sprintf("AGENTCHUTE.md differs from this binary's embedded spec (disk sha256=%s, embedded sha256=%s); if the disk copy is stale, update your checkout; if it is deliberately newer or locally edited, this is expected — update the binary instead (`agentchute update`)",
 			shortSHA256(onDisk), shortSHA256(embedded)),
 	}
 }
