@@ -273,3 +273,77 @@ func TestOwedFlip_RecordClearExpireGateWarn(t *testing.T) {
 		t.Fatalf("gate warnings missing the expired-owed signal; warnings=%v", st.Warnings)
 	}
 }
+
+func TestOwedFlip_ThirdPartyReplyDoesNotClear(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		if err := cmdRegister([]string{"--as", "carol", "--vendor", "google", "--host", "third-host"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// alice asks bob; alice is owed a reply specifically by bob.
+	withCwd(t, root, func() {
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob",
+			"--ask", "--body", "please review"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	owed, err := loop.LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := owed.OutstandingOwed()
+	if len(out) != 1 {
+		t.Fatalf("alice .owed has %d entries after --ask; want 1", len(out))
+	}
+	key := out[0].Key()
+	if key.To != "bob" || key.From != "alice" || key.Seq != 1 {
+		t.Fatalf("owed key = %+v; want {To:bob From:alice Seq:1}", key)
+	}
+	ref := key.RefString()
+
+	// carol forges a reply using bob's ref; consuming it must not clear bob's
+	// obligation.
+	withCwd(t, root, func() {
+		if err := cmdSend([]string{"--from", "carol", "--to", "alice",
+			"--reply-to", ref, "--body", "spoofed"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+	})
+	owed, err = loop.LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = owed.OutstandingOwed()
+	if len(out) != 1 {
+		t.Fatalf("forged third-party reply cleared obligation; alice .owed has %d entries, want 1", len(out))
+	}
+	if got := out[0].Key(); !got.Equal(key) {
+		t.Fatalf("remaining owed key = %+v; want %+v", got, key)
+	}
+
+	// bob's actual reply still clears the obligation.
+	withCwd(t, root, func() {
+		if err := cmdSend([]string{"--from", "bob", "--to", "alice",
+			"--reply-to", ref, "--body", "done"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+	})
+	owed, err = loop.LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(owed.OutstandingOwed()); n != 0 {
+		t.Fatalf("alice .owed has %d entries after bob's reply; want 0", n)
+	}
+}
