@@ -620,10 +620,36 @@ func (r *runnerRuntime) injectLoop() {
 			return
 		case <-r.wakeCh:
 			if r.waitForInjectionWindow() {
-				r.injectPrompt()
+				r.injectIfPending()
 			}
 		}
 	}
+}
+
+// injectIfPending re-checks the inbox immediately before injecting (M4,
+// deep-analysis-v2 addendum): a wake can be enqueued for mail that the
+// agent's own `check` — triggered by an earlier cue in the same batch —
+// already claimed (moved inbox -> .claimed) by the time this cue reaches the
+// front of injectLoop, producing a spurious "check inbox" prompt into an
+// already-empty inbox. Single call site (the only caller of injectPrompt).
+func (r *runnerRuntime) injectIfPending() {
+	if !r.hasPendingInboxMail() {
+		return
+	}
+	r.injectPrompt()
+}
+
+// hasPendingInboxMail reports whether the raw inbox (parsed messages or
+// skipped/malformed files — either needs `check` to run) currently has
+// anything in it. On a transient listing error, fails OPEN (reports
+// pending) to preserve the safe failure direction: an extra spurious cue is
+// acceptable, a suppressed real one is not.
+func (r *runnerRuntime) hasPendingInboxMail() bool {
+	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(r.cfg.AgentInboxDir(r.opts.AgentID))
+	if err != nil && !errors.Is(err, loop.ErrInboxMissing) {
+		return true
+	}
+	return len(msgs) > 0 || len(skipped) > 0
 }
 
 func (r *runnerRuntime) waitForInjectionWindow() bool {
