@@ -149,21 +149,36 @@ func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registrati
 	// Pull-only (Gate 6c): registrations carry no wake state and presence is the
 	// `.live` fact. There is no WAKE / REACHABLE / CACHED column; LAST_SEEN/AGE
 	// come from `.live` (loop.LiveLastSeen), absent => "-".
-	fmt.Fprintln(tw, "AGENT\tSTATUS\tINBOX\tLAST_SEEN\tAGE\tHOST")
+	fmt.Fprintln(tw, "AGENT\tSTATUS\tINBOX\tLAST_SEEN\tAGE\tHOST\tPROTO")
 	for _, id := range loop.RegistrationsByAgentID(regs) {
 		reg := regs[id]
 		inboxDepth := countInbox(cfg.AgentInboxDir(id))
 		liveSeen, _ := loop.LiveLastSeen(cfg, reg.AgentID)
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
 			reg.AgentID,
 			reg.Status,
 			inboxDepth,
 			formatMaybeTime(liveSeen),
 			formatAge(now, liveSeen),
 			formatDash(reg.Host),
+			formatProtocolVersion(reg.ProtocolVersion),
 		)
 	}
 	_ = tw.Flush()
+
+	var warnings []string
+	for _, id := range loop.RegistrationsByAgentID(regs) {
+		if warning := protocolVersionWarning(regs[id]); warning != "" {
+			warnings = append(warnings, warning)
+		}
+	}
+	if len(warnings) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "PROTOCOL WARNINGS:")
+		for _, warning := range warnings {
+			fmt.Fprintf(w, "- %s\n", warning)
+		}
+	}
 }
 
 func countInbox(dir string) int {
@@ -223,4 +238,22 @@ func formatDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func formatProtocolVersion(version int) string {
+	switch version {
+	case 0:
+		return "legacy"
+	case loop.CurrentProtocolVersion:
+		return fmt.Sprintf("v%d", version)
+	default:
+		return fmt.Sprintf("v%d!", version)
+	}
+}
+
+func protocolVersionWarning(reg *loop.Registration) string {
+	if reg == nil || reg.ProtocolVersion == 0 || reg.ProtocolVersion == loop.CurrentProtocolVersion {
+		return ""
+	}
+	return fmt.Sprintf("%s reports protocol v%d; expected v%d", reg.AgentID, reg.ProtocolVersion, loop.CurrentProtocolVersion)
 }

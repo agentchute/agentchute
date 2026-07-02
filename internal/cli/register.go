@@ -146,13 +146,14 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 		}
 
 		reg = &loop.Registration{
-			AgentID:      opts.AgentID,
-			Vendor:       opts.Vendor,
-			ControlRepo:  cfg.ControlRepo,
-			WorkingRepos: opts.WorkingRepos,
-			Host:         host,
-			LastSeen:     now,
-			Status:       loop.StatusActive,
+			AgentID:         opts.AgentID,
+			ProtocolVersion: loop.CurrentProtocolVersion,
+			Vendor:          opts.Vendor,
+			ControlRepo:     cfg.ControlRepo,
+			WorkingRepos:    opts.WorkingRepos,
+			Host:            host,
+			LastSeen:        now,
+			Status:          loop.StatusActive,
 			// WI-E3 launch provenance: a non-empty value from the caller wins (a
 			// fresh runner/hook/manual launch updates how the lane enrolled); empty
 			// values fall back to the existing registration below.

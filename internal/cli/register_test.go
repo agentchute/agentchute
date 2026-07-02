@@ -76,6 +76,33 @@ func TestRegister_RMWUnderAgentLock(t *testing.T) {
 	})
 }
 
+func TestRegisterWritesProtocolVersion(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := performRegister(cfg, registerOpts{AgentID: "codex", Vendor: "openai"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath("codex"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reg.ProtocolVersion != loop.CurrentProtocolVersion {
+			t.Fatalf("ProtocolVersion = %d, want %d", reg.ProtocolVersion, loop.CurrentProtocolVersion)
+		}
+		data := string(mustRead(t, cfg.AgentRegistrationPath("codex")))
+		if !strings.Contains(data, "\nv: 2\n") {
+			t.Fatalf("registration missing v: 2:\n%s", data)
+		}
+	})
+}
+
 // TestRegister_NoLostUpdateVsConcurrentUpdateLastSeen asserts that a
 // performRegister merge cannot silently clobber a concurrently-recorded
 // last_active. performRegister preserves existing.LastActive across the

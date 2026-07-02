@@ -369,6 +369,66 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 	// were removed (sender-side wake reachability no longer exists).
 }
 
+func TestDoctorProtocolVersionAbsentIsSilent(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, reg := range []*loop.Registration{
+		{
+			AgentID:         "codex",
+			ProtocolVersion: loop.CurrentProtocolVersion,
+			Vendor:          "openai",
+			ControlRepo:     cfg.ControlRepo,
+			Host:            "doctor-test",
+			LastSeen:        now,
+			Status:          loop.StatusActive,
+		},
+		{
+			AgentID:     "gemini-cli",
+			Vendor:      "google",
+			ControlRepo: cfg.ControlRepo,
+			Host:        "doctor-test",
+			LastSeen:    now,
+			Status:      loop.StatusActive,
+		},
+	} {
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath(reg.AgentID), reg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := checkProtocolVersions(cfg)
+	if got.Severity != severityOK {
+		t.Fatalf("protocol_version severity = %q, want OK; msg=%q", got.Severity, got.Message)
+	}
+	if strings.Contains(got.Message, "gemini-cli") {
+		t.Fatalf("absent-v legacy registration must not warn: %q", got.Message)
+	}
+}
+
+func TestDoctorProtocolVersionMismatchWarns(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	reg := &loop.Registration{
+		AgentID:         "future",
+		ProtocolVersion: loop.CurrentProtocolVersion + 1,
+		Vendor:          "test",
+		ControlRepo:     cfg.ControlRepo,
+		Host:            "doctor-test",
+		LastSeen:        time.Now().UTC().Truncate(time.Second),
+		Status:          loop.StatusActive,
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(reg.AgentID), reg); err != nil {
+		t.Fatal(err)
+	}
+
+	got := checkProtocolVersions(cfg)
+	if got.Severity != severityWarn {
+		t.Fatalf("protocol_version severity = %q, want WARN; msg=%q", got.Severity, got.Message)
+	}
+	if !strings.Contains(got.Message, "future reports protocol v3; expected v2") {
+		t.Fatalf("protocol_version warning missing mismatch detail: %q", got.Message)
+	}
+}
+
 // Gate 6a (pull-only): TestDoctorTmuxWakeValidityHonorsProbeSeam was removed
 // along with the checkWakeTargetValidity tmux arm it exercised.
 

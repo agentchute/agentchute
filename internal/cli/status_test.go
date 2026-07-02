@@ -105,6 +105,63 @@ func TestStatus_PresenceFromLive(t *testing.T) {
 	}
 }
 
+func TestStatusProtocolVersionColumnAndWarnings(t *testing.T) {
+	root := t.TempDir()
+	cfg := &loop.Config{
+		ControlRepo: root,
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
+	}
+	mustMkdir(t, cfg.AgentsDir())
+
+	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
+	regs := map[string]*loop.Registration{
+		"codex": {
+			AgentID:         "codex",
+			ProtocolVersion: loop.CurrentProtocolVersion,
+			Vendor:          "openai",
+			ControlRepo:     root,
+			LastSeen:        now,
+			Status:          loop.StatusActive,
+		},
+		"gemini-cli": {
+			AgentID:     "gemini-cli",
+			Vendor:      "google",
+			ControlRepo: root,
+			LastSeen:    now,
+			Status:      loop.StatusActive,
+		},
+		"future": {
+			AgentID:         "future",
+			ProtocolVersion: loop.CurrentProtocolVersion + 1,
+			Vendor:          "test",
+			ControlRepo:     root,
+			LastSeen:        now,
+			Status:          loop.StatusActive,
+		},
+	}
+
+	var out bytes.Buffer
+	printStatus(&out, cfg, regs, now)
+	text := out.String()
+
+	if got := statusColumnValue(t, text, "PROTO", "codex"); got != "v2" {
+		t.Fatalf("codex PROTO = %q, want v2:\n%s", got, text)
+	}
+	if got := statusColumnValue(t, text, "PROTO", "gemini-cli"); got != "legacy" {
+		t.Fatalf("gemini-cli PROTO = %q, want legacy:\n%s", got, text)
+	}
+	if got := statusColumnValue(t, text, "PROTO", "future"); got != "v3!" {
+		t.Fatalf("future PROTO = %q, want v3!:\n%s", got, text)
+	}
+	if !strings.Contains(text, "PROTOCOL WARNINGS:") || !strings.Contains(text, "future reports protocol v3; expected v2") {
+		t.Fatalf("status missing protocol mismatch warning:\n%s", text)
+	}
+	if strings.Contains(text, "gemini-cli reports protocol") {
+		t.Fatalf("absent-v legacy registration must not warn:\n%s", text)
+	}
+}
+
 // Pull-only (Gate 6c): TestStatus_ShowsReachableColumn and
 // TestStatus_ShowsCachedReachableAge were removed. The WAKE / REACHABLE / CACHED
 // columns (and statusReachableProbe) are gone — registrations carry no wake state
