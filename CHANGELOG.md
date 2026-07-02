@@ -4,6 +4,10 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v0.11.1 (2026-07-02) — docs: the durable-key rule + blog honesty
+
+A docs-only patch. **§6.2 now states the durable-key rule** for `send --idempotency-key`: the key must be caller-durable — the same value across every retry of one logical send (a task id, the triggering message ref) — because a fresh key per attempt (e.g. `$(uuidgen)`) gives zero resume protection: it either double-delivers under two sequence numbers or degrades to unverified, accidental at-least-once. The flag help points to the rule. Also: the pre-0.8 blog posts are marked historical (they describe mechanics deleted in the pull-only redesign), the runner-PTY incident note moved under `docs/decisions/`, and CONTRIBUTORS.md's dead README link now points at the CHANGELOG.
+
 ## v0.11.0 (2026-07-02) — the universality proof
 
 A minor release with two additions that earn their mass and one subtraction — the outcome of a 5-way "what would make agentchute whole" design review run under the subtract-default rule (most of the candidate additions were rejected or deferred), plus the findings of a third independent deep review (of v0.10.2 itself, which verified the v0.10.2 trust-boundary fixes as "correct and complete").
