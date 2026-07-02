@@ -4,6 +4,27 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v0.11.0 (2026-07-02) — the universality proof
+
+A minor release with two additions that earn their mass and one subtraction — the outcome of a 5-way "what would make agentchute whole" design review run under the subtract-default rule (most of the candidate additions were rejected or deferred), plus the findings of a third independent deep review (of v0.10.2 itself, which verified the v0.10.2 trust-boundary fixes as "correct and complete").
+
+**Conformance: language-neutral vectors + the spike name retired (#54)**
+- The conformance module is renamed `agentchute.dev/spike/conformance` → **`agentchute.dev/conformance`** — the prototype name had outlived two audits on a STABLE protocol.
+- The seven invariants (R1/D1/D2/O1/C1/E1/B1) are now encoded as **language-neutral JSON vectors** (`conformance/vectors/core.json`, schema `agentchute-conformance-vectors-v1`); the Go suite is a vector *runner* driving the abstract Binding interface, and both bindings (private-inbox + shared-log) pass the identical vector set. The vectors are the language-neutral conformance contract the "executable spec" covenant implies.
+- A **disposable second-language proof** (`conformance/example-python-binding/`, ~260 lines, Python stdlib only) reads the same vectors and passes them against a minimal inbox binding — proving the protocol's central claim (substrate/language independence) in a second language. It is deliberately a labeled point-in-time snapshot, outside CI and every release gate: the vectors are the maintained deliverable, not a second SDK.
+
+**`send --idempotency-key` — opt-in at-least-once (#52 spec, #55 code)**
+- The idempotency machinery that already existed in the sequencer is now exposed: `send --idempotency-key <key>` re-issues the **same** seq on a re-send with the same key, giving callers that opt in at-least-once semantics across a crash-mid-send (previously every send was non-resumable; a crash between seq allocation and link double-sent or silently dropped). Default (unset) behavior is unchanged at-most-once. Guardrails: opt-in only, no default body-hash key, no retries, no delivery guarantee beyond the write.
+- Internal correctives now use it (N8): `SendCorrective` derives a stable sha256 key from its own arguments, so an identical-args retry dedups instead of double-delivering an enforcement notice. (Boot announce deliberately unkeyed: no clean retry point, and a duplicate "I'm here" is harmless.)
+
+**Fixes from the v0.10.2 deep review (#53)**
+- **The ghost `priority` field is gone (B1).** `pending`/`boot` read and rendered a frontmatter field that nothing could produce, nothing validated, and the spec dropped back in v0.3.3 — the reverse of the task/status cleanup (spec updated, reader lingered). Removed outright; `pending`/`boot` now surface only spec'd fields. Recorded in Appendix D.
+- **`doctor spec_freshness` message honesty (C1).** The WARN no longer recommends re-running `init`/`setup` (which never resolves spec divergence — `init` skips any recognizable spec by design) and now names both directions: stale disk → update your checkout; deliberately newer/locally-edited disk → expected, update the binary instead.
+- **The N1 foundation is pinned (P2).** A new regression test proves discharge identity comes from the canonical *filename* sender and never the body frontmatter `from:` — hand-planted disagreeing messages in both polarities — so a future refactor can't silently invert the property the v0.10.2 owed-discharge fix rests on. (Validated by mutation: flipping the guard fails the test.)
+
+**Spec (#52) + release-prep precision**
+- §6.2 documents the opt-in `--idempotency-key` flag; Appendix D records the `priority` reader removal. Release-prep adds two precision notes from the final adversarial gate: §6.2 now names the 256-entry re-issue window (a past-window resend allocates a fresh seq and may duplicate — still at-least-once) and the flag help warns that reusing a key for *different* content is silently dropped as a duplicate of the original.
+
 ## v0.10.2 (2026-07-02) — trust boundary + operational honesty
 
 A patch release — fixes, docs, and test-hardening only. Source: a second independent deep-analysis pass (against v0.10.1) probing the trust model, plus four operational findings surfaced by a live fleet restart. Triaged by a 4-way senior review; every fix developed by one agent and gate-reviewed by two (independent adversarial reviewers stood in where a reviewer was safety-blocked). Additive items (registration `v:`, `--idempotency-key`, a lease-timeout knob, mtime-based liveness, language-neutral conformance vectors + a second-language implementation) are deferred to v0.11.0 — a patch stays a patch.
