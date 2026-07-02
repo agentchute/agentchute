@@ -9,7 +9,7 @@ import (
 )
 
 // pidAlive reports whether pid names a live process on THIS host, via the
-// classic FindProcess + Signal(0) probe (mirrors run.go:processAlive, which
+// classic FindProcess + Signal(0) probe (mirrors serve.go:processAlive, which
 // lives in package main and is unreachable from internal/loop). EPERM means the
 // process exists but is owned by another uid — still alive for our purposes.
 //

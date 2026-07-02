@@ -254,7 +254,8 @@ func (d *runnerDiagnostics) logf(format string, args ...any) {
 	if d == nil {
 		return
 	}
-	d.write(fmt.Sprintf(format, args...))
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	d.write(timestamp + " " + fmt.Sprintf(format, args...))
 }
 
 func (d *runnerDiagnostics) bufferFatalf(format string, args ...any) {

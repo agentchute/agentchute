@@ -103,6 +103,14 @@ func TestRunnerDiagnosticsLogFileOnlyDuringRawWindow(t *testing.T) {
 	if !strings.Contains(log, "agentchute serve: inject prompt:") {
 		t.Fatalf("runner.log missing inject diagnostic:\n%s", log)
 	}
+	firstLine := strings.Split(strings.TrimSpace(log), "\n")[0]
+	fields := strings.Fields(firstLine)
+	if len(fields) < 2 {
+		t.Fatalf("runner.log line missing timestamp/message fields: %q", firstLine)
+	}
+	if _, err := time.Parse(time.RFC3339, fields[0]); err != nil {
+		t.Fatalf("runner.log timestamp = %q, want RFC3339: %v", fields[0], err)
+	}
 }
 
 func TestRunRefusesLiveRunnerCollision(t *testing.T) {
@@ -505,7 +513,7 @@ func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 // target each tick and record a cached reachability fact (ReachableAt) in its
 // registration. Gate 6a (pull-only): TestRunnerPollLoop_WritesReachableAt was
 // removed. pollOnce no longer reproves or records ReachableAt (the own-wake
-// reprove call at run.go's poll tick was deleted), so there is nothing to assert.
+// reprove call at serve.go's poll tick was deleted), so there is nothing to assert.
 
 func setupShortRunFixture(t *testing.T) string {
 	t.Helper()

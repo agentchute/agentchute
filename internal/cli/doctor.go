@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,6 +46,11 @@ var (
 	// Env-only form. Distinct from templated because absent
 	// AGENTCHUTE_BIN there is no fallback.
 	hookEnvOnlyRE = regexp.MustCompile(`\$AGENTCHUTE_BIN[ \t]+[a-z]`)
+)
+
+const (
+	staleTempFilePrefix = ".tmp_"
+	staleTempFileAge    = time.Hour
 )
 
 // cmdDoctor is the diagnostic aggregator. Walks an
@@ -176,6 +182,7 @@ type doctorOptions struct {
 func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) doctorReport {
 	checks := []doctorCheck{
 		checkLoopDirScaffold(cfg),
+		checkStaleTempFiles(cfg, opts.Now),
 		checkBinaryOnPath(),
 		checkHookFilePresence(cfg, agentID),
 		checkHookContentSanity(cfg),
@@ -252,6 +259,111 @@ func checkLoopDirScaffold(cfg *loop.Config) doctorCheck {
 		}
 	}
 	return doctorCheck{Name: "loop_dir_scaffold", Severity: severityOK, Message: "agents/, inbox/ present with correct shape"}
+}
+
+type staleTempFile struct {
+	path string
+	age  time.Duration
+}
+
+func checkStaleTempFiles(cfg *loop.Config, now time.Time) doctorCheck {
+	stale, err := findStaleTempFiles(cfg, now, staleTempFileAge)
+	if err != nil {
+		return doctorCheck{Name: "stale_temp_files", Severity: severityWarn, Message: fmt.Sprintf("stale temp scan error: %v", err)}
+	}
+	if len(stale) == 0 {
+		return doctorCheck{Name: "stale_temp_files", Severity: severityOK, Message: "no stale .tmp_* files found"}
+	}
+	return doctorCheck{
+		Name:     "stale_temp_files",
+		Severity: severityWarn,
+		Message:  fmt.Sprintf("%d stale .tmp_* file(s) older than %s: %s", len(stale), staleTempFileAge, formatStaleTempFiles(cfg, stale)),
+	}
+}
+
+func findStaleTempFiles(cfg *loop.Config, now time.Time, olderThan time.Duration) ([]staleTempFile, error) {
+	var stale []staleTempFile
+	scanDir := func(dir string) error {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), staleTempFilePrefix) {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			age := now.Sub(info.ModTime())
+			if age > olderThan {
+				stale = append(stale, staleTempFile{path: filepath.Join(dir, entry.Name()), age: age})
+			}
+		}
+		return nil
+	}
+	scanChildDirs := func(parent string) error {
+		children, err := os.ReadDir(parent)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		for _, child := range children {
+			if !child.IsDir() {
+				continue
+			}
+			if err := scanDir(filepath.Join(parent, child.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := scanChildDirs(filepath.Join(cfg.LoopDir, "inbox")); err != nil {
+		return nil, err
+	}
+	if err := scanChildDirs(filepath.Join(cfg.LoopDir, "state")); err != nil {
+		return nil, err
+	}
+	if err := scanDir(cfg.AgentsDir()); err != nil {
+		return nil, err
+	}
+	if err := scanDir(filepath.Join(cfg.LoopDir, "live")); err != nil {
+		return nil, err
+	}
+	sort.Slice(stale, func(i, j int) bool { return stale[i].path < stale[j].path })
+	return stale, nil
+}
+
+func formatStaleTempFiles(cfg *loop.Config, files []staleTempFile) string {
+	const maxShown = 5
+	parts := make([]string, 0, minInt(len(files), maxShown))
+	for i, f := range files {
+		if i >= maxShown {
+			break
+		}
+		path := f.path
+		if rel, err := filepath.Rel(cfg.ControlRepo, f.path); err == nil && !strings.HasPrefix(rel, "..") {
+			path = rel
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s old)", path, f.age.Round(time.Minute)))
+	}
+	if len(files) > maxShown {
+		parts = append(parts, fmt.Sprintf("... %d more", len(files)-maxShown))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func checkBinaryOnPath() doctorCheck {
