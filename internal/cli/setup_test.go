@@ -453,8 +453,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v21 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v21 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v22 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v22 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)
