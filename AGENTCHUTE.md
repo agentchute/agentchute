@@ -144,7 +144,7 @@ The canonical `from-<from>_seq-<020d>.md` is the only inbox filename format. A n
 ### 6.2 Sender flow
 1. Compose body (UTF-8).
 2. Allocate the next durable `seq` for `(from, to)` (write-ahead). The active serve token, if any, is fence-verified first.
-3. **Deliver into the inbox with the no-overwrite guarantee** under the canonical `(to, from, seq)` name (unique-temp + atomic `link()`; `EEXIST` = this exact message already landed = success). A sender crash between seq allocation and the link loses that message as a legal gap (at-most-once); callers needing at-least-once delivery supply a stable idempotency key via the library API (the reference `send` command does not expose one).
+3. **Deliver into the inbox with the no-overwrite guarantee** under the canonical `(to, from, seq)` name (unique-temp + atomic `link()`; `EEXIST` = this exact message already landed = success). A sender crash between seq allocation and the link loses that message as a legal gap (at-most-once); callers needing at-least-once delivery supply a stable idempotency key via the library API or the send command's opt-in `--idempotency-key <key>` flag (re-sending with the same key re-issues the same sequence number, enabling at-least-once delivery; default send usage remains at-most-once).
 4. **No wake.** The sender does not poke or signal the recipient — it only writes the message into the recipient's inbox. The recipient discovers it on its own poll.
 
 ### 6.3 Recipient flow — two-phase consume (act-then-archive)
@@ -323,6 +323,8 @@ status: active
 If a sender's durable counter (`state/<from>/seq/<to>.json`) is corrupted or lost, rebuild it rather than guessing: set `last_issued = max(seq present in the recipient's inbox + archive from this sender) + slack`, where the slack MUST exceed the 256-entry `Recent` re-issue window so fresh sequence numbers can never collide with lost dedup state. No special command is required — rewriting the JSON state file is sufficient.
 
 ## Appendix D. Compatibility history
+
+**DONE in v0.11.0 — unspec'd priority frontmatter reader removed (clean delete).** The undocumented `priority` frontmatter field (previously dropped from the spec in v0.3.3) was removed from the CLI reader (`pending`/`boot` display and structs), eliminating obsolete dead weight and aligning the reader with the normative envelope schema (§6.4).
 
 **DONE in v0.9.1 — dead shim-generation code removed (clean delete).** `renderShimScript` (the legacy per-wrapper shim generator) had zero production callers and moved to a test-only `legacyShimScript` fixture helper. `removeSetupAliasShimsForWrapper` was deleted outright (zero callers — the same-name alias cleanup is unreachable now that aliases are never installed). The misnamed `gitignoreBeginV1`/`gitignoreEndV1` constants (they held the current `v3` marker) were renamed `gitignoreBegin`/`gitignoreEnd`.
 
