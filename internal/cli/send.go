@@ -28,7 +28,7 @@ func cmdSend(args []string) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var fromID, toID, body, replyTo, controlRepo, loopDir string
+	var fromID, toID, body, replyTo, controlRepo, loopDir, idempotencyKey string
 	var ask, jsonOut bool
 	var replyBy time.Duration
 	fs.StringVar(&fromID, "from", "", "sender agent id (or $AGENTCHUTE_AGENT_ID)")
@@ -38,6 +38,7 @@ func cmdSend(args []string) error {
 	fs.BoolVar(&ask, "ask", false, "set reply_required: true and prepend `## ASK` heading to the body")
 	fs.DurationVar(&replyBy, "reply-by", 0, "with --ask: override the owed-reply deadline (e.g. 1h; default 30m)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
+	fs.StringVar(&idempotencyKey, "idempotency-key", "", "opt-in: a resend with the same key re-issues the same seq (at-least-once); default (unset) is at-most-once")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 
@@ -156,16 +157,19 @@ func cmdSend(args []string) error {
 	if fi, statErr := os.Stat(inboxDir); statErr != nil || !fi.IsDir() {
 		return fmt.Errorf("write inbox message: recipient %q is not registered; run agentchute register --as %s first (%w)", toID, toID, os.ErrNotExist)
 	}
-	// idempotencyKey is "": send has no stable per-message content key, so a
-	// sender crash between the durable seq commit and the link loses the
-	// allocated seq as a legal gap (at-most-once for this message). The library
-	// re-issue path remains available to callers that supply a stable non-empty
-	// idempotency key. serveToken rides AGENTCHUTE_SERVE_TOKEN: a
+	// idempotencyKey defaults to "": send has no stable per-message content key,
+	// so a sender crash between the durable seq commit and the link loses the
+	// allocated seq as a legal gap (at-most-once for this message) — unchanged
+	// default behavior. --idempotency-key is the opt-in escape hatch (F1): a
+	// caller that supplies a stable non-empty key gets at-least-once, because a
+	// resend with the same key re-issues the SAME seq instead of consuming a new
+	// one (AllocateSeq). No default body-hash key, no retries, no delivery
+	// guarantee beyond the write (C.6). serveToken rides AGENTCHUTE_SERVE_TOKEN: a
 	// send from a child launched under `agentchute serve` carries the runner's
 	// active serve-lease fence, so a write from a fenced (reclaimed) agent fails
 	// closed (AllocateSeq VerifyFence -> ErrFenced). Empty env (no serve lease) =>
 	// intentionally unfenced.
-	id, err := loop.SendSeqMessage(cfg, fromID, toID, content, "", os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
+	id, err := loop.SendSeqMessage(cfg, fromID, toID, content, idempotencyKey, os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("write inbox message: recipient %q is not registered; run agentchute register --as %s first (%w)", toID, toID, err)
@@ -287,7 +291,7 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 
 func sendUsage(err error) error {
 	return fmt.Errorf(`%w
-usage: agentchute send --from <sender> --to <recipient> [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
+usage: agentchute send --from <sender> --to <recipient> [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--idempotency-key <key>] [--json] [--control-repo <path>] [--loop-dir <path>]
 
   Ways to provide the body (pick one):
     --body "literal text"             short replies
