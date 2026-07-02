@@ -19,7 +19,7 @@ A patch release — fixes, docs, and test-hardening only. Source: a second indep
 
 **Docs / spec honesty**
 - **New hand-protocol scoping covenant (M3).** An agent with the reference CLI available MUST use it; the hand-protocol (Appendix C) is exclusively for environments without the binary. `README.md` no longer invites mixing hand-driven and CLI agents in one pool; the wrapper/`AGENTS.md` hand-protocol pointers were corrected from `§5` (Discovery) to Appendix C. This closes the failure mode where a binary-holding agent followed stale hand-protocol memory and bypassed the CLI's validation.
-- **§10 presence honesty (N7).** A fresh `.live` proves the supervisor/heartbeat is ticking, not that the agent wrapper is processing (the runner heartbeats `.live` unconditionally each tick).
+- **§9 presence honesty (N7).** A fresh `.live` proves the supervisor/heartbeat is ticking, not that the agent wrapper is processing (the runner heartbeats `.live` unconditionally each tick).
 - **§15 enforcement (docs).** The Security Considerations section now names the owed-discharge sender check (N1) and body sanitization (N3) as the enforced mechanisms of the compromised-peer boundary — framing only, no crypto.
 - **Enrollment marker v22 → v23** (the §5→Appendix C wrapper pointer sits inside the marked block). Re-run `setup` to re-stamp.
 
