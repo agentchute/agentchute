@@ -283,7 +283,30 @@ func checkStaleTempFiles(cfg *loop.Config, now time.Time) doctorCheck {
 
 func findStaleTempFiles(cfg *loop.Config, now time.Time, olderThan time.Duration) ([]staleTempFile, error) {
 	var stale []staleTempFile
-	scanChildren := func(parent string) error {
+	scanDir := func(dir string) error {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), staleTempFilePrefix) {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			age := now.Sub(info.ModTime())
+			if age > olderThan {
+				stale = append(stale, staleTempFile{path: filepath.Join(dir, entry.Name()), age: age})
+			}
+		}
+		return nil
+	}
+	scanChildDirs := func(parent string) error {
 		children, err := os.ReadDir(parent)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -295,31 +318,22 @@ func findStaleTempFiles(cfg *loop.Config, now time.Time, olderThan time.Duration
 			if !child.IsDir() {
 				continue
 			}
-			dir := filepath.Join(parent, child.Name())
-			entries, err := os.ReadDir(dir)
-			if err != nil {
+			if err := scanDir(filepath.Join(parent, child.Name())); err != nil {
 				return err
-			}
-			for _, entry := range entries {
-				if entry.IsDir() || !strings.HasPrefix(entry.Name(), staleTempFilePrefix) {
-					continue
-				}
-				info, err := entry.Info()
-				if err != nil {
-					return err
-				}
-				age := now.Sub(info.ModTime())
-				if age > olderThan {
-					stale = append(stale, staleTempFile{path: filepath.Join(dir, entry.Name()), age: age})
-				}
 			}
 		}
 		return nil
 	}
-	if err := scanChildren(filepath.Join(cfg.LoopDir, "inbox")); err != nil {
+	if err := scanChildDirs(filepath.Join(cfg.LoopDir, "inbox")); err != nil {
 		return nil, err
 	}
-	if err := scanChildren(filepath.Join(cfg.LoopDir, "state")); err != nil {
+	if err := scanChildDirs(filepath.Join(cfg.LoopDir, "state")); err != nil {
+		return nil, err
+	}
+	if err := scanDir(cfg.AgentsDir()); err != nil {
+		return nil, err
+	}
+	if err := scanDir(filepath.Join(cfg.LoopDir, "live")); err != nil {
 		return nil, err
 	}
 	sort.Slice(stale, func(i, j int) bool { return stale[i].path < stale[j].path })
