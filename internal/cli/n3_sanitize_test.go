@@ -62,45 +62,8 @@ func TestCheckSanitizesControlBytesInConsumedBody(t *testing.T) {
 	}
 }
 
-// TestPendingTextSanitizesPriorityControlBytes covers the secondary N3
-// exposure (codex's gate-review catch): pending's text-mode `[priority:...]`
-// flag prints e.Priority raw, and e.Priority is sourced from the UNVALIDATED
-// frontmatter peek path (readFrontmatter -> loop.ParseMessageFrontmatter,
-// with no loop.ValidateMessageFrontmatter gate in front of it, unlike
-// check.go's consume path) — so a sender-controlled `priority:` value can
-// carry ANSI/OSC/C0 bytes straight into `agentchute pending`'s text output.
-// e.From/e.Timestamp are filename-derived (constrained by the seq-filename
-// regex) and intentionally NOT covered here.
-func TestPendingTextSanitizesPriorityControlBytes(t *testing.T) {
-	root, cfg := setupSendFixture(t)
-	inbox := cfg.AgentInboxDir("claude-code")
-
-	evilPriority := "\x1b[31murgent\x1b[0m\x9b"
-	body := "---\n" +
-		"from: codex\n" +
-		"to: claude-code\n" +
-		"priority: " + evilPriority + "\n" +
-		"---\n\nbody\n"
-	mustWriteSeqInbox(t, inbox, "codex", 1, []byte(body))
-
-	withCwd(t, root, func() {
-		out, err := captureStdout(t, func() error { return cmdPending(pendingArgs()) })
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, bad := range []string{"\x1b", "\x9b"} {
-			if strings.Contains(out, bad) {
-				t.Fatalf("pending text output still contains raw control byte %q; got:\n%q", bad, out)
-			}
-		}
-		if !strings.Contains(out, "urgent") {
-			t.Fatalf("sanitization dropped legitimate priority text; got:\n%q", out)
-		}
-	})
-}
-
 // TestSanitizeControlBytes pins the exact keep/drop boundary of the helper
-// underlying both tests above: \n and \t are the only control code points
+// underlying the test above: \n and \t are the only control code points
 // kept; all other C0, DEL, and C1 code points are dropped; ordinary text
 // (including multi-byte UTF-8 and invalid UTF-8) passes through unchanged
 // or degrades safely.

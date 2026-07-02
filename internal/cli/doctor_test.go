@@ -145,10 +145,13 @@ func TestDoctorSpecFreshnessWarnsOnStaleSpec(t *testing.T) {
 	if got.Severity != severityWarn {
 		t.Fatalf("spec_freshness severity = %q, want WARN; message=%q", got.Severity, got.Message)
 	}
-	for _, want := range []string{"differs from this binary's embedded spec", "disk sha256=", "embedded sha256=", "agentchute init"} {
+	for _, want := range []string{"differs from this binary's embedded spec", "disk sha256=", "embedded sha256=", "update your checkout", "agentchute update"} {
 		if !strings.Contains(got.Message, want) {
 			t.Fatalf("spec_freshness message missing %q: %q", want, got.Message)
 		}
+	}
+	if strings.Contains(got.Message, "agentchute init") {
+		t.Fatalf("spec_freshness message still recommends `agentchute init`, which never fixes divergence (init.go skip-if-present): %q", got.Message)
 	}
 }
 
