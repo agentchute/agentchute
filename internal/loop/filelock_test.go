@@ -242,7 +242,7 @@ func TestUpdateLastSeen_NoLostUpdateUnderConcurrency(t *testing.T) {
 	}
 }
 
-// TestRunnerOfflineNotResurrectedByConcurrentLastSeen models the run.go shutdown
+// TestRunnerOfflineNotResurrectedByConcurrentLastSeen models the serve.go shutdown
 // race: a registration marked offline must not be flipped back to active by a
 // concurrent last_seen refresh. With both writers serialized through
 // withAgentLock and the offline write applied last, the terminal state is

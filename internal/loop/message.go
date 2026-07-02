@@ -77,8 +77,9 @@ func AnnounceEnrollment(cfg *Config, self *Registration) (AnnounceResult, error)
 		}
 		result.Total++
 		content := ComposeMessage(self.AgentID, "", body)
-		// Gate 4: deliver under the canonical (to,from,seq) identity (empty
-		// idempotencyKey/serveToken = transitional at-most-once, unfenced).
+		// Deliver under the canonical (to,from,seq) identity. Empty
+		// idempotencyKey means at-most-once across a sender crash between seq
+		// allocation and link; empty serveToken means intentionally unfenced.
 		if _, err := SendSeqMessage(cfg, self.AgentID, peer.AgentID, content, "", ""); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("send to %s: %v", peer.AgentID, err))
 			continue
@@ -185,8 +186,9 @@ func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionR
 	body := CorrectiveBody(malformedItem, reason, sectionRef)
 	content := ComposeMessage(from, "", body)
 
-	// Gate 4: deliver under the canonical (to,from,seq) identity (empty
-	// idempotencyKey/serveToken = transitional at-most-once, unfenced).
+	// Deliver under the canonical (to,from,seq) identity. Empty idempotencyKey
+	// means at-most-once across a sender crash between seq allocation and link;
+	// empty serveToken means intentionally unfenced.
 	id, err := SendSeqMessage(cfg, from, offender, content, "", "")
 	if err != nil {
 		return Message{}, err

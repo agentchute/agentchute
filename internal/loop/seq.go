@@ -236,9 +236,8 @@ var afterOuterFenceHook func()
 // serveToken: the active serve lease fence (lease.go). When non-empty,
 // AllocateSeq VerifyFence's it BEFORE persisting the counter, so a zombie/paused
 // holder whose lease was reclaimed can NOT advance the counter (closes the
-// dup-writer hole launch-time guarding alone leaves open). When EMPTY the write
-// is UNFENCED — the documented Gate-2/off-bus/degraded mode; serve supplies a
-// real token once the lease is wired in (Gate 6).
+// dup-writer hole launch-time guarding alone leaves open). When EMPTY, the write
+// is intentionally UNFENCED for callers that are not running under a serve lease.
 //
 // FENCING (fail-closed): when serveToken != "", VerifyFence is checked TWICE —
 // once OUTSIDE withAgentLock (fast fail-closed) and AGAIN INSIDE the lock,
@@ -361,23 +360,19 @@ func writeSeqMessage(inboxDir string, id MsgID, content []byte) (alreadyLanded b
 		return false, err
 	}
 	tempPath := tempFile.Name()
+	defer func() { _ = os.Remove(tempPath) }()
 	if err := writeAndSyncOpenFile(tempFile, content); err != nil {
-		_ = os.Remove(tempPath)
 		return false, err
 	}
 
 	finalPath := filepath.Join(inboxDir, id.Filename())
 	if err := linkNoClobber(tempPath, finalPath); err != nil {
-		_ = os.Remove(tempPath)
 		if errors.Is(err, os.ErrExist) {
 			// This exact (to,from,seq) is still present in the inbox — safe no-op
 			// success (pre-consume; post-consume relies on receiver Key dedup).
 			return true, nil
 		}
 		return false, fmt.Errorf("link to %s: %w", finalPath, err)
-	}
-	if err := removeFile(tempPath); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to remove temp seq file %s: %v\n", tempPath, err)
 	}
 	if err := syncDir(inboxDir); err != nil {
 		return false, err
@@ -405,7 +400,7 @@ func SendSeqMessage(cfg *Config, from, to string, content []byte, idempotencyKey
 	// fully eliminate the link race (a reclaim can always slip between this read and
 	// the link); the durable+monotonic seq guarantees no REUSE regardless, so any
 	// residual late write lands at a seq the new owner will never re-issue. Only
-	// enforced when fenced (serveToken != ""); empty = unfenced transitional mode.
+	// enforced when fenced (serveToken != ""); empty = intentionally unfenced.
 	if serveToken != "" {
 		if err := VerifyFence(cfg, from, serveToken); err != nil {
 			return MsgID{}, err

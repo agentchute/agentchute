@@ -33,7 +33,6 @@ const (
 )
 
 var (
-	removeFile   = os.Remove
 	readInboxDir = os.ReadDir
 )
 

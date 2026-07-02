@@ -179,17 +179,7 @@ func TestArchiveMessageIdempotentWhenDestinationIsSameFile(t *testing.T) {
 	}
 }
 
-// TestWriteSeqMessageIgnoresTempCleanupError: a failed temp-file cleanup after a
-// successful link must not fail the write; the leftover temp is left behind.
-func TestWriteSeqMessageIgnoresTempCleanupError(t *testing.T) {
-	oldRemoveFile := removeFile
-	t.Cleanup(func() {
-		removeFile = oldRemoveFile
-	})
-	removeFile = func(string) error {
-		return errors.New("cleanup failed")
-	}
-
+func TestWriteSeqMessageCleansTempFile(t *testing.T) {
 	root := t.TempDir()
 	inbox := filepath.Join(root, "inbox", "claude-code")
 	if err := os.MkdirAll(inbox, 0o755); err != nil {
@@ -200,22 +190,14 @@ func TestWriteSeqMessageIgnoresTempCleanupError(t *testing.T) {
 	if _, err := os.Stat(msg.Path); err != nil {
 		t.Fatal(err)
 	}
-	// The temp file now uses a unique os.CreateTemp name (not the deterministic
-	// .tmp_<final>), so locate the leftover by its tempFilePrefix rather than an
-	// exact name.
 	entries, err := os.ReadDir(inbox)
 	if err != nil {
 		t.Fatal(err)
 	}
-	foundTemp := false
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), tempFilePrefix) {
-			foundTemp = true
-			break
+			t.Fatalf("temp file should be cleaned after successful link; found %s", e.Name())
 		}
-	}
-	if !foundTemp {
-		t.Fatalf("a temp file should remain after fake cleanup failure; inbox entries: %v", entries)
 	}
 }
 

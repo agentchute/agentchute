@@ -66,6 +66,56 @@ func TestDoctorMissingScaffoldBlocks(t *testing.T) {
 	}
 }
 
+func TestDoctorWarnsOnStaleTempFiles(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	now := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
+	inboxDir := cfg.AgentInboxDir("codex")
+	stateDir := cfg.AgentStateDir("codex")
+	if err := os.MkdirAll(inboxDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staleInbox := filepath.Join(inboxDir, ".tmp_inbox")
+	staleState := filepath.Join(stateDir, ".tmp_lease")
+	freshInbox := filepath.Join(inboxDir, ".tmp_fresh")
+	normalState := filepath.Join(stateDir, "serve.claim")
+	for _, path := range []string{staleInbox, staleState, freshInbox, normalState} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staleTime := now.Add(-2 * time.Hour)
+	freshTime := now.Add(-30 * time.Minute)
+	for _, path := range []string{staleInbox, staleState} {
+		if err := os.Chtimes(path, staleTime, staleTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(freshInbox, freshTime, freshTime); err != nil {
+		t.Fatal(err)
+	}
+
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: now})
+	got := findCheck(t, r, "stale_temp_files")
+	if got.Severity != severityWarn {
+		t.Fatalf("stale_temp_files severity = %q, want WARN; message=%q", got.Severity, got.Message)
+	}
+	for _, want := range []string{
+		"2 stale .tmp_* file(s)",
+		".agentchute/loop/inbox/codex/.tmp_inbox",
+		".agentchute/loop/state/codex/.tmp_lease",
+	} {
+		if !strings.Contains(got.Message, want) {
+			t.Fatalf("stale_temp_files message missing %q:\n%s", want, got.Message)
+		}
+	}
+	if strings.Contains(got.Message, ".tmp_fresh") || strings.Contains(got.Message, "serve.claim") {
+		t.Fatalf("stale_temp_files reported non-stale/non-temp file:\n%s", got.Message)
+	}
+}
+
 func TestDoctorBareAgentchuteCheckInHookBlocks(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	// Drop a hook file that contains the silent-drain antipattern.
