@@ -253,10 +253,11 @@ func displayConsumed(cfg *loop.Config, agentID string, msg loop.Message, content
 	fm := loop.ParseMessageFrontmatter(content)
 
 	// Asker-side owed flip. ClearOwed only touches OUR ledger and only removes a
-	// matching key, so the From==agentID guard (we are the asker) is the
-	// authority check; a non-matching ref is a harmless no-op.
+	// matching key. The ref must name us as asker, and the consumed reply must
+	// come from the agent that owed it; otherwise a third party could clear an
+	// obligation by echoing someone else's ref.
 	if ref := strings.TrimSpace(fm["in_reply_to"]); ref != "" {
-		if key, ok := loop.ParseMsgIDRef(ref); ok && key.From == agentID {
+		if key, ok := loop.ParseMsgIDRef(ref); ok && key.From == agentID && msg.Sender == key.To {
 			if err := loop.ClearOwed(cfg, agentID, key); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: failed to clear owed obligation %s: %v\n", ref, err)
 			}
