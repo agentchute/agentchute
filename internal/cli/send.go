@@ -38,7 +38,7 @@ func cmdSend(args []string) error {
 	fs.BoolVar(&ask, "ask", false, "set reply_required: true and prepend `## ASK` heading to the body")
 	fs.DurationVar(&replyBy, "reply-by", 0, "with --ask: override the owed-reply deadline (e.g. 1h; default 30m)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
-	fs.StringVar(&idempotencyKey, "idempotency-key", "", "opt-in: a resend with the same key re-issues the same seq (at-least-once, within the sender's 256-entry re-issue window); the key must be unique per logical message — reusing it for different content silently drops the new content; default (unset) is at-most-once")
+	fs.StringVar(&idempotencyKey, "idempotency-key", "", "opt-in: a resend with the same key re-issues the same seq (at-least-once, within the sender's 256-entry re-issue window); the key must be unique per logical message and STABLE across retries of that same message (a fresh value per attempt, e.g. $(uuidgen), gives zero resume protection — see AGENTCHUTE.md §6.2); reusing a key for different content silently drops the new content; default (unset) is at-most-once")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 

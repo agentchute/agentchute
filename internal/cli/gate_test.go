@@ -24,8 +24,6 @@ func TestGateHelpDocumentsBlockersAndHookExitCodes(t *testing.T) {
 		"asker-owned only",
 		"blocked in text/--json modes",
 		"--codex-hook Stop",
-		"--gemini-hook AfterAgent",
-		"current Gemini templates use BeforeAgent + --json",
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("gate help missing %q:\n%s", want, help)
@@ -453,71 +451,6 @@ func TestGateContinuePhaseSamePredicateAsFinish(t *testing.T) {
 		}
 		if !errors.Is(errContinue, errBlocked) {
 			t.Fatalf("continue err = %v, want errBlocked", errContinue)
-		}
-	})
-}
-
-// Legacy/experimental --gemini-hook AfterAgent emits decision:deny on block,
-// decision:allow on clear. Always exit 0 — the JSON is the signal. The shipped
-// Gemini hook template uses BeforeAgent + --json instead.
-func TestGateGeminiHookAfterAgentBlockedShape(t *testing.T) {
-	root := setupBootFixture(t)
-	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "%1")
-		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
-			t.Fatal(err)
-		}
-		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
-		mustWriteSeqInbox(t, inboxDir, "codex", 1,
-			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
-		out, err := captureStdout(t, func() error {
-			return cmdGate(gateArgs("continue", "--gemini-hook", "AfterAgent"))
-		})
-		if err != nil {
-			t.Errorf("err = %v, want nil (gemini hook exit 0)", err)
-		}
-		var wrap struct {
-			Decision string `json:"decision"`
-			Reason   string `json:"reason"`
-		}
-		if jerr := json.Unmarshal([]byte(out), &wrap); jerr != nil {
-			t.Fatalf("unmarshal: %v\n%s", jerr, out)
-		}
-		if wrap.Decision != "deny" {
-			t.Errorf("decision = %q, want deny", wrap.Decision)
-		}
-		if !strings.Contains(wrap.Reason, "unread") {
-			t.Errorf("reason missing 'unread': %q", wrap.Reason)
-		}
-	})
-}
-
-func TestGateGeminiHookAfterAgentClearShape(t *testing.T) {
-	root := setupBootFixture(t)
-	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "%1")
-		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
-		out, err := captureStdout(t, func() error {
-			return cmdGate(gateArgs("continue", "--gemini-hook", "AfterAgent"))
-		})
-		if err != nil {
-			t.Errorf("err = %v, want nil", err)
-		}
-		var wrap struct {
-			Decision string `json:"decision"`
-		}
-		if jerr := json.Unmarshal([]byte(out), &wrap); jerr != nil {
-			t.Fatalf("unmarshal: %v\n%s", jerr, out)
-		}
-		if wrap.Decision != "allow" {
-			t.Errorf("decision = %q, want allow on clear inbox", wrap.Decision)
 		}
 	})
 }
