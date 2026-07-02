@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1.0.0: the coordination protocol that stopped growing — agentchute</title>
+<meta name="description" content="agentchute reaches v1.0.0. The story of a coordination protocol that found its stable core by deleting code, establishing boundaries, and choosing to stop growing.">
+<meta property="og:title" content="1.0.0: the coordination protocol that stopped growing">
+<meta property="og:description" content="agentchute reaches v1.0.0. The story of a coordination protocol that found its stable core by deleting code, establishing boundaries, and choosing to stop growing.">
+<meta property="og:url" content="https://agentchute.dev/blog/v1-0-0-the-coordination-protocol-that-stopped-growing.html">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://agentchute.dev/images/blog/simple-deleted.svg">
+<meta property="og:image:alt" content="Visualizing agentchute's transition from push to pull: eliminating watchdog, reachability, and complex pokes.">
+<meta property="og:image:width" content="600">
+<meta property="og:image:height" content="160">
+<meta property="article:published_time" content="2026-07-02">
+<meta property="article:author" content="reHuman Labs">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="1.0.0: the coordination protocol that stopped growing">
+<meta name="twitter:description" content="agentchute reaches v1.0.0. The story of a coordination protocol that found its stable core by deleting code, establishing boundaries, and choosing to stop growing.">
+<meta name="twitter:image" content="https://agentchute.dev/images/blog/simple-deleted.svg">
+<link rel="canonical" href="https://agentchute.dev/blog/v1-0-0-the-coordination-protocol-that-stopped-growing.html">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="../" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="../">home</a>
+      <a href="../blog/">blog</a>
+      <a href="../spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<article class="blog-article">
+
+<section class="hero">
+  <div class="wrap">
+    <p class="blog-meta">July 2, 2026 · reHuman Labs</p>
+    <h1>1.0.0: the coordination protocol that stopped growing</h1>
+    <img src="assets/one-point-oh.gif" alt="agentchute 1.0 — an inbox per agent, a Markdown message; a 'protocol v2 · stable' chip, confetti falling, and four agent cards (claude, codex, gemini, grok) with pulsing live-dots." style="width:100%;max-width:920px;border-radius:8px;margin:1.2rem 0;">
+    <p class="lede" style="font-style: italic; color: var(--fg-dim);">
+      We are releasing agentchute v1.0.0. In a software category racing to pile on orchestration layers, our milestone is different: a coordination protocol that is stable, final, and has chosen to stop growing.
+    </p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <p>
+      Today, agentchute reaches version 1.0.0. This release marks the transition of the core protocol and its reference command-line interface to a stable, finalized state. Under the project's two-axis SemVer contract, the protocol is stable and won't break under you. It is done.
+    </p>
+
+    <p>
+      agentchute is not a commercial product, a cloud service, or an all-enveloping agent framework. It is a filesystem-based coordination protocol—a tiny, pull-only mailbox system where agents communicate by writing Markdown files into one another's inbox directories, without any central server or network broker.
+    </p>
+
+    <p>
+      The journey to 1.0.0 was not a progression of adding features, but an exercise in subtraction. By deleting the machinery we built to solve self-inflicted problems, establishing clear trust boundaries, and demonstrating the protocol's compatibility across substrates, we found a core that is complete.
+    </p>
+
+    <h2>The Arc of Subtraction</h2>
+
+    <p>
+      The path to a stable v1.0.0 core was defined by several key milestones:
+    </p>
+
+    <h3>v0.8.0: Simple Again</h3>
+    <p>
+      Early in the project, we made a fundamental design error: we had the sender of a message wake the recipient. To support this push model, we had to introduce reachability tracking, which required a watchdog, which in turn introduced race conditions that needed liveness caches and synchronization gates to resolve. In v0.8.0, we threw out the push apparatus entirely. We moved to a pure pull-based model: the sender writes to a directory and walks away; the recipient is responsible for checking its own inbox on its own cadence.
+    </p>
+
+    <h3>v0.9.x: The Subtraction Phase</h3>
+    <p>
+      Following the pivot to pull, we ruthlessly stripped out the legacy watchdog, reachability systems, and cooperative-wake mechanics. This subtraction phase removed <strong>-8,262 lines of code</strong> from the repository, leaving a lean, highly reliable command-line implementation and a PTY-based runner.
+    </p>
+
+    <h3>v0.10.0: Protocol v2 Stable</h3>
+    <p>
+      With the codebase simplified, we codified the core semantics of the wire protocol as Protocol v2. We established that breaking changes to these invariants would require a Protocol v3, providing a stable foundation that developers and custom implementations could build upon.
+    </p>
+
+    <h3>v0.10.x: The Trust Boundary</h3>
+    <p>
+      We hardened the implementation against potential peer misbehavior. Since agents read untrusted files in their inbox directories, we implemented strict file-size limits, safe file opens using open-no-follow (O_NOFOLLOW on UNIX, avoiding TOCTOU symlink swaps), and local-only PID fences to prevent resource exhaustion or path traversal from buggy or hostile peers.
+    </p>
+
+    <h3>v0.11.0: The Universality Proof</h3>
+    <p>
+      To prove that agentchute is a substrate-agnostic protocol rather than a specific Go library, we isolated its guarantees into a conformance suite. We verified these invariants across <strong>9 conformance vectors</strong> and <strong>2 distinct bindings</strong> (the POSIX filesystem link-no-overwrite binding and an in-memory/log transport). To prove that any language could easily implement a conformant client, we wrote a disposable Python proof-of-concept that fully passes the conformance vectors.
+    </p>
+
+    <h3>v0.11.8 &amp; 1.0.0: Hardening and Stability</h3>
+    <p>
+      Our final steps involved prep work for the 1.0 release: integrating macOS CI, ensuring SIGWINCH PTY-resize robustness under Unix, removing legacy hook parameters, and declaring the protocol stable.
+    </p>
+  </div>
+</section>
+
+<section class="flow">
+  <div class="wrap">
+    <h2>The Non-Product Stance</h2>
+
+    <p>
+      We want to be explicit about what 1.0.0 means:
+    </p>
+
+    <ul>
+      <li><strong>Stable, not static:</strong> The reference CLI will receive patches for bugs, security vulnerabilities, and compatibility with newer Go versions. But we will not add product features, orchestration layers, or commercial integrations.</li>
+      <li><strong>Adoption through Conformance:</strong> If you want to use agentchute in a different language, on a different substrate (like S3, Redis, or git), or inside your own custom runner, you do not need to wrap our binary. You can build your own client and verify its correctness against the conformance vectors.</li>
+      <li><strong>No more growth:</strong> The protocol is stable. It won't churn, and it won't break under you.</li>
+    </ul>
+
+    <blockquote class="blog-quote">
+      "agentchute 1.0.0 means the coordination protocol is finished, not that it grew up into a product."
+    </blockquote>
+
+    <p>
+      By choosing to stop growing, agentchute provides a reliable, permanent building block for multi-agent workflows. The code is finalized, the conformance suite is green, and the protocol is ready for your agents.
+    </p>
+  </div>
+</section>
+
+  <p style="text-align:center;margin-top:2rem;"><img src="assets/update-to-1-0.gif" alt="A terminal types '$ agentchute update' and prints 'agentchute v1.0.0 — protocol v2 · stable' in green, with a little confetti burst inside the terminal." style="width:100%;max-width:920px;border-radius:8px;"></p>
+</article>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/agentchute/agentchute">github.com/agentchute/agentchute</a>
+      ·
+      <a href="../">home</a>
+      ·
+      <a href="../blog/">blog</a>
+      ·
+      MIT license
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
