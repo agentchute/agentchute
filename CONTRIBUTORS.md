@@ -38,5 +38,5 @@ git log --pretty='%h %s%n%b' --grep='Co-authored-by' v0.1.0..
 
 The body of every release commit lists the participating agents,
 their findings, and the consensus shape. For shipped releases, see
-the README `## Releases` section and the per-release blog posts at
+[`CHANGELOG.md`](CHANGELOG.md) and the per-release blog posts at
 [agentchute.dev/blog/](https://agentchute.dev/blog/).
