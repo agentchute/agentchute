@@ -2,11 +2,13 @@
 
 *Open spec for inbox-based agent coordination. Protocol v2 (pull-only) — **STABLE** as of v0.10.0; reference CLI implementation. The primitives (§1), envelope (§6.4), filename/identity grammar (§6.1), lifecycle guarantees (§6.3, §11.1), and the conformance invariants are covenants: they change only through the versioned deprecation process in [`CONTRIBUTING.md`](CONTRIBUTING.md).*
 
-> **Executable spec.** The normative invariants below are encoded as a runnable
-> conformance suite in [`conformance/`](conformance/) — seven invariants
-> (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`) driven against two substrate bindings
-> (private inbox dir + shared log). Any substrate that passes the suite is
-> conformant. When prose and the suite disagree, the suite wins.
+> **Executable spec.** The normative invariants below are encoded as runnable,
+> language-neutral conformance vectors in [`conformance/`](conformance/) — seven
+> core invariants (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`) plus two crash-safety
+> vectors (`C2` universal, `Q1` inbox-profile), driven against two substrate
+> bindings (private inbox dir + shared log). Any substrate that passes its
+> applicable vectors is conformant. When prose and the suite disagree, the
+> suite wins.
 
 ---
 
