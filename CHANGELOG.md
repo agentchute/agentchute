@@ -4,6 +4,25 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v0.11.8 (2026-07-02) — freeze-prep: the 1.0 gates
+
+The release that carries every gate of the agreed 1.0 plan (the freeze itself is declared at v1.0.0, over this release's dogfooded artifacts). **Version-number note (owner decision):** this release is numbered 0.11.8 by Alex's instruction; its content is minor-grade (one addition, one owner-excepted removal) and is treated as a minor under the versioning policy.
+
+**Protocol version now self-evidences on the wire (#59 spec, #64 code)**
+- Registrations emit **`v: 2`** — a frozen protocol's records should self-certify their version instead of the claim living in prose. `doctor`/`status` gain a `protocol_version` reader: **absent `v:` is a silent legacy state** (mixed fleets are normal — no warning); only an explicit non-2 value warns, and it is diagnostic only, never delivery-blocking.
+
+**Crash-safety joins the language-neutral conformance contract (#65)**
+- Vectors gain schema-wide **`applies_to`** applicability (array; omitted = universal; existing vectors unchanged) — machine-readable, not a convention for third parties to reverse-engineer.
+- **C2 sender-crash-resume** (universal) and **Q1 malformed-quarantine** (`["inbox"]` — the shared-log binding has no bad-filename analogue) port the crash half of the lifecycle promises into the portable contract.
+- The disposable Python proof now **skips unknown vector kinds and non-applicable vectors with a printed note** instead of crashing — modeling correct third-party consumer behavior; it still proves its original seven invariants, out of CI as always.
+
+**Hardening + honesty (#62, #59, #60)**
+- **macOS CI** — the test/vet/build/conformance matrix now includes `macos-latest`, and the macOS leg is a **required** check (we ship darwin binaries; findings are findings, never flakes). First macOS run in project history passed green.
+- **A real SIGWINCH regression test** — mid-session terminal resize propagates to the child PTY and the session survives (the previously-untested gap on the runner's weakest pillar).
+- **`gate --gemini-hook AfterAgent` removed** — **owner-logged one-time exception (Alex)** to the deprecate-then-remove window, per the policy's own exception mechanism (precedent: the `run` alias, v0.9.1). The surface was verified dead on every shipped config (templates use `BeforeAgent --json`; the negative guard test stays).
+- **Spec honesty (#59):** §6.5 documents the `v:` emission + absent-is-legacy semantics; all three "(v1)" headings retitled; the §13 wishlist deleted after folding its true non-goals into §12 (resolving a deferred-vs-never contradiction; transcript-export parked as issue #63); §2 gains the "tested targets and assumptions" matrix; cross-host NFS is explicitly documented-assumptions-not-CI-verified; PTY injection = best-effort cue, not a compliance guarantee; Appendix C notes the hand-protocol has no multi-writer/lease equivalent; Appendix D reconciles covenant-stability vs prose growth.
+- **Policy (#60):** CONTRIBUTING gains the two-axis versioning contract (protocol vs CLI; version-line-agnostic release rules; effective in full at v1.0.0) with the owner-exception clause retained and the deferred-cleanup ledger convention relocated from the spec; README gains the non-product Status section ("protocol + reference implementation, not a product") and the tightened any-wrapper phrasing.
+
 ## v0.11.1 (2026-07-02) — docs: the durable-key rule + blog honesty
 
 A docs-only patch. **§6.2 now states the durable-key rule** for `send --idempotency-key`: the key must be caller-durable — the same value across every retry of one logical send (a task id, the triggering message ref) — because a fresh key per attempt (e.g. `$(uuidgen)`) gives zero resume protection: it either double-delivers under two sequence numbers or degrades to unverified, accidental at-least-once. The flag help points to the rule. Also: the pre-0.8 blog posts are marked historical (they describe mechanics deleted in the pull-only redesign), the runner-PTY incident note moved under `docs/decisions/`, and CONTRIBUTORS.md's dead README link now points at the CHANGELOG.
