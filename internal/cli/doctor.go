@@ -184,6 +184,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 	checks := []doctorCheck{
 		checkLoopDirScaffold(cfg),
 		checkSpecFreshness(cfg),
+		checkProtocolVersions(cfg),
 		checkStaleTempFiles(cfg, opts.Now),
 		checkBinaryOnPath(),
 		checkHookFilePresence(cfg, agentID),
@@ -251,6 +252,37 @@ func checkSpecFreshness(cfg *loop.Config) doctorCheck {
 func shortSHA256(data []byte) string {
 	sum := sha256.Sum256(data)
 	return fmt.Sprintf("%x", sum[:])[:12]
+}
+
+func checkProtocolVersions(cfg *loop.Config) doctorCheck {
+	regs, errs := loop.ReadRegistrationsLenient(cfg.AgentsDir())
+	if len(errs) > 0 {
+		return doctorCheck{
+			Name:     "protocol_version",
+			Severity: severityWarn,
+			Message:  fmt.Sprintf("registration protocol-version scan skipped %d unreadable registration(s)", len(errs)),
+		}
+	}
+
+	regsMap := make(map[string]*loop.Registration)
+	for _, reg := range regs {
+		regsMap[reg.AgentID] = reg
+	}
+
+	var warnings []string
+	for _, id := range loop.RegistrationsByAgentID(regsMap) {
+		if warning := protocolVersionWarning(regsMap[id]); warning != "" {
+			warnings = append(warnings, warning)
+		}
+	}
+	if len(warnings) == 0 {
+		return doctorCheck{Name: "protocol_version", Severity: severityOK, Message: fmt.Sprintf("no explicit protocol-version mismatches; expected v%d", loop.CurrentProtocolVersion)}
+	}
+	return doctorCheck{
+		Name:     "protocol_version",
+		Severity: severityWarn,
+		Message:  strings.Join(warnings, "; "),
+	}
 }
 
 func checkLoopDirScaffold(cfg *loop.Config) doctorCheck {

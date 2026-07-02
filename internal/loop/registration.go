@@ -17,6 +17,8 @@ import (
 const (
 	MaxRegistrationBytes = 1 << 20 // 1 MiB — registrations are tiny in practice.
 	MaxInboxMessageBytes = 4 << 20 // 4 MiB — free-form markdown bodies.
+
+	CurrentProtocolVersion = 2
 )
 
 // ReadFileLimit reads up to max bytes from path, returning ErrFileTooLarge
@@ -60,15 +62,16 @@ const (
 // recipient's own `.live` file (loop.IsLive). There is no wake_method/wake_target
 // and no reachability cache — every consumer reads `.live` for presence.
 type Registration struct {
-	AgentID      string
-	Vendor       string
-	ControlRepo  string
-	WorkingRepos []string
-	Host         string
-	LastSeen     time.Time
-	Status       Status
-	RestartAt    *time.Time
-	LastActive   *time.Time
+	AgentID         string
+	ProtocolVersion int
+	Vendor          string
+	ControlRepo     string
+	WorkingRepos    []string
+	Host            string
+	LastSeen        time.Time
+	Status          Status
+	RestartAt       *time.Time
+	LastActive      *time.Time
 
 	// WI-E3 launch provenance (AGENTCHUTE.md §5.1). Advisory and
 	// backward-compatible: records HOW this lane enrolled so verify views (E1)
@@ -105,13 +108,14 @@ func ReadRegistration(path string) (*Registration, error) {
 	}
 
 	reg := &Registration{
-		AgentID:      fields.scalar("agent_id"),
-		Vendor:       fields.scalar("vendor"),
-		ControlRepo:  fields.scalar("control_repo"),
-		WorkingRepos: fields.list("working_repos"),
-		Host:         fields.scalar("host"),
-		Status:       Status(fields.scalar("status")),
-		Body:         body,
+		AgentID:         fields.scalar("agent_id"),
+		ProtocolVersion: parseProtocolVersion(fields.scalar("v")),
+		Vendor:          fields.scalar("vendor"),
+		ControlRepo:     fields.scalar("control_repo"),
+		WorkingRepos:    fields.list("working_repos"),
+		Host:            fields.scalar("host"),
+		Status:          Status(fields.scalar("status")),
+		Body:            body,
 	}
 	if reg.Status == "" {
 		reg.Status = StatusActive
@@ -381,6 +385,9 @@ func formatRegistration(r *Registration) string {
 	var b strings.Builder
 	b.WriteString("---\n")
 	writeScalar(&b, "agent_id", r.AgentID)
+	if r.ProtocolVersion != 0 {
+		writeScalar(&b, "v", strconv.Itoa(r.ProtocolVersion))
+	}
 	writeScalar(&b, "vendor", r.Vendor)
 	writeScalar(&b, "control_repo", r.ControlRepo)
 	if len(r.WorkingRepos) > 0 {
@@ -422,6 +429,18 @@ func formatRegistration(r *Registration) string {
 		}
 	}
 	return b.String()
+}
+
+func parseProtocolVersion(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 func writeScalar(b *strings.Builder, key, value string) {
