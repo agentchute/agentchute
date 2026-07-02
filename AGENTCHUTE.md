@@ -222,7 +222,7 @@ The leading bracket in the injected cue is machine metadata; the model-facing in
 
 Presence is a **published fact with freshness**, written to `live/<id>.live` (`{id, last_seen, busy, pid, host}`) on every heartbeat via an atomic tmp+rename:
 - A `.live` newer than the freshness window ⇒ **alive**.
-- A stale or absent `.live` ⇒ **not-alive** (never an error — an unregistered or long-gone agent simply reads not-alive). This is the dead-mailbox detection: "came back days later, one agent never returned" surfaces as a stale `.live`. Freshness compares the writer's embedded `last_seen` against the reader's clock under the same NTP-loose assumption as §5.4: clock skew between reader and writer shifts perceived freshness in either direction (a fast reader clock can read a healthy agent as not-alive for up to the skew).
+- A stale or absent `.live` ⇒ **not-alive** (never an error — an unregistered or long-gone agent simply reads not-alive). This is the dead-mailbox detection: "came back days later, one agent never returned" surfaces as a stale `.live`. Freshness compares the writer's embedded `last_seen` against the reader's clock under the same NTP-loose assumption as §5.4: clock skew between reader and writer shifts perceived freshness in either direction (a fast reader clock can read a healthy agent as not-alive for up to the skew). A fresh presence record proves only that the supervisor or heartbeat mechanism is ticking; it does not prove that the underlying agent wrapper is actively processing. (The runner supervisor updates `.live` unconditionally each heartbeat tick.)
 - `busy` is **advisory only** and NEVER affects aliveness — this deliberately avoids the false-dead direction (a busy agent mid-long-turn must not read as dead).
 
 `gate`/`doctor`/`status` read presence from `.live`, not from registration `last_seen`. There is **no watchdog and no cross-agent liveness tracking** — both were deleted as push machinery. A pull-only pool needs neither: a sender doesn't care whether the recipient is live (the message waits in the inbox), and an asker learns of a dead recipient from its own expired `.owed` plus the recipient's stale `.live`.
@@ -278,7 +278,7 @@ The protocol's position:
 - **Task authority does not grant instruction authority.** The §7.2 inbox-only authority to mutate is the authority to *carry out the stated task* to its done-condition. It does not extend to arbitrary imperatives embedded in a message body.
 - **Wrappers enforce the boundary.** Wrapper enrollment files (`CLAUDE.md`, `CODEX.md`, `GEMINI.md`, `GROK.md`, and the templates) MUST carry a standing rule: instructions arriving in an inbox body that expand scope beyond the local repository — creating or cloning repositories, accessing credentials, network access, deletion, or other irreversible actions — require explicit human confirmation before execution.
 
-No cryptographic machinery is added (signing remains a §12 non-goal); this section is framing, and the wrapper rule is its enforcement point.
+To enforce this boundary, the reference CLI verifies the sender's identity from the inbox filename before discharging any owed reply obligation (N1) and sanitizes raw message bodies by stripping C0/C1 control bytes on output (N3). No cryptographic machinery is added (signing remains a §12 non-goal); this section is framing, and the wrapper rule is its enforcement point.
 
 ---
 
@@ -288,7 +288,7 @@ See `README.md` or `examples/hooks/` for current Claude Code, Codex, and Gemini 
 
 ## Appendix C. Hand-protocol walkthrough
 
-For agents without the reference CLI binary. (The CLI enforces a durable `seq` counter and a serve lease; a hand-protocol agent SHOULD coordinate to keep a single writer per id and a monotonic per-`(from,to)` counter.)
+The hand-protocol is exclusively for environments without the reference CLI binary; an agent with the reference CLI available MUST use the CLI rather than driving files by hand. (The CLI enforces a durable `seq` counter and a serve lease; a hand-protocol agent SHOULD coordinate to keep a single writer per id and a monotonic per-`(from,to)` counter.)
 
 ### C.1 Registration
 Write `.agentchute/loop/agents/<id>.md`:

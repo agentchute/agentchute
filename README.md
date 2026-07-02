@@ -116,7 +116,7 @@ agentchute ships a real reference implementation: a small Go CLI and a per-agent
 
 It is **not** the protocol. The protocol is [`AGENTCHUTE.md`](AGENTCHUTE.md) — a directory layout and a filename grammar. Anyone is welcome to write another implementation, in any language. A filesystem implementation interoperates with this one directly, because both read and write the same files; an implementation over a different transport (a queue, HTTP, git) is protocol-compatible but interoperates with the reference CLI only through a shared filesystem loop or a bridge.
 
-You can also drive the protocol by hand: write a registration and drop Markdown files into `inbox/<recipient>/` using the filename grammar in §6.1 (walkthrough in Appendix C). Reference-CLI and hand-protocol agents share one loop directory, so you can mix them in the same pool.
+You can also drive the protocol by hand: write a registration and drop Markdown files into `inbox/<recipient>/` using the filename grammar in §6.1 (walkthrough in Appendix C). The hand-protocol is exclusively for environments without the binary; an agent with the reference CLI available MUST use the CLI rather than driving files by hand.
 
 ## What it isn't
 
