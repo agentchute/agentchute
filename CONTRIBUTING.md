@@ -86,7 +86,7 @@ This sequencing prevents implementations diverging from the spec.
 To guarantee pool stability and coordinate independent implementations, we maintain a two-axis versioning contract:
 
 ### 1. Protocol Version (AGENTCHUTE.md)
-- Protocol v2 is stable; its covenants change only through the deprecation process below. A breaking change would be Protocol v3. At CLI v1.0.0 the protocol will be declared frozen; the two-axis contract below takes full effect then (until v1.0.0, the v0.x rules continue to apply to the CLI line).
+- Protocol v2 is stable; its covenants change only through the deprecation process below. A breaking change would be Protocol v3. At CLI v1.0.0 this stability is formally declared final; the two-axis contract below takes full effect then (until v1.0.0, the v0.x rules continue to apply to the CLI line).
 
 ### 2. Reference CLI Version (SemVer)
 - The CLI implements the corresponding protocol version (e.g., CLI 1.x implements Protocol v2).
