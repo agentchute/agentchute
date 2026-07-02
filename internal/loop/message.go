@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -186,10 +187,15 @@ func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionR
 	body := CorrectiveBody(malformedItem, reason, sectionRef)
 	content := ComposeMessage(from, "", body)
 
-	// Deliver under the canonical (to,from,seq) identity. Empty idempotencyKey
-	// means at-most-once across a sender crash between seq allocation and link;
-	// empty serveToken means intentionally unfenced.
-	id, err := SendSeqMessage(cfg, from, offender, content, "", "")
+	// N8: a stable content-derived idempotency key, so a caller retrying
+	// SendCorrective with the identical arguments (a transient send failure,
+	// not a fresh re-quarantine — a re-quarantine of the same original file
+	// produces a NEW timestamped malformedItem path and is correctly treated
+	// as a distinct corrective) re-issues the same seq instead of consuming a
+	// new one. Deterministic function of the call's own inputs only — no
+	// clock, no randomness. Empty serveToken means intentionally unfenced.
+	key := correctiveIdempotencyKey(from, offender, malformedItem, reason, sectionRef)
+	id, err := SendSeqMessage(cfg, from, offender, content, key, "")
 	if err != nil {
 		return Message{}, err
 	}
@@ -202,6 +208,17 @@ func SendCorrective(cfg *Config, from, offender, malformedItem, reason, sectionR
 	// Simple-again Gate 6a (pull-only): the corrective is delivered by the inbox
 	// file write alone; the offender picks it up on its own poll. No wake poke.
 	return msg, nil
+}
+
+// correctiveIdempotencyKey derives a stable idempotency key from
+// SendCorrective's own arguments (N8) — a sha256 hex digest, bounded and
+// filesystem/JSON-safe regardless of how long malformedItem/reason get.
+// Identical arguments always produce the identical key; any difference (a
+// different offender, item, or reason) produces a different key, so distinct
+// correctives never collide.
+func correctiveIdempotencyKey(from, offender, malformedItem, reason, sectionRef string) string {
+	sum := sha256.Sum256([]byte(from + "\x00" + offender + "\x00" + malformedItem + "\x00" + reason + "\x00" + sectionRef))
+	return fmt.Sprintf("corrective-%x", sum[:16])
 }
 
 // announcementBody is the human- and machine-readable payload for an

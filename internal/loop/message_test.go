@@ -145,6 +145,70 @@ func TestSendCorrectiveWritesMessageAndSkipsPokeForEmptyTarget(t *testing.T) {
 	}
 }
 
+// TestSendCorrectiveRetryWithSameItemDedups is N8 (deep-analysis-v2, step-6
+// adopted): a SendCorrective call retried with the IDENTICAL arguments (the
+// realistic retry shape -- a caller re-issuing the same already-computed
+// corrective after a transient failure, not re-quarantining a fresh file)
+// must re-issue the SAME seq, not consume a new one -- exactly one file must
+// land in the offender's inbox.
+func TestSendCorrectiveRetryWithSameItemDedups(t *testing.T) {
+	cfg := setupAnnounceFixture(t)
+	newReg(t, cfg, "claude-code", "anthropic", "", "") // self
+	offender := newReg(t, cfg, "codex", "openai", "", "")
+
+	msg1, err := SendCorrective(cfg, "claude-code", offender.AgentID,
+		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg2, err := SendCorrective(cfg, "claude-code", offender.AgentID,
+		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg1.Filename != msg2.Filename {
+		t.Fatalf("retrying SendCorrective with identical arguments allocated a new seq: %q vs %q", msg1.Filename, msg2.Filename)
+	}
+
+	entries, err := os.ReadDir(cfg.AgentInboxDir(offender.AgentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("want 1 corrective delivered for a same-arguments retry, got %d", len(entries))
+	}
+}
+
+// TestSendCorrectiveDifferentItemAllocatesDistinctSeq is the non-regression
+// half: a DIFFERENT malformed item (different content) must not collide with
+// an unrelated corrective's key.
+func TestSendCorrectiveDifferentItemAllocatesDistinctSeq(t *testing.T) {
+	cfg := setupAnnounceFixture(t)
+	newReg(t, cfg, "claude-code", "anthropic", "", "")
+	offender := newReg(t, cfg, "codex", "openai", "", "")
+
+	msg1, err := SendCorrective(cfg, "claude-code", offender.AgentID,
+		".agentchute/loop/malformed/bad1.md", "filename does not match §6.1", "§6.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg2, err := SendCorrective(cfg, "claude-code", offender.AgentID,
+		".agentchute/loop/malformed/bad2.md", "filename does not match §6.1", "§6.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg1.Filename == msg2.Filename {
+		t.Fatalf("two distinct malformed items collided on the same seq: %q", msg1.Filename)
+	}
+	entries, err := os.ReadDir(cfg.AgentInboxDir(offender.AgentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("want 2 correctives delivered for 2 distinct items, got %d", len(entries))
+	}
+}
+
 func TestAnnounceEnrollmentNoPeers(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
 	self := newReg(t, cfg, "claude-code", "anthropic", "", "I do synthesis.")
