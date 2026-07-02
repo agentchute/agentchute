@@ -1,12 +1,12 @@
 # agentchute — current handoff
 
-Last updated: 2026-07-01.
+Last updated: 2026-07-02 (v1.0.0).
 
 Read this after `AGENTS.md` and before touching anything. This file stays short and current; release history belongs in [`CHANGELOG.md`](CHANGELOG.md), and protocol history belongs in [`AGENTCHUTE.md`](AGENTCHUTE.md).
 
 ## Current state
 
-Latest release: **`v0.11.8`** — freeze-prep: the 1.0 gates (registrations emit `v: 2` with doctor/status readers and absent-is-silent-legacy semantics; crash-safety vectors C2/Q1 + schema-wide `applies_to` in the conformance contract; macOS CI required; SIGWINCH regression test; gemini-hook removed under an owner-logged exception; spec/policy honesty — tested-targets matrix, NFS demotion, two-axis versioning, non-product boundary). Numbered 0.11.8 by owner decision; minor-grade content. NEXT: dogfood window per the ratified exit criteria (≥72h floor + 9 observable criteria), then v1.0.0 = the zero-code-delta freeze tag (Protocol v2.0 — FROZEN + CLI 1.0.0 + subtraction-arc blog post). Prior: v0.11.1 docs patch; v0.11.0 universality proof; v0.10.x trust-boundary arc; v0.10.0 Protocol v2 STABLE.
+Latest release: **`v1.0.0`** — the declaration release: **Protocol v2 — stable, declared final** (covenants change only through the versioned deprecation process; a breaking change would be Protocol v3), carried by reference **CLI v1.0.0** (contract: CLI 1.x ⇒ Protocol v2; the two-axis versioning policy in CONTRIBUTING is in full effect). Zero code/wire/conformance-semantic delta over the dogfooded v0.11.8 tree — the tag carries declaration texts, the F2 wording fix, this handoff, the CHANGELOG, launch GIFs (social/gif/), and the 0.8→1.0 subtraction-arc blog post. 1.0 means done, not big. Post-1.0 queue (each needs its own design round; none scheduled): self-serve conformance certification (first priority), the cue-channel ladder (per-session stdio constraint pre-ratified). Prior: v0.11.8 freeze-prep; v0.11.x; v0.10.x; v0.10.0 Protocol v2 STABLE.
 
 Coordination is **pull-only**: senders only ever write files and never poke a recipient. A loopless wrapper runs under the runner (`agentchute serve`, launched via `ac serve <wrapper>`) — a per-agent PTY supervisor that polls the agent's own inbox and injects a `check inbox` cue. There is no watchdog, no reachability cache, and no tmux/herdr wake adapters; those were removed. Message identity is the durable `(to, from, seq)` tuple; consumption is two-phase (`check` claims, `ack` commits — at-least-once, so handlers must be idempotent). Presence is the `.live` fact. Reply obligations are asker-owned (`.owed`). Id-uniqueness rides a serve lease + fencing token. The protocol's invariants ship as an executable suite in [`conformance/`](conformance/).
 

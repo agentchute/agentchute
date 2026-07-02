@@ -1,6 +1,6 @@
 # AGENTCHUTE.md
 
-*Open spec for inbox-based agent coordination. Protocol v2 (pull-only) — **STABLE** as of v0.10.0; reference CLI implementation. The primitives (§1), envelope (§6.4), filename/identity grammar (§6.1), lifecycle guarantees (§6.3, §11.1), and the conformance invariants are covenants: they change only through the versioned deprecation process in [`CONTRIBUTING.md`](CONTRIBUTING.md).*
+*Open spec for inbox-based agent coordination. **Protocol v2 (pull-only) — stable; declared final at CLI v1.0.0.** It will not break under you: the primitives (§1), envelope (§6.4), filename/identity grammar (§6.1), lifecycle guarantees (§6.3, §11.1), and the conformance invariants are covenants that change only through the versioned deprecation process in [`CONTRIBUTING.md`](CONTRIBUTING.md); a breaking change would be Protocol v3. The reference CLI 1.x implements Protocol v2.*
 
 > **Executable spec.** The normative invariants below are encoded as runnable,
 > language-neutral conformance vectors in [`conformance/`](conformance/) — seven
@@ -44,7 +44,7 @@ These are reference choices, not protocol requirements. Conforming implementatio
 ### In scope
 - **Pull-only inbox coordination** through per-recipient inboxes (§6).
 - **Per-agent supervision.** A loopless wrapper runs under `agentchute serve` (PTY supervisor) for inbox polling and `check inbox` injection. No sender-side wake.
-- **Small shared-FS pool.** 2 to ~10 agents sharing a single-host filesystem (or multi-host network mount subject to POSIX locking assumptions). Beyond that, routing/role-election is required (v2).
+- **Small shared-FS pool.** 2 to ~10 agents sharing a single-host filesystem (or multi-host network mount subject to POSIX locking assumptions). Beyond that, routing/role-election would be required (a future protocol major; a non-goal today, §12).
 - **Substrate-defined pool locator.** _Reference CLI: a repo containing `AGENTCHUTE.md` and a `.agentchute/loop` directory._
 - **Free-form messages with optional structured envelope** (§6.4).
 - **`.live` presence with freshness** (§9) and **asker-owned reply obligations** (§6.6).

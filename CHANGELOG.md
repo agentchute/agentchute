@@ -4,6 +4,20 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.0.0 (2026-07-02) — done, not big
+
+**The declaration release.** Protocol v2 is **stable — declared final**: it will not break under you. The covenants (primitives, envelope, filename/identity grammar, lifecycle guarantees, conformance invariants) change only through the versioned deprecation process; extensions can come; a breaking change would be Protocol v3. The reference CLI is versioned **1.0.0** as the artifact carrying the declaration — contract: **CLI 1.x implements Protocol v2** — and the two-axis versioning policy in CONTRIBUTING.md is now in full effect.
+
+**Said plainly (the honesty clause):** this release adds almost no new technical guarantee over what v0.10.0's STABLE covenant regime already promised. The 1.0 deltas are exactly three, and all shipped in v0.11.8: the protocol version self-evidences on the wire (`v: 2`), the versioning policy names both version lines, and the non-product boundary is stated in writing. 1.0 marks the promise *finished and declared*, not enlarged.
+
+**Zero code/wire/conformance-semantic delta** over the dogfooded v0.11.8 tree. This tag carries only: the declaration texts (spec status line; CONTRIBUTING/README already reworded in #69), the one-word §2 scope fix from the v0.11.8 review (F2: the stale "(v2)" parenthetical → "a future protocol major"), the internal handoff sweep, this CHANGELOG, the launch GIFs (`social/gif/`), and the "0.8→1.0 subtraction arc" blog post.
+
+**Owner exception (logged per the policy's mechanism):** the ratified dogfood window (≥72h + 9 observable criteria) was closed early by owner decision at the tag. Baseline verification at window-open was fully green — entire pool on v0.11.8 release binaries installed via the real paths, `v: 2` live fleet-wide (PROTO=v2 on all five lanes), doctor clean, conformance green against the release tree — and 4 of 9 criteria were already satisfied; the remaining observational criteria continue as ordinary post-release monitoring on the live pool that builds agentchute with agentchute.
+
+**Not in 1.0, by decision (the rejects are the statement):** native Windows; signing beyond checksums; non-filesystem transports in the reference CLI; broadcast/routing/coordinator agents; maintained SDKs or a maintained second implementation (the language-neutral vectors are the deliverable — a 261-line disposable Python proof already passes them); packaging/distribution channels; supervision/rollback tooling; default retries or exactly-once; dashboards, daemons, config systems. This is a protocol's 1.0, not a product's.
+
+**Post-1.0 (recorded, unscheduled, each behind its own subtract-default design round):** self-serve conformance certification (`conformance --binding <cmd>` — the first-priority round); the cue-channel ladder (hooks → per-session stdio MCP view → PTY floor; constraint pre-ratified: never a daemon).
+
 ## v0.11.8 (2026-07-02) — freeze-prep: the 1.0 gates
 
 The release that carries every gate of the agreed 1.0 plan (the freeze itself is declared at v1.0.0, over this release's dogfooded artifacts). **Version-number note (owner decision):** this release is numbered 0.11.8 by Alex's instruction; its content is minor-grade (one addition, one owner-excepted removal) and is treated as a minor under the versioning policy.
