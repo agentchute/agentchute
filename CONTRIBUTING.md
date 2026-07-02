@@ -83,12 +83,20 @@ This sequencing prevents implementations diverging from the spec.
 
 ## Deprecation & versioning policy
 
-To keep the pool stable and minimize disruption, we follow these versioning and deprecation rules. This policy applies from v0.10.0 onward; prior releases predate these rules and are not subject to them:
+To guarantee pool stability and coordinate independent implementations, we maintain a two-axis versioning contract:
 
-- **Patch releases (v0.X.Y)**: Fixes, docs, and test-hardening only. No CLI command/flag removals or renames.
-- **Minor releases (v0.X.0)**: May remove or rename CLI surface after one explicit deprecation window (deprecate in minor N, remove in N+1).
-- **Binding promises**: Deprecation timelines are binding unless the owner (Alex) logs an explicit, one-time exception in the `CHANGELOG.md` (e.g., the early removal of the `run` verb alias in v0.9.1, which was originally promised for v0.10.0).
-- **Enrollment marker contract**: Any change to the marked-block content in wrappers/templates requires bumping the `enrollmentVersion`, re-stamping via `init`, and keeping templates/wrappers drift-tested under `TestTemplatesMatchRepoWrappers`.
+### 1. Protocol Version (AGENTCHUTE.md)
+- Protocol v2 is stable; its covenants change only through the deprecation process below. A breaking change would be Protocol v3. At CLI v1.0.0 the protocol will be declared frozen; the two-axis contract below takes full effect then (until v1.0.0, the v0.x rules continue to apply to the CLI line).
+
+### 2. Reference CLI Version (SemVer)
+- The CLI implements the corresponding protocol version (e.g., CLI 1.x implements Protocol v2).
+- **Patch releases (X.Y.Z patch)**: Fixes, documentation, and test-hardening only. No command or flag removals.
+- **Minor releases (X.Y.0 minor)**: May deprecate or rename CLI surface. Any command/flag removal requires a deprecation window of at least one minor release (e.g., deprecate in minor N, remove in minor N+1).
+- **Owner exception clause**: Deprecation timelines are binding unless the owner (Alex) logs an explicit, one-time exception in the `CHANGELOG.md` (e.g., the early removal of the `run` verb alias in v0.9.1, or the `gemini-hook` removal in v0.11.8).
+- **Enrollment marker contract**: Any change to marked-block content in wrappers or templates requires bumping the `enrollmentVersion`, re-stamping via `init`, and verifying via `TestTemplatesMatchRepoWrappers`.
+
+### Deferred-Cleanup Ledger
+To keep the spec clean, we track deprecated features and slated removals in a virtual deferred-cleanup ledger. If a slated item's cleanup gate remains unmet release after release, we escalate rather than silently re-defer. Once a deprecated feature, command, or compatibility field is fully removed from the codebase, the completion is archived in Appendix D of the spec.
 
 ## Reporting bugs
 

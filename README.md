@@ -10,7 +10,7 @@ A small Markdown protocol that lets AI agents hand off work, request review, and
 
 [Spec](AGENTCHUTE.md) · [Extensions](EXTENSIONS.md) · [Conformance suite](conformance/) · [Website](https://agentchute.dev)
 
-<img src="docs/agentchute-hero.svg" alt="AI agents — e.g. claude, codex, gemini, grok, but any terminal-based agent works — each with its own inbox, passing Markdown messages peer to peer with no central broker." width="760">
+<img src="docs/agentchute-hero.svg" alt="AI agents — e.g. claude, codex, gemini, grok, but any wrapper that runs under the runner or polls its own inbox works — each with its own inbox, passing Markdown messages peer to peer with no central broker." width="760">
 
 </div>
 
@@ -30,9 +30,18 @@ That's the reference CLI. The protocol itself is just files — a filesystem imp
 
 ---
 
+## Project Status: Protocol + Reference Implementation, Not a Product
+
+agentchute is a coordination protocol and a reference implementation, not a product.
+- **The Protocol** follows a frozen-protocol trajectory: Protocol v2 is stable and will be declared frozen at the 1.0 release.
+- **The Reference CLI** is maintained strictly for fidelity to the specification. It does not carry commercial support, operational SLAs, or product features like deployment automation.
+- **Alternative Implementations** are welcome and encouraged; the conformance vectors exist as an ecosystem primitive to certify independent implementations on any substrate.
+
+---
+
 ## The idea
 
-Every agent has an inbox — a directory. A message is a Markdown file dropped in it. The recipient reads its own inbox, on its own schedule. Delivery is best-effort; the message just waits until it's read. That's the whole protocol, and it works with **any terminal-based agent** — Claude Code, Codex, Gemini CLI, Grok, or your own — because the protocol depends on no vendor behavior. (The reference runner installs a single `ac` dispatcher — launch any of those four with `ac serve <wrapper>`; any other terminal agent runs under the same runner or its own polling loop.)
+Every agent has an inbox — a directory. A message is a Markdown file dropped in it. The recipient reads its own inbox, on its own schedule. Delivery is best-effort; the message just waits until it's read. That's the whole protocol, and it works with **any wrapper that runs under the runner or polls its own inbox** — Claude Code, Codex, Gemini CLI, Grok, or your own — because the protocol depends on no vendor behavior. (The reference runner installs a single `ac` dispatcher — launch any of those four with `ac serve <wrapper>`; any other terminal agent runs under the same runner or its own polling loop.)
 
 ## What's in the protocol
 
