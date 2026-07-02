@@ -332,14 +332,6 @@ func listHerdrSafe() (r []herdrPresenceEntry) {
 	return
 }
 
-func listTmuxSafe() (r []tmuxPresenceEntry) {
-	defer func() { _ = recover() }()
-	if listTmuxPanes != nil {
-		r = listTmuxPanes()
-	}
-	return
-}
-
 func listRunnerSafe(cfg *loop.Config) (r []runnerPresenceEntry) {
 	defer func() { _ = recover() }()
 	if listRunnerSockets != nil {
