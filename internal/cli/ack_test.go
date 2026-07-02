@@ -207,9 +207,13 @@ func TestAckJSONReportsGateClearVsBlocked(t *testing.T) {
 	}
 }
 
-// TestAckQuietStillReturnsErrBlocked pins that --quiet only suppresses output,
-// never the exit-code signal a hook/script depends on.
-func TestAckQuietStillReturnsErrBlocked(t *testing.T) {
+// TestAckQuietIsHookModeSuppressesBothOutputAndExitCode pins --quiet as hook
+// mode: it commits unconditionally like every other mode, but ALWAYS exits 0
+// (never errBlocked) so a paired `gate --before finish` Stop-hook entry stays
+// the sole authoritative block signal — ack --quiet exiting 2 with no reason
+// (quiet suppressed the text) would otherwise raise a second, reason-less
+// block alongside gate's.
+func TestAckQuietIsHookModeSuppressesBothOutputAndExitCode(t *testing.T) {
 	root, cfg := setupConsumeFixture(t)
 
 	withCwd(t, root, func() {
@@ -229,8 +233,8 @@ func TestAckQuietStillReturnsErrBlocked(t *testing.T) {
 	withCwd(t, root, func() {
 		out, err = captureStdout(t, func() error { return cmdAck([]string{"--as", "bob", "--quiet"}) })
 	})
-	if !errors.Is(err, errBlocked) {
-		t.Fatalf("err = %v, want errBlocked even under --quiet", err)
+	if err != nil {
+		t.Fatalf("cmdAck --quiet with a still-blocked gate: %v, want nil (quiet always exits 0 once committed)", err)
 	}
 	if out != "" {
 		t.Fatalf("--quiet should suppress all output; got %q", out)

@@ -29,18 +29,30 @@ import (
 // the archive.
 //
 // EXIT CODE distinguishes the two outcomes so scripts never mistake "committed"
-// for "done": gate clear after commit => nil (exit 0). Gate still blocked after
-// commit (unrelated obligations remain) => errBlocked (exit 2), same sentinel
-// `gate --before finish` returns, so `ack`'s exit code alone tells a caller
-// whether it's safe to treat the turn as finished. A blocked exit is reported
-// via text/JSON exactly like an already-committed-and-still-blocked state; it is
-// NOT a command failure (exit 1) — the commit itself always succeeds or `ack`
-// returns a real error.
+// for "done" — in DEFAULT mode only: gate clear after commit => nil (exit 0).
+// Gate still blocked after commit (unrelated obligations remain) => errBlocked
+// (exit 2), same sentinel `gate --before finish` returns, so `ack`'s exit code
+// alone tells a caller whether it's safe to treat the turn as finished. A
+// blocked exit is reported via text/JSON exactly like an already-committed-
+// and-still-blocked state; it is NOT a command failure (exit 1) — the commit
+// itself always succeeds or `ack` returns a real error.
+//
+// --quiet is HOOK MODE, not just "less output": it suppresses BOTH the
+// text/JSON report AND the exit-2 signal (always returns nil once the commit
+// itself succeeds). Its one documented consumer is the Stop-hook commit step,
+// where `ack --quiet` runs as its OWN hook entry immediately before
+// `gate --before finish --json` in the same hook list. A Stop hook that exits
+// 2 is itself a block signal to the harness; if `ack --quiet` also returned
+// errBlocked, a blocked turn would raise it TWICE — once from ack with NO
+// reason (quiet swallowed the text), once from gate with the real reasons —
+// a confusing, reason-less duplicate block. In hook mode `gate` is the sole
+// authoritative block signal; `ack --quiet`'s job is only to commit silently.
+// Callers that want the committed-vs-done distinction use the DEFAULT
+// (non-quiet) mode and read the exit code / `gate_clear` JSON field.
 //
 // Idempotent: an already-archived message (e.g. a partial prior ack) is treated
 // as success, and an empty .claimed is a no-op. Flags mirror `check`
-// (--as/--vendor/--json) plus --quiet for the Stop-hook commit step (--quiet
-// suppresses text/JSON output but never the exit code).
+// (--as/--vendor/--json) plus --quiet for the Stop-hook commit step.
 func cmdAck(args []string) error {
 	fs := flag.NewFlagSet("ack", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -118,11 +130,18 @@ func cmdAck(args []string) error {
 		result.BlockReasons = reasons
 	}
 
+	if quiet {
+		// Hook mode: the commit already happened above; suppress both the
+		// report and the exit-2 signal so a paired `gate --before finish` hook
+		// entry remains the sole authoritative block signal (see doc comment).
+		return nil
+	}
+
 	if jsonOut {
 		if err := emitAckJSON(result); err != nil {
 			return err
 		}
-	} else if !quiet {
+	} else {
 		emitAckText(result)
 	}
 
@@ -173,5 +192,5 @@ func emitAckJSON(r ackResult) error {
 }
 
 func ackUsage(err error) error {
-	return fmt.Errorf("%w\nusage: agentchute ack [--as <agent-id>] [--vendor <v>] [--control-repo <path>] [--loop-dir <path>] [--json] [--quiet]\n  ack COMMITS messages that `check` claimed: archives inbox/<id>/.claimed residue, unconditionally.\n  Exit 0 if the finish gate is then clear; exit 2 (same sentinel as `gate --before finish`) if other\n  obligations still block finish — the commit itself already happened either way.", err)
+	return fmt.Errorf("%w\nusage: agentchute ack [--as <agent-id>] [--vendor <v>] [--control-repo <path>] [--loop-dir <path>] [--json] [--quiet]\n  ack COMMITS messages that `check` claimed: archives inbox/<id>/.claimed residue, unconditionally.\n  Default mode: exit 0 if the finish gate is then clear; exit 2 (same sentinel as `gate --before\n  finish`) if other obligations still block finish — the commit itself already happened either way.\n  --quiet is hook mode: suppresses output AND always exits 0 once the commit succeeds, so a paired\n  `gate --before finish` hook entry remains the sole authoritative block signal.", err)
 }
