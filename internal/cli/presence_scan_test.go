@@ -43,7 +43,7 @@ func presencePoolCfg(t *testing.T) (*loop.Config, string) {
 	return cfg, root
 }
 
-func TestScanUnenrolledWrappers_FindsUnregisteredPaneInPool(t *testing.T) {
+func TestScanUnenrolledWrappers_IgnoresTmuxPanes(t *testing.T) {
 	cfg, root := presencePoolCfg(t)
 
 	// A plain registration for codex (pull-only: it carries no tmux wake target).
@@ -70,21 +70,11 @@ func TestScanUnenrolledWrappers_FindsUnregisteredPaneInPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scanUnenrolledWrappers: %v", err)
 	}
-	// Pull-only (Gate 6c): registrations carry no tmux wake target, so a tmux pane
-	// can no longer be matched to a registration — BOTH in-pool panes surface as
-	// present-but-not-enrolled.
-	if len(got) != 2 {
-		t.Fatalf("want 2 unenrolled tmux panes, got %d: %+v", len(got), got)
-	}
-	panes := map[string]bool{}
-	for _, p := range got {
-		if p.Kind != "tmux" || p.Suggestion == "" {
-			t.Fatalf("unexpected entry: %+v", p)
-		}
-		panes[p.Hint] = true
-	}
-	if !panes["%1"] || !panes["%2"] {
-		t.Fatalf("expected panes %%1 and %%2, got %+v", got)
+	// Pull-only registrations carry no tmux wake target, and a pane id has no
+	// registration link. In-pool tmux panes are therefore not actionable
+	// unenrolled-presence evidence.
+	if len(got) != 0 {
+		t.Fatalf("tmux panes must not surface as unenrolled presence; got %+v", got)
 	}
 }
 
@@ -169,8 +159,8 @@ func TestScanUnenrolledWrappers_IgnoresOutOfPoolCwd(t *testing.T) {
 	outOfPool := t.TempDir() // no AGENTCHUTE.md -> Discover fails -> not in pool
 
 	stubPresenceListers(t)
-	listTmuxPanes = func() []tmuxPresenceEntry {
-		return []tmuxPresenceEntry{{PaneID: "%7", Cwd: outOfPool}}
+	listProcesses = func() []processPresenceEntry {
+		return []processPresenceEntry{{PID: 99, Command: "codex", Cwd: outOfPool}}
 	}
 
 	got, err := scanUnenrolledWrappers(cfg)
@@ -465,6 +455,20 @@ func TestDoctor_UnenrolledPresenceWarnsNeverBlocks(t *testing.T) {
 	}
 	if got.Severity != severityWarn {
 		t.Fatalf("severity = %q, want WARN (presence is advisory, never a blocker)", got.Severity)
+	}
+}
+
+func TestDoctor_UnenrolledPresenceIgnoresTmuxPanes(t *testing.T) {
+	cfg, root := presencePoolCfg(t)
+
+	stubPresenceListers(t)
+	listTmuxPanes = func() []tmuxPresenceEntry {
+		return []tmuxPresenceEntry{{PaneID: "%1", Cwd: root}}
+	}
+
+	got := checkUnenrolledPresence(cfg)
+	if got.Severity != severityOK {
+		t.Fatalf("severity = %q, want OK for tmux-only presence; message=%q", got.Severity, got.Message)
 	}
 }
 

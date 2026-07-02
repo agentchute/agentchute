@@ -120,6 +120,53 @@ func TestDoctorWarnsOnStaleTempFiles(t *testing.T) {
 	}
 }
 
+func TestDoctorSpecFreshnessMatchesEmbeddedSpec(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	if err := os.WriteFile(filepath.Join(cfg.ControlRepo, "AGENTCHUTE.md"), []byte(embeddedSpecContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := checkSpecFreshness(cfg)
+	if got.Severity != severityOK {
+		t.Fatalf("spec_freshness severity = %q, want OK; message=%q", got.Severity, got.Message)
+	}
+	if !strings.Contains(got.Message, "matches embedded spec") {
+		t.Fatalf("spec_freshness message missing match text: %q", got.Message)
+	}
+}
+
+func TestDoctorSpecFreshnessWarnsOnStaleSpec(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	if err := os.WriteFile(filepath.Join(cfg.ControlRepo, "AGENTCHUTE.md"), []byte("# AGENTCHUTE.md\n\nstale copy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := checkSpecFreshness(cfg)
+	if got.Severity != severityWarn {
+		t.Fatalf("spec_freshness severity = %q, want WARN; message=%q", got.Severity, got.Message)
+	}
+	for _, want := range []string{"differs from this binary's embedded spec", "disk sha256=", "embedded sha256=", "agentchute init"} {
+		if !strings.Contains(got.Message, want) {
+			t.Fatalf("spec_freshness message missing %q: %q", want, got.Message)
+		}
+	}
+}
+
+func TestDoctorSpecFreshnessSkipsWhenEmbeddedSpecUnavailable(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	if err := os.WriteFile(filepath.Join(cfg.ControlRepo, "AGENTCHUTE.md"), []byte("# AGENTCHUTE.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := embeddedSpecContent
+	embeddedSpecContent = ""
+	t.Cleanup(func() { embeddedSpecContent = prev })
+
+	got := checkSpecFreshness(cfg)
+	if got.Severity != severitySkip {
+		t.Fatalf("spec_freshness severity = %q, want SKIP; message=%q", got.Severity, got.Message)
+	}
+}
+
 func TestDoctorBareAgentchuteCheckInHookBlocks(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	// Drop a hook file that contains the silent-drain antipattern.

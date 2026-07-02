@@ -17,8 +17,8 @@ import (
 // matching live registration. It is the operator answer to "who is running here
 // but never enrolled?" — the read-only slice of the presence daemon (WI-E4).
 type UnenrolledProcess struct {
-	Kind       string // herdr | tmux | runner-socket | process
-	Hint       string // identity hint (herdr name / tmux pane / agent id / pid)
+	Kind       string // herdr | runner-socket | process
+	Hint       string // identity hint (herdr name / agent id / pid)
 	Cwd        string // the process working dir that mapped to this pool
 	Suggestion string // how to enroll it
 }
@@ -151,14 +151,14 @@ func defaultProcessParentPID(pid int) int {
 const presenceProbeTimeout = 500 * time.Millisecond
 
 // scanUnenrolledWrappers enumerates wrapper presences on this host (herdr
-// agents, tmux panes, runner sockets, raw wrapper processes) whose working dir
+// agents, runner sockets, raw wrapper processes) whose working dir
 // maps — via loop.Discover, by cwd alone — to THIS pool's control repo and that
 // have NO matching live registration, returning one UnenrolledProcess per hit.
 //
 // It is STRICTLY READ-ONLY: it reads registrations + per-agent local state and
 // enumerates host state, but never creates or repairs a registration (that is
 // WI-E4's job). The only error it returns is a failure to read the agents
-// directory; every enumerator error is swallowed so a missing herdr/tmux/ps
+// directory; every enumerator error is swallowed so a missing herdr/ps
 // degrades to "that source reported nothing."
 func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 	if cfg == nil {
@@ -170,11 +170,11 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 		return nil, err
 	}
 
-	// Pull-only (Gate 6c): registrations carry no wake target, so a herdr/tmux
+	// Pull-only (Gate 6c): registrations carry no wake target, so a herdr
 	// presence can no longer be matched to a registration BY wake target. herdr
 	// agents map to an enrolled lane only when the bound name is itself a
-	// registered agent id; tmux panes have no registration link at all, so an
-	// in-pool pane always surfaces as present-but-not-enrolled.
+	// registered agent id. tmux panes have no registration link, so they are not
+	// an actionable unenrolled-presence source.
 	agentIDs := map[string]bool{}
 	enrolledPIDs := map[int]bool{}
 	for id := range regs {
@@ -217,25 +217,6 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 			Hint:       name,
 			Cwd:        p.Cwd,
 			Suggestion: fmt.Sprintf("herdr agent %q is in this pool but not enrolled; relaunch via the `ac` dispatcher (`ac serve <wrapper>`) or run `agentchute boot --as %s`", name, name),
-		})
-	}
-
-	// tmux panes: detected by enumerating panes and their cwds (`tmux list-panes`).
-	// A pane id has no registration link, so every in-pool pane surfaces as
-	// present-but-not-enrolled.
-	for _, p := range listTmuxSafe() {
-		pane := strings.TrimSpace(p.PaneID)
-		if pane == "" {
-			continue
-		}
-		if !cwdMapsToPool(cfg, p.Cwd) {
-			continue
-		}
-		out = append(out, UnenrolledProcess{
-			Kind:       "tmux",
-			Hint:       pane,
-			Cwd:        p.Cwd,
-			Suggestion: fmt.Sprintf("tmux pane %s is in this pool but not enrolled; relaunch via the `ac` dispatcher (`ac serve <wrapper>`) or run `agentchute boot --as <id>`", pane),
 		})
 	}
 
