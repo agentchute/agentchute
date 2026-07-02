@@ -14,42 +14,53 @@ import "testing"
 // Inbox-only on purpose: quarantine is a wire/filename-grammar concern
 // specific to the FS+frontmatter substrate. The shared-log binding has no
 // analogous concept — a log record is already-typed Go data, nothing like a
-// bad filename or unparseable YAML can occur once it's in the stream — so
-// this is not run via eachBinding (same rationale as
+// bad filename or unparseable YAML can occur once it's in the stream — so the
+// vector uses applies_to:["inbox"] (same rationale as
 // TestInbox_PostConsumeResendRelandsThenKeyDedup).
-func TestInbox_MalformedQuarantineNeverDeliveredOrConsumedOrDropped(t *testing.T) {
-	b := newInbox()
-	must(t, b.Register("bob"))
+func TestQ1_MalformedQuarantineNeverDeliveredOrConsumedOrDropped(t *testing.T) {
+	v := vectorByID(t, "Q1", "malformed_quarantine")
+	eachApplicableBinding(t, v, func(t *testing.T, b Binding) {
+		ib, ok := b.(*inboxBinding)
+		if !ok {
+			t.Fatalf("malformed quarantine vector ran on unsupported binding %q", b.Name())
+		}
+		if len(v.Bodies) != 2 || len(v.MalformedItems) != 2 {
+			t.Fatalf("malformed quarantine vector needs two valid bodies and two malformed items: %+v", v)
+		}
+		must(t, ib.Register(v.Recipient))
 
-	must(t, b.DeliverRaw("bob", "valid-1", &Msg{From: "alice", Body: "first"}))
-	must(t, b.DeliverRaw("bob", "not-a-valid-message-name.md", nil))
-	must(t, b.DeliverRaw("bob", "valid-2", &Msg{From: "alice", Body: "second"}))
+		first := Msg{From: v.Sender, Body: v.Bodies[0]}
+		second := Msg{From: v.Sender, Body: v.Bodies[1]}
+		must(t, ib.DeliverRaw(v.Recipient, "valid-1", &first))
+		must(t, ib.DeliverRaw(v.Recipient, v.MalformedItems[0], nil))
+		must(t, ib.DeliverRaw(v.Recipient, "valid-2", &second))
 
-	// Never delivered, never blocks/reorders valid mail: Poll shows exactly
-	// the two valid messages, in arrival order, with the malformed item absent.
-	got, _ := b.Poll("bob")
-	if len(got) != 2 || got[0].Body != "first" || got[1].Body != "second" {
-		t.Fatalf("malformed item must not appear in Poll and must not disturb valid message order/continuity; got %+v", got)
-	}
+		// Never delivered, never blocks/reorders valid mail: Poll shows exactly
+		// the two valid messages, in arrival order, with the malformed item absent.
+		got, _ := ib.Poll(v.Recipient)
+		if len(got) != 2 || got[0].Body != v.Bodies[0] || got[1].Body != v.Bodies[1] {
+			t.Fatalf("malformed item must not appear in Poll and must not disturb valid message order/continuity; got %+v", got)
+		}
 
-	// Never silently dropped: it is quarantined (observable), not vanished.
-	mal := b.MalformedItems("bob")
-	if len(mal) != 1 || mal[0] != "not-a-valid-message-name.md" {
-		t.Fatalf("malformed item must be quarantined (observable via MalformedItems), not silently dropped; got %v", mal)
-	}
+		// Never silently dropped: it is quarantined (observable), not vanished.
+		mal := ib.MalformedItems(v.Recipient)
+		if len(mal) != 1 || mal[0] != v.MalformedItems[0] {
+			t.Fatalf("malformed item must be quarantined (observable via MalformedItems), not silently dropped; got %v", mal)
+		}
 
-	// Never counted as consumed: Consume only sees the 2 valid messages.
-	var acts []string
-	n, err := b.Consume("bob", func(m Msg) error { acts = append(acts, m.Body); return nil })
-	must(t, err)
-	if n != 2 || len(acts) != 2 {
-		t.Fatalf("consume must only see the 2 valid messages, never the quarantined item; n=%d acts=%v", n, acts)
-	}
+		// Never counted as consumed: Consume only sees the 2 valid messages.
+		var acts []string
+		n, err := ib.Consume(v.Recipient, func(m Msg) error { acts = append(acts, m.Body); return nil })
+		must(t, err)
+		if n != 2 || len(acts) != 2 {
+			t.Fatalf("consume must only see the 2 valid messages, never the quarantined item; n=%d acts=%v", n, acts)
+		}
 
-	// A second quarantine of a DIFFERENT item is additive, not overwriting —
-	// mirrors the real malformed/ dir accumulating distinct quarantined files.
-	must(t, b.DeliverRaw("bob", "also-bad.md", nil))
-	if mal := b.MalformedItems("bob"); len(mal) != 2 {
-		t.Fatalf("a second malformed item must accumulate, not overwrite the first; got %v", mal)
-	}
+		// A second quarantine of a DIFFERENT item is additive, not overwriting —
+		// mirrors the real malformed/ dir accumulating distinct quarantined files.
+		must(t, ib.DeliverRaw(v.Recipient, v.MalformedItems[1], nil))
+		if mal := ib.MalformedItems(v.Recipient); len(mal) != 2 {
+			t.Fatalf("a second malformed item must accumulate, not overwrite the first; got %v", mal)
+		}
+	})
 }

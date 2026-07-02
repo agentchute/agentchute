@@ -41,6 +41,16 @@
       "message": {"from": "alice", "body": "do-it", "key": "k1"}
     },
     {
+      "id": "C2",
+      "kind": "sender_crash_resume",
+      "name": "sender crash before durable counter reissues the same seq safely",
+      "recipient": "bob",
+      "sender": "alice",
+      "message": {"body": "m1", "key": "k1"},
+      "next_message": {"body": "m2", "key": "k2"},
+      "different_message": {"from": "alice", "body": "DIFFERENT", "seq": 1}
+    },
+    {
       "id": "E1",
       "kind": "envelope",
       "name": "unknown fields are ignored and from is required",
@@ -55,6 +65,16 @@
       "recipient": "bob",
       "reader": "carol",
       "message": {"from": "alice", "body": "secret for bob"}
+    },
+    {
+      "id": "Q1",
+      "kind": "malformed_quarantine",
+      "name": "malformed items are quarantined without blocking valid inbox mail",
+      "applies_to": ["inbox"],
+      "recipient": "bob",
+      "sender": "alice",
+      "bodies": ["first", "second"],
+      "malformed_items": ["not-a-valid-message-name.md", "also-bad.md"]
     }
   ]
 }
