@@ -53,13 +53,16 @@ collapsing the duplicate.
 
 ## Vector format
 
-`vectors/core.json` is intentionally boring: one object per invariant, with an
-`id`, a `kind`, and only the scenario data that a runner needs. It is not a DSL
-and it does not encode implementation details. Runners map each `kind` to the
-small amount of imperative behavior needed to exercise that invariant.
+`vectors/core.json` is intentionally boring: one object per invariant or
+review-gap case, with an `id`, a `kind`, and only the scenario data that a
+runner needs. It is not a DSL and it does not encode implementation details.
+Runners map each `kind` to the small amount of imperative behavior needed to
+exercise that case. `applies_to`, when present, limits a vector to named binding
+profiles such as `inbox`; when omitted, the vector is universal.
 
-Two further tests close the review gaps:
-- **`TestC1_SenderCrashResume`** — the *sender* half of C1. A sender links `seq=N`, crashes before its counter is durable, resumes and re-issues `seq=N`; `EEXIST` makes that a no-op (one copy) and the next message gets `N+1`. It also asserts the **§7 hazard**: reusing a seq for *different* content is silently dropped — making "seq counter must be durable+monotonic, ids unique per process" executable. Most likely to catch a real bug when the per-`(from,to)` allocator is built.
+Additional tests close the review gaps:
+- **`TestC2_SenderCrashResume`** — the *sender* half of C1. A sender links `seq=N`, crashes before its counter is durable, resumes and re-issues `seq=N`; `EEXIST` makes that a no-op (one copy) and the next message gets `N+1`. It also asserts the **§7 hazard**: reusing a seq for *different* content is silently dropped — making "seq counter must be durable+monotonic, ids unique per process" executable. Most likely to catch a real bug when the per-`(from,to)` allocator is built.
+- **`TestQ1_MalformedQuarantineNeverDeliveredOrConsumedOrDropped`** — an inbox-profile vector for §11.1 quarantine: malformed items are observable, never delivered/consumed, and never block valid mail.
 - **`TestD1_FsyncOrdering`** — pins `write(tmp) → fsync(tmp) → link → fsync(dir)` and proves a crash at every step leaves the record absent-or-whole, never torn. Catches linking before fsync (a record that survives a power cut without its body).
 
 ## B1 is the §5 decision, as code

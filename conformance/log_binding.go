@@ -54,6 +54,8 @@ func newLog() *logBinding {
 
 func (b *logBinding) Name() string { return "log (shared append-only stream + cursors)" }
 
+func (b *logBinding) Profile() string { return "log" }
+
 func (b *logBinding) Register(id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
