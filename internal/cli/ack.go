@@ -17,19 +17,30 @@ import (
 // yet commit. Archiving is the single commit point; a crash before ack leaves the
 // residue in .claimed so the next `check` RE-DELIVERS it (at-least-once).
 //
-// CLEAR-THEN-COMMIT (the load-bearing contract): ack archives ONLY IF the finish
-// gate is clear (finishGateClear: unread / malformed / pending-reply / corrupt
-// ledger / missing registration). If finish would BLOCK, ack archives NOTHING and
-// leaves .claimed intact, so a gate-blocked turn still RE-DELIVERS its claimed
-// mail next turn (at-least-once is preserved across the block). This is why the
-// Stop/BeforeAgent hooks can run `ack` alongside `gate --before finish` in any
-// order: ack self-gates, so claimed mail is never committed past a blocked finish.
-// The agent's OWN claimed/owed state is NON-BLOCKING in the finish gate, so ack
-// can always commit its just-claimed mail once unrelated blockers clear.
+// UNCONDITIONAL COMMIT (v0.10.1, replaces the old CLEAR-THEN-COMMIT contract):
+// ack ALWAYS archives .claimed, regardless of finish-gate status. Archiving is
+// the caller's OWN state (mail it already claimed and acted on); it is not pool
+// hygiene, and gating it on the finish gate meant an UNRELATED blocker — e.g. a
+// third party dropping a new malformed/unread file into this agent's inbox
+// between `check` and `ack` — delayed committing mail this agent had already
+// correctly handled. The finish gate still independently blocks `finish`: ack
+// evaluates it AFTER committing (so reported reasons reflect the post-commit
+// state) purely to REPORT whether other obligations remain, never to withhold
+// the archive.
+//
+// EXIT CODE distinguishes the two outcomes so scripts never mistake "committed"
+// for "done": gate clear after commit => nil (exit 0). Gate still blocked after
+// commit (unrelated obligations remain) => errBlocked (exit 2), same sentinel
+// `gate --before finish` returns, so `ack`'s exit code alone tells a caller
+// whether it's safe to treat the turn as finished. A blocked exit is reported
+// via text/JSON exactly like an already-committed-and-still-blocked state; it is
+// NOT a command failure (exit 1) — the commit itself always succeeds or `ack`
+// returns a real error.
 //
 // Idempotent: an already-archived message (e.g. a partial prior ack) is treated
 // as success, and an empty .claimed is a no-op. Flags mirror `check`
-// (--as/--vendor/--json) plus --quiet for the Stop-hook commit step.
+// (--as/--vendor/--json) plus --quiet for the Stop-hook commit step (--quiet
+// suppresses text/JSON output but never the exit code).
 func cmdAck(args []string) error {
 	fs := flag.NewFlagSet("ack", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -81,18 +92,8 @@ func cmdAck(args []string) error {
 		return fmt.Errorf("list claimed residue: %w", err)
 	}
 
-	// CLEAR-THEN-COMMIT: evaluate the finish gate FIRST. If it is not clear,
-	// archive NOTHING and leave the residue uncommitted (re-delivered next turn).
-	// Read-only and reuses gate.go's exact blocking predicate, so ack and
-	// `gate --before finish` can never disagree.
-	clear, reasons, err := finishGateClear(cfg, agentID, now)
-	if err != nil {
-		return fmt.Errorf("evaluate finish gate: %w", err)
-	}
-	if !clear {
-		return emitAckNotClear(agentID, len(residue), reasons, jsonOut, quiet)
-	}
-
+	// UNCONDITIONAL COMMIT (F7): archive every claimed message regardless of
+	// finish-gate status — see the doc comment above cmdAck.
 	acked := make([]ackItem, 0, len(residue))
 	for _, msg := range residue {
 		dest, err := loop.ArchiveMessage(msg, cfg.ArchiveDir(), agentID, now)
@@ -102,46 +103,54 @@ func cmdAck(args []string) error {
 		acked = append(acked, ackItem{Filename: msg.Filename, ArchivePath: dest})
 	}
 
+	// Evaluate the finish gate AFTER committing, purely to REPORT whether other
+	// obligations remain. Read-only; reuses gate.go's exact blocking predicate,
+	// so ack and `gate --before finish` can never disagree about whether finish
+	// would block. Post-commit means the reported reasons never stale-cite the
+	// batch we just archived (gate.go's own ClaimedResidue warning drops to 0).
+	clear, reasons, err := finishGateClear(cfg, agentID, now)
+	if err != nil {
+		return fmt.Errorf("evaluate finish gate: %w", err)
+	}
+
+	result := ackResult{Agent: agentID, Count: len(acked), Acked: acked, GateClear: clear}
+	if !clear {
+		result.BlockReasons = reasons
+	}
+
 	if jsonOut {
-		return emitAckJSON(ackResult{Agent: agentID, Count: len(acked), Acked: acked, GateClear: true})
+		if err := emitAckJSON(result); err != nil {
+			return err
+		}
+	} else if !quiet {
+		emitAckText(result)
 	}
-	if quiet {
-		return nil
-	}
-	if len(acked) == 0 {
-		fmt.Println("(nothing to ack)")
-		return nil
-	}
-	for _, a := range acked {
-		fmt.Printf("acked %s -> %s\n", a.Filename, a.ArchivePath)
+
+	// Exit code carries the distinction JSON/text already reported: clear => the
+	// commit is fully done; blocked => committed, but do not treat this turn as
+	// finished (same sentinel/exit-2 contract as `gate --before finish`).
+	if !clear {
+		return errBlocked
 	}
 	return nil
 }
 
-// emitAckNotClear reports a CLEAR-THEN-COMMIT abort: the finish gate is not clear,
-// so ack archived nothing and the claimed residue stays for redelivery. It is NOT
-// an error and returns nil (exit 0): the paired `gate --before finish` hook step
-// emits the authoritative block signal (exit 2 / decision JSON); ack's only job
-// here is to refuse to commit early — erroring would break the hook chain.
-func emitAckNotClear(agentID string, claimedCount int, reasons []string, jsonOut, quiet bool) error {
-	if jsonOut {
-		return emitAckJSON(ackResult{
-			Agent:        agentID,
-			Count:        0,
-			Acked:        []ackItem{},
-			GateClear:    false,
-			NotAcked:     claimedCount,
-			BlockReasons: reasons,
-		})
+// emitAckText prints the human-readable ack outcome: the committed items (or
+// "(nothing to ack)"), followed by any remaining finish-gate blockers.
+func emitAckText(r ackResult) {
+	if len(r.Acked) == 0 {
+		fmt.Println("(nothing to ack)")
+	} else {
+		for _, a := range r.Acked {
+			fmt.Printf("acked %s -> %s\n", a.Filename, a.ArchivePath)
+		}
 	}
-	if quiet {
-		return nil
+	if !r.GateClear {
+		fmt.Println("finish gate still blocked after commit:")
+		for _, reason := range r.BlockReasons {
+			fmt.Printf("  - %s\n", reason)
+		}
 	}
-	fmt.Printf("finish gate not clear; %d claimed message(s) left uncommitted\n", claimedCount)
-	for _, r := range reasons {
-		fmt.Printf("  - %s\n", r)
-	}
-	return nil
 }
 
 type ackItem struct {
@@ -154,8 +163,7 @@ type ackResult struct {
 	Count        int       `json:"count"`
 	Acked        []ackItem `json:"acked"`
 	GateClear    bool      `json:"gate_clear"`
-	NotAcked     int       `json:"not_acked,omitempty"`     // claimed residue left uncommitted because finish was not clear
-	BlockReasons []string  `json:"block_reasons,omitempty"` // the finish-gate blocking reasons (when gate_clear=false)
+	BlockReasons []string  `json:"block_reasons,omitempty"` // remaining finish-gate reasons; set only when gate_clear=false (committing is unconditional, so these are no longer about THIS ack's own residue)
 }
 
 func emitAckJSON(r ackResult) error {
@@ -165,5 +173,5 @@ func emitAckJSON(r ackResult) error {
 }
 
 func ackUsage(err error) error {
-	return fmt.Errorf("%w\nusage: agentchute ack [--as <agent-id>] [--vendor <v>] [--control-repo <path>] [--loop-dir <path>] [--json] [--quiet]\n  ack COMMITS messages that `check` claimed: archives inbox/<id>/.claimed residue.", err)
+	return fmt.Errorf("%w\nusage: agentchute ack [--as <agent-id>] [--vendor <v>] [--control-repo <path>] [--loop-dir <path>] [--json] [--quiet]\n  ack COMMITS messages that `check` claimed: archives inbox/<id>/.claimed residue, unconditionally.\n  Exit 0 if the finish gate is then clear; exit 2 (same sentinel as `gate --before finish`) if other\n  obligations still block finish — the commit itself already happened either way.", err)
 }
