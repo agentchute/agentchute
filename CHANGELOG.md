@@ -4,6 +4,10 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v0.11.1 (2026-07-02) — docs: the durable-key rule + blog honesty
+
+A docs-only patch. **§6.2 now states the durable-key rule** for `send --idempotency-key`: the key must be caller-durable — the same value across every retry of one logical send (a task id, the triggering message ref) — because a fresh key per attempt (e.g. `$(uuidgen)`) gives zero resume protection: it either double-delivers under two sequence numbers or degrades to unverified, accidental at-least-once. The flag help points to the rule. Also: the pre-0.8 blog posts are marked historical (they describe mechanics deleted in the pull-only redesign), the runner-PTY incident note moved under `docs/decisions/`, and CONTRIBUTORS.md's dead README link now points at the CHANGELOG.
+
 ## v0.11.0 (2026-07-02) — the universality proof
 
 A minor release with two additions that earn their mass and one subtraction — the outcome of a 5-way "what would make agentchute whole" design review run under the subtract-default rule (most of the candidate additions were rejected or deferred), plus the findings of a third independent deep review (of v0.10.2 itself, which verified the v0.10.2 trust-boundary fixes as "correct and complete").
@@ -72,7 +76,7 @@ A patch release — fixes, docs, and test-hardening only, the first release gove
 The release that completes the protocol. The finish-line worklist from the independent 0.9.1 post-release audit, executed end-to-end by the five-agent team (every PR developed by one agent and review-looped by two seniors until all happy; unanimous 5-way final review), plus a high-severity runner fix found by the tmux verification team. **Protocol v2 is declared STABLE as of this release** — the primitives, envelope, filename/identity grammar, lifecycle guarantees, and conformance invariants are now covenants, changed only through the deprecation & versioning policy (CONTRIBUTING.md) that also takes effect with this release.
 
 **Runner fix (high severity) — wrappers no longer boot on a 0×0 PTY**
-- `ac serve` started the child before any winsize was set; fast-booting TUIs drew a blank frame and the healing SIGWINCH raced their resize-handler install — intermittently permanently-blank panes (grok/codex/gemini observed). The child PTY is now sized from the runner's terminal **before exec** (`StartInheritSize`), with a clean fallback when the runner has no terminal. Found, root-caused (with a deterministic repro), and fixed by the tmux verification team; report at `docs/fix-runner-pty-initial-size.md`.
+- `ac serve` started the child before any winsize was set; fast-booting TUIs drew a blank frame and the healing SIGWINCH raced their resize-handler install — intermittently permanently-blank panes (grok/codex/gemini observed). The child PTY is now sized from the runner's terminal **before exec** (`StartInheritSize`), with a clean fallback when the runner has no terminal. Found, root-caused (with a deterministic repro), and fixed by the tmux verification team; report at `docs/decisions/fix-runner-pty-initial-size.md`.
 
 **Retention model for `archive/` + `malformed/` (C/P2)**
 - retention model specified for archive/+malformed/ (caller-managed, outside the delivery guarantee) + documented cleanup one-liner; no code/command added.

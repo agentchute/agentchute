@@ -43,7 +43,7 @@ func cmdGate(args []string) error {
 	fs := flag.NewFlagSet("gate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, before, controlRepo, loopDir, codexHook, geminiHook string
+	var agentID, vendor, before, controlRepo, loopDir, codexHook string
 	var jsonOut, requireConfirm, ackStaleReg bool
 	fs.StringVar(&agentID, "as", "", "agent id (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
@@ -52,7 +52,6 @@ func cmdGate(args []string) error {
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or $AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
 	fs.StringVar(&codexHook, "codex-hook", "", "codex hook JSON shape for the named event (Stop)")
-	fs.StringVar(&geminiHook, "gemini-hook", "", "legacy gemini-cli decision JSON shape (AfterAgent); current Gemini hooks use BeforeAgent + --json")
 	fs.BoolVar(&requireConfirm, "require-confirm", false, "refuse unless warn-level conditions are explicitly acknowledged")
 	fs.BoolVar(&ackStaleReg, "ack-stale-reg", false, "acknowledge that the registration is stale (for --require-confirm)")
 
@@ -106,12 +105,6 @@ func cmdGate(args []string) error {
 		// On clear: no output, exit 0. On block: emit {"decision":"block",...}
 		// JSON, exit 0 (codex's preferred shape; main.go won't see errBlocked).
 		return emitGateCodexStop(status)
-	case geminiHook == "AfterAgent":
-		// Legacy/experimental gemini-cli AfterAgent decision envelope:
-		// {"decision":"deny","reason":"..."} on block, {"decision":"allow"}
-		// on clear. Always exits 0 (the JSON is the signal). Current shipped
-		// Gemini hooks use BeforeAgent + --json exit-code blocking instead.
-		return emitGateGeminiAfterAgent(status)
 	case jsonOut:
 		if err := emitGateJSON(status); err != nil {
 			return err
@@ -395,28 +388,6 @@ func emitGateCodexStop(s gateStatus) error {
 	return enc.Encode(out)
 }
 
-// emitGateGeminiAfterAgent emits the legacy/experimental gemini-cli AfterAgent
-// decision JSON. Current shipped Gemini hooks use BeforeAgent + --json.
-// On block: `{"decision":"deny","reason":"..."}` forces another turn.
-// On clear: `{"decision":"allow"}` lets the session end. Always exits 0
-// (the JSON is the signal). This is the in-session continuation surface for
-// gemini-cli without an external scheduler; typically paired with
-// `--before continue`.
-func emitGateGeminiAfterAgent(s gateStatus) error {
-	if !s.Blocked {
-		out := map[string]any{"decision": "allow"}
-		enc := json.NewEncoder(os.Stdout)
-		return enc.Encode(out)
-	}
-	reason := fmt.Sprintf("agentchute gate --before %s: %s", s.Phase, strings.Join(s.Reasons, "; "))
-	out := map[string]any{
-		"decision": "deny",
-		"reason":   reason,
-	}
-	enc := json.NewEncoder(os.Stdout)
-	return enc.Encode(out)
-}
-
 func gateUsage(err error) error {
 	if err == flag.ErrHelp {
 		return gateHelpErr()
@@ -458,7 +429,7 @@ All phases block if this agent is not registered.
 
 Exit codes:
   0  clear to proceed; also used by hook-envelope modes whose JSON is the signal
-     (--codex-hook Stop, --gemini-hook AfterAgent)
+     (--codex-hook Stop)
   2  blocked in text/--json modes (including shipped Claude/Gemini finish hooks)
   1  command failure (binary error, filesystem error, etc.)
 
@@ -470,8 +441,6 @@ Flags:
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --json                structured JSON output (blocked still exits 2)
   --codex-hook <event>  codex hook JSON shape (Stop)
-  --gemini-hook <event> legacy gemini-cli decision JSON shape (AfterAgent);
-                        current Gemini templates use BeforeAgent + --json
   --require-confirm     refuse unless warn-level conditions are acknowledged
   --ack-stale-reg       acknowledge stale registration (for --require-confirm)
 `)
