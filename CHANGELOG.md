@@ -4,6 +4,25 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v0.10.2 (2026-07-02) — trust boundary + operational honesty
+
+A patch release — fixes, docs, and test-hardening only. Source: a second independent deep-analysis pass (against v0.10.1) probing the trust model, plus four operational findings surfaced by a live fleet restart. Triaged by a 4-way senior review; every fix developed by one agent and gate-reviewed by two (independent adversarial reviewers stood in where a reviewer was safety-blocked). Additive items (registration `v:`, `--idempotency-key`, a lease-timeout knob, mtime-based liveness, language-neutral conformance vectors + a second-language implementation) are deferred to v0.11.0 — a patch stays a patch.
+
+**Trust-boundary fixes (the compromised-peer boundary §15 named, now enforced in code)**
+- **Owed-reply discharge now verifies the replier's identity (N1).** `check` clears an `.owed` obligation only when the consumed reply's canonical sender is the agent that owed it (`msg.Sender == key.To`), not merely when the reply names us as asker. Previously any peer echoing another pair's `in_reply_to` — adversarially, or via a stale/hallucinated ref from a well-meaning peer — could clear an obligation it did not own. Impact was bounded to silently suppressing a non-blocking gate warning; no state or authority was ever breached. The §6.6 spec sentence was tightened first (spec-first, per CONTRIBUTING), then the code guard landed with a regression test.
+- **Consumed message bodies are sanitized before display (N3).** `check` (and the `pending` text view of the frontmatter-derived priority field) now strips C0/C1 control code points — keeping only `\n`/`\t` — before printing peer-controlled text to a terminal, closing an ANSI/OSC/DEL terminal-injection vector (screen repaint, prompt spoofing, window-title, OSC-52 clipboard). Applied unconditionally (bodies are spec'd UTF-8 free-form text; a control sequence is never legitimate payload), so no platform-specific TTY detection is needed; `--json`/`--show-body` output is unchanged (already escaped).
+
+**Operational honesty (from the live fleet restart)**
+- **`doctor` detects a stale on-disk spec (M1).** New `spec_freshness` check byte-compares `AGENTCHUTE.md` against the binary's embedded spec and WARNs (with short sha256s) on mismatch — catching the split-brain where an agent reads a months-stale spec from a checkout parked on an old branch and enforces a superseded protocol. It compares against the embedded spec, not a version token (which would false-WARN on every patch).
+- **`doctor` no longer emits false `unenrolled_presence` warnings (M2).** The tmux-pane source was dropped: pull-only removed the pane→registration correlation, so every in-pool pane (including plain shells/editors) was flagged as unenrolled. Registration, `.live` freshness, runner-socket, and raw-process signals remain.
+- **The runner no longer injects spurious wake cues (M4).** `serve` re-checks the inbox immediately before injecting the `check inbox` cue and skips if it emptied since the wake was enqueued (a claim race), while still failing open (an extra cue is acceptable; a suppressed real one is not).
+
+**Docs / spec honesty**
+- **New hand-protocol scoping covenant (M3).** An agent with the reference CLI available MUST use it; the hand-protocol (Appendix C) is exclusively for environments without the binary. `README.md` no longer invites mixing hand-driven and CLI agents in one pool; the wrapper/`AGENTS.md` hand-protocol pointers were corrected from `§5` (Discovery) to Appendix C. This closes the failure mode where a binary-holding agent followed stale hand-protocol memory and bypassed the CLI's validation.
+- **§10 presence honesty (N7).** A fresh `.live` proves the supervisor/heartbeat is ticking, not that the agent wrapper is processing (the runner heartbeats `.live` unconditionally each tick).
+- **§15 enforcement (docs).** The Security Considerations section now names the owed-discharge sender check (N1) and body sanitization (N3) as the enforced mechanisms of the compromised-peer boundary — framing only, no crypto.
+- **Enrollment marker v22 → v23** (the §5→Appendix C wrapper pointer sits inside the marked block). Re-run `setup` to re-stamp.
+
 ## v0.10.1 (2026-07-02) — edges and honesty
 
 A patch release — fixes, docs, and test-hardening only, the first release governed end-to-end by the new deprecation & versioning policy. Source: an independent deep analysis of v0.10.0 ("the implementation is excellent; the findings are edges and honesty gaps, not rot"), triaged by a unanimous 3-way senior design pass. Additive items from the same analysis (`registration v:`, `--idempotency-key`, a lease-timeout knob, mtime-based liveness) were deliberately deferred to v0.11.0 — a patch stays a patch.
