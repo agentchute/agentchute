@@ -184,7 +184,7 @@ Receivers MUST ignore unrecognized frontmatter fields. `from` is required inform
 Reply obligations are **asker-owned only**. The asker's `.owed` ledger is the **sole** reply-obligation mechanism (non-blocking warning + expiry). **Recipients are never blocked at finish by a `reply_required` message** — delivery is best-effort pull, with no forcing function once delivered.
 
 - When an agent sends `--ask` (reply-required), it records its own obligation in `state/<asker>/owed.json`: "I am owed a reply to `(to=recipient, from=me, seq)` by `<deadline>`" (default 30m; override with `--reply-by`). The ledger is single-writer, atomic-rename, and the gate reads only its OWN ledger — it never scans peers.
-- When the asker later consumes a reply whose `in_reply_to` references that `(to,from,seq)`, the obligation is cleared (idempotent).
+- When the asker later consumes a reply whose `in_reply_to` references that `(to,from,seq)`, the obligation is cleared only if the consumed reply's canonical sender is the agent that owed the reply (idempotent).
 - The asker's gate surfaces **outstanding** and **expired** obligations as **non-blocking warnings**. An expired obligation is the asker-side dead-recipient signal: a dead recipient shows up twice over — the asker's expired `.owed` AND the recipient's stale `.live` — so the asker never waits on a corpse.
 - On the recipient side, consuming a `reply_required` message records **nothing** and merely **prints the reply-ref command** (`reply_required` is advisory on the wire). There is no recipient-side ledger and no `defer` command; both were removed in v0.9.0 (the `.owed` redesign). A reply is a normal `send --reply-to <ref>`, which discharges the asker's `.owed` when the asker consumes it.
 
