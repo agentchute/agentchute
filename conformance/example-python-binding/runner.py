@@ -252,7 +252,15 @@ RUNNERS = {
 
 def main() -> int:
     for vector in load_vectors().values():
-        RUNNERS[vector["kind"]](vector)
+        applies_to = vector.get("applies_to")
+        if applies_to is not None and "inbox" not in applies_to:
+            print(f"skip {vector['id']} {vector['kind']} (not applicable to inbox)")
+            continue
+        runner = RUNNERS.get(vector["kind"])
+        if runner is None:
+            print(f"skip {vector['id']} {vector['kind']} (unknown kind)")
+            continue
+        runner(vector)
         print(f"ok {vector['id']} {vector['kind']}")
     return 0
 

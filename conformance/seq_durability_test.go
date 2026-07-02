@@ -37,7 +37,7 @@ func TestD1_FsyncOrdering(t *testing.T) {
 	}
 }
 
-// C1, sender side (crash-resume + EEXIST dedup). The consumer-crash half is in
+// C2, sender side (crash-resume + EEXIST dedup). The consumer-crash half is in
 // TestC1_AtLeastOnceIdempotent; THIS is the sender half and the one most likely
 // to catch a real bug in the per-(from,to) seq allocator.
 //
@@ -49,49 +49,50 @@ func TestD1_FsyncOrdering(t *testing.T) {
 // DIFFERENT content is silently dropped. The test asserts that this is what
 // happens — making the assumption executable, and documenting why the seq
 // counter must be durable+monotonic and ids must be unique per process.
-func TestC1_SenderCrashResume(t *testing.T) {
-	eachBinding(t, func(t *testing.T, b Binding) {
-		must(t, b.Register("bob"))
-		s := NewSeqSender("alice")
+func TestC2_SenderCrashResume(t *testing.T) {
+	v := vectorByID(t, "C2", "sender_crash_resume")
+	eachApplicableBinding(t, v, func(t *testing.T, b Binding) {
+		must(t, b.Register(v.Recipient))
+		s := NewSeqSender(v.Sender)
 
 		// normal send: seq=1 lands
-		seq1, err := s.Send(b, "bob", "m1", "k1")
+		seq1, err := s.Send(b, v.Recipient, v.Message.Body, v.Message.Key)
 		must(t, err)
 		if seq1 != 1 {
 			t.Fatalf("first seq must be 1, got %d", seq1)
 		}
 
 		// CRASH: counter not made durable -> on resume the sender re-issues seq=1
-		s.loseCounter("bob")
-		seqR, err := s.Send(b, "bob", "m1", "k1") // identical resend
+		s.loseCounter(v.Recipient)
+		seqR, err := s.Send(b, v.Recipient, v.Message.Body, v.Message.Key) // identical resend
 		must(t, err)
 		if seqR != 1 {
 			t.Fatalf("resume must re-issue seq=1, got %d", seqR)
 		}
 
 		// EEXIST made the resend a no-op: exactly one copy of m1.
-		got, _ := b.Poll("bob")
-		if n := count(got, "m1"); n != 1 {
-			t.Fatalf("EEXIST must dedup the crash-resend; want 1 copy of m1, got %d", n)
+		got, _ := b.Poll(v.Recipient)
+		if n := count(got, v.Message.Body); n != 1 {
+			t.Fatalf("EEXIST must dedup the crash-resend; want 1 copy of %s, got %d", v.Message.Body, n)
 		}
 
 		// the next genuinely-new message gets the next seq and lands.
-		seq2, err := s.Send(b, "bob", "m2", "k2")
+		seq2, err := s.Send(b, v.Recipient, v.NextMessage.Body, v.NextMessage.Key)
 		must(t, err)
 		if seq2 != 2 {
 			t.Fatalf("next message must get seq=2, got %d", seq2)
 		}
-		got, _ = b.Poll("bob")
-		if count(got, "m2") != 1 {
-			t.Fatal("m2 must land")
+		got, _ = b.Poll(v.Recipient)
+		if count(got, v.NextMessage.Body) != 1 {
+			t.Fatalf("%s must land", v.NextMessage.Body)
 		}
 
 		// HAZARD (executable §7 assumption): reusing an already-landed seq for
 		// DIFFERENT content is SILENTLY DROPPED. This is why the impl MUST keep
 		// the seq counter durable+monotonic and give each process a unique id.
-		must(t, b.Deliver("bob", Msg{From: "alice", Body: "DIFFERENT", Seq: 1}))
-		got, _ = b.Poll("bob")
-		if count(got, "DIFFERENT") != 0 {
+		must(t, b.Deliver(v.Recipient, v.DifferentMsg.msg()))
+		got, _ = b.Poll(v.Recipient)
+		if count(got, v.DifferentMsg.Body) != 0 {
 			t.Fatal("expected the seq-reuse-with-different-content to be dropped (the documented hazard)")
 		}
 		t.Logf("HAZARD confirmed: reusing seq for different content is dropped -> seq counter MUST be durable+monotonic, ids unique per process (§7).")

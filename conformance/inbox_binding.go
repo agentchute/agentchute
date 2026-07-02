@@ -35,6 +35,8 @@ func newInbox() *inboxBinding {
 
 func (b *inboxBinding) Name() string { return "inbox (N private inboxes)" }
 
+func (b *inboxBinding) Profile() string { return "inbox" }
+
 func (b *inboxBinding) Register(id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

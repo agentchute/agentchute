@@ -22,6 +22,45 @@ func eachBinding(t *testing.T, fn func(t *testing.T, b Binding)) {
 	}
 }
 
+func eachApplicableBinding(t *testing.T, v testVector, fn func(t *testing.T, b Binding)) {
+	t.Helper()
+	ran := 0
+	for _, mk := range bindings() {
+		b := mk()
+		if !v.appliesTo(bindingProfile(b)) {
+			continue
+		}
+		ran++
+		t.Run(b.Name(), func(t *testing.T) { fn(t, b) })
+	}
+	if ran == 0 {
+		t.Fatalf("vector %s applies_to matched no bindings", v.ID)
+	}
+}
+
+func (v testVector) appliesTo(profile string) bool {
+	if v.AppliesTo == nil {
+		return true
+	}
+	for _, allowed := range v.AppliesTo {
+		if allowed == profile {
+			return true
+		}
+	}
+	return false
+}
+
+func bindingProfile(b Binding) string {
+	if profiled, ok := b.(interface{ Profile() string }); ok {
+		return profiled.Profile()
+	}
+	return b.Name()
+}
+
+func knownProfile(profile string) bool {
+	return profile == "inbox" || profile == "log"
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -35,7 +74,7 @@ func must(t *testing.T, err error) {
 // Catches: a binding that cannot tell a live agent from a long-gone one.
 func TestR1_Presence(t *testing.T) {
 	v := vectorByID(t, "R1", "presence_freshness")
-	eachBinding(t, func(t *testing.T, b Binding) {
+	eachApplicableBinding(t, v, func(t *testing.T, b Binding) {
 		if _, _, reg := b.Presence(v.Agent); reg {
 			t.Fatal("an unregistered agent must not be registered/present")
 		}
@@ -60,7 +99,7 @@ func TestR1_Presence(t *testing.T) {
 // Catches: readers observing torn / half-written messages.
 func TestD1_AtomicVisibility(t *testing.T) {
 	v := vectorByID(t, "D1", "atomic_visibility")
-	eachBinding(t, func(t *testing.T, b Binding) {
+	eachApplicableBinding(t, v, func(t *testing.T, b Binding) {
 		must(t, b.Register(v.Recipient))
 		sd := b.(interface {
 			deliverSlow(string, Msg, chan<- struct{}, <-chan struct{}) error
@@ -88,7 +127,7 @@ func TestD1_AtomicVisibility(t *testing.T) {
 // Catches: dropped coordination messages under load.
 func TestD2_NoOverwrite(t *testing.T) {
 	v := vectorByID(t, "D2", "no_overwrite")
-	eachBinding(t, func(t *testing.T, b Binding) {
+	eachApplicableBinding(t, v, func(t *testing.T, b Binding) {
 		must(t, b.Register(v.Recipient))
 		var wg sync.WaitGroup
 		for i := 0; i < v.Count; i++ {
@@ -111,7 +150,7 @@ func TestD2_NoOverwrite(t *testing.T) {
 // Catches: a binding that reorders one sender's own messages.
 func TestO1_PerSenderFIFO(t *testing.T) {
 	v := vectorByID(t, "O1", "per_sender_fifo")
-	eachBinding(t, func(t *testing.T, b Binding) {
+	eachApplicableBinding(t, v, func(t *testing.T, b Binding) {
 		must(t, b.Register(v.Recipient))
 		for _, body := range v.Bodies {
 			must(t, b.Deliver(v.Recipient, Msg{From: v.Sender, Body: body}))
@@ -134,7 +173,7 @@ func TestO1_PerSenderFIFO(t *testing.T) {
 // Catches: at-most-once consume losing a coordination message on a crash.
 func TestC1_AtLeastOnceIdempotent(t *testing.T) {
 	v := vectorByID(t, "C1", "consume_redelivery")
-	eachBinding(t, func(t *testing.T, b Binding) {
+	eachApplicableBinding(t, v, func(t *testing.T, b Binding) {
 		must(t, b.Register(v.Recipient))
 		must(t, b.Deliver(v.Recipient, v.Message.msg()))
 
@@ -174,7 +213,7 @@ func TestC1_AtLeastOnceIdempotent(t *testing.T) {
 // being accepted.
 func TestE1_Envelope(t *testing.T) {
 	v := vectorByID(t, "E1", "envelope")
-	eachBinding(t, func(t *testing.T, b Binding) {
+	eachApplicableBinding(t, v, func(t *testing.T, b Binding) {
 		must(t, b.Register(v.Recipient))
 		// unknown/future fields are carried but ignorable
 		must(t, b.Deliver(v.Recipient, v.Message.msg()))
@@ -195,7 +234,7 @@ func TestE1_Envelope(t *testing.T) {
 // the privacy posture you are choosing. Run with -v to see the verdict.
 func TestB1_PrivacyFork(t *testing.T) {
 	v := vectorByID(t, "B1", "body_privacy")
-	eachBinding(t, func(t *testing.T, b Binding) {
+	eachApplicableBinding(t, v, func(t *testing.T, b Binding) {
 		must(t, b.Register(v.Recipient))
 		must(t, b.Deliver(v.Recipient, v.Message.msg()))
 		peerSees := b.PeekBodies(v.Recipient, v.Reader)

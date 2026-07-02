@@ -19,6 +19,7 @@ type testVector struct {
 	ID             string    `json:"id"`
 	Kind           string    `json:"kind"`
 	Name           string    `json:"name"`
+	AppliesTo      []string  `json:"applies_to,omitempty"`
 	Agent          string    `json:"agent,omitempty"`
 	Recipient      string    `json:"recipient,omitempty"`
 	Reader         string    `json:"reader,omitempty"`
@@ -30,7 +31,10 @@ type testVector struct {
 	StaleSeconds   int       `json:"stale_seconds,omitempty"`
 	Bodies         []string  `json:"bodies,omitempty"`
 	Message        vectorMsg `json:"message,omitempty"`
+	NextMessage    vectorMsg `json:"next_message,omitempty"`
+	DifferentMsg   vectorMsg `json:"different_message,omitempty"`
 	InvalidMessage vectorMsg `json:"invalid_message,omitempty"`
+	MalformedItems []string  `json:"malformed_items,omitempty"`
 }
 
 type vectorMsg struct {
@@ -73,12 +77,13 @@ func loadVectors(t *testing.T) map[string]testVector {
 		if v.ID == "" || v.Kind == "" {
 			t.Fatalf("invalid vector with missing id/kind: %+v", v)
 		}
+		validateAppliesTo(t, v)
 		if _, exists := out[v.ID]; exists {
 			t.Fatalf("duplicate vector id %q", v.ID)
 		}
 		out[v.ID] = v
 	}
-	for _, id := range []string{"R1", "D1", "D2", "O1", "C1", "E1", "B1"} {
+	for _, id := range []string{"R1", "D1", "D2", "O1", "C1", "C2", "E1", "B1", "Q1"} {
 		if _, ok := out[id]; !ok {
 			t.Fatalf("missing vector %s", id)
 		}
@@ -103,4 +108,24 @@ func (v testVector) senderFor(i int) string {
 		return v.SenderPrefix
 	}
 	return fmt.Sprintf("%s%d", v.SenderPrefix, i%v.SenderModulo)
+}
+
+func validateAppliesTo(t *testing.T, v testVector) {
+	t.Helper()
+	if v.AppliesTo == nil {
+		return
+	}
+	if len(v.AppliesTo) == 0 {
+		t.Fatalf("vector %s has empty applies_to; omit it for universal", v.ID)
+	}
+	seen := map[string]bool{}
+	for _, profile := range v.AppliesTo {
+		if !knownProfile(profile) {
+			t.Fatalf("vector %s applies_to has unknown profile %q", v.ID, profile)
+		}
+		if seen[profile] {
+			t.Fatalf("vector %s applies_to repeats profile %q", v.ID, profile)
+		}
+		seen[profile] = true
+	}
 }
