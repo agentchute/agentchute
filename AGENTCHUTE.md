@@ -125,7 +125,7 @@ The per-`(sender, recipient)` `seq` design is only sound if **one live process o
 - A **stale** claim is reclaimable only via the liveness rule: stale past the lease timeout, **plus** a same-host pid-proof failure when the holder is same-host (a frozen-but-alive process keeps its id); cross-host reclaim uses freshness/timeout only (pid is not provable across hosts).
 - The **fencing token** (`serve_token`, a 128-bit random epoch) is the load-bearing part: every heartbeat and **every `seq` write verifies it**. A zombie/paused holder that resumes after its lease was reclaimed fails the token check and stops — so it cannot create a dup-writer even though launch was guarded. The runner passes its token to the child via `AGENTCHUTE_SERVE_TOKEN`, so a fenced (reclaimed) child's `send` fails closed too.
 
-This makes "give each process its own id" an enforced, fenced invariant rather than a convention. (Operational assumptions: the lease state lives on the same shared mount as the inboxes, and clocks are NTP-loose with `lease-timeout ≫ heartbeat + max-skew`. Severe skew degrades to premature/delayed reclaim, but the fence still prevents an actual dup-write.)
+This makes "give each process its own id" an enforced, fenced invariant rather than a convention. (Operational assumptions: the lease state lives on the same shared mount as the inboxes, and clocks are NTP-loose with `lease-timeout ≫ heartbeat + max-skew`. Cross-host deployments require NFSv4 for correct lock emulation and mount caching settings with `actimeo` less than the lease timeout — or `noac` / `lookupcache=none` on the loop directory — to prevent stale cache reads from passing the fence; `flock` locking is not shared across hosts on NFSv3. Severe skew degrades to premature/delayed reclaim; within these mount requirements the fence still prevents an actual dup-write.)
 
 ## 6. Messaging
 
@@ -144,7 +144,7 @@ The canonical `from-<from>_seq-<020d>.md` is the only inbox filename format. A n
 ### 6.2 Sender flow
 1. Compose body (UTF-8).
 2. Allocate the next durable `seq` for `(from, to)` (write-ahead). The active serve token, if any, is fence-verified first.
-3. **Deliver into the inbox with the no-overwrite guarantee** under the canonical `(to, from, seq)` name (unique-temp + atomic `link()`; `EEXIST` = this exact message already landed = success).
+3. **Deliver into the inbox with the no-overwrite guarantee** under the canonical `(to, from, seq)` name (unique-temp + atomic `link()`; `EEXIST` = this exact message already landed = success). A sender crash between seq allocation and the link loses that message as a legal gap (at-most-once); callers needing at-least-once delivery supply a stable idempotency key via the library API (the reference `send` command does not expose one).
 4. **No wake.** The sender does not poke or signal the recipient — it only writes the message into the recipient's inbox. The recipient discovers it on its own poll.
 
 ### 6.3 Recipient flow — two-phase consume (act-then-archive)
@@ -154,19 +154,23 @@ Consumption is at-least-once and split across two verbs:
 2. Enumerate and sort inbox messages (per-sender FIFO).
 3. **`check` — phase 1 (CLAIM + display).** First re-display any uncommitted `.claimed` residue from a crashed/un-acked prior turn, each tagged with a **`REDELIVERED`** banner. Then, for each new message: validate envelope/body (quarantine if malformed, §11), CLAIM it (move `inbox/<id>/<name>` → `inbox/<id>/.claimed/<name>` under its canonical name), and display it. `check` does **not** archive.
 4. **Act on each displayed message.** Because the CLI prints and exits before the model acts, archiving during `check` would be at-most-once for the *work*; claiming instead makes the work at-least-once. **Handlers MUST be idempotent** — a crash between `check` and `ack` re-delivers.
-5. **`ack` — phase 2 (COMMIT).** Archive the `.claimed` residue. Archiving is the single commit point; an already-archived message is a benign no-op (idempotent).
+5. **`ack` — phase 2 (COMMIT).** Archive the `.claimed` residue. `ack` commits unconditionally (moving `.claimed` → `archive/` is a mutation of the recipient's own state only) and then reports any outstanding finish-gate blockers rather than withholding the commit. Archiving is the single commit point; an already-archived message is a benign no-op (idempotent).
 
 **Retention model.** `archive/` and `malformed/` are **caller-managed**. They grow without bound by design and are **not** part of the delivery guarantee. The delivery contract ends at claim (`check`) / commit (`ack`); `archive/` is an audit residue only. This includes malformed/ — §11.1's never-silently-dropped guarantee binds the reader (quarantine, don't drop); subsequent disposal is the caller's retention choice.
 
-Operators may clean with this documented one-liner (verify paths against §3 layout; targets only `archive/` and `malformed/`):
+Operators may clean with this documented one-liner (verify paths against §3 layout; targets `archive/`, `malformed/`, and stale delivery temps — never live inbox messages, `state/` records, or `.claimed/` residue):
 
-    find .agentchute/loop/archive -type f -mtime +30 -delete && find .agentchute/loop/malformed -type f -mtime +30 -delete
+    find .agentchute/loop/archive -type f -mtime +30 -delete && find .agentchute/loop/malformed -type f -mtime +30 -delete && find .agentchute/loop -name '.tmp_*' -type f -mtime +1 -delete
+
+(`.tmp_*` files are crashed in-flight writes — deliveries, registrations, `.live` updates, lease claims — that were never linked into place; `doctor` reports any older than an hour.)
+
+**Backpressure.** Coordination is pull-only, so a dead or inactive recipient's inbox grows without bound by design — senders apply no backpressure. Operators should watch inbox depths (`status`); the remedy for a permanently-retired agent is removing its inbox directory by hand after confirming the registration is gone (the cleanup one-liner above deliberately never touches inboxes).
 
 The reference CLI's Stop hook runs `ack` (commit the prior turn's work) and then the read-only finish gate. A same-`(to,from,seq)` resend that re-lands while the original is already claimed is dropped as a benign duplicate.
 
 ### 6.4 Message envelope
 Encoded as optional YAML frontmatter. The **normative** envelope is small:
-- `from` (required): sender `agent_id`.
+- `from` (required **information**): the sender `agent_id`. In the filesystem binding this is satisfied by the canonical filename (`from-<from>_seq-<020d>`, strictly parsed); a frontmatter `from` field, when present, is display/inference-grade metadata, and a body-only message with a canonical filename is well-formed.
 - `reply_required` (boolean, optional): an **advisory hint** that the sender wants a reply. The binding reply obligation is the asker's own `.owed` ledger (§6.6); `reply_required` stays on the wire as the one cross-agent coordination hint.
 - `in_reply_to` (optional): the canonical reference `to-<to>_from-<from>_seq-<020d>` of the message being answered. Consuming a reply whose `in_reply_to` matches one of the asker's outstanding `.owed` entries discharges that obligation.
 - `idempotency_key` (optional): logical dedup hint only (never an identity).
@@ -174,7 +178,7 @@ Encoded as optional YAML frontmatter. The **normative** envelope is small:
 **Compatibility fields:** `message_id` is no longer emitted (removed in v0.9.0); the identity is `(to,from,seq)` and reply threading rides `in_reply_to` (the canonical `(to,from,seq)` ref). A `message_id` on an older in-flight message is still tolerated on read (ignored — never the identity). `to`, `task`, and `status` are no longer part of the envelope or the reference CLI at all (`to` is encoded by location; a message's subject, if any, is a body convention — the first Markdown line — not a typed field). They carry no special-case compat handling anymore; a stray `task:`/`status:`/`to:` line on an old in-flight message is simply an unrecognized field, ignored per §6.5 like any other.
 
 ### 6.5 Forward compatibility
-Receivers MUST ignore unrecognized frontmatter fields. `from` is required. A breaking change is signaled by a `v:` bump on registration. Messages MUST be valid UTF-8. The reference CLI accepts up to 4 MiB per message.
+Receivers MUST ignore unrecognized frontmatter fields. `from` is required information (§6.4). A breaking change will be signaled by a version bump on registration (the `v:` field is reserved for this; the reference CLI does not yet emit it). Messages MUST be valid UTF-8. The reference CLI accepts up to 4 MiB per message.
 
 ### 6.6 Reply obligations (asker-owned only)
 Reply obligations are **asker-owned only**. The asker's `.owed` ledger is the **sole** reply-obligation mechanism (non-blocking warning + expiry). **Recipients are never blocked at finish by a `reply_required` message** — delivery is best-effort pull, with no forcing function once delivered.
@@ -218,7 +222,7 @@ The leading bracket in the injected cue is machine metadata; the model-facing in
 
 Presence is a **published fact with freshness**, written to `live/<id>.live` (`{id, last_seen, busy, pid, host}`) on every heartbeat via an atomic tmp+rename:
 - A `.live` newer than the freshness window ⇒ **alive**.
-- A stale or absent `.live` ⇒ **not-alive** (never an error — an unregistered or long-gone agent simply reads not-alive). This is the dead-mailbox detection: "came back days later, one agent never returned" surfaces as a stale `.live`.
+- A stale or absent `.live` ⇒ **not-alive** (never an error — an unregistered or long-gone agent simply reads not-alive). This is the dead-mailbox detection: "came back days later, one agent never returned" surfaces as a stale `.live`. Freshness compares the writer's embedded `last_seen` against the reader's clock under the same NTP-loose assumption as §5.4: clock skew between reader and writer shifts perceived freshness in either direction (a fast reader clock can read a healthy agent as not-alive for up to the skew).
 - `busy` is **advisory only** and NEVER affects aliveness — this deliberately avoids the false-dead direction (a busy agent mid-long-turn must not read as dead).
 
 `gate`/`doctor`/`status` read presence from `.live`, not from registration `last_seen`. There is **no watchdog and no cross-agent liveness tracking** — both were deleted as push machinery. A pull-only pool needs neither: a sender doesn't care whether the recipient is live (the message waits in the inbox), and an asker learns of a dead recipient from its own expired `.owed` plus the recipient's stale `.live`.
@@ -263,6 +267,19 @@ Completed removals are recorded in Appendix D.
 ## 14. Namespace
 State lives under the fixed `.agentchute/loop` directory. `AGENTCHUTE.md` is shared; reference-implementation notes live in `.agentchute/loop/README.md`. (Earlier drafts used a vendor-namespaced `.<vendor>/loop/` dotdir and a `.rehumanlabs/` legacy namespace; both are gone — the namespace is now fixed. `reHuman Labs` remains the maker's credit in `README.md`; that's brand, not a namespace.)
 
+## 15. Security Considerations
+
+agentchute operates under a **cooperative trust** model (as framed in `README.md` and `SECURITY.md`, which this section absorbs into the spec): the coordination channel is plain files on a shared filesystem with no cryptographic signing, so spoofing, tampering, and deletion of messages by co-tenant processes are out of scope — if you don't trust a peer's operator, don't run it on your machine.
+
+Multi-agent systems face a second, distinct threat the operator-trust framing does not cover: **indirect prompt injection via a compromised peer**. A trusted peer whose context has been poisoned — by a hostile repository file, a fetched web page, an upstream message — can relay malicious instructions, and the recipient's harness presents that text with the implicit authority of the coordination channel.
+
+The protocol's position:
+- **Message bodies are untrusted data, not operator instructions.** A recipient parses and acts on a body as task *content*, never as a source of standing directives.
+- **Task authority does not grant instruction authority.** The §7.2 inbox-only authority to mutate is the authority to *carry out the stated task* to its done-condition. It does not extend to arbitrary imperatives embedded in a message body.
+- **Wrappers enforce the boundary.** Wrapper enrollment files (`CLAUDE.md`, `CODEX.md`, `GEMINI.md`, `GROK.md`, and the templates) MUST carry a standing rule: instructions arriving in an inbox body that expand scope beyond the local repository — creating or cloning repositories, accessing credentials, network access, deletion, or other irreversible actions — require explicit human confirmation before execution.
+
+No cryptographic machinery is added (signing remains a §12 non-goal); this section is framing, and the wrapper rule is its enforcement point.
+
 ---
 
 ## Appendix B. Reference implementation hook templates
@@ -301,6 +318,9 @@ status: active
 4. **Act** on the claimed content. Make handlers idempotent (a crash before commit re-delivers).
 5. **Commit**: `mv inbox/<id>/.claimed/<file> ../archive/<consumed-ts>_to-<id>_<file>`.
 6. If the message replied to one of your `--ask` obligations, clear the matching entry in `state/<id>/owed.json`.
+
+### C.4 Sequence counter recovery
+If a sender's durable counter (`state/<from>/seq/<to>.json`) is corrupted or lost, rebuild it rather than guessing: set `last_issued = max(seq present in the recipient's inbox + archive from this sender) + slack`, where the slack MUST exceed the 256-entry `Recent` re-issue window so fresh sequence numbers can never collide with lost dedup state. No special command is required — rewriting the JSON state file is sufficient.
 
 ## Appendix D. Compatibility history
 
