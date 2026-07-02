@@ -4,6 +4,27 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v0.10.1 (2026-07-02) — edges and honesty
+
+A patch release — fixes, docs, and test-hardening only, the first release governed end-to-end by the new deprecation & versioning policy. Source: an independent deep analysis of v0.10.0 ("the implementation is excellent; the findings are edges and honesty gaps, not rot"), triaged by a unanimous 3-way senior design pass. Additive items from the same analysis (`registration v:`, `--idempotency-key`, a lease-timeout knob, mtime-based liveness) were deliberately deferred to v0.11.0 — a patch stays a patch.
+
+**Runner diagnostics no longer garble the terminal (#40)**
+- All runner diagnostics that could fire while the terminal is in raw mode now go to `state/<agent-id>/runner.log` (RFC3339-timestamped) instead of stderr — raw-mode stderr writes were landing at the cursor position (typically the wrapper TUI's status rows) with output post-processing off, causing the episodic smears/vanishing statuslines. Two true fatals (serve-lease fenced; terminal-restore failure) are buffered and printed to stderr once, after the terminal is restored, so a dying runner still says why.
+
+**`ack` commits unconditionally (#41) — user-visible behavior change**
+- `ack` now always archives `.claimed` residue (the recipient's own state) and *then* reports any remaining finish-gate blockers, instead of refusing to commit when an unrelated blocker (e.g. a third party dropping a malformed file into the inbox after `check`) was present. The finish gate itself is unchanged and still blocks finishing.
+- Exit contract: default mode exits 0 when the gate is clear after commit, 2 (the `gate --before finish` sentinel) when other obligations remain — scripts can no longer mistake "committed" for "done". `--quiet` is hook mode: it suppresses output *and* the exit-2 signal, because in the Stop-hook chain `gate` is the sole authoritative block signal and a silent duplicate block from `ack` would be indistinguishable from a reason-less failure.
+
+**Crash-residue visibility (#42)**
+- `doctor` gains a `stale_temp_files` check reporting `.tmp_*` files older than an hour across all four places in-flight writes can crash-orphan them: `inbox/*/`, `state/*/`, `agents/`, and `live/`.
+- `writeSeqMessage` adopts defer-based temp cleanup (panic-safe, matching the lease writer), closing a strictly larger orphan window.
+- The documented retention one-liner gains a third clause sweeping stale `.tmp_*` files loop-wide.
+
+**Spec honesty + Security Considerations (#43)**
+- New **§15 Security Considerations** — the spec's first threat-model position: cooperative trust for operators (absorbing README/SECURITY.md framing) plus the compromised-peer relay threat; message bodies are untrusted data, not operator instructions; §7.2 task authority is not instruction authority; wrappers MUST require human confirmation for scope-expanding instructions arriving in inbox bodies. The standing rule now ships in all four wrapper files and both enrollment templates (**marker v21 → v22** — re-run `setup` to re-stamp). Framing only; no crypto/auth machinery.
+- Spec–implementation honesty fixes: §6.2 states the send crash-window semantics (at-most-once as shipped; an idempotency key is a library-API affordance); §6.4/§6.5 state that `from` is required *information* satisfied by the canonical filename (body-only messages are well-formed) and that the registration `v:` field is reserved, not yet emitted; §5.4 gains cross-host NFS mount requirements (NFSv4, `actimeo` below the lease timeout, the flock caveat); §9 states the presence clock-skew assumption; §6.3 documents backpressure (a dead recipient's inbox grows by design; the remedy) and Appendix C.4 documents sequence-counter recovery. Stale "transitional" comments in the sequencer/send path rewritten to match.
+- `internal/cli/run.go` renamed `serve.go` (the verb changed in v0.9.1; the file finally follows).
+
 ## v0.10.0 (2026-07-01) — the finish line
 
 The release that completes the protocol. The finish-line worklist from the independent 0.9.1 post-release audit, executed end-to-end by the five-agent team (every PR developed by one agent and review-looped by two seniors until all happy; unanimous 5-way final review), plus a high-severity runner fix found by the tmux verification team. **Protocol v2 is declared STABLE as of this release** — the primitives, envelope, filename/identity grammar, lifecycle guarantees, and conformance invariants are now covenants, changed only through the deprecation & versioning policy (CONTRIBUTING.md) that also takes effect with this release.
