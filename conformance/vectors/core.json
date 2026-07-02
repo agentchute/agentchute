@@ -1,0 +1,60 @@
+{
+  "schema": "agentchute-conformance-vectors-v1",
+  "vectors": [
+    {
+      "id": "R1",
+      "kind": "presence_freshness",
+      "name": "presence is registered, fresh, and expires when stale",
+      "agent": "x",
+      "stale_seconds": 3600
+    },
+    {
+      "id": "D1",
+      "kind": "atomic_visibility",
+      "name": "staged delivery is invisible until committed",
+      "recipient": "bob",
+      "message": {"from": "alice", "body": "hello"}
+    },
+    {
+      "id": "D2",
+      "kind": "no_overwrite",
+      "name": "concurrent deliveries all survive",
+      "recipient": "bob",
+      "count": 200,
+      "sender_prefix": "s",
+      "sender_modulo": 5,
+      "body_prefix": "m"
+    },
+    {
+      "id": "O1",
+      "kind": "per_sender_fifo",
+      "name": "one sender's order is preserved",
+      "recipient": "bob",
+      "sender": "alice",
+      "bodies": ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"]
+    },
+    {
+      "id": "C1",
+      "kind": "consume_redelivery",
+      "name": "crash after act redelivers and idempotency key dedups",
+      "recipient": "bob",
+      "message": {"from": "alice", "body": "do-it", "key": "k1"}
+    },
+    {
+      "id": "E1",
+      "kind": "envelope",
+      "name": "unknown fields are ignored and from is required",
+      "recipient": "bob",
+      "message": {"from": "alice", "body": "hi", "extra": {"future_field": "v"}},
+      "invalid_message": {"body": "no from"}
+    },
+    {
+      "id": "B1",
+      "kind": "body_privacy",
+      "name": "binding declares whether peer reads are possible",
+      "recipient": "bob",
+      "reader": "carol",
+      "message": {"from": "alice", "body": "secret for bob"}
+    }
+  ]
+}

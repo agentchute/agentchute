@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// logBinding = the SHARED APPEND-ONLY LOG model (the §5 fork), as a spike.
+// logBinding = the SHARED APPEND-ONLY LOG model (the §5 fork), as a model.
 //
 //	┌──────────────────────────── one ordered stream ───────────────────────────┐
 //	│ seq0 to=bob   seq1 to=alice  seq2 to=bob  seq3 to=carol  seq4 to=bob ...    │
@@ -28,7 +28,7 @@ import (
 // What it COSTS (also shown):
 //   - B1 is VOID — every agent can read every record. No private bodies.
 //
-// This is the whole spike the team asked for, in ~90 lines. The decision is:
+// This is the whole alternate model the team asked for, in ~90 lines. The decision is:
 // is inter-agent privacy a real requirement for your pools? If not, this model
 // is simpler AND more robust than N inboxes, and deletes the ordering fiction
 // and the separate presence primitive in one move.

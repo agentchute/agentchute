@@ -1,11 +1,16 @@
-# Conformance harness + shared-log spike
+# Conformance harness + shared-log model
 
-Two deliverables in one package, both runnable:
+Four deliverables in one package:
 
-1. **A conformance harness** — the protocol's invariants as a Go test suite,
-   run against **two bindings** so any substrate is checked on equal footing.
-2. **The shared-log model** (`log_binding.go`) — the §5 fork as ~90 lines of
+1. **Language-neutral vectors** — JSON scenarios under `vectors/` defining the
+   protocol's invariant cases without depending on Go.
+2. **A conformance harness** — the vectors run as a Go test suite against **two
+   bindings** so any substrate is checked on equal footing.
+3. **The shared-log model** (`log_binding.go`) — the §5 fork as ~90 lines of
    working code, exercised by the same suite and demo as the inbox model.
+4. **A disposable Python proof** — `example-python-binding/runner.py` reads the
+   same vectors against a stdlib-only inbox binding. It is a snapshot, not a
+   maintained SDK or release gate.
 
 Pure stdlib, no dependencies.
 
@@ -15,17 +20,19 @@ Pure stdlib, no dependencies.
 go test -v ./...            # the invariant suite, against BOTH models
 go run ./cmd/acdemo inbox   # narrated handoff on the N-inboxes model
 go run ./cmd/acdemo log     # same handoff on the shared-log model
+python3 example-python-binding/runner.py  # optional, disposable proof
 ```
 
 ## Why a harness (not just tests)
 
 The §4 reframe says: **the invariants are the protocol; the substrate is a
-binding.** This makes that real. The suite drives only the abstract `Binding`
+binding.** This makes that real. The durable contract is the JSON vector set;
+the Go suite is one runner for it. The suite drives only the abstract `Binding`
 interface, so the filesystem inbox model and the shared-log model pass the
-*identical* tests. A new substrate (git branch, Redis Stream, HTTP+ETag) becomes
-conformant by implementing `Binding` and being added to `bindings()` — then it
-inherits the whole suite. That is what "universal / multi-binding" has to mean
-to be more than a claim.
+*identical* vector cases. A new substrate (git branch, Redis Stream, HTTP+ETag)
+becomes conformant by implementing `Binding` and being added to `bindings()` —
+then it inherits the whole suite. That is what "universal / multi-binding" has
+to mean to be more than a claim.
 
 ## What each invariant proves (and the failure it catches)
 
@@ -43,6 +50,13 @@ to be more than a claim.
 load-bearing one: it injects a crash at the worst moment (after the handler
 acts, before the consume commits) and asserts re-delivery, then shows `msg_key`
 collapsing the duplicate.
+
+## Vector format
+
+`vectors/core.json` is intentionally boring: one object per invariant, with an
+`id`, a `kind`, and only the scenario data that a runner needs. It is not a DSL
+and it does not encode implementation details. Runners map each `kind` to the
+small amount of imperative behavior needed to exercise that invariant.
 
 Two further tests close the review gaps:
 - **`TestC1_SenderCrashResume`** — the *sender* half of C1. A sender links `seq=N`, crashes before its counter is durable, resumes and re-issues `seq=N`; `EEXIST` makes that a no-op (one copy) and the next message gets `N+1`. It also asserts the **§7 hazard**: reusing a seq for *different* content is silently dropped — making "seq counter must be durable+monotonic, ids unique per process" executable. Most likely to catch a real bug when the per-`(from,to)` allocator is built.
@@ -81,8 +95,8 @@ and body privacy.
 Implement `Binding` (8 methods) + the two test-only hooks
 (`crashAfterActOnce`, `forceLastSeen`, `deliverSlow`), add a constructor to
 `bindings()`, and run `go test -v`. If it passes, your substrate is agentchute-
-conformant. A language-agnostic harness would drive these same operations over a
-substrate's real CLI/ACL boundary instead of a Go interface — same invariants.
+conformant. A language-agnostic harness can drive the same vector operations
+over a substrate's real CLI/ACL boundary instead of a Go interface.
 
 ## Scope
 
