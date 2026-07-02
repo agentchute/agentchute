@@ -39,16 +39,28 @@ These are reference choices, not protocol requirements. Conforming implementatio
 
 ## 2. Scope
 
-### In scope (v1)
+### In scope
 - **Pull-only inbox coordination** through per-recipient inboxes (§6).
 - **Per-agent supervision.** A loopless wrapper runs under `agentchute serve` (PTY supervisor) for inbox polling and `check inbox` injection. No sender-side wake.
-- **Small shared-FS pool.** 2 to ~10 agents sharing one filesystem (single host, or multi-host over a shared/network mount). Beyond that, routing/role-election is required (v2).
+- **Small shared-FS pool.** 2 to ~10 agents sharing a single-host filesystem (or multi-host network mount subject to POSIX locking assumptions). Beyond that, routing/role-election is required (v2).
 - **Substrate-defined pool locator.** _Reference CLI: a repo containing `AGENTCHUTE.md` and a `.agentchute/loop` directory._
 - **Free-form messages with optional structured envelope** (§6.4).
 - **`.live` presence with freshness** (§9) and **asker-owned reply obligations** (§6.6).
 
-### Out of scope (v1)
+### Out of scope
 See **§12 Non-goals**. Exclusions: non-filesystem transports in the reference CLI, sender-side wake / push presence, durable audit trails, capability-based routing, and cryptographic signing.
+
+### Tested targets and assumptions
+
+The reference implementation makes specific assumptions about its runtime environment:
+
+| Axis | Tested Configuration | Out of Scope / Untested |
+| :--- | :--- | :--- |
+| **Operating System** | macOS, Linux (CI verified) | Native Windows (WSL required for run) |
+| **Filesystem Layout** | Single-host shared directory (tested local disk) | Multi-disk, non-POSIX layouts |
+| **Network Filesystems** | NFSv4 (advisory POSIX locking assumptions; not CI-verified) | NFSv3, SMB/CIFS (lacks flock emulation) |
+| **PTY / Supervision** | Unix-like PTY (SIGWINCH propagation, best-effort) | Non-PTY shell wrappers, raw Windows Cmd/PowerShell PTY emulation |
+| **Security Model** | Cooperative local trust (POSIX file permissions) | Cryptographic signing, transport encryption, host-isolation bypass |
 
 ### Concurrency and Access
 agentchute is **concurrency-agnostic**: it neither enforces nor prevents simultaneous work. The expected default is linear (one agent at a time per task). Agents MUST have read/write access to their configured inbox medium. **One live process owns an id at a time** — the reference CLI enforces this with a serve lease + fencing token (§5.4).
@@ -125,7 +137,7 @@ The per-`(sender, recipient)` `seq` design is only sound if **one live process o
 - A **stale** claim is reclaimable only via the liveness rule: stale past the lease timeout, **plus** a same-host pid-proof failure when the holder is same-host (a frozen-but-alive process keeps its id); cross-host reclaim uses freshness/timeout only (pid is not provable across hosts).
 - The **fencing token** (`serve_token`, a 128-bit random epoch) is the load-bearing part: every heartbeat and **every `seq` write verifies it**. A zombie/paused holder that resumes after its lease was reclaimed fails the token check and stops — so it cannot create a dup-writer even though launch was guarded. The runner passes its token to the child via `AGENTCHUTE_SERVE_TOKEN`, so a fenced (reclaimed) child's `send` fails closed too.
 
-This makes "give each process its own id" an enforced, fenced invariant rather than a convention. (Operational assumptions: the lease state lives on the same shared mount as the inboxes, and clocks are NTP-loose with `lease-timeout ≫ heartbeat + max-skew`. Cross-host deployments require NFSv4 for correct lock emulation and mount caching settings with `actimeo` less than the lease timeout — or `noac` / `lookupcache=none` on the loop directory — to prevent stale cache reads from passing the fence; `flock` locking is not shared across hosts on NFSv3. Severe skew degrades to premature/delayed reclaim; within these mount requirements the fence still prevents an actual dup-write.)
+This makes "give each process its own id" an enforced, fenced invariant rather than a convention. (Operational assumptions: the lease state lives on the same shared mount as the inboxes, and clocks are NTP-loose with `lease-timeout ≫ heartbeat + max-skew`. Cross-host deployments over network mounts are not CI-verified; they assume NFSv4 for correct lock emulation and mount caching settings with `actimeo` less than the lease timeout — or `noac` / `lookupcache=none` on the loop directory — to prevent stale cache reads from passing the fence. `flock` locking is not shared across hosts on NFSv3. Severe skew degrades to premature/delayed reclaim; within these mount requirements the fence still prevents an actual dup-write.)
 
 ## 6. Messaging
 
@@ -180,7 +192,7 @@ Encoded as optional YAML frontmatter. The **normative** envelope is small:
 **Compatibility fields:** `message_id` is no longer emitted (removed in v0.9.0); the identity is `(to,from,seq)` and reply threading rides `in_reply_to` (the canonical `(to,from,seq)` ref). A `message_id` on an older in-flight message is still tolerated on read (ignored — never the identity). `to`, `task`, and `status` are no longer part of the envelope or the reference CLI at all (`to` is encoded by location; a message's subject, if any, is a body convention — the first Markdown line — not a typed field). They carry no special-case compat handling anymore; a stray `task:`/`status:`/`to:` line on an old in-flight message is simply an unrecognized field, ignored per §6.5 like any other.
 
 ### 6.5 Forward compatibility
-Receivers MUST ignore unrecognized frontmatter fields. `from` is required information (§6.4). A breaking change will be signaled by a version bump on registration (the `v:` field is reserved for this; the reference CLI does not yet emit it). Messages MUST be valid UTF-8. The reference CLI accepts up to 4 MiB per message.
+Receivers MUST ignore unrecognized frontmatter fields. `from` is required information (§6.4). Conforming registrations emit the protocol major version in the `v:` field (emitted as `v: 2`; absent `v:` implies a silent legacy/unknown state with no warnings generated, as mixed fleets are normal). A genuine protocol-major version mismatch (where `v:` is present and does not equal 2) surfaces as a diagnostic warning (doctor/status) but is never a delivery blocker. Messages MUST be valid UTF-8. The reference CLI accepts up to 4 MiB per message.
 
 ### 6.6 Reply obligations (asker-owned only)
 Reply obligations are **asker-owned only**. The asker's `.owed` ledger is the **sole** reply-obligation mechanism (non-blocking warning + expiry). **Recipients are never blocked at finish by a `reply_required` message** — delivery is best-effort pull, with no forcing function once delivered.
@@ -220,6 +232,8 @@ There is **no wake on the wire** and no sender-side poke. Discovery is recipient
 
 The leading bracket in the injected cue is machine metadata; the model-facing instruction is `check inbox`. `setup --wake` installs the runner path only; the former tmux/herdr wake adapters and the runner receive-socket were removed in the pull-only redesign.
 
+PTY injection is a best-effort cue, not a compliance guarantee. The supervisor attempts to inject the text cue without disrupting active child input, but terminal size changes, SIGWINCH propagation, or platform-specific shell quirks (e.g., Windows native consoles, where WSL must be used instead) can delay or miss cue delivery. In all cases, the child's underlying poll remains the authoritative discovery mechanism.
+
 ## 9. Liveness & presence
 
 Presence is a **published fact with freshness**, written to `live/<id>.live` (`{id, last_seen, busy, pid, host}`) on every heartbeat via an atomic tmp+rename:
@@ -247,24 +261,14 @@ A well-formed canonical seq file is never quarantined; only a genuinely-unrecogn
 
 Quarantine happens **pre-claim** (`check` validates before it claims, §6.3 step 3): a quarantined item is never claimed and never archived, so it never counts as **consumed**. It has no effect on `seq` either way — `seq` is the sender's own durable per-`(from,to)` counter (§6.1), not something a reader advances by claiming or quarantining a message, so a malformed item simply never touches it. It is never silently dropped: it persists as a file under `.agentchute/loop/malformed/` until an operator or agent inspects it. This is surfaced proactively, not just documented — `doctor`/`pending`/`boot` report the malformed count with a `check`-to-quarantine hint, and `gate` (including `--before finish`) blocks on any unquarantined malformed file until `check` runs.
 
-## 12. Non-goals (v1)
+## 12. Non-goals
 - No non-filesystem transport in the reference CLI.
 - No sender-side wake / push presence / reachability cache.
 - No durable/authenticated audit trail (archive is gitignored; default off).
 - No capability-based routing.
 - No protocol-level signing or auth.
 - No coordinator/router agents and no cross-agent liveness tracking.
-
-## 13. v2 deferred items
-- Coordinator/router agents.
-- Opt-in transcript export / shared-log audit profile (the `log` binding in [`conformance/`](conformance/) is the first-class opt-in profile).
-- Handshake / version negotiation beyond the registration `v:` field.
-
-### 13.1 Compatibility & deprecations (scheduled removals)
-
-A deferred-cleanup ledger. It is currently empty. **Re-listing is not retiring:** if an item's gate stays unmet release after release, escalate — do not silently re-defer.
-
-Completed removals are recorded in Appendix D.
+- No handshake or dynamic version negotiation beyond the static registration `v:` field.
 
 ## 14. Namespace
 State lives under the fixed `.agentchute/loop` directory. `AGENTCHUTE.md` is shared; reference-implementation notes live in `.agentchute/loop/README.md`. (Earlier drafts used a vendor-namespaced `.<vendor>/loop/` dotdir and a `.rehumanlabs/` legacy namespace; both are gone — the namespace is now fixed. `reHuman Labs` remains the maker's credit in `README.md`; that's brand, not a namespace.)
@@ -290,7 +294,7 @@ See `README.md` or `examples/hooks/` for current Claude Code, Codex, and Gemini 
 
 ## Appendix C. Hand-protocol walkthrough
 
-The hand-protocol is exclusively for environments without the reference CLI binary; an agent with the reference CLI available MUST use the CLI rather than driving files by hand. (The CLI enforces a durable `seq` counter and a serve lease; a hand-protocol agent SHOULD coordinate to keep a single writer per id and a monotonic per-`(from,to)` counter.)
+The hand-protocol is exclusively for environments without the reference CLI binary; an agent with the reference CLI available MUST use the CLI rather than driving files by hand. (The CLI enforces a durable `seq` counter and a serve lease; a hand-protocol agent SHOULD coordinate to keep a single writer per id and a monotonic per-`(from,to)` counter.) The hand-protocol carries no multi-writer protection or fencing mechanism; preventing write collisions is a best-effort coordination task for the operator.
 
 ### C.1 Registration
 Write `.agentchute/loop/agents/<id>.md`:
@@ -325,6 +329,8 @@ status: active
 If a sender's durable counter (`state/<from>/seq/<to>.json`) is corrupted or lost, rebuild it rather than guessing: set `last_issued = max(seq present in the recipient's inbox + archive from this sender) + slack`, where the slack MUST exceed the 256-entry `Recent` re-issue window so fresh sequence numbers can never collide with lost dedup state. No special command is required — rewriting the JSON state file is sufficient.
 
 ## Appendix D. Compatibility history
+
+**Reconciliation in v0.11.8 — Covenants held despite prose growth.** While the stable covenants (§1, §6.1, §6.3, §6.4, §11.1, and conformance invariants) remained strictly frozen and unchanged across the v0.10.x and v0.11.x releases, the explanatory prose of this specification grew by approximately 20%. This growth represents the addition of security framing (§15), operational assumptions, and scope honesty boundaries (such as NFS/PTY limitations)—none of which altered the normative wire protocol.
 
 **DONE in v0.11.0 — unspec'd priority frontmatter reader removed (clean delete).** The undocumented `priority` frontmatter field (previously dropped from the spec in v0.3.3) was removed from the CLI reader (`pending`/`boot` display and structs), eliminating obsolete dead weight and aligning the reader with the normative envelope schema (§6.4).
 
