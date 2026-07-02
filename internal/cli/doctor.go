@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -182,6 +183,7 @@ type doctorOptions struct {
 func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) doctorReport {
 	checks := []doctorCheck{
 		checkLoopDirScaffold(cfg),
+		checkSpecFreshness(cfg),
 		checkStaleTempFiles(cfg, opts.Now),
 		checkBinaryOnPath(),
 		checkHookFilePresence(cfg, agentID),
@@ -217,6 +219,39 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 }
 
 // ---------- individual checks ----------
+
+func checkSpecFreshness(cfg *loop.Config) doctorCheck {
+	const name = "spec_freshness"
+	if cfg == nil || cfg.ControlRepo == "" {
+		return doctorCheck{Name: name, Severity: severitySkip, Message: "control repo unavailable; skipping AGENTCHUTE.md freshness check"}
+	}
+	if embeddedSpecContent == "" {
+		return doctorCheck{Name: name, Severity: severitySkip, Message: "embedded AGENTCHUTE.md unavailable; skipping spec freshness check"}
+	}
+	path := filepath.Join(cfg.ControlRepo, "AGENTCHUTE.md")
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return doctorCheck{Name: name, Severity: severitySkip, Message: "AGENTCHUTE.md missing; discovery/scaffold checks own this"}
+		}
+		return doctorCheck{Name: name, Severity: severityWarn, Message: fmt.Sprintf("AGENTCHUTE.md unreadable at %s: %v", path, err)}
+	}
+	embedded := []byte(embeddedSpecContent)
+	if bytes.Equal(onDisk, embedded) {
+		return doctorCheck{Name: name, Severity: severityOK, Message: "AGENTCHUTE.md matches embedded spec"}
+	}
+	return doctorCheck{
+		Name:     name,
+		Severity: severityWarn,
+		Message: fmt.Sprintf("AGENTCHUTE.md differs from this binary's embedded spec (disk sha256=%s, embedded sha256=%s); re-run `agentchute init`/`setup` or update your checkout",
+			shortSHA256(onDisk), shortSHA256(embedded)),
+	}
+}
+
+func shortSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:])[:12]
+}
 
 func checkLoopDirScaffold(cfg *loop.Config) doctorCheck {
 	type expected struct {
