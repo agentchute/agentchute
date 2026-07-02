@@ -217,7 +217,11 @@ func emitPendingText(entries []pendingEntry, owed []loop.OwedEntry, malformed in
 				flags += " [REPLY-REQUIRED]"
 			}
 			if e.Priority != "" && e.Priority != "normal" {
-				flags += " [priority:" + e.Priority + "]"
+				// e.Priority is sourced from the unvalidated frontmatter peek
+				// path (readFrontmatter), so it must be sanitized before
+				// reaching a raw terminal here (N3, deep-analysis-v2) — see
+				// sanitizeControlBytes in check.go.
+				flags += " [priority:" + sanitizeControlBytes(e.Priority) + "]"
 			}
 			if e.Stale {
 				flags += " [stale]"

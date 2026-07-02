@@ -280,11 +280,36 @@ func printConsumedBody(msg loop.Message, content []byte, redelivered bool) {
 	} else {
 		fmt.Printf("---- %s ----\n", msg.Filename)
 	}
-	fmt.Print(string(content))
-	if !strings.HasSuffix(string(content), "\n") {
+	sanitized := sanitizeControlBytes(string(content))
+	fmt.Print(sanitized)
+	if !strings.HasSuffix(sanitized, "\n") {
 		fmt.Println()
 	}
 	fmt.Println()
+}
+
+// sanitizeControlBytes strips C0/C1 control code points from peer-controlled
+// text before it reaches a raw terminal (N3, deep-analysis-v2): a body
+// carrying ANSI/OSC escape sequences or bare C1 codes can repaint the
+// operator's screen, spoof a prompt, or set the window title. Applied
+// unconditionally (not just when stdout is a TTY) because message bodies are
+// spec'd UTF-8 free-form text — a control sequence is never legitimate
+// payload — and unconditional stripping avoids needing platform-specific
+// stdout-TTY detection. \n and \t are the only control code points kept.
+func sanitizeControlBytes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\t':
+			b.WriteRune(r)
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
+			// drop: C0 (incl. ESC, CR), DEL, and C1 control code points.
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // printReplyRefIfRequired prints the copyable in_reply_to ref a reply to msg must
