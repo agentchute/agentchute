@@ -33,7 +33,7 @@ That's the reference CLI. The protocol itself is just files — a filesystem imp
 ## Project Status: Protocol + Reference Implementation, Not a Product
 
 agentchute is a coordination protocol and a reference implementation, not a product.
-- **The Protocol** follows a frozen-protocol trajectory: Protocol v2 is stable and will be declared frozen at the 1.0 release.
+- **The Protocol** follows a stability trajectory: Protocol v2 is stable — its covenants change only through the versioned deprecation process — and that stability is formally declared final at the 1.0 release.
 - **The Reference CLI** is maintained strictly for fidelity to the specification. It does not carry commercial support, operational SLAs, or product features like deployment automation.
 - **Alternative Implementations** are welcome and encouraged; the conformance vectors exist as an ecosystem primitive to certify independent implementations on any substrate.
 
