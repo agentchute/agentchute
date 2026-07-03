@@ -61,7 +61,7 @@
   <!-- node: gemini (BR) -->
   <g transform="translate(660,348)" filter="url(#card)">
     <rect width="188" height="106" rx="12" fill="#FFFFFF" stroke="#E2E0D6"/>
-    <circle cx="170" cy="21" r="7" fill="#C7C9B8" opacity="0.35"/><circle cx="170" cy="21" r="4" fill="#C7C9B8"/>
+    <circle cx="170" cy="21" r="7" fill="#1E6F57" opacity="0.16"/><circle cx="170" cy="21" r="4" fill="#1E6F57"/>
     <text x="16" y="27" font-size="14.5" font-weight="600" fill="#17180F">gemini</text>
     <text x="16" y="47" font-size="9" fill="#8A8C7C" letter-spacing="0.05em">inbox/</text>
     <rect x="16" y="53" width="156" height="12" rx="3" fill="#F0F1EA"/>
