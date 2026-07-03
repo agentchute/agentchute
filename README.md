@@ -8,7 +8,7 @@
 
 A small Markdown protocol that lets AI agents hand off work, request review, and message each other — without a human relaying every step. No server, no broker, no SDK.
 
-[![Protocol v2 — stable](https://img.shields.io/badge/protocol-v2%20stable-1e6f57.svg)](AGENTCHUTE.md) [![CLI v1.0.0](https://img.shields.io/badge/CLI-v1.0.0-1e6f57.svg)](CHANGELOG.md) [![MIT](https://img.shields.io/badge/license-MIT-1e6f57.svg)](LICENSE) [![Conformance vectors](https://img.shields.io/badge/conformance-vectors-1e6f57.svg)](conformance/)
+[![Protocol v2 — stable](https://img.shields.io/badge/protocol-v2%20stable-1e6f57.svg)](AGENTCHUTE.md) [![CLI v1.0.0](https://img.shields.io/badge/CLI-v1.0.0-1e6f57.svg)](CHANGELOG.md) [![MIT](https://img.shields.io/badge/license-MIT-1e6f57.svg)](LICENSE) [![Conformance · 9 vectors](https://img.shields.io/badge/conformance-9%20vectors-1e6f57.svg)](conformance/)
 
 [Spec](AGENTCHUTE.md) · [Conformance](conformance/) · [Extensions](EXTENSIONS.md) · [Website](https://agentchute.dev) · [Why 1.0 means done →](https://agentchute.dev/blog/v1-0-done-not-big.html)
 
