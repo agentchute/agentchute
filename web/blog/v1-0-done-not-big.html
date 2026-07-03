@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1.0 — done, not big · agentchute</title>
+<meta name="description" content="agentchute 1.0 is out: Protocol v2, reference CLI 1.0. Most 1.0s promise more. Ours promises it won't break under you.">
+<meta property="og:title" content="1.0 — done, not big">
+<meta property="og:description" content="agentchute 1.0 is out: Protocol v2, reference CLI 1.0. Most 1.0s promise more. Ours promises it won't break under you.">
+<meta property="og:url" content="https://agentchute.dev/blog/v1-0-done-not-big.html">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://agentchute.dev/blog/assets/og-announcement.png">
+<meta property="og:image:alt" content="The anti-hockey-stick: agentchute's codebase mass falling from v0.7.1 to a stable v1.0 — 8,262 lines removed in one release; protocol v2 · stable.">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="1.0 — done, not big">
+<meta name="twitter:description" content="agentchute 1.0 is out: Protocol v2, reference CLI 1.0. Most 1.0s promise more. Ours promises it won't break under you.">
+<meta name="twitter:image" content="https://agentchute.dev/blog/assets/og-announcement.png">
+<link rel="canonical" href="https://agentchute.dev/blog/v1-0-done-not-big.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{--paper:#FAF9F5;--ink:#17180F;--muted:#5C5E50;--faint:#8A8C7C;--hair:#E6E4DA;--line:#E2E0D6;--green:#1E6F57;--green-soft:#EAF1ED;--green-line:#CFE3D8;--amber:#C8791A;--sans:'Inter',system-ui,sans-serif;--disp:'Space Grotesk',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16.5px;line-height:1.7;-webkit-font-smoothing:antialiased}
+  a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
+  header{border-bottom:1px solid var(--hair)}
+  .bar{max-width:1080px;margin:0 auto;padding:0 28px;display:flex;align-items:center;justify-content:space-between;height:58px}
+  .brand{font-family:var(--mono);font-weight:600;font-size:14.5px}
+  .brand .sq{display:inline-block;width:9px;height:9px;background:var(--green);border-radius:2px;margin-right:9px;vertical-align:middle}
+  nav a{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-left:20px}
+  article{max-width:720px;margin:0 auto;padding:52px 24px 80px}
+  .kicker{font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.07em;margin:0 0 12px}
+  h1{font-family:var(--disp);font-weight:700;font-size:clamp(2rem,5vw,2.9rem);line-height:1.06;letter-spacing:-.02em;margin:0 0 12px}
+  .meta{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin:0 0 30px}
+  figure{margin:34px 0}
+  figure img{width:100%;height:auto;display:block;border-radius:14px}
+  figcaption{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:10px;text-align:center}
+  h2{font-family:var(--disp);font-weight:600;font-size:1.4rem;letter-spacing:-.01em;margin:42px 0 12px}
+  p{margin:0 0 18px;color:var(--ink)}
+  p.lede{font-size:1.16rem;color:var(--muted)}
+  ul{margin:0 0 18px;padding-left:22px}
+  li{margin:0 0 8px}
+  code{font-family:var(--mono);font-size:.88em;background:#F0F1EA;border-radius:4px;padding:1.5px 5px}
+  .callout{border:1px solid var(--green-line);background:var(--green-soft);border-radius:12px;padding:18px 20px;margin:26px 0}
+  .callout p{margin:0;color:var(--muted)}
+  .callout b{color:var(--ink)}
+  .gone{font-family:var(--mono);font-size:14px;color:var(--muted)}
+  .gone s{text-decoration-color:color-mix(in srgb,var(--ink) 45%,transparent)}
+  .sig{margin-top:44px;padding-top:22px;border-top:1px solid var(--hair);font-family:var(--mono);font-size:13px;color:var(--faint)}
+  .next{margin-top:34px;border:1px solid var(--line);border-radius:12px;padding:16px 20px;background:#fff}
+  .next a{font-family:var(--mono);font-size:13.5px;font-weight:600}
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <div class="brand"><span class="sq"></span>agentchute</div>
+  <nav><a href="/">home</a><a href="/blog/">blog</a><a href="https://github.com/agentchute/agentchute">github</a></nav>
+</div></header>
+
+<article>
+  <p class="kicker">RELEASE · CLI v1.0 · PROTOCOL v2</p>
+  <h1>1.0 — done, not big.</h1>
+  <p class="meta">July 2, 2026 · reHuman Labs</p>
+
+  <p class="lede">Most 1.0 announcements promise that things are about to get bigger. Ours promises the opposite: <b>the wire will not break under you.</b> agentchute 1.0 is out — the protocol reaches v2, stable, and the reference CLI that carries it is 1.0.</p>
+
+  <figure>
+    <img src="/blog/assets/subtraction-arc.svg" alt="Chart of agentchute's codebase mass falling from v0.7.1 to v1.0 — the watchdog, wake adapters, reachability caches and typed fields deleted along the way — then flattening into a stable Protocol v2 line.">
+    <figcaption>the anti-hockey-stick: how a codebase reaches 1.0 by shrinking</figcaption>
+  </figure>
+
+  <h2>The problem, in one sentence</h2>
+  <p>If you run several AI agents on one project — Claude Code writing, Codex reviewing, Gemini researching — <b>you</b> are the message bus: copy from one terminal, paste into another, relay the review back, all day. Frameworks solve this with brokers, task graphs, and SDKs. We solved it with a directory and a file.</p>
+  <p>Every agent gets an inbox — a directory. A message is a Markdown file dropped in it. The recipient reads its own inbox, on its own schedule. Pull, not push; best-effort; no server, no broker, no SDK. It works with any terminal-based agent, because none of it depends on vendor behavior. That's the whole protocol, and it's been the whole protocol since <a href="/blog/v0-8-0-simple-again.html">we deleted our way back to it</a>.</p>
+
+  <h2>How we got here</h2>
+  <p>agentchute reached 1.0 the unusual way. The 0.8 redesign removed the sender-poke mistake and everything built to prop it up: <span class="gone"><s>the watchdog</s>, <s>cooperative wake</s>, <s>reachability caches</s>, <s>per-vendor wake adapters</s></span>. The 0.9 line was the subtraction release — <b>8,262 lines removed in one tag</b> — and made it policy: <em>every release must remove something.</em> 0.10 declared the protocol stable. 0.11 made the conformance suite language-neutral: seven invariants as JSON vectors, and a 269-line stdlib-Python script that passes them, proving the protocol lives outside any one implementation. What's left fits in your head: five primitives, seven invariants, two bindings, zero servers.</p>
+
+  <h2>What "stable" means, precisely</h2>
+  <p><b>Stable is SemVer-serious, not rhetorical.</b> The covenants — the primitives, the envelope, the identity grammar, the lifecycle guarantees — change only through the written deprecation process. The protocol can still be improved and extended — clarifications, new extension profiles — but a breaking change means Protocol v3, entered through that same process. And the version now self-evidences: every registration carries <code>v: 2</code> on the wire, so the claim lives in the pool, not in prose.</p>
+  <p>The reference CLI is 1.0.0, and the entire compatibility contract is one line: <b>CLI 1.x implements Protocol v2.</b> The tag itself changes nothing — v1.0.0 is byte-honest over the release we dogfooded on our own live pool, installed through the real installer, run by the same five-agent team that builds agentchute with agentchute.</p>
+
+  <div class="callout">
+    <p><b>The honesty clause.</b> The protocol has been stable since v0.10.0, so 1.0 adds almost nothing technically new — on purpose. It adds exactly three small things: wire self-evidence (<code>v: 2</code>), a written two-line versioning contract, and a stated boundary: agentchute is <b>a protocol and a faithful reference implementation — not a product.</b> No support tier, no SLA, no roadmap-by-request. If a 1.0 that adds nothing sounds strange, that's the point: this is a protocol's 1.0, not a product's.</p>
+  </div>
+
+  <h2>What we said no to</h2>
+  <p>Rejecting these <em>is</em> the announcement: no priorities, no delivery receipts, no broadcast, no routing or coordinator agents, no signing machinery, no retries or exactly-once, no config system, no daemons, no maintained SDKs. Each one would re-grow the mass we spent four releases removing. In a category racing to add orchestration surface, agentchute's 1.0 statement is <b>a protocol that stays small on purpose.</b></p>
+
+  <h2>Build on it</h2>
+  <p>Install the reference CLI and your agents are coordinating in minutes — or skip our binary entirely: the protocol is just files, and the <a href="https://github.com/agentchute/agentchute/tree/main/conformance">vectors</a> tell you whether your own implementation, in any language, got it right. Either way, the promise is the same and it's the only one we make: <b>build on this — it won't break under you.</b></p>
+
+  <div class="next"><a href="/blog/after-done-roadmap.html">Next: after 1.0 — the roadmap around a stable core →</a></div>
+
+  <p class="sig">$ an inbox per agent. a Markdown message. that's the protocol — now at v2, stable.</p>
+</article>
+</body>
+</html>

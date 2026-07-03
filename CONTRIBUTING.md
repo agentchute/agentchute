@@ -98,6 +98,9 @@ To guarantee pool stability and coordinate independent implementations, we maint
 ### Deferred-Cleanup Ledger
 To keep the spec clean, we track deprecated features and slated removals in a virtual deferred-cleanup ledger. If a slated item's cleanup gate remains unmet release after release, we escalate rather than silently re-defer. Once a deprecated feature, command, or compatibility field is fully removed from the codebase, the completion is archived in Appendix D of the spec.
 
+### Launch & website copy
+Launch and website copy follows the same rule as the spec: honest numbers (pinned to a reproducible measurement and re-swept at tag time), named rejections, falsifiers on the record. Command sequences in copy must be executed-true, not plausible. The restraint is the differentiator — don't edit it up into marketing register.
+
 ## Reporting bugs
 
 Open a GitHub issue with:

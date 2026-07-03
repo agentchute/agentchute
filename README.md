@@ -4,13 +4,15 @@
 
 **An inbox per agent. A Markdown message. That's the protocol.**
 
+**Protocol v2 · Reference CLI v1.0**
+
 A small Markdown protocol that lets AI agents hand off work, request review, and message each other — without a human relaying every step. No server, no broker, no SDK.
 
-[![MIT](https://img.shields.io/badge/license-MIT-1e6f57.svg)](LICENSE) [![Go 1.21+](https://img.shields.io/badge/go-1.21+-1e6f57.svg)](go.mod) [![Spec](https://img.shields.io/badge/spec-AGENTCHUTE.md-1e6f57.svg)](AGENTCHUTE.md)
+[![Protocol v2 — stable](https://img.shields.io/badge/protocol-v2%20stable-1e6f57.svg)](AGENTCHUTE.md) [![CLI v1.0.0](https://img.shields.io/badge/CLI-v1.0.0-1e6f57.svg)](CHANGELOG.md) [![MIT](https://img.shields.io/badge/license-MIT-1e6f57.svg)](LICENSE) [![Conformance · 9 vectors](https://img.shields.io/badge/conformance-9%20vectors-1e6f57.svg)](conformance/)
 
-[Spec](AGENTCHUTE.md) · [Extensions](EXTENSIONS.md) · [Conformance suite](conformance/) · [Website](https://agentchute.dev)
+[Spec](AGENTCHUTE.md) · [Conformance](conformance/) · [Extensions](EXTENSIONS.md) · [Website](https://agentchute.dev) · [Why 1.0 means done →](https://agentchute.dev/blog/v1-0-done-not-big.html)
 
-<img src="docs/agentchute-hero.svg" alt="AI agents — e.g. claude, codex, gemini, grok, but any wrapper that runs under the runner or polls its own inbox works — each with its own inbox, passing Markdown messages peer to peer with no central broker." width="760">
+<img src="docs/agentchute-hero.svg" alt="AI agents — e.g. claude, codex, gemini, grok, but any terminal-based agent works — each with its own inbox, passing Markdown messages peer to peer with no central broker." width="760">
 
 </div>
 
@@ -18,30 +20,23 @@ A small Markdown protocol that lets AI agents hand off work, request review, and
 curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
 ```
 
-> **Upgrading from 0.7.x or earlier?** 0.8 is a breaking redesign (pull-only; new on-disk message format). Stop your agents, then run one clean-upgrade command:
->
-> ```sh
-> curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh -s -- --fresh --yes --wake runner --wrappers all
-> ```
->
-> Open a new shell (or `hash -r`) so the new `ac` dispatcher resolves (it installs at `~/.agentchute/bin/ac` and must precede the system `/usr/sbin/ac` on PATH). Verify with `ac doctor`, then restart each agent: `ac serve claude`, `ac serve codex`, … See [CHANGELOG](CHANGELOG.md).
+Already on 0.x? `agentchute update` — CLI 1.0.0 carries no wire or behavior change over the dogfooded v0.11.8. Coming from 0.7.x or earlier? See the clean-upgrade note in the [CHANGELOG](CHANGELOG.md).
 
-That's the reference CLI. The protocol itself is just files — a filesystem implementation of your own interoperates with it directly; over another transport it's protocol-compatible (see [`AGENTCHUTE.md`](AGENTCHUTE.md) and [`EXTENSIONS.md`](EXTENSIONS.md)).
+That's the reference CLI. The protocol itself is just files — an implementation of your own interoperates with it directly, and the [conformance vectors](conformance/) tell you whether you got it right.
 
 ---
 
-## Project Status: Protocol + Reference Implementation, Not a Product
+## What 1.0 means here
 
-agentchute is a coordination protocol and a reference implementation, not a product.
-- **The Protocol** follows a stability trajectory: Protocol v2 is stable — its covenants change only through the versioned deprecation process — and that stability is formally declared final at the 1.0 release.
-- **The Reference CLI** is maintained strictly for fidelity to the specification. It does not carry commercial support, operational SLAs, or product features like deployment automation.
-- **Alternative Implementations** are welcome and encouraged; the conformance vectors exist as an ecosystem primitive to certify independent implementations on any substrate.
+**Done, not big.** Most projects reach 1.0 by adding; agentchute got here by deleting. The pull-only redesign removed the watchdog, the wake adapters, and the reachability machinery; one release alone removed 8,262 lines; every release since is required to remove something. What's left is the stable core:
 
----
+- **Protocol v2 is stable.** *Stable* is SemVer-serious, not rhetorical: the covenants — the primitives (§1), the envelope (§6.4), the identity grammar (§6.1), the lifecycle guarantees — change only through the written deprecation process. The protocol can still be improved and extended — clarifications, extension profiles — but a breaking change means Protocol v3, entered through that same process. Registrations now carry `v: 2` on the wire, so the version claim self-evidences instead of living in prose.
+- **CLI 1.x implements Protocol v2.** That's the whole compatibility contract. The CLI patches and minors freely underneath it.
+- **Honesty clause:** the protocol has been stable since v0.10.0, so 1.0 adds almost nothing technically new — and that's the point. It adds three small things: wire self-evidence (`v: 2`), a written two-line versioning contract, and the boundary below.
 
 ## The idea
 
-Every agent has an inbox — a directory. A message is a Markdown file dropped in it. The recipient reads its own inbox, on its own schedule. Delivery is best-effort; the message just waits until it's read. That's the whole protocol, and it works with **any wrapper that runs under the runner or polls its own inbox** — Claude Code, Codex, Gemini CLI, Grok, or your own — because the protocol depends on no vendor behavior. (The reference runner installs a single `ac` dispatcher — launch any of those four with `ac serve <wrapper>`; any other terminal agent runs under the same runner or its own polling loop.)
+Every agent has an inbox — a directory. A message is a Markdown file dropped in it. The recipient reads its own inbox, on its own schedule. Delivery is best-effort; the message just waits until it's read. That's the whole protocol, and it works with **any terminal-based agent** — Claude Code, Codex, Gemini CLI, Grok, or your own — because the protocol depends on no vendor behavior. (The reference runner installs a single `ac` dispatcher — launch any of those four with `ac serve <wrapper>`; any other terminal agent runs under the same runner or its own polling loop.)
 
 ## What's in the protocol
 
@@ -49,13 +44,11 @@ Five implementation-agnostic primitives. The inbox medium and transport are your
 
 - **Per-recipient inbox.** Each agent owns an ordered message stream; the recipient owns consumption.
 - **Identified messages.** Each message has a durable `(to, from, seq)` identity. A sender's messages stay in order, with no clock.
-- **No-overwrite delivery.** A sender never clobbers an existing message; re-delivering the same `(to, from, seq)` is a benign no-op.
+- **No-overwrite delivery.** A sender never clobbers an existing message; re-sending the same one is a safe no-op.
 - **Recipient reads its own inbox.** Pull, not push. Senders write and walk away.
 - **Self-registration + presence.** Each agent publishes a small record and a liveness heartbeat, read on demand.
 
-The guarantees are pinned by a [conformance suite](conformance/) — any implementation that passes it is conformant, on any substrate.
-
-> **Coming from 0.7?** 0.8 is much smaller. The implementation had grown a liveness/wake subsystem to make sender-side "poke the recipient" reliable; 0.8 flips to pull — senders write and walk away, recipients read on their own cadence, and the watchdog, reachability caches, and cross-agent gates are all deleted. [Read the full story →](https://agentchute.dev/blog/v0-8-0-simple-again.html)
+The guarantees are pinned by **language-neutral conformance vectors** — seven invariants as JSON, run against both shipped bindings, plus a 269-line stdlib-Python proof that the vectors are implementable in any language. An implementation that passes the vectors is conformant, on any substrate.
 
 ## A handoff
 
@@ -72,7 +65,7 @@ The guarantees are pinned by a [conformance suite](conformance/) — any impleme
       │◀─────────────────────────────────────────
 ```
 
-No sender ever pokes a recipient, and there is no central process or broker in the middle. The message waits in the inbox until the recipient reads it. (Agents that can't poll on their own run under one small supervisor that watches their inbox for them — see the [docs](AGENTCHUTE.md).)
+No sender ever pokes a recipient, and there is no process in the middle. The message waits in the inbox until the recipient reads it.
 
 ## Quickstart
 
@@ -87,13 +80,7 @@ AGENTCHUTE_AGENT_ID=codex       ac serve codex    # another terminal
 agentchute doctor --as codex                      # sanity-check (any terminal)
 ```
 
-`ac serve <wrapper>` is the launch verb.
-
-That's it — both agents are enrolled and polling their own inboxes. Coordination happens between them; you won't normally run `send`/`check`/`ack` yourself.
-
-## How coordination works
-
-Once your agents are running, they do this on their own — you won't normally type these commands. They're worth knowing anyway: for troubleshooting, for driving a reply by hand when an agent is stuck, or just to see what `check` and `ack` actually commit.
+That's it — both agents are enrolled and polling their own inboxes. Coordination happens between them; you won't normally run these next commands yourself, but they're what the agents do:
 
 ```sh
 # claude-code asks codex for a review
@@ -105,55 +92,33 @@ agentchute send --from codex --to claude-code --reply-to <ref> --body "looks goo
 agentchute ack --as codex       # COMMIT: archive the claimed message
 ```
 
-`check` claims and displays mail; `ack` commits it — a crash before `ack` redelivers the claimed message, so handlers should be idempotent. `--ask` records the obligation on the **sender's** side, so an unanswered request surfaces as your own overdue item — never a silent hang.
-
-The loop lives at `.agentchute/loop/`:
-
-```
-agents/              live registrations (id, vendor, host)
-inbox/<id>/          unread messages owned by each recipient
-inbox/<id>/.claimed/ claimed-but-not-committed messages (redelivered on crash)
-archive/             consumed messages
-malformed/           quarantined protocol violations
-live/<id>.live       per-agent presence heartbeat
-state/<id>/          each agent's own ledgers + sequence counters
-```
-
-## The reference implementation
-
-agentchute ships a real reference implementation: a small Go CLI and a per-agent supervisor that handle delivery, registration, presence, and message ordering for you, so you don't have to build any of it.
-
-It is **not** the protocol. The protocol is [`AGENTCHUTE.md`](AGENTCHUTE.md) — a directory layout and a filename grammar. Anyone is welcome to write another implementation, in any language. A filesystem implementation interoperates with this one directly, because both read and write the same files; an implementation over a different transport (a queue, HTTP, git) is protocol-compatible but interoperates with the reference CLI only through a shared filesystem loop or a bridge.
-
-You can also drive the protocol by hand: write a registration and drop Markdown files into `inbox/<recipient>/` using the filename grammar in §6.1 (walkthrough in Appendix C). The hand-protocol is exclusively for environments without the binary; an agent with the reference CLI available MUST use the CLI rather than driving files by hand.
+`--ask` records the obligation on the **sender's** side, so an unanswered request surfaces as your own overdue item — never a silent hang.
 
 ## What it isn't
 
 Not a multi-agent framework. No task graphs, no role election, no central broker, no SaaS tier.
 
-- **Not a delivery broker.** Best-effort; the recipient reads on its own cadence, and at-least-once consume means handlers must be idempotent. Need retries and exactly-once? Use a queue.
+- **Not a delivery broker.** Best-effort and idempotent; the recipient reads on its own cadence. Need retries and exactly-once? Use a queue.
 - **Not an auth system.** Messages are unsigned plain text. If you don't trust your peers, don't run them on your machine.
 - **Not a router.** Agents are peers; senders pick recipients explicitly. No wildcard, no broadcast.
 - **Not an audit log.** The loop is a transient, local operational trace, gitignored by default.
 
-## Operating a pool
+## Status: a protocol, not a product
 
-Setup, worktree teams, the poller fallback for agents without a native loop, and the full command surface are in [`AGENTCHUTE.md`](AGENTCHUTE.md) and the wrapper enrollment templates. Most users only run `setup` and `doctor` directly.
+agentchute is an open protocol and a faithful reference implementation. It is **not a product**: there is no support tier, no SLA, no roadmap-by-request. The reference CLI is maintained for spec fidelity; alternate implementations are welcome and the [vectors](conformance/) are how you prove one. Every release must remove something or shorten the removable-later list — that policy is why 1.0 exists.
 
-- **Single shared filesystem** (reference CLI). Multi-machine works if participants share the volume; alternate transports (queues, S3, HTTP) are protocol-compatible but don't ship in the reference CLI.
-- **Cooperative trust.** Plain text, no signing or encryption.
-- **POSIX shells.** macOS and Linux; Windows via WSL.
+What's next lives **around** the stable core, never inside the wire — self-serve conformance certification, a cleaner cue channel, git-backed pools for multi-host. [The roadmap around a stable core →](https://agentchute.dev/blog/after-done-roadmap.html)
 
 ## Spec, hacking, license
 
-The protocol is [`AGENTCHUTE.md`](AGENTCHUTE.md); the binary is one reference implementation, and alternates are welcome. Behavior changes start with the spec and the [conformance suite](conformance/).
+The protocol is [`AGENTCHUTE.md`](AGENTCHUTE.md); the binary is one reference implementation. Behavior changes start with the spec and the [conformance vectors](conformance/). Tested targets and operational assumptions are in the support matrix in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ```sh
 git clone https://github.com/agentchute/agentchute
-cd agentchute && gofmt -w . && go vet ./... && go test ./... && go build ./...
+cd agentchute && test -z "$(gofmt -l .)" && go vet ./... && go test ./... && go build ./...
 ```
 
-Go 1.21+. The core stays stdlib; the agent supervisor uses `github.com/creack/pty`. See [`CONTRIBUTING.md`](CONTRIBUTING.md). MIT — see [`LICENSE`](LICENSE).
+Go 1.21+. Core is stdlib; the agent supervisor uses `github.com/creack/pty`. See [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md) · MIT — [`LICENSE`](LICENSE).
 
 ---
 

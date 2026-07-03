@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>After 1.0 — the roadmap around a stable core · agentchute</title>
+<meta name="description" content="Protocol v2 is stable, so the roadmap is everything around it: self-serve conformance certification, a cleaner cue channel (hooks → MCP → PTY), git-backed pools for multi-host, and hub-and-spoke as a docs profile. No dates. Protocol v2 / CLI 1.x will not break under you; any breaking change is Protocol v3 through process.">
+<meta property="og:title" content="After 1.0 — the roadmap around a stable core">
+<meta property="og:description" content="Protocol v2 is stable, so the roadmap is everything around it: certification, the cue-channel ladder, git-backed pools, hub-and-spoke as a docs profile. No dates.">
+<meta property="og:url" content="https://agentchute.dev/blog/after-done-roadmap.html">
+<meta property="og:type" content="article">
+<meta property="og:image" content="https://agentchute.dev/blog/assets/og-roadmap.png">
+<meta property="og:image:alt" content="A stable Protocol v2 core with four workstreams orbiting outside it: certification, cue channel, git-backed pools, hub-and-spoke. Nothing crosses back into the wire.">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="After 1.0 — the roadmap around a stable core">
+<meta name="twitter:description" content="Protocol v2 is stable, so the roadmap is everything around it: certification, the cue-channel ladder, git-backed pools, hub-and-spoke as a docs profile. No dates.">
+<meta name="twitter:image" content="https://agentchute.dev/blog/assets/og-roadmap.png">
+<link rel="canonical" href="https://agentchute.dev/blog/after-done-roadmap.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{--paper:#FAF9F5;--ink:#17180F;--muted:#5C5E50;--faint:#8A8C7C;--hair:#E6E4DA;--line:#E2E0D6;--green:#1E6F57;--green-soft:#EAF1ED;--green-line:#CFE3D8;--amber:#C8791A;--sans:'Inter',system-ui,sans-serif;--disp:'Space Grotesk',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16.5px;line-height:1.7;-webkit-font-smoothing:antialiased}
+  a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
+  header{border-bottom:1px solid var(--hair)}
+  .bar{max-width:1080px;margin:0 auto;padding:0 28px;display:flex;align-items:center;justify-content:space-between;height:58px}
+  .brand{font-family:var(--mono);font-weight:600;font-size:14.5px}
+  .brand .sq{display:inline-block;width:9px;height:9px;background:var(--green);border-radius:2px;margin-right:9px;vertical-align:middle}
+  nav a{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-left:20px}
+  article{max-width:720px;margin:0 auto;padding:52px 24px 80px}
+  .kicker{font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.07em;margin:0 0 12px}
+  h1{font-family:var(--disp);font-weight:700;font-size:clamp(2rem,5vw,2.9rem);line-height:1.06;letter-spacing:-.02em;margin:0 0 12px}
+  .meta{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin:0 0 30px}
+  figure{margin:34px 0}
+  figure img{width:100%;height:auto;display:block;border-radius:14px}
+  figcaption{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:10px;text-align:center}
+  h2{font-family:var(--disp);font-weight:600;font-size:1.4rem;letter-spacing:-.01em;margin:42px 0 12px}
+  p{margin:0 0 18px}
+  p.lede{font-size:1.16rem;color:var(--muted)}
+  ul{margin:0 0 18px;padding-left:22px}
+  li{margin:0 0 8px}
+  code{font-family:var(--mono);font-size:.88em;background:#F0F1EA;border-radius:4px;padding:1.5px 5px}
+  .rule{border:1px solid var(--green-line);background:var(--green-soft);border-radius:12px;padding:16px 20px;margin:24px 0;color:var(--muted)}
+  .rule b{color:var(--ink)}
+  .fals{border-left:3px solid var(--amber);padding:2px 0 2px 16px;color:var(--muted);margin:20px 0;font-size:15px}
+  .sig{margin-top:44px;padding-top:22px;border-top:1px solid var(--hair);font-family:var(--mono);font-size:13px;color:var(--faint)}
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <div class="brand"><span class="sq"></span>agentchute</div>
+  <nav><a href="/">home</a><a href="/blog/">blog</a><a href="https://github.com/agentchute/agentchute">github</a></nav>
+</div></header>
+
+<article>
+  <p class="kicker">ROADMAP · POST-1.0</p>
+  <h1>After 1.0 — the roadmap around a stable core.</h1>
+  <p class="meta">agentchute · reHuman Labs</p>
+
+  <p class="lede">Protocol v2 is stable, so this roadmap has an unusual shape: nothing on it changes the wire. The protocol can still gain clarifications and extension profiles — but nothing here changes what you build on. Everything below lives <b>around</b> the stable core — how you prove an implementation, how the cue reaches an agent, how pools span hosts, how pools compose. And one more unusual thing: <b>no dates.</b> These are recorded directions, not commitments; each still has to survive the same subtract-default review that produced 1.0.</p>
+
+  <figure>
+    <img src="/blog/assets/roadmap-around-stable.svg" alt="A stable Protocol v2 core with four workstreams orbiting outside it: conformance certification, the cue-channel ladder, git-backed pools, and hub-and-spoke. Nothing crosses back into the wire.">
+    <figcaption>a stable core, a living edge — nothing changes the wire</figcaption>
+  </figure>
+
+  <div class="rule"><b>The standing rule.</b> An addition is guilty until it proves it closes a gap that bites in practice. Every item below adds zero wire surface — if a design round finds it can't, the item dies, not the stability promise.</div>
+
+  <h2>1 · Certification: prove your implementation</h2>
+  <p>v2-stable says <em>build on this</em>; certification says <em>here's how you prove you did</em>. The conformance suite is already language-neutral JSON vectors — a 269-line stdlib-Python proof passes them today. The next step is self-serve: <code>agentchute conformance --binding &lt;cmd&gt;</code> runs the vectors against <b>any</b> implementation you name and reports pass/fail. Then "conformant to agentchute Protocol v2" becomes something a third party can claim and prove without us in the loop — the way protocol conformance should work. This is the first post-1.0 design round, with one hard guardrail: it runs vectors; it never becomes a test framework. No plugins, no config.</p>
+
+  <h2>2 · The cue channel, honestly</h2>
+  <p>The protocol is pull-only: the message just waits in the inbox. The only implementation question is what nudges an agent to look. Today that's two things — <b>lifecycle hooks</b> where the harness has them (mail gets read at every turn boundary, no injection at all), and the <b>runner</b>, which supervises the agent's terminal and types <code>check inbox</code> at it when mail arrives. That PTY injection works, and it is also the weakest pillar we ship: per-vendor keystroke dialects, idle-window heuristics, and a history of exactly the bugs you'd expect from typing at a live TUI.</p>
+  <p>The plan is a ladder: <b>hooks where they exist → a per-session MCP tool view → PTY as the universal floor.</b> The MCP tier exposes <code>check</code>/<code>ack</code>/<code>send</code> as tools over stdio, so the cue becomes a clean function call instead of keystrokes — and while native MCP support is increasingly common among terminal agents, this client-side compatibility profile remains an assumption we have to prove out across the fleet. Nothing about the protocol changes: files stay the only ground truth, delivery stays best-effort, and the hard guardrail is architectural — the MCP tier is a per-session stdio subprocess, never a daemon, never a cache, never a broker. The moment it holds state, it's the thing we deleted in 0.8 wearing a new jacket.</p>
+
+  <h2>3 · Multi-host, without pretending</h2>
+  <p>Honesty first: today, multi-host means a shared filesystem — workable on a correctly configured NFSv4 mount, with the caveats documented in the spec rather than waved away. The real answer is alternate <b>transports</b>, and the first one is deliberately boring: <b>git-backed pools.</b> The pool lives in a repo; hosts push and pull it. Zero new infrastructure — everyone already has git and a remote — and we assume repo access control can serve as pool membership, though this relies entirely on the host Git server's authentication layer rather than a protocol-level check. Best-effort, pull-based delivery tolerates fetch lag by design, which is exactly why git fits where it would break a chattier protocol. A hosted HTTP/MCP gateway — one host holding the pool on local disk, remote agents operating through it — is the stronger option for tighter loops, and the more honest trade: it removes the shared-FS hazards entirely, at the cost of being server-shaped for its remote members. Both live in <code>EXTENSIONS.md</code> as profiles. Neither becomes the reference default; "no server, no broker" stays literally true for the reference.</p>
+
+  <h2>4 · Hub-and-spoke, without DNS</h2>
+  <p>Bigger projects want multiple pools. They already have them: <b>a pool is a domain</b>, identity is pool-scoped, and an ordinary agent that joins several pools is a bridge — the spec has said so since v2. The profile we'll write down makes the topology explicit: spokes share a pool only with a <b>hub</b>; a hub is not a router but <em>a recipient that sometimes sends</em> — it reads a prose ask ("get the backend pool to review PR 42"), decides under its own policy, and if it acts, that's a new best-effort send under its own identity in the other pool. Names never cross a pool boundary — the grammar makes a remote address literally unwritable — so the DNS problem can't form: no global names, no path selection, no directory. When two agents in different domains need sustained contact, you don't build a route; you make a small <b>working-group pool</b> containing exactly them. Membership is the routing. One hop only, by covenant and by topology (hubs don't peer), never by wire enforcement — the protocol can't even see a forward, and that blindness is the simplicity.</p>
+
+  <h2>What will never be on this roadmap</h2>
+  <p>Priorities, TTLs, broadcast, delivery receipts, retries and exactly-once, protocol-level signing, routing or coordinator agents, config systems, daemons, dashboards, maintained SDKs. Each is somebody's reasonable request and each re-grows the mass 1.0 exists to have removed. The vectors are the deliverable; implementations are the ecosystem; the wire is done.</p>
+
+  <p class="fals"><b>The falsifier, on the record:</b> if we ever genuinely need multi-hop path <em>selection</em> — messages traversing pools neither endpoint knows — that's evidence this design has been outgrown, and it becomes Protocol v3 through the deprecation process, eyes open. We're betting the working-group move absorbs every case that looks like it. If we're wrong, you'll read it here, not find it smuggled into a minor.</p>
+
+  <p class="sig">$ a stable core, a living edge. build on the core; meet us at the edge.</p>
+</article>
+</body>
+</html>
