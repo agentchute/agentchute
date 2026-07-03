@@ -1,87 +1,108 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 500" font-family="ui-monospace, 'JetBrains Mono', SFMono-Regular, Menlo, monospace" role="img" aria-label="AI agents (e.g. claude, codex, gemini, grok — but any terminal-based agent works) each with its own inbox, passing Markdown messages peer to peer with no central broker.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 500" font-family="ui-monospace,'JetBrains Mono',SFMono-Regular,Menlo,monospace" role="img" aria-label="Agents — claude, codex, gemini, grok, and any terminal-based agent — each with its own inbox, passing Markdown messages peer to peer. No central broker. Protocol v2 · reference CLI 1.0.">
   <defs>
     <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#1E6F57"/>
     </marker>
+    <filter id="card" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="2.4" flood-color="#17180F" flood-opacity="0.10"/>
+    </filter>
+    <pattern id="dots" width="30" height="30" patternUnits="userSpaceOnUse">
+      <circle cx="1.2" cy="1.2" r="1.2" fill="#17180F" opacity="0.045"/>
+    </pattern>
   </defs>
 
-  <!-- self-contained background so it looks identical in light/dark READMEs -->
-  <rect x="0" y="0" width="920" height="500" rx="18" fill="#FAF9F5"/>
-  <rect x="0.5" y="0.5" width="919" height="499" rx="18" fill="none" stroke="#E9E7DD"/>
+  <!-- paper -->
+  <rect x="0.5" y="0.5" width="919" height="499" rx="18" fill="#FAF9F5" stroke="#E9E7DD"/>
+  <rect x="0.5" y="0.5" width="919" height="499" rx="18" fill="url(#dots)"/>
 
-  <!-- peer paths form a ring around an empty middle: no hub. Subtle pull cue in center text. -->
-  <g fill="none" stroke="#1E6F57" stroke-width="1.6" stroke-dasharray="2 5" stroke-linecap="round" opacity="0.85">
-    <path d="M276,150 C 392,120 540,112 648,132" marker-end="url(#ah)"/>
-    <path d="M742,182 C 772,244 772,300 756,348" marker-end="url(#ah)"/>
-    <path d="M660,398 C 536,426 320,426 284,406" marker-end="url(#ah)"/>
+  <!-- empty center, made visible -->
+  <circle cx="460" cy="252" r="72" fill="none" stroke="#E2E0D6" stroke-width="1.4" stroke-dasharray="3 7"/>
+  <text x="460" y="247" text-anchor="middle" font-size="12.5" fill="#9A9C8C" letter-spacing="0.05em">no central broker</text>
+  <text x="460" y="266" text-anchor="middle" font-size="10.5" fill="#B6B8A8" letter-spacing="0.03em">agents are peers</text>
+
+  <!-- peer ring -->
+  <g fill="none" stroke="#1E6F57" stroke-width="1.7" stroke-dasharray="2 5" stroke-linecap="round" opacity="0.85">
+    <path d="M276,150 C 392,118 540,110 648,132" marker-end="url(#ah)"/>
+    <path d="M744,184 C 774,246 774,300 758,348" marker-end="url(#ah)"/>
+    <path d="M660,400 C 536,428 320,428 284,408" marker-end="url(#ah)"/>
     <path d="M182,356 C 166,302 166,250 174,200" marker-end="url(#ah)"/>
   </g>
 
-  <!-- empty center: the thesis. Added subtle pull note. -->
-  <text x="460" y="240" text-anchor="middle" font-size="12.5" fill="#9A9C8C" letter-spacing="0.04em">no central broker</text>
-  <text x="460" y="258" text-anchor="middle" font-size="11" fill="#B6B8A8" letter-spacing="0.02em">agents are peers</text>
-  <text x="460" y="274" text-anchor="middle" font-size="9" fill="#8A8C7C" letter-spacing="0.02em">(recipient reads its own inbox)</text>
-
-  <!-- node: claude (top-left) - consistent green dot, 3 bars -->
-  <g transform="translate(88,96)">
-    <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
-    <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
-    <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">claude</text>
-    <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
-    <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
-    <rect x="16" y="70" width="156" height="12" rx="3" fill="#F0F1EA"/>
-    <rect x="16" y="86" width="116" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+  <!-- version chip -->
+  <g transform="translate(700,32)">
+    <rect x="0" y="0" width="184" height="34" rx="17" fill="#FAF9F5" fill-opacity="0.85" stroke="#1E6F57" stroke-width="1.6"/>
+    <text x="92" y="22" text-anchor="middle" font-size="12" font-weight="600" fill="#1E6F57" letter-spacing="0.07em">protocol v2 · cli 1.0</text>
   </g>
 
-  <!-- node: codex (top-right) - consistent -->
-  <g transform="translate(648,84)">
-    <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
-    <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
-    <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">codex</text>
-    <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
-    <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
-    <rect x="16" y="70" width="132" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+  <!-- node: claude (TL) -->
+  <g transform="translate(88,96)" filter="url(#card)">
+    <rect width="188" height="106" rx="12" fill="#FFFFFF" stroke="#E2E0D6"/>
+    <circle cx="170" cy="21" r="7" fill="#1E6F57" opacity="0.16"/><circle cx="170" cy="21" r="4" fill="#1E6F57"/>
+    <text x="16" y="27" font-size="14.5" font-weight="600" fill="#17180F">claude</text>
+    <text x="16" y="47" font-size="9" fill="#8A8C7C" letter-spacing="0.05em">inbox/</text>
+    <rect x="16" y="53" width="156" height="12" rx="3" fill="#F0F1EA"/>
+    <rect x="16" y="69" width="156" height="12" rx="3" fill="#F0F1EA"/>
+    <rect x="16" y="85" width="156" height="13" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+    <circle cx="164" cy="91.5" r="2.6" fill="#C8791A"/>
+  </g>
+
+  <!-- node: codex (TR) -->
+  <g transform="translate(648,84)" filter="url(#card)">
+    <rect width="188" height="106" rx="12" fill="#FFFFFF" stroke="#E2E0D6"/>
+    <circle cx="170" cy="21" r="7" fill="#1E6F57" opacity="0.16"/><circle cx="170" cy="21" r="4" fill="#1E6F57"/>
+    <text x="16" y="27" font-size="14.5" font-weight="600" fill="#17180F">codex</text>
+    <text x="16" y="47" font-size="9" fill="#8A8C7C" letter-spacing="0.05em">inbox/</text>
+    <rect x="16" y="53" width="156" height="12" rx="3" fill="#F0F1EA"/>
+    <rect x="16" y="69" width="156" height="13" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+    <circle cx="164" cy="75.5" r="2.6" fill="#C8791A"/>
     <rect x="16" y="86" width="156" height="12" rx="3" fill="#F0F1EA"/>
   </g>
 
-  <!-- node: gemini (bottom-right) - FIXED to consistent green dot, 3 bars -->
-  <g transform="translate(660,348)">
-    <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
-    <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
-    <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">gemini</text>
-    <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
-    <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
-    <rect x="16" y="70" width="100" height="12" rx="3" fill="#F0F1EA"/>
-    <rect x="16" y="86" width="156" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+  <!-- node: gemini (BR) -->
+  <g transform="translate(660,348)" filter="url(#card)">
+    <rect width="188" height="106" rx="12" fill="#FFFFFF" stroke="#E2E0D6"/>
+    <circle cx="170" cy="21" r="7" fill="#C7C9B8" opacity="0.35"/><circle cx="170" cy="21" r="4" fill="#C7C9B8"/>
+    <text x="16" y="27" font-size="14.5" font-weight="600" fill="#17180F">gemini</text>
+    <text x="16" y="47" font-size="9" fill="#8A8C7C" letter-spacing="0.05em">inbox/</text>
+    <rect x="16" y="53" width="156" height="12" rx="3" fill="#F0F1EA"/>
+    <rect x="16" y="69" width="104" height="12" rx="3" fill="#F0F1EA"/>
   </g>
 
-  <!-- node: grok (bottom-left) - consistent -->
-  <g transform="translate(96,352)">
-    <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
-    <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
-    <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">grok</text>
-    <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
-    <rect x="16" y="54" width="156" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+  <!-- node: grok (BL) -->
+  <g transform="translate(96,352)" filter="url(#card)">
+    <rect width="188" height="106" rx="12" fill="#FFFFFF" stroke="#E2E0D6"/>
+    <circle cx="170" cy="21" r="7" fill="#1E6F57" opacity="0.16"/><circle cx="170" cy="21" r="4" fill="#1E6F57"/>
+    <text x="16" y="27" font-size="14.5" font-weight="600" fill="#17180F">grok</text>
+    <text x="16" y="47" font-size="9" fill="#8A8C7C" letter-spacing="0.05em">inbox/</text>
+    <rect x="16" y="53" width="156" height="13" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
+    <circle cx="164" cy="59.5" r="2.6" fill="#C8791A"/>
     <rect x="16" y="70" width="138" height="12" rx="3" fill="#F0F1EA"/>
     <rect x="16" y="86" width="156" height="12" rx="3" fill="#F0F1EA"/>
   </g>
 
-  <!-- message in flight: claude -> codex -->
-  <g transform="translate(430,96)">
-    <rect x="0" y="0" width="74" height="46" rx="7" fill="#FFFFFF" stroke="#CFE3D8"/>
-    <rect x="0" y="0" width="4" height="46" rx="2" fill="#1E6F57"/>
-    <path d="M60,0 l14,14 h-14 z" fill="#EAF1ED"/>
-    <text x="12" y="19" font-size="7.5" fill="#8A8C7C">from-claude</text>
-    <text x="12" y="32" font-size="9.5" fill="#17180F">review PR 42</text>
-    <text x="12" y="41" font-size="7.5" fill="#C8791A">⌖ reply</text>
+  <!-- in flight: claude -> codex -->
+  <g transform="translate(428,92) rotate(-2)" filter="url(#card)">
+    <rect x="0" y="0" width="96" height="50" rx="8" fill="#FFFFFF" stroke="#CFE3D8"/>
+    <rect x="0" y="0" width="4" height="50" rx="2" fill="#1E6F57"/>
+    <path d="M82,0 l14,14 h-14 z" fill="#EAF1ED" stroke="#CFE3D8" stroke-width="0.75"/>
+    <text x="12" y="16" font-size="7.5" fill="#8A8C7C">from-claude_seq-042</text>
+    <text x="12" y="31" font-size="10" fill="#17180F">review PR 42</text>
+    <circle cx="15" cy="40.5" r="2" fill="#C8791A"/>
+    <text x="21" y="43" font-size="7.5" fill="#C8791A" font-weight="600">reply-required</text>
   </g>
 
-  <!-- message in flight: gemini -> grok -->
-  <g transform="translate(414,392)">
-    <rect x="0" y="0" width="74" height="40" rx="7" fill="#FFFFFF" stroke="#E2E0D6"/>
-    <rect x="0" y="0" width="4" height="40" rx="2" fill="#1E6F57"/>
-    <path d="M60,0 l14,14 h-14 z" fill="#F0F1EA"/>
-    <text x="12" y="18" font-size="7.5" fill="#8A8C7C">from-gemini</text>
-    <text x="12" y="31" font-size="9.5" fill="#17180F">findings.md</text>
+  <!-- in flight: gemini -> grok -->
+  <g transform="translate(410,392) rotate(2)" filter="url(#card)">
+    <rect x="0" y="0" width="96" height="42" rx="8" fill="#FFFFFF" stroke="#E2E0D6"/>
+    <rect x="0" y="0" width="4" height="42" rx="2" fill="#1E6F57"/>
+    <path d="M82,0 l14,14 h-14 z" fill="#F0F1EA" stroke="#E2E0D6" stroke-width="0.75"/>
+    <text x="12" y="16" font-size="7.5" fill="#8A8C7C">from-gemini_seq-137</text>
+    <text x="12" y="31" font-size="10" fill="#17180F">findings.md attached</text>
+  </g>
+
+  <!-- universality hint -->
+  <g transform="translate(374,458)">
+    <rect width="172" height="26" rx="7" fill="none" stroke="#C7C9B8" stroke-width="1.2" stroke-dasharray="4 4"/>
+    <text x="86" y="17" text-anchor="middle" font-size="10" fill="#8A8C7C">+ any terminal agent — yours</text>
   </g>
 </svg>

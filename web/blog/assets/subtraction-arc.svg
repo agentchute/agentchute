@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 430" font-family="ui-monospace,'JetBrains Mono',SFMono-Regular,Menlo,monospace" role="img" aria-label="Chart of agentchute codebase mass falling from v0.7.1 to v1.0 — the watchdog, wake adapters, reachability caches and typed fields deleted along the way — then flattening into a stable Protocol v2 line.">
+  <defs>
+    <pattern id="dots2" width="30" height="30" patternUnits="userSpaceOnUse">
+      <circle cx="1.2" cy="1.2" r="1.2" fill="#17180F" opacity="0.045"/>
+    </pattern>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1.6" flood-color="#17180F" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="919" height="429" rx="18" fill="#FAF9F5" stroke="#E9E7DD"/>
+  <rect x="0.5" y="0.5" width="919" height="429" rx="18" fill="url(#dots2)"/>
+
+  <text x="46" y="46" font-size="12" fill="#8A8C7C" letter-spacing="0.06em">THE ANTI-HOCKEY-STICK</text>
+  <text x="46" y="64" font-size="10.5" fill="#B6B8A8">codebase mass, v0.7.1 → v1.0</text>
+
+  <!-- baseline -->
+  <line x1="80" y1="340" x2="856" y2="340" stroke="#E2E0D6" stroke-width="1.2"/>
+
+  <!-- descending mass area: points (110,120) (254,190) (398,268) (542,286) (686,292) (830,292) -->
+  <path d="M110,120 C 170,128 210,158 254,190 C 310,230 350,254 398,268 C 450,283 500,285 542,286 C 596,289 640,291 686,292 L 830,292 L 830,340 L 110,340 Z"
+        fill="#17180F" opacity="0.05"/>
+  <path d="M110,120 C 170,128 210,158 254,190 C 310,230 350,254 398,268 C 450,283 500,285 542,286 C 596,289 640,291 686,292 L 830,292"
+        fill="none" stroke="#1E6F57" stroke-width="2.6" stroke-linecap="round"/>
+
+  <!-- release points -->
+  <g stroke="#1E6F57" stroke-width="2" fill="#FFFFFF">
+    <circle cx="110" cy="120" r="5"/>
+    <circle cx="254" cy="190" r="5"/>
+    <circle cx="398" cy="268" r="5"/>
+    <circle cx="542" cy="286" r="5"/>
+    <circle cx="686" cy="292" r="5"/>
+  </g>
+  <circle cx="830" cy="292" r="6.5" fill="#1E6F57"/>
+  <circle cx="830" cy="292" r="11" fill="none" stroke="#1E6F57" stroke-width="1.2" opacity="0.4"/>
+
+  <!-- release labels -->
+  <g font-size="11.5" fill="#5C5E50" text-anchor="middle">
+    <text x="110" y="364">v0.7.1</text>
+    <text x="254" y="364">v0.8</text>
+    <text x="398" y="364">v0.9</text>
+    <text x="542" y="364">v0.10</text>
+    <text x="686" y="364">v0.11</text>
+    <text x="830" y="364" fill="#1E6F57" font-weight="600">v1.0</text>
+  </g>
+  <g font-size="9.5" fill="#B6B8A8" text-anchor="middle">
+    <text x="254" y="380">pull-only</text>
+    <text x="398" y="380">subtraction</text>
+    <text x="542" y="380">stable</text>
+    <text x="686" y="380">vectors</text>
+    <text x="830" y="380" fill="#8A8C7C">stable</text>
+  </g>
+
+  <!-- deletion callouts -->
+  <g font-size="11" fill="#8A8C7C">
+    <g text-anchor="start">
+      <text x="196" y="112" text-decoration="line-through">the watchdog</text>
+      <text x="216" y="132" text-decoration="line-through">sender wake + vendor adapters</text>
+      <text x="236" y="152" text-decoration="line-through">reachability caches</text>
+    </g>
+    <g stroke="#8A8C7C" stroke-width="1.1" opacity="0.85">
+      <line x1="195" y1="108.5" x2="277" y2="108.5"/>
+      <line x1="215" y1="128.5" x2="409" y2="128.5"/>
+      <line x1="235" y1="148.5" x2="359" y2="148.5"/>
+      <line x1="488" y1="236.5" x2="632" y2="236.5"/>
+    </g>
+    <line x1="252" y1="160" x2="254" y2="182" stroke="#C7C9B8" stroke-width="1"/>
+    <text x="402" y="218" text-anchor="middle" fill="#C8791A" font-weight="600" font-size="12.5">−8,262 lines</text>
+    <line x1="399" y1="226" x2="398" y2="260" stroke="#C7C9B8" stroke-width="1"/>
+    <text x="560" y="240" text-anchor="middle" text-decoration="line-through">task · status · priority</text>
+    <line x1="551" y1="248" x2="543" y2="278" stroke="#C7C9B8" stroke-width="1"/>
+  </g>
+
+  <!-- version chip over the flat tail -->
+  <g transform="translate(710,232)" filter="url(#soft)">
+    <rect x="0" y="0" width="162" height="32" rx="16" fill="#FAF9F5" fill-opacity="0.85" stroke="#1E6F57" stroke-width="1.6"/>
+    <text x="81" y="21" text-anchor="middle" font-size="11.5" font-weight="600" fill="#1E6F57" letter-spacing="0.08em">protocol v2 · stable</text>
+  </g>
+
+  <!-- what's left caption -->
+  <text x="856" y="330" text-anchor="end" font-size="10.5" fill="#8A8C7C">what's left: an inbox and a Markdown file</text>
+</svg>
