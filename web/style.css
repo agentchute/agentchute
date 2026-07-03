@@ -1,20 +1,22 @@
 /* agentchute.dev — hand-crafted styles, no build chain. */
 
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap');
+
 :root {
-  --bg: #fbfaf7;
-  --bg-alt: #f3f0e8;
-  --fg: #1c1b18;
-  --fg-dim: #545048;
-  --accent: #b94a26;
-  --accent-fg: #ffffff;
-  --rule: #d8d2c4;
-  --code-bg: #1c1b18;
-  --code-fg: #f3f0e8;
-  --link: #2a4a8a;
-  --link-hover: #b94a26;
+  --bg: #faf9f5;
+  --bg-alt: #f4f3ee;
+  --fg: #17180f;
+  --fg-dim: #5c5e50;
+  --accent: #1e6f57;
+  --accent-fg: #f7fbf9;
+  --rule: #e2e0d6;
+  --code-bg: #17180f;
+  --code-fg: #f4f3ee;
+  --link: var(--accent);
+  --link-hover: #1a6050;
   --width: 720px;
   --mono: "JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace;
-  --serif: "Charter", "Iowan Old Style", "Palatino", "Georgia", serif;
+  --disp: "Space Grotesk", system-ui, sans-serif;
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
 }
 
@@ -54,7 +56,7 @@ header.site {
   z-index: 10;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  background: rgba(251, 250, 247, 0.92);
+  background: rgba(250, 249, 245, 0.92);
 }
 
 header.site .wrap {
@@ -111,7 +113,7 @@ section.hero {
 }
 
 h1 {
-  font-family: var(--serif);
+  font-family: var(--disp);
   font-size: clamp(28px, 4.2vw, 40px);
   line-height: 1.18;
   letter-spacing: -0.015em;
@@ -126,7 +128,7 @@ h1 .dim {
 }
 
 h2 {
-  font-family: var(--serif);
+  font-family: var(--disp);
   font-size: clamp(22px, 2.4vw, 26px);
   line-height: 1.25;
   margin: 0 0 16px 0;
@@ -354,7 +356,7 @@ pre.ascii code {
 
 .anim-controls button {
   background: transparent;
-  border: 1px solid rgba(243, 240, 232, 0.25);
+  border: 1px solid rgba(244, 243, 238, 0.25);
   color: var(--code-fg);
   font-family: var(--mono);
   font-size: 12px;
@@ -365,8 +367,8 @@ pre.ascii code {
 }
 
 .anim-controls button:hover {
-  background: rgba(243, 240, 232, 0.08);
-  border-color: rgba(243, 240, 232, 0.55);
+  background: rgba(244, 243, 238, 0.08);
+  border-color: rgba(244, 243, 238, 0.55);
 }
 
 .anim-controls button:focus-visible {
@@ -380,7 +382,7 @@ pre.ascii code {
 
 .anim-step-label {
   margin-left: auto;
-  color: rgba(243, 240, 232, 0.75);
+  color: rgba(244, 243, 238, 0.75);
   font-variant-numeric: tabular-nums;
 }
 
@@ -503,7 +505,7 @@ footer a:hover {
 }
 
 footer .tiny {
-  color: rgba(243, 240, 232, 0.65);
+  color: rgba(244, 243, 238, 0.65);
   max-width: 480px;
   margin: 0 auto;
 }
@@ -574,7 +576,7 @@ ul.post-list > li:first-child {
 }
 
 .featured-post-title {
-  font-family: var(--serif);
+  font-family: var(--disp);
   font-size: 22px;
   font-weight: 600;
   line-height: 1.25;
@@ -669,7 +671,7 @@ article.blog-article figure.blog-image figcaption {
 }
 
 article.blog-article blockquote.blog-quote {
-  font-family: var(--serif);
+  font-family: var(--disp);
   font-size: 22px;
   line-height: 1.4;
   font-style: italic;
