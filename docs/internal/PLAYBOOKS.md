@@ -21,7 +21,7 @@ Companion to the **Working efficiently on this bus** rules in [`AGENTS.md`](../.
 1. Freeze first (E3): the ask must pin base SHA, head SHA, changed files, allowed delta. Unpinned ask → `NEEDS-INFO`, no work.
 2. `git fetch` + diff base..head; confirm the file scope matches the stated scope exactly — surplus files are a finding on their own.
 3. Pick the verification tier (E5) by surface; run it. Substantive claims — numbers, protocol semantics, file scope, rendered assets — get re-derived from the tree/binary, not trusted from the PR text. Render any touched image/binary.
-4. Verdict: `SHIP` or `FIX` with file:line evidence. Deliver on the bus (the real gate signal) and mirror to `gh pr comment` (shared-token self-block prevents `gh pr review`).
+4. Verdict: `SHIP` or `FIX` with file:line evidence, delivered on the bus — the bus reply IS the gate signal. Mirror to `gh pr comment` ONLY if the gate ask's `AUTHORIZATION:` line names that PR comment (E9/R4: an external message is irreversible work; no authorization = bus-only). When mirroring is authorized, use `gh pr comment` — the shared token self-blocks `gh pr review`.
 
 ## delta-regate (re-gate after a fix — E4)
 
