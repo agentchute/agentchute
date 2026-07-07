@@ -26,10 +26,12 @@
 # --- manual (survives agentchute init) ---
 .agentchute/loop/live/
 .agentchute/loop/*.log
-/.tmp/
-/.claude/
+# .codex/ and .gemini/ hold only local hook wiring (0 tracked files); .claude/ is
+# NOT blanket-ignored — it tracks settings.json + skills/ + commands/ (PR #74/#75),
+# so ignore only its local override. .tmp/ is already covered above.
 /.codex/
 /.gemini/
+.claude/settings.local.json
 *.bak
 
 # Local scratch (spike runs) — never commit
