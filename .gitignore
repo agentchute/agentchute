@@ -23,6 +23,15 @@
 .agentchute/loop/scratch-*
 # agentchute-gitignore v3 end
 
+# --- manual (survives agentchute init) ---
+.agentchute/loop/live/
+.agentchute/loop/*.log
+/.tmp/
+/.claude/
+/.codex/
+/.gemini/
+*.bak
+
 # Local scratch (spike runs) — never commit
 proposal_spike_run/
 
