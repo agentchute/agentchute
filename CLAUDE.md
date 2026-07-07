@@ -59,7 +59,9 @@ Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGEN
 
 ## Claude-specific notes
 
-None at the moment. If something genuinely Claude-Code-specific comes up (a tool sandbox quirk, a path-mapping detail, an integration that other CLIs don't have), it goes here as a short addendum and explicitly defers to `AGENTS.md` for everything else.
+**Worktrees**: fresh scratch/dev work → `EnterWorktree(name=...)` + `ExitWorktree(action="remove")` (native, session-tracked cleanup). Pinned-SHA gate-review checkouts (reviewing a specific PR head) → native cleanup does NOT fire for a manually-added worktree entered via `path`; use `git worktree add .tmp/worktrees/review-<pr> <sha>` and remove it with `git worktree remove` in the same turn.
+
+If something else genuinely Claude-Code-specific comes up (a tool sandbox quirk, a path-mapping detail, an integration that other CLIs don't have), it goes here as a short addendum and explicitly defers to `AGENTS.md` for everything else.
 
 ## Communication profile — reference & reminder
 
