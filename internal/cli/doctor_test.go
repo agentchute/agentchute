@@ -251,6 +251,76 @@ func TestDoctorMixedFormsDoNotMaskCheckOffender(t *testing.T) {
 	}
 }
 
+// Bug found on #74: a `permissions.allow` entry that merely *names* an
+// agentchute subcommand (e.g. "Bash(agentchute check:*)") is not a hook
+// invoking that subcommand. checkHookContentSanity must scan only actual
+// hook command strings, not the raw file body, or a permissions allowlist
+// naming `agentchute check` (a legitimate, recommended config) trips a
+// false BLOCKER in both `doctor` and CI.
+func TestDoctorPermissionsAllowNamingCheckDoesNotBlock(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	claudeDir := filepath.Join(cfg.ControlRepo, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Templated command form + AGENTCHUTE_BIN stub, so this test exercises
+	// only the hook_content_sanity fix and not incidental PATH resolution
+	// (same pattern as TestDoctorWarnsOnUnreadInboxNotBlocks).
+	stub := filepath.Join(cfg.ControlRepo, "stub-agentchute")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTCHUTE_BIN", stub)
+	hookContent := `{
+		"permissions": {"allow": ["Bash(agentchute check:*)", "Bash(agentchute send:*)"]},
+		"hooks": {"UserPromptSubmit":[{"hooks":[{"type":"command","command":"${AGENTCHUTE_BIN:-agentchute} pending --as claude-code"}]}]}
+	}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
+	got := findCheck(t, r, "hook_content_sanity")
+	if got.Severity != severityOK {
+		t.Errorf("hook_content_sanity severity = %q, want OK (permissions.allow naming `agentchute check` is not a hook invoking it); msg=%q", got.Severity, got.Message)
+	}
+	if r.Blockers != 0 {
+		t.Errorf("Blockers = %d, want 0", r.Blockers)
+	}
+}
+
+// Sonnet review on 38733e1: a malformed hook JSON must not fall back to
+// raw-body scanning, or the same false-positive re-opens gated behind a
+// parse error (a permissions substring naming `agentchute check` inside a
+// syntactically broken file would still match on the raw body). Invalid
+// JSON gets its own WARN signal instead of ever running the command
+// regexes over unparsed content.
+func TestDoctorMalformedHookJSONWithPermissionsSubstringDoesNotBlock(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	claudeDir := filepath.Join(cfg.ControlRepo, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Syntactically invalid (trailing comma, unclosed object) but still
+	// contains the literal substring "agentchute check" via the
+	// permissions entry — exactly the shape that would false-positive if
+	// hookCommandBody's parse-error path fell back to raw-body scanning.
+	malformed := `{
+		"permissions": {"allow": ["Bash(agentchute check:*)",]},
+		"hooks": {"UserPromptSubmit":[{"hooks":[{"type":"command","command":"agentchute pending --as claude-code"}]}]}
+	`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(malformed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
+	got := findCheck(t, r, "hook_content_sanity")
+	if got.Severity != severityWarn {
+		t.Errorf("hook_content_sanity severity = %q, want WARN (invalid JSON, not a BLOCKER, and must not scan raw body); msg=%q", got.Severity, got.Message)
+	}
+	if r.Blockers != 0 {
+		t.Errorf("Blockers = %d, want 0 (malformed file must never trip the permissions-substring false positive)", r.Blockers)
+	}
+}
+
 // Codex review on bff226c: --json discovery failure must still exit
 // errBlocked. Previously emitDoctorJSON returned nil before the
 // errBlocked guard ran.
