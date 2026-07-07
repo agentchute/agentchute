@@ -24,11 +24,10 @@ func currentUID() string {
 }
 
 // ensureOwnedRunnerSocketDir creates dir (0700) if needed and verifies it is a
-// real directory (not a symlink). Windows lacks a portable POSIX uid/owner
-// check via os.FileInfo.Sys() without golang.org/x/sys/windows (not a
-// dependency here), so ownership is approximated by the per-user (SID-suffixed)
-// directory name; the symlink and directory checks still apply. Unix runners
-// get the full uid ownership verification.
+// real directory (not a symlink). This fallback does not perform a Windows
+// ACL/SID owner check; ownership is approximated by the per-user
+// (SID-suffixed) directory name, and the symlink and directory checks still
+// apply. Unix runners get the full uid ownership verification.
 func ensureOwnedRunnerSocketDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

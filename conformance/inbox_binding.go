@@ -9,7 +9,7 @@ import (
 // inboxBinding = the N-PRIVATE-INBOXES model (today's agentchute).
 //
 // Reference storage is the filesystem: one directory per agent, files as
-// messages, `ln` for no-overwrite, tmp+rename for atomic visibility (see ../ach).
+// messages, `ln` for no-overwrite, tmp+rename for atomic visibility (see internal/loop).
 // Modeled in-memory here ONLY so the suite can drive concurrency and crashes
 // deterministically — the semantics are identical to the FS binding.
 //

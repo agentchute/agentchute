@@ -261,12 +261,10 @@ func parseAnyInboxName(name string, modTime time.Time) (Message, bool) {
 // The move is atomic via os.Rename when source and destination share a
 // filesystem (the normal case for in-repo state).
 // ArchiveMessageDest returns the absolute archive path ArchiveMessage will
-// write for the given message and consumedAt time, WITHOUT touching the
-// filesystem. It is deterministic in (consumedAt, recipient, msg.Filename), so
-// `check` can record the pending-reply obligation with the correct archive_path
-// BEFORE the message is moved out of the inbox (record-before-archive). The
-// returned path stays valid as long as ArchiveMessage is called with the same
-// arguments.
+// write for the given message and consumedAt time, without touching the
+// filesystem. It is deterministic in (consumedAt, recipient, msg.Filename);
+// the returned path stays valid as long as ArchiveMessage is called with the
+// same arguments.
 func ArchiveMessageDest(msg Message, archiveDir, recipient string, consumedAt time.Time) string {
 	archivedName := fmt.Sprintf("%s_to-%s_%s", formatArchiveTimestamp(consumedAt), recipient, msg.Filename)
 	return filepath.Join(archiveDir, archivedName)

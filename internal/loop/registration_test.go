@@ -17,8 +17,6 @@ control_repo: /tmp/repo
 working_repos:
   - /tmp/repo
   - "/tmp/other repo"
-wake_method: tmux
-wake_target: "%1"
 last_seen: 2026-05-09T16:08:36Z
 status: exhausted
 restart_at: 2026-05-09T18:00:00Z
@@ -149,8 +147,6 @@ func TestUpdateLastSeenPreservesBody(t *testing.T) {
 agent_id: codex
 vendor: openai
 control_repo: /tmp/repo
-wake_method: tmux
-wake_target: "%1"
 last_seen: 2026-05-09T16:08:36Z
 status: active
 ---
@@ -181,8 +177,6 @@ func TestUpdateLastActivePreservesBody(t *testing.T) {
 agent_id: codex
 vendor: openai
 control_repo: /tmp/repo
-wake_method: tmux
-wake_target: "%1"
 last_seen: 2026-05-09T16:08:36Z
 status: active
 ---
@@ -214,8 +208,6 @@ agent_id: codex
 vendor: openai
 control_repo: /tmp/repo
 custom_field: preserved-by-line-edit-only
-wake_method: tmux
-wake_target: "%1"
 last_seen: 2026-05-09T16:08:36Z
 status: active
 ---
@@ -245,8 +237,6 @@ func TestUpdateLastSeenWritesLive(t *testing.T) {
 agent_id: codex
 vendor: openai
 control_repo: /tmp/repo
-wake_method: tmux
-wake_target: "%1"
 last_seen: 2026-05-09T16:08:36Z
 status: active
 ---
@@ -280,8 +270,6 @@ agent_id: codex
 vendor: openai
 vendor: local
 control_repo: /tmp/repo
-wake_method: tmux
-wake_target: "%1"
 last_seen: 2026-05-09T16:08:36Z
 status: active
 ---
@@ -421,8 +409,6 @@ func TestReadRegistrationRejectsSymlink(t *testing.T) {
 agent_id: codex
 vendor: openai
 control_repo: /tmp/repo
-wake_method: tmux
-wake_target: "%1"
 last_seen: 2026-05-09T16:08:36Z
 status: active
 ---

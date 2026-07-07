@@ -7,10 +7,9 @@ import (
 	"os"
 )
 
-// openRegularNoFollow is the Windows fallback. There is no portable O_NOFOLLOW
-// here without golang.org/x/sys/windows (not a dependency), so this preserves
-// the prior behavior: Lstat to reject a symlink leaf, then Open, then re-check
-// the opened fd is a regular file. The Lstat→Open TOCTOU window is therefore
+// openRegularNoFollow is the Windows fallback. It preserves the prior behavior:
+// Lstat to reject a symlink leaf, then Open, then re-check the opened fd is a
+// regular file. The Lstat→Open TOCTOU window is therefore
 // only PARTIALLY closed on Windows (the post-open fstat catches a swap to a
 // non-regular object, but a swap between two regular files is not detected).
 // agentchute's loop dirs are owner-only, so an untrusted peer cannot reach the

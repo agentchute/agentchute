@@ -21,7 +21,7 @@ say "python proof: runner.py=${actual_lines} lines; claims found: $(printf '%s '
 
 # 2. Vector-count claims ("9 vectors", badge '9%20vectors') must equal core.json's vector count.
 actual_vectors=$(grep -c '"id"' conformance/vectors/core.json)
-vclaims=$(grep -rhoE '[0-9]+ vectors|[0-9]+%20vectors' $SURFACES 2>/dev/null | grep -oE '^[0-9]+' | sort -u)
+vclaims=$(grep -rhoE '[0-9]+ vectors|[0-9]+%20vectors' $SURFACES CHANGELOG.md 2>/dev/null | grep -oE '^[0-9]+' | sort -u)
 for n in $vclaims; do
   [ "$n" = "$actual_vectors" ] || bad "a '${n} vectors' claim exists but core.json has ${actual_vectors}"
 done

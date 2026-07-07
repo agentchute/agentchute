@@ -6,7 +6,7 @@ Thanks for considering it. Three things up-front:
 
 2. **The binary is intentionally small.** agentchute's pitch is "a few markdown files and a pull-only inbox." If a PR adds a dependency, a config file, a new subcommand category, or a feature that requires explanation, the bar is high. We'd rather ship less.
 
-3. **Test what you change.** If you fix a bug, add a test that fails without the fix. If you add a feature, integration tests > unit tests for v0.1.0. Run the full pre-commit ritual before sending the PR:
+3. **Test what you change.** If you fix a bug, add a test that fails without the fix. If you add a feature, prefer integration tests over deep unit-test scaffolding. Run the full pre-commit ritual before sending the PR:
 
    ```sh
    gofmt -w .
@@ -49,9 +49,9 @@ No new third-party dependencies beyond the existing PTY runner dependency (`gith
 
 ## What's not in scope
 
-For v0.x:
+Outside the reference CLI:
 
-- Non-filesystem inbox transports in the v0.1 reference CLI. Alternate transports (queues, HTTP, object stores) are protocol-compatible per EXTENSIONS.md but don't ship in v0.1. Within the v0.1 CLI, pool participants must share one filesystem — cross-machine over a network mount is in scope, cross-filesystem inside one v0.1 pool is not.
+- Non-filesystem inbox transports. Alternate transports (queues, HTTP, object stores) are protocol-compatible per EXTENSIONS.md but don't ship in the reference CLI. Within one pool, participants must share one filesystem — cross-machine over a network mount is in scope, cross-filesystem inside one pool is not.
 - Wildcard inboxes / broadcast / self-claim mechanisms (deliberately excluded — see `AGENTCHUTE.md` §7 / §12).
 - Capability-based routing (also deliberately excluded).
 - Built-in role/election machinery.

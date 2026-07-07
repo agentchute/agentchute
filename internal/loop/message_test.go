@@ -119,8 +119,8 @@ func TestCorrectiveBodyFormat(t *testing.T) {
 
 func TestSendCorrectiveWritesMessageAndSkipsPokeForEmptyTarget(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
-	newReg(t, cfg, "claude-code", "anthropic", "", "")    // self
-	offender := newReg(t, cfg, "codex", "openai", "", "") // offender (pull-only: delivery is inbox-write only, no poke)
+	newReg(t, cfg, "claude-code", "anthropic", "")    // self
+	offender := newReg(t, cfg, "codex", "openai", "") // offender (pull-only: delivery is inbox-write only, no poke)
 
 	msg, err := SendCorrective(cfg, "claude-code", offender.AgentID,
 		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1")
@@ -153,8 +153,8 @@ func TestSendCorrectiveWritesMessageAndSkipsPokeForEmptyTarget(t *testing.T) {
 // land in the offender's inbox.
 func TestSendCorrectiveRetryWithSameItemDedups(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
-	newReg(t, cfg, "claude-code", "anthropic", "", "") // self
-	offender := newReg(t, cfg, "codex", "openai", "", "")
+	newReg(t, cfg, "claude-code", "anthropic", "") // self
+	offender := newReg(t, cfg, "codex", "openai", "")
 
 	msg1, err := SendCorrective(cfg, "claude-code", offender.AgentID,
 		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1")
@@ -184,8 +184,8 @@ func TestSendCorrectiveRetryWithSameItemDedups(t *testing.T) {
 // an unrelated corrective's key.
 func TestSendCorrectiveDifferentItemAllocatesDistinctSeq(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
-	newReg(t, cfg, "claude-code", "anthropic", "", "")
-	offender := newReg(t, cfg, "codex", "openai", "", "")
+	newReg(t, cfg, "claude-code", "anthropic", "")
+	offender := newReg(t, cfg, "codex", "openai", "")
 
 	msg1, err := SendCorrective(cfg, "claude-code", offender.AgentID,
 		".agentchute/loop/malformed/bad1.md", "filename does not match §6.1", "§6.1")
@@ -211,7 +211,7 @@ func TestSendCorrectiveDifferentItemAllocatesDistinctSeq(t *testing.T) {
 
 func TestAnnounceEnrollmentNoPeers(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
-	self := newReg(t, cfg, "claude-code", "anthropic", "", "I do synthesis.")
+	self := newReg(t, cfg, "claude-code", "anthropic", "I do synthesis.")
 
 	result, err := AnnounceEnrollment(cfg, self)
 	if err != nil {
@@ -227,9 +227,9 @@ func TestAnnounceEnrollmentNoPeers(t *testing.T) {
 
 func TestAnnounceEnrollmentSendsToPeersSkipsSelfAndExamples(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
-	self := newReg(t, cfg, "claude-code", "anthropic", "", "synthesis")
-	newReg(t, cfg, "codex", "openai", "", "review")
-	newReg(t, cfg, "gemini-cli", "google", "", "external review")
+	self := newReg(t, cfg, "claude-code", "anthropic", "synthesis")
+	newReg(t, cfg, "codex", "openai", "review")
+	newReg(t, cfg, "gemini-cli", "google", "external review")
 
 	// .example.md files exist alongside live registrations; must be skipped.
 	mustWrite(t, filepath.Join(cfg.AgentsDir(), "codex.example.md"), []byte("---\nagent_id: codex\nvendor: openai\ncontrol_repo: "+cfg.ControlRepo+"\nlast_seen: 2026-05-09T16:08:36Z\nstatus: active\n---\n"))
@@ -277,8 +277,8 @@ func TestAnnounceEnrollmentSendsToPeersSkipsSelfAndExamples(t *testing.T) {
 
 func TestAnnounceEnrollmentMissingInboxIsWarningNotFatal(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
-	self := newReg(t, cfg, "claude-code", "anthropic", "", "synthesis")
-	peer := newReg(t, cfg, "codex", "openai", "", "review")
+	self := newReg(t, cfg, "claude-code", "anthropic", "synthesis")
+	peer := newReg(t, cfg, "codex", "openai", "review")
 
 	// Remove the peer's inbox dir to simulate a busted registration.
 	if err := os.RemoveAll(cfg.AgentInboxDir(peer.AgentID)); err != nil {
@@ -341,9 +341,8 @@ func setupAnnounceFixture(t *testing.T) *Config {
 	return cfg
 }
 
-func newReg(t *testing.T, cfg *Config, agentID, vendor, wakeTarget, body string) *Registration {
+func newReg(t *testing.T, cfg *Config, agentID, vendor, body string) *Registration {
 	t.Helper()
-	_ = wakeTarget // pull-only (Gate 6c): registrations carry no wake target
 	reg := &Registration{
 		AgentID:     agentID,
 		Vendor:      vendor,

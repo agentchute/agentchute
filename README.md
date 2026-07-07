@@ -111,7 +111,7 @@ What's next lives **around** the stable core, never inside the wire — self-ser
 
 ## Spec, hacking, license
 
-The protocol is [`AGENTCHUTE.md`](AGENTCHUTE.md); the binary is one reference implementation. Behavior changes start with the spec and the [conformance vectors](conformance/). Tested targets and operational assumptions are in the support matrix in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+The protocol is [`AGENTCHUTE.md`](AGENTCHUTE.md); the binary is one reference implementation. Behavior changes start with the spec and the [conformance vectors](conformance/). Tested targets and operational assumptions are in [`AGENTCHUTE.md` §2](AGENTCHUTE.md#2-scope).
 
 ```sh
 git clone https://github.com/agentchute/agentchute
