@@ -25,3 +25,6 @@
 
 # Local scratch (spike runs) — never commit
 proposal_spike_run/
+
+# Scratch/handoff dir (session-review artifacts, /save-context output) — never commit
+.tmp/
