@@ -742,8 +742,10 @@ type hookCommandsDoc struct {
 // *names* an agentchute subcommand (e.g. `"Bash(agentchute check:*)"`) reads
 // as if it were a hook literally invoking that subcommand (bug: #74 added
 // such an entry and tripped a false BLOCKER). Returns an error if data
-// isn't valid JSON; callers fall back to raw-body scanning in that case so
-// a hand-corrupted hook file doesn't silently stop being checked.
+// isn't valid JSON; callers must NOT fall back to scanning the raw file
+// body in that case — that would re-open the same false-positive (a
+// permissions/other key naming a subcommand inside a malformed file would
+// still match). Surface the parse failure as its own signal instead.
 func hookCommandBody(data []byte) (string, error) {
 	var doc hookCommandsDoc
 	if err := json.Unmarshal(data, &doc); err != nil {
@@ -779,6 +781,7 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 
 	var checkOffenders []string
 	var resolutionOffenders []string
+	var invalidJSONFiles []string
 
 	for _, h := range hookFiles {
 		full := filepath.Join(append([]string{cfg.ControlRepo}, h.path...)...)
@@ -788,9 +791,14 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 		}
 		body, err := hookCommandBody(data)
 		if err != nil {
-			// Not valid JSON — fall back to the raw file body so a
-			// hand-corrupted hook file still gets scanned conservatively.
-			body = string(data)
+			// Not valid JSON. Do NOT fall back to raw-body scanning here —
+			// that would re-open the exact false-positive this function
+			// exists to avoid (a permissions/other key merely naming a
+			// subcommand would read as a hook invoking it). Surface the
+			// parse failure as its own signal instead; a malformed hook
+			// file won't fire correctly anyway, which is worth flagging.
+			invalidJSONFiles = append(invalidJSONFiles, h.wrapper)
+			continue
 		}
 
 		if hookCheckSubcmdRE.MatchString(body) {
@@ -825,6 +833,13 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 			Name:     "hook_content_sanity",
 			Severity: severityBlocker,
 			Message:  fmt.Sprintf("hook file(s) reference agentchute commands that cannot resolve in this environment: %s", strings.Join(resolutionOffenders, ", ")),
+		}
+	}
+	if len(invalidJSONFiles) > 0 {
+		return doctorCheck{
+			Name:     "hook_content_sanity",
+			Severity: severityWarn,
+			Message:  fmt.Sprintf("hook file(s) are not valid JSON, cannot verify hook command safety: %s — fix the JSON syntax", strings.Join(invalidJSONFiles, ", ")),
 		}
 	}
 	return doctorCheck{Name: "hook_content_sanity", Severity: severityOK, Message: "no `check` subcommand in hooks and all references resolve"}
