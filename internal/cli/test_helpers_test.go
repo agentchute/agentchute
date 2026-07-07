@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,51 +11,6 @@ import (
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
-
-// withFakeHerdrList installs a fake `herdr` binary that answers `agent list`
-// with the given name->pane bindings, logs `rename` invocations to renameLog,
-// and reports `agent get` as not-found. Relocated verbatim (simple-again Gate
-// 6a) from the deleted reachability_test.go into this shared test-helper file
-// because register_test.go and herdr_state_test.go (both Gate 6c, untouched
-// here) still depend on it.
-func withFakeHerdrList(t *testing.T, renameLog string, bindings map[string]string) {
-	t.Helper()
-	old := herdrProbeBinary
-	var items []string
-	for name, pane := range bindings {
-		items = append(items, fmt.Sprintf(`{"name":"%s","pane_id":"%s"}`, name, pane))
-	}
-	listJSON := fmt.Sprintf(`{"result":{"agents":[%s]}}`, strings.Join(items, ","))
-	path := filepath.Join(t.TempDir(), "herdr")
-	script := "#!/bin/sh\n" +
-		"sub=\"$2\"\n" +
-		"case \"$sub\" in\n" +
-		"  list) printf '%s\\n' '" + listJSON + "' ; exit 0 ;;\n" +
-		"  rename) printf '%s %s\\n' \"$3\" \"$4\" >> '" + renameLog + "' ; exit 0 ;;\n" +
-		"  get) printf '{\"error\":{\"code\":\"agent_not_found\"}}\\n' ; exit 0 ;;\n" +
-		"  *) exit 1 ;;\n" +
-		"esac\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	herdrProbeBinary = path
-	t.Cleanup(func() { herdrProbeBinary = old })
-}
-
-// renameLogContents reads a herdr rename log written by withFakeHerdrList,
-// returning "" when the log was never written. Relocated verbatim (simple-again
-// Gate 6a) from the deleted reachability_test.go for herdr_state_test.go.
-func renameLogContents(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return ""
-		}
-		t.Fatal(err)
-	}
-	return string(data)
-}
 
 func mustMkdir(t *testing.T, path string) {
 	t.Helper()
@@ -93,19 +47,6 @@ func mustWriteSeqInbox(t *testing.T, inboxDir, from string, seq uint64, content 
 	t.Helper()
 	name := loop.MsgID{From: from, Seq: seq}.Filename()
 	mustWrite(t, filepath.Join(inboxDir, name), content)
-}
-
-// mustWriteAgedInbox writes an inbox file and back-dates its filesystem mtime
-// to `arrival`. The inbox lister derives a message's arrival time from its
-// mtime (arrival on this host) — a seq filename carries no embedded timestamp —
-// so tests that need an inbox file aged to a specific arrival time must control
-// its mtime rather than rely on a filename timestamp.
-func mustWriteAgedInbox(t *testing.T, path string, arrival time.Time) {
-	t.Helper()
-	mustWrite(t, path, []byte("hi"))
-	if err := os.Chtimes(path, arrival, arrival); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func withFakeTmuxTargets(t *testing.T, targets ...string) {
@@ -193,19 +134,7 @@ func mustWriteFreshPollerHeartbeat(t *testing.T, cfg *loop.Config, agentID strin
 	}
 }
 
-// mustExampleRepo / readExampleReg were relocated here from the deleted
-// herdr_state_test.go (simple-again Gate 6c). They are shared fixture helpers
-// used by presence/register tests, unrelated to the retired herdr probe.
 func mustExampleRepo(t *testing.T, root string) {
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
-}
-
-func readExampleReg(t *testing.T, root, agentID string) *loop.Registration {
-	t.Helper()
-	reg, err := loop.ReadRegistration(filepath.Join(root, ".agentchute", "loop", "agents", agentID+".md"))
-	if err != nil {
-		t.Fatalf("read registration %s: %v", agentID, err)
-	}
-	return reg
 }

@@ -206,7 +206,7 @@ These rules govern task messages between agents on the bus. They exist because r
 
 ## Working efficiently on this bus
 
-Measured basis: the 2026-07-04 fleet retrospective (`proposal/retro-2026-07/` on the live pool's checkout; 533-message archive, 163 hub sessions, 71 PRs). The review loop itself is cheap — median bus reply 30 s, median PR merge under 10 minutes — so these rules cut the plumbing around review, never its substance.
+Measured basis: the 2026-07-04 fleet retrospective (`docs/internal/retro-2026-07/synthesis.md`; 533-message archive, 163 hub sessions, 71 PRs). The review loop itself is cheap — median bus reply 30 s, median PR merge under 10 minutes — so these rules cut the plumbing around review, never its substance.
 
 - **E1 Briefs by reference (MUST for 3+ recipients).** Write the shared brief/synthesis/evidence ONCE to a file (program docs under `proposal/<program>/`); each bus message carries the pointer plus that recipient's own GOAL/ACCEPTANCE/ACTION MODE delta of ≤10 lines. Never paste the same long body to N lanes — in the measured window, 24–36% of all archive bytes were duplicate broadcast copies.
 - **E2 Pair-owned loops.** The implementer and the assigned reviewer run gate/fix delta loops directly with each other; the integrator receives a one-line SHIP/FIX tally. Integrator-owned: merge, tag, release, cross-lane synthesis, and operator-facing reports.

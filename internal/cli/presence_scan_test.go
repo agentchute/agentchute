@@ -16,13 +16,12 @@ import (
 // real herdr/tmux/ps on the dev machine). Restored on cleanup.
 func stubPresenceListers(t *testing.T) {
 	t.Helper()
-	oh, ot, or, op := listHerdrAgents, listTmuxPanes, listRunnerSockets, listProcesses
+	oh, or, op := listHerdrAgents, listRunnerSockets, listProcesses
 	listHerdrAgents = func() []herdrPresenceEntry { return nil }
-	listTmuxPanes = func() []tmuxPresenceEntry { return nil }
 	listRunnerSockets = func(_ *loop.Config) []runnerPresenceEntry { return nil }
 	listProcesses = func() []processPresenceEntry { return nil }
 	t.Cleanup(func() {
-		listHerdrAgents, listTmuxPanes, listRunnerSockets, listProcesses = oh, ot, or, op
+		listHerdrAgents, listRunnerSockets, listProcesses = oh, or, op
 	})
 }
 
@@ -41,41 +40,6 @@ func presencePoolCfg(t *testing.T) (*loop.Config, string) {
 	}
 	mustMkdir(t, cfg.AgentsDir())
 	return cfg, root
-}
-
-func TestScanUnenrolledWrappers_IgnoresTmuxPanes(t *testing.T) {
-	cfg, root := presencePoolCfg(t)
-
-	// A plain registration for codex (pull-only: it carries no tmux wake target).
-	enrolled := &loop.Registration{
-		AgentID:     "codex",
-		Vendor:      "openai",
-		ControlRepo: root,
-		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath("codex"), enrolled); err != nil {
-		t.Fatal(err)
-	}
-
-	stubPresenceListers(t)
-	listTmuxPanes = func() []tmuxPresenceEntry {
-		return []tmuxPresenceEntry{
-			{PaneID: "%1", Cwd: root},
-			{PaneID: "%2", Cwd: root},
-		}
-	}
-
-	got, err := scanUnenrolledWrappers(cfg)
-	if err != nil {
-		t.Fatalf("scanUnenrolledWrappers: %v", err)
-	}
-	// Pull-only registrations carry no tmux wake target, and a pane id has no
-	// registration link. In-pool tmux panes are therefore not actionable
-	// unenrolled-presence evidence.
-	if len(got) != 0 {
-		t.Fatalf("tmux panes must not surface as unenrolled presence; got %+v", got)
-	}
 }
 
 func TestScanUnenrolledWrappers_HerdrAndProcessSources(t *testing.T) {
@@ -455,20 +419,6 @@ func TestDoctor_UnenrolledPresenceWarnsNeverBlocks(t *testing.T) {
 	}
 	if got.Severity != severityWarn {
 		t.Fatalf("severity = %q, want WARN (presence is advisory, never a blocker)", got.Severity)
-	}
-}
-
-func TestDoctor_UnenrolledPresenceIgnoresTmuxPanes(t *testing.T) {
-	cfg, root := presencePoolCfg(t)
-
-	stubPresenceListers(t)
-	listTmuxPanes = func() []tmuxPresenceEntry {
-		return []tmuxPresenceEntry{{PaneID: "%1", Cwd: root}}
-	}
-
-	got := checkUnenrolledPresence(cfg)
-	if got.Severity != severityOK {
-		t.Fatalf("severity = %q, want OK for tmux-only presence; message=%q", got.Severity, got.Message)
 	}
 }
 
