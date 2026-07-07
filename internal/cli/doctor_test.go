@@ -251,6 +251,43 @@ func TestDoctorMixedFormsDoNotMaskCheckOffender(t *testing.T) {
 	}
 }
 
+// Bug found on #74: a `permissions.allow` entry that merely *names* an
+// agentchute subcommand (e.g. "Bash(agentchute check:*)") is not a hook
+// invoking that subcommand. checkHookContentSanity must scan only actual
+// hook command strings, not the raw file body, or a permissions allowlist
+// naming `agentchute check` (a legitimate, recommended config) trips a
+// false BLOCKER in both `doctor` and CI.
+func TestDoctorPermissionsAllowNamingCheckDoesNotBlock(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	claudeDir := filepath.Join(cfg.ControlRepo, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Templated command form + AGENTCHUTE_BIN stub, so this test exercises
+	// only the hook_content_sanity fix and not incidental PATH resolution
+	// (same pattern as TestDoctorWarnsOnUnreadInboxNotBlocks).
+	stub := filepath.Join(cfg.ControlRepo, "stub-agentchute")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTCHUTE_BIN", stub)
+	hookContent := `{
+		"permissions": {"allow": ["Bash(agentchute check:*)", "Bash(agentchute send:*)"]},
+		"hooks": {"UserPromptSubmit":[{"hooks":[{"type":"command","command":"${AGENTCHUTE_BIN:-agentchute} pending --as claude-code"}]}]}
+	}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
+	got := findCheck(t, r, "hook_content_sanity")
+	if got.Severity != severityOK {
+		t.Errorf("hook_content_sanity severity = %q, want OK (permissions.allow naming `agentchute check` is not a hook invoking it); msg=%q", got.Severity, got.Message)
+	}
+	if r.Blockers != 0 {
+		t.Errorf("Blockers = %d, want 0", r.Blockers)
+	}
+}
+
 // Codex review on bff226c: --json discovery failure must still exit
 // errBlocked. Previously emitDoctorJSON returned nil before the
 // errBlocked guard ran.

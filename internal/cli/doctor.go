@@ -722,6 +722,44 @@ func hookWrapperForAgent(agentID string) (string, bool) {
 	return "", false
 }
 
+// hookCommandsDoc models the shape shared by every wrapper's hook JSON file
+// (claude .claude/settings.json, codex .codex/hooks.json, gemini
+// .gemini/settings.json all nest {"hooks": {<Event>: [{"hooks":
+// [{"command": ...}]}]}} identically, modulo event names and unrelated
+// per-hook fields like "matcher"/"timeout"/"statusMessage").
+type hookCommandsDoc struct {
+	Hooks map[string][]struct {
+		Hooks []struct {
+			Command string `json:"command"`
+		} `json:"hooks"`
+	} `json:"hooks"`
+}
+
+// hookCommandBody extracts and joins every hook command string from a
+// wrapper's hook JSON file, so checkHookContentSanity's regexes scan only
+// actual hook invocations — not unrelated top-level keys like
+// `permissions`. Without this, a `permissions.allow` entry that merely
+// *names* an agentchute subcommand (e.g. `"Bash(agentchute check:*)"`) reads
+// as if it were a hook literally invoking that subcommand (bug: #74 added
+// such an entry and tripped a false BLOCKER). Returns an error if data
+// isn't valid JSON; callers fall back to raw-body scanning in that case so
+// a hand-corrupted hook file doesn't silently stop being checked.
+func hookCommandBody(data []byte) (string, error) {
+	var doc hookCommandsDoc
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return "", err
+	}
+	var commands []string
+	for _, entries := range doc.Hooks {
+		for _, entry := range entries {
+			for _, h := range entry.Hooks {
+				commands = append(commands, h.Command)
+			}
+		}
+	}
+	return strings.Join(commands, "\n"), nil
+}
+
 // checkHookContentSanity scans installed hook templates per-occurrence
 // instead of per-file: each agentchute invocation form is analyzed
 // independently so mixed templated + bare references in one file are
@@ -748,7 +786,12 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 		if err != nil {
 			continue // absence is handled by checkHookFilePresence
 		}
-		body := string(data)
+		body, err := hookCommandBody(data)
+		if err != nil {
+			// Not valid JSON — fall back to the raw file body so a
+			// hand-corrupted hook file still gets scanned conservatively.
+			body = string(data)
+		}
 
 		if hookCheckSubcmdRE.MatchString(body) {
 			checkOffenders = append(checkOffenders, h.wrapper)
