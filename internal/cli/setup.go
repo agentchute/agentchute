@@ -191,8 +191,8 @@ Usage:
   agentchute setup [--wake runner] [--wrappers all|none|<list>] [--yes] [--dry-run]
 
 Scaffolds the control repo with agentchute init, stops local agentchute
-pollers/runners, clears stale live registrations and repo Herdr names so agents
-re-enroll, installs lifecycle hooks for the selected wrappers, and installs the
+pollers/runners, clears stale live registrations so agents re-enroll, installs
+lifecycle hooks for the selected wrappers, and installs the
 single ac dispatcher (launch a wrapper with: ac serve <wrapper>).
 
 runner is the only supported wake path: the tmux/herdr wake adapters were
@@ -468,7 +468,7 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 		fmt.Fprintln(w, "                state (inbox/archive/malformed/live/scratch/state) + live registrations;")
 		fmt.Fprintln(w, "                preserves scaffold + state/setup.json; refuses a live bus (prompts before deleting)")
 	} else {
-		fmt.Fprintln(w, "  reset:        stop local agentchute pollers/runners, clear live agents/*.md, release repo Herdr names")
+		fmt.Fprintln(w, "  reset:        stop local agentchute pollers/runners and clear live agents/*.md")
 	}
 	if len(hookWrappers) > 0 {
 		fmt.Fprintln(w, "  hooks:        repo scope, force/idempotent")
@@ -551,9 +551,9 @@ func previousSetupShimWrappers(state setupGlobalState) []string {
 }
 
 // setupRunRuntimeReset is the DESTRUCTIVE phase of setup: it stops local
-// pollers/runners, clears runtime state files and repo Herdr names, then deletes
-// live registrations so agents re-enroll. It is a package var so tests can inject
-// a failure to prove the ordering invariant below. It is invoked LAST in
+// pollers/runners, clears runtime state files, then deletes live registrations
+// so agents re-enroll. It is a package var so tests can inject a failure to
+// prove the ordering invariant below. It is invoked LAST in
 // applySetup — after every idempotent, recoverable write (init/enrollment, hooks,
 // shims, PATH block, saved setup state) has landed — so a mid-setup failure can
 // never leave the bus with cleared registrations AND no wake infrastructure.
@@ -567,9 +567,6 @@ var setupRunRuntimeReset = func(root string, cfg *loop.Config, wrappers []string
 	}
 	if len(reset.RuntimeFiles) > 0 {
 		fmt.Printf("cleared %d runtime state file(s)\n", len(reset.RuntimeFiles))
-	}
-	if len(reset.HerdrNames) > 0 {
-		fmt.Printf("released %d herdr name(s): %s\n", len(reset.HerdrNames), strings.Join(reset.HerdrNames, ", "))
 	}
 	for _, warning := range reset.Warnings {
 		fmt.Printf("warning: setup reset: %s\n", warning)

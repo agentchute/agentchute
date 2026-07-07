@@ -37,11 +37,6 @@ type herdrPresenceEntry struct {
 	Cwd  string
 }
 
-type tmuxPresenceEntry struct {
-	PaneID string
-	Cwd    string
-}
-
 type runnerPresenceEntry struct {
 	AgentID string
 	Target  string // unix:<socket> (for the hint)
@@ -56,7 +51,6 @@ type processPresenceEntry struct {
 
 var (
 	listHerdrAgents   = defaultListHerdrAgents
-	listTmuxPanes     = defaultListTmuxPanes
 	listRunnerSockets = defaultListRunnerSockets
 	listProcesses     = defaultListProcesses
 	// processParentPID resolves a pid's parent pid (macOS/Linux `ps -p <pid> -o
@@ -173,8 +167,7 @@ func scanUnenrolledWrappers(cfg *loop.Config) ([]UnenrolledProcess, error) {
 	// Pull-only (Gate 6c): registrations carry no wake target, so a herdr
 	// presence can no longer be matched to a registration BY wake target. herdr
 	// agents map to an enrolled lane only when the bound name is itself a
-	// registered agent id. tmux panes have no registration link, so they are not
-	// an actionable unenrolled-presence source.
+	// registered agent id.
 	agentIDs := map[string]bool{}
 	enrolledPIDs := map[int]bool{}
 	for id := range regs {
@@ -384,32 +377,6 @@ func defaultListHerdrAgents() []herdrPresenceEntry {
 			continue
 		}
 		entries = append(entries, herdrPresenceEntry{Name: name, Cwd: cwd})
-	}
-	return entries
-}
-
-// defaultListTmuxPanes enumerates every tmux pane and its current path via
-// `tmux list-panes -a`. Read-only; nil when tmux is absent or the call fails.
-func defaultListTmuxPanes() []tmuxPresenceEntry {
-	if _, err := exec.LookPath(tmuxProbeBinary); err != nil {
-		return nil
-	}
-	out, err := exec.Command(tmuxProbeBinary, "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_path}").Output()
-	if err != nil {
-		return nil
-	}
-	var entries []tmuxPresenceEntry
-	for _, line := range strings.Split(string(out), "\n") {
-		pane, cwd, ok := strings.Cut(line, "\t")
-		if !ok {
-			continue
-		}
-		pane = strings.TrimSpace(pane)
-		cwd = strings.TrimSpace(cwd)
-		if pane == "" || cwd == "" {
-			continue
-		}
-		entries = append(entries, tmuxPresenceEntry{PaneID: pane, Cwd: cwd})
 	}
 	return entries
 }

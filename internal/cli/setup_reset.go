@@ -20,7 +20,6 @@ type setupRuntimeResetResult struct {
 	Pollers      []string
 	Runners      []string
 	RuntimeFiles []string
-	HerdrNames   []string
 	Warnings     []string
 }
 
@@ -49,15 +48,10 @@ func resetSetupRuntimeState(root string, cfg *loop.Config, wrappers []string) se
 				result.Warnings = append(result.Warnings, fmt.Sprintf("remove runtime state %s: %v", path, err))
 			}
 		}
-		// Pull-only (Gate 6c): herdr is retired as a wake transport and a
-		// registration carries no herdr name binding, so there is no herdr-name
-		// binding to clear on reset. The HerdrNames result field stays for output
-		// stability but is no longer populated.
 	}
 	sort.Strings(result.Pollers)
 	sort.Strings(result.Runners)
 	sort.Strings(result.RuntimeFiles)
-	sort.Strings(result.HerdrNames)
 	sort.Strings(result.Warnings)
 	return result
 }
