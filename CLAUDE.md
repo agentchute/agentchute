@@ -59,7 +59,9 @@ Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGEN
 
 ## Claude-specific notes
 
-None at the moment. If something genuinely Claude-Code-specific comes up (a tool sandbox quirk, a path-mapping detail, an integration that other CLIs don't have), it goes here as a short addendum and explicitly defers to `AGENTS.md` for everything else.
+**Response style**: `AGENTS.md` §7 (terse, lead with the answer, no filler/self-celebration, no YAGNI) applies to every response — restated here because this file loads every session and §7 doesn't. If a reply drifts long, that's the rule to re-check first.
+
+If something else genuinely Claude-Code-specific comes up (a tool sandbox quirk, a path-mapping detail, an integration that other CLIs don't have), it goes here as a short addendum and explicitly defers to `AGENTS.md` for everything else.
 
 ## Communication profile — reference & reminder
 
