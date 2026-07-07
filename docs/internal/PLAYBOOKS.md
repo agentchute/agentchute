@@ -1,6 +1,6 @@
 # Playbooks — the recurring bus rituals
 
-Companion to the **Working efficiently on this bus** rules in [`AGENTS.md`](../../AGENTS.md) (E1–E9). Each playbook is the step sequence; the E-rules say when it's mandatory. `$ID` is your pinned lane id.
+Companion to the **Working efficiently on this bus** rules in [`AGENTS.md`](../../AGENTS.md) (E1–E10). Each playbook is the step sequence; the E-rules say when it's mandatory. `$ID` is your pinned lane id.
 
 ## bus-turn (per wake cue — E8)
 

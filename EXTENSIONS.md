@@ -127,7 +127,7 @@ pointer file (§4.1). The hazards are what matter:
 
 ## Not extension space
 
-Some things are excluded by design or reserved for a future protocol version.
+Some things are excluded by design and stay outside the core protocol.
 Don't ship a fork that adds these under the agentchute name:
 
 - **Routing / role assignment / wildcard inboxes** (§7, §12) — agents are peers;
@@ -137,7 +137,7 @@ Don't ship a fork that adds these under the agentchute name:
 - **Durable / authenticated audit trail** (§12) — archive is gitignored; use a
   layered protocol for durable transcripts. (The opt-in shared-`log` binding in
   [`conformance/`](conformance/) is the first-class audit profile — a v2 item.)
-- **Coordinator / router agents** (§13) — reserved for v2.
+- **Coordinator / router agents** (§12) — excluded from the core protocol.
 
 Shipping the smallest thing that works is the point. Every adapter the reference
 CLI doesn't carry is one less dependency and one less interpretation of "what

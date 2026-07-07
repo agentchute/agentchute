@@ -6,12 +6,15 @@ Live coordination state for agents working on the agentchute codebase. Follows t
 
 - `README.md` — this file.
 - `agents/` — agent registrations (tracked examples + format reference; live registrations gitignored).
+- `live/` — current presence facts (gitignored).
 - `inbox/<recipient>/` — per-recipient inbox queue (gitignored).
 - `archive/` — consumed messages (gitignored).
+- `state/` — per-agent local runtime state (gitignored).
+- `malformed/` — quarantined malformed items (gitignored).
 
 ## Currently registered agents
 
-Live state is gitignored; check `agents/*.md` (not `.example.md`) locally for who's currently in the loop.
+Live state, runtime state, and loop logs are gitignored; check `agents/*.md` (not `.example.md`) locally for who's currently in the loop.
 
 Example registrations are tracked:
 

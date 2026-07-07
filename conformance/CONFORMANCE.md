@@ -6,7 +6,7 @@ Four deliverables in one package:
    protocol's invariant cases without depending on Go.
 2. **A conformance harness** — the vectors run as a Go test suite against **two
    bindings** so any substrate is checked on equal footing.
-3. **The shared-log model** (`log_binding.go`) — the §5 fork as ~90 lines of
+3. **The shared-log model** (`log_binding.go`) — the §5 fork as
    working code, exercised by the same suite and demo as the inbox model.
 4. **A disposable Python proof** — `example-python-binding/runner.py` reads the
    same vectors against a stdlib-only inbox binding. It is a snapshot, not a
@@ -105,6 +105,6 @@ over a substrate's real CLI/ACL boundary instead of a Go interface.
 
 Tested on Linux (Go 1.22, clean container): suite + both demos pass as shown.
 The bindings are modeled in-memory for deterministic concurrency/crash tests;
-the SEMANTICS match the real substrates (filesystem inbox = `../ach`; the log =
+the SEMANTICS match the real substrates (filesystem inbox = `internal/loop`; the log =
 an append file / git branch / Redis Stream / Kafka). This proves the model
 behavior and the invariant set — not a production storage layer.
