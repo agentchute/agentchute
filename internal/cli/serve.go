@@ -727,6 +727,16 @@ func (r *runnerRuntime) isIdle() bool {
 func (r *runnerRuntime) injectPrompt() {
 	if err := r.writePTY(promptInjectionBytes(r.opts)); err != nil {
 		r.logf("agentchute serve: inject prompt: %v\n", err)
+		// Clear pendingWake even on failure (code review fix): enqueueWake's
+		// pendingWake gate (A2) means a stuck-true flag here would silently
+		// suppress every future wake for the runner's lifetime — including
+		// brand-new mail arriving later — defeating the whole point of this
+		// slice. lastInjection is deliberately NOT set: nothing was actually
+		// delivered, so the recueInterval countdown must not start.
+		r.mu.Lock()
+		r.pendingWake = false
+		r.mu.Unlock()
+		_ = r.saveState()
 		return
 	}
 	now := time.Now().UTC()

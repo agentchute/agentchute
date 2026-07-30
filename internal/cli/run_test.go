@@ -530,7 +530,11 @@ func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 // poll re-cues with recue=true.
 func TestRunnerRecuesAfterInterval(t *testing.T) {
 	origInterval := recueInterval
-	recueInterval = 50 * time.Millisecond
+	// 300ms (not 50ms, code review fix): the no-early-recue assertion below
+	// needs real headroom against scheduler stalls on this repo's known-flaky
+	// macOS CI runners — a >50ms stall between setting lastInjection and the
+	// second pollOnce would fail it spuriously.
+	recueInterval = 300 * time.Millisecond
 	t.Cleanup(func() { recueInterval = origInterval })
 
 	root := setupShortRunFixture(t)
@@ -562,7 +566,7 @@ func TestRunnerRecuesAfterInterval(t *testing.T) {
 	}
 
 	// After the interval elapses, the next poll re-cues, recue=true.
-	time.Sleep(recueInterval + 30*time.Millisecond)
+	time.Sleep(recueInterval + 100*time.Millisecond)
 	rt.pollOnce()
 	recue, had = rt.drainWakeRecue()
 	if !had || !recue {
@@ -701,6 +705,97 @@ func TestInjectIfPendingSkipClearsPendingWake(t *testing.T) {
 	}
 	if got.PendingWake {
 		t.Fatal("runner.json still shows pending_wake:true after an inject attempt on a drained inbox")
+	}
+}
+
+// TestInjectPromptFailureClearsPendingWake is a code-review-fix regression
+// test: a failed injection attempt (e.g. a PTY I/O error while the child
+// survives — rt.ptmx is nil here, which writePTY treats identically) must
+// still clear pendingWake. Under A2's pendingWake gate in enqueueWake, a
+// stuck-true flag here would permanently suppress every future wake for the
+// runner's lifetime — including brand-new, unrelated mail arriving later —
+// defeating the whole point of this slice. Pre-A2 code self-healed because
+// enqueueWake's channel send was ungated; A2 introduced this failure mode.
+func TestInjectPromptFailureClearsPendingWake(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	rt.diag = newRunnerDiagnostics(cfg, "runner-test")
+	defer rt.diag.close()
+	inbox := cfg.AgentInboxDir("runner-test")
+	mustWrite(t, filepath.Join(inbox, "not-a-seq-name.md"), []byte("body"))
+
+	// First poll: period start, queues a wake (recue=false). Mail stays
+	// pending throughout this test (never claimed).
+	rt.pollOnce()
+	if _, had := rt.drainWakeRecue(); !had {
+		t.Fatal("first poll did not queue a wake")
+	}
+	// The test helper's drain cleared pendingWake as a side effect of
+	// inspecting the channel; restore it to simulate injectLoop's real
+	// consume-then-wait sequence (wake received, pendingWake still set) right
+	// before it calls injectIfPending -> injectPrompt.
+	rt.mu.Lock()
+	rt.pendingWake = true
+	rt.mu.Unlock()
+
+	rt.injectIfPending() // hasPendingInboxMail is true -> injectPrompt -> writePTY fails (ptmx is nil)
+
+	rt.mu.Lock()
+	stillLatched := rt.pendingWake
+	rt.mu.Unlock()
+	if stillLatched {
+		t.Fatal("a failed injection left pendingWake stuck true — every future wake, including brand-new mail, would be silently suppressed forever")
+	}
+
+	// A later poll, with the mail still genuinely pending, must still be able
+	// to queue a fresh wake — proving the runner is not permanently jammed.
+	rt.pollOnce()
+	if !rt.drainWake() {
+		t.Fatal("runner did not re-cue after a failed injection attempt")
+	}
+}
+
+// TestRunnerNewPeriodCuesWithinOneTickDespiteRecentInjection pins the
+// periodStart disjunct in pollOnce's cue predicate (an undisclosed-until-
+// review third deviation from C16's literal text, now disclosed in the PR
+// body): a genuinely NEW pending period must cue immediately, recue=false,
+// even when lastInjection is recent from a PREVIOUS, already-resolved period.
+// C16's literal predicate alone (lastInjection.IsZero() ||
+// elapsed>=recueInterval) would wrongly delay this new arrival until
+// recueInterval had passed since the unrelated prior period's injection,
+// violating "mail arrives mid-session: cued within one tick." If periodStart
+// is ever removed from the predicate, this test must fail.
+func TestRunnerNewPeriodCuesWithinOneTickDespiteRecentInjection(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	inbox := cfg.AgentInboxDir("runner-test")
+
+	// A previous, unrelated period was injected moments ago and has since
+	// fully resolved (mail claimed elsewhere, wasPending/pendingWake clear).
+	rt.mu.Lock()
+	rt.lastInjection = time.Now().UTC()
+	rt.wasPending = false
+	rt.pendingWake = false
+	rt.mu.Unlock()
+
+	// A brand-new message arrives, starting a genuinely new period.
+	mustWrite(t, filepath.Join(inbox, "not-a-seq-name.md"), []byte("body"))
+
+	rt.pollOnce()
+	recue, had := rt.drainWakeRecue()
+	if !had {
+		t.Fatal("a new pending period did not cue within one tick despite a recent prior-period injection")
+	}
+	if recue {
+		t.Fatal("a new period's first cue was recue=true, want recue=false")
 	}
 }
 
