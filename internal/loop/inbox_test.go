@@ -324,7 +324,10 @@ func (i fakeFileInfo) Sys() any           { return nil }
 
 // InferSenderFromFilename recovers the sender from a canonical seq filename.
 // The legacy nonce-name inference path was removed in v0.9.0, so a legacy
-// `_msg-`-shaped name (tombstone case) is no longer attributed.
+// `_msg-`-shaped name (tombstone case) is no longer attributed. Its sole
+// production caller (the §11.1 corrective-notify path) was deleted in v2.5
+// plan A6; retained caller-less for B6, which extends it to both filename
+// grammars.
 func TestInferSenderFromFilenameRecoversSeqSender(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -347,68 +350,6 @@ func TestInferSenderFromFilenameRecoversSeqSender(t *testing.T) {
 			t.Errorf("%s: got (%q, %v), want (%q, %v)",
 				c.name, got, ok, c.wantSender, c.wantOK)
 		}
-	}
-}
-
-// InferSenderFromFrontmatter should extract `from:` from a YAML frontmatter
-// block when the filename was already malformed and the sender capture failed.
-func TestInferSenderFromFrontmatterReadsFromField(t *testing.T) {
-	dir := t.TempDir()
-	good := filepath.Join(dir, "good.md")
-	mustWrite(t, good, []byte(`---
-from: gemini-cli
-to: claude-code
-task: hi
----
-
-body
-`))
-	if got, ok := InferSenderFromFrontmatter(good); !ok || got != "gemini-cli" {
-		t.Errorf("got (%q, %v), want (gemini-cli, true)", got, ok)
-	}
-
-	bad := filepath.Join(dir, "bad.md")
-	mustWrite(t, bad, []byte(`no frontmatter at all
-just a body
-`))
-	if got, ok := InferSenderFromFrontmatter(bad); ok {
-		t.Errorf("expected ok=false for body-only, got (%q, true)", got)
-	}
-
-	invalid := filepath.Join(dir, "invalid.md")
-	mustWrite(t, invalid, []byte(`---
-from: BAD AGENT
-to: claude-code
----
-`))
-	if got, ok := InferSenderFromFrontmatter(invalid); ok {
-		t.Errorf("expected ok=false for invalid slug %q", got)
-	}
-
-	// Body lines that LOOK like frontmatter fields must NOT be inferred —
-	// only the first ---/--- block counts.
-	bodyOnly := filepath.Join(dir, "body-only.md")
-	mustWrite(t, bodyOnly, []byte(`no frontmatter, just body text
-that happens to mention from: codex deep in the message
-about an unrelated topic.
-`))
-	if got, ok := InferSenderFromFrontmatter(bodyOnly); ok {
-		t.Errorf("body-only file mis-inferred sender %q; should not match", got)
-	}
-
-	// Frontmatter block with closing --- ; body below it has another from:
-	// that should be ignored.
-	multi := filepath.Join(dir, "multi.md")
-	mustWrite(t, multi, []byte(`---
-from: claude-code
-to: codex
----
-
-Body discussing from: gemini-cli (not the real sender).
-`))
-	got, ok := InferSenderFromFrontmatter(multi)
-	if !ok || got != "claude-code" {
-		t.Errorf("multi-from file: got (%q, %v), want (claude-code, true)", got, ok)
 	}
 }
 

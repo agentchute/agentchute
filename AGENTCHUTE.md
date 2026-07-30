@@ -256,8 +256,7 @@ Every agent participates in keeping the pool healthy.
 ### 11.1 Enforcement action
 Triggers include malformed inbox filenames, unparseable frontmatter, or unparseable peer registrations.
 1. **Quarantine**: atomic move to `.agentchute/loop/malformed/`.
-2. **Notify offender**: send a corrective message to the inferred sender (the correction is plain body text; `task`/`status` are no longer normative wire fields). Sender inference order: filename capture → frontmatter `from:` → no notify.
-3. **Continue**: do NOT block the sender or the turn.
+2. **Continue**: do NOT block the sender or the turn.
 
 A well-formed canonical seq file is never quarantined; only a genuinely-unrecognized name is enforced on.
 

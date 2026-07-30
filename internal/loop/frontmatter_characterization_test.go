@@ -1,23 +1,24 @@
 package loop
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// This file CHARACTERIZES the current behavior of the three frontmatter
-// parsers that historically caused validator/recorder skew (WI-10). It is a
+// This file CHARACTERIZES the current behavior of the frontmatter parsers
+// that historically caused validator/recorder skew (WI-10). It is a
 // behavior snapshot, NOT an aspiration: every assertion below documents what
 // the code does TODAY. If a future change alters these outputs, that is a
 // real behavior change and must be justified, not silently re-baselined.
 //
-// The three parsers under characterization:
+// Originally characterized THREE parsers; parser A (InferSenderFromFrontmatter)
+// was deleted in v2.5 plan A6 along with its sole production caller (the
+// §11.1 corrective-notify path) — this file dropped its A-specific
+// assertions accordingly. Full consolidation to ONE parser (dropping the B
+// vs C distinction below too) is v2.5 plan B8's job, not this one.
 //
-//	A. InferSenderFromFrontmatter (inbox.go) — regex `from:` extractor over the
-//	   first ---/--- block. Returns (sender, ok); ok=false unless a valid
-//	   agent_id `from:` scalar is found. Only the `from:` field is observable.
+// The two parsers still under characterization:
+//
 //	B. parseFrontmatter (registration.go) — STRICT key:value parser. Returns
 //	   (fields, body, error). Rejects indentation, non-key:value lines, dup
 //	   keys, missing close. Also reached via ValidateMessageFrontmatter, which
@@ -31,13 +32,10 @@ import (
 // passes B but C reads it differently (or vice-versa), the recorder and the
 // validator disagree.
 
-// fmProbe runs all three parsers over one input and returns a comparable
-// snapshot. For A and C we feed the raw content; for B we feed the
-// CRLF-normalized text exactly as ValidateMessageFrontmatter does.
+// fmProbe runs both remaining parsers over one input and returns a comparable
+// snapshot. We feed C the raw content; B gets the CRLF-normalized text
+// exactly as ValidateMessageFrontmatter does.
 type fmProbe struct {
-	// A: InferSenderFromFrontmatter
-	aSender string
-	aOK     bool
 	// B: parseFrontmatter (strict). bErr is the error string ("" if nil).
 	bErr    string
 	bFields map[string]string // scalar values only, for comparison
@@ -49,14 +47,6 @@ type fmProbe struct {
 func probeFrontmatter(t *testing.T, content string) fmProbe {
 	t.Helper()
 	p := fmProbe{}
-
-	// A needs a file on disk.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "probe.md")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write probe: %v", err)
-	}
-	p.aSender, p.aOK = InferSenderFromFrontmatter(path)
 
 	// B (strict).
 	fields, body, err := parseFrontmatter(content)
@@ -109,10 +99,10 @@ func frontmatterFixtures() map[string]string {
 	}
 }
 
-// TestFrontmatterCharacterization_Snapshot drives all three parsers over the
-// shared fixtures and emits a comparison table (visible with -v). It does not
-// assert; the targeted tests below pin the load-bearing comparisons. Run with
-// `go test -run Characterization -v ./internal/loop` to see the table.
+// TestFrontmatterCharacterization_Snapshot drives both remaining parsers over
+// the shared fixtures and emits a comparison table (visible with -v). It does
+// not assert; the targeted tests below pin the load-bearing comparisons. Run
+// with `go test -run Characterization -v ./internal/loop` to see the table.
 func TestFrontmatterCharacterization_Snapshot(t *testing.T) {
 	fx := frontmatterFixtures()
 	names := make([]string, 0, len(fx))
@@ -133,8 +123,8 @@ func TestFrontmatterCharacterization_Snapshot(t *testing.T) {
 		if p.bErr != "" {
 			bSummary = "ERR(" + p.bErr + ")"
 		}
-		t.Logf("%-22s | A=(%q,%v) | B=%s | C=%s",
-			n, p.aSender, p.aOK, bSummary, mapStr(p.cMap))
+		t.Logf("%-22s | B=%s | C=%s",
+			n, bSummary, mapStr(p.cMap))
 	}
 }
 
@@ -217,11 +207,6 @@ func TestChar_StrictRejectsDupKey(t *testing.T) {
 	c := ParseMessageFrontmatter([]byte(in))
 	if c["from"] != "gemini-cli" {
 		t.Fatalf("C: dup key last-write-wins; want gemini-cli, got %q", c["from"])
-	}
-	// A (regex) matches the FIRST `from:` line.
-	a := senderFromContent(t, in)
-	if a != "codex" {
-		t.Fatalf("A: regex matches first from:; want codex, got %q", a)
 	}
 }
 
@@ -316,8 +301,8 @@ func TestChar_WhitespaceAroundDelimiter(t *testing.T) {
 }
 
 // TestChar_MissingClose pins that B ERRORS on a missing closing `---`, while C
-// returns an EMPTY map (firstFrontmatterBlock returns ok=false), and A returns
-// ok=false. ValidateMessageFrontmatter surfaces B's error.
+// returns an EMPTY map (firstFrontmatterBlock returns ok=false).
+// ValidateMessageFrontmatter surfaces B's error.
 func TestChar_MissingClose(t *testing.T) {
 	in := "---\nfrom: codex\ntask: t\n\nbody without close\n"
 	if strictGate(in) {
@@ -326,10 +311,6 @@ func TestChar_MissingClose(t *testing.T) {
 	c := ParseMessageFrontmatter([]byte(in))
 	if len(c) != 0 {
 		t.Fatalf("C: missing close -> empty map; got %v", c)
-	}
-	a := senderFromContent(t, in)
-	if a != "" {
-		t.Fatalf("A: missing close -> no sender; got %q", a)
 	}
 }
 
@@ -373,18 +354,4 @@ func TestChar_ListValue(t *testing.T) {
 	if len(c) != 2 { // from + working_repos
 		t.Fatalf("C: list item lines must be skipped (no colon); got map=%v", c)
 	}
-}
-
-// senderFromContent isolates A's `from:` extraction without ValidateAgentID
-// rejecting (we pass a valid slug in tests that use it). It writes to a temp
-// file and calls the production function.
-func senderFromContent(t *testing.T, content string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "p.md")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	s, _ := InferSenderFromFrontmatter(path)
-	return s
 }

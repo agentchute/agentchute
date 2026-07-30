@@ -109,27 +109,6 @@ func cmdCheck(args []string) error {
 			}
 			fmt.Fprintf(os.Stderr, "warning: quarantined %s (malformed §6.1 filename) -> %s\n",
 				name, quarantined)
-
-			// Sender inference order per §11.1: filename capture → frontmatter
-			// from: → no notify.
-			offender, ok := loop.InferSenderFromFilename(name)
-			if !ok {
-				offender, ok = loop.InferSenderFromFrontmatter(quarantined)
-			}
-			if !ok {
-				fmt.Fprintf(os.Stderr, "  offender unidentifiable; corrective notify skipped\n")
-				continue
-			}
-			if offender == agentID {
-				fmt.Fprintf(os.Stderr, "  inferred offender is self; corrective notify skipped\n")
-				continue
-			}
-			if _, err := loop.SendCorrective(cfg, agentID, offender,
-				quarantined, "filename does not match §6.1", "§6.1"); err != nil {
-				fmt.Fprintf(os.Stderr, "  corrective send to %s failed: %v\n", offender, err)
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "  notified %s\n", offender)
 		}
 	} else if len(skipped) > 0 {
 		fmt.Fprintf(os.Stderr, "warning: %d non-§6.1 file(s) in inbox; --no-archive suppressed §11 enforcement:\n", len(skipped))
@@ -200,20 +179,6 @@ func cmdCheck(args []string) error {
 			}
 			fmt.Fprintf(os.Stderr, "warning: quarantined %s (malformed §6.4 frontmatter: %v) -> %s\n",
 				msg.Filename, err, quarantined)
-			// Filename matched §6.1 so msg.Sender is authoritative.
-			if msg.Sender == agentID {
-				fmt.Fprintf(os.Stderr, "  inferred offender is self; corrective notify skipped\n")
-				claimed++
-				continue
-			}
-			reason := fmt.Sprintf("frontmatter block is syntactically malformed: %v", err)
-			if _, serr := loop.SendCorrective(cfg, agentID, msg.Sender,
-				quarantined, reason, "§6.4"); serr != nil {
-				fmt.Fprintf(os.Stderr, "  corrective send to %s failed: %v\n", msg.Sender, serr)
-				claimed++
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "  notified %s\n", msg.Sender)
 			claimed++
 			continue
 		}
