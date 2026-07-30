@@ -39,7 +39,6 @@ func cmdSend(args []string) error {
 	var fromID, toID, body, replyTo, controlRepo, loopDir, idempotencyKey string
 	var ask, jsonOut bool
 	var replyBy time.Duration
-	replyByRaw := originalFlagValue(args, "--reply-by")
 	fs.StringVar(&fromID, "from", "", "sender agent id (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&toID, "to", "", "recipient agent id")
 	fs.StringVar(&body, "body", "", "message body markdown; if empty, body is read from stdin")
@@ -188,7 +187,7 @@ func cmdSend(args []string) error {
 	id, committed, sendErr := sendSeqMessageWithCommit(cfg, fromID, toID, content, idempotencyKey, os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
 	retry := sendRetryOptions{
 		Ask:        ask,
-		ReplyBy:    replyByRaw,
+		ReplyBy:    replyBy.String(),
 		ReplyBySet: replyBySet,
 		ReplyTo:    replyTo,
 		ReplyToSet: replyToSet,
@@ -210,7 +209,6 @@ func cmdSend(args []string) error {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "WARNING: message delivered but inbox durability sync failed: %v. Do NOT resend.\n", sendErr)
-		return nil
 	}
 
 	// Asker-owned obligation (protocol-v2 / Gate 5): when we ASK for a reply,
@@ -226,8 +224,10 @@ func cmdSend(args []string) error {
 			deadline = now.Add(replyBy)
 		}
 		if err := loop.RecordOwed(cfg, fromID, id, deadline, now); err != nil {
-			if emitErr := emitSendResult(result, jsonOut); emitErr != nil {
-				return emitErr
+			if sendErr == nil {
+				if emitErr := emitSendResult(result, jsonOut); emitErr != nil {
+					return emitErr
+				}
 			}
 			fmt.Fprintf(os.Stderr, "WARNING: reply-obligation bookkeeping failed: %v. Do NOT resend.\n", err)
 			return nil
@@ -238,6 +238,9 @@ func cmdSend(args []string) error {
 	// `in_reply_to` ref (emitted by ComposeMessage above) so the ASKER's `.owed`
 	// obligation discharges when they consume this reply (ClearOwed, check.go).
 	// There is NO recipient-side ledger to mutate here.
+	if sendErr != nil {
+		return nil
+	}
 	return emitSendResult(result, jsonOut)
 }
 
@@ -358,19 +361,6 @@ func sendRetryCommand(from, to, spoolPath string, opts sendRetryOptions) string 
 		parts = append(parts, "--reply-to", shellQuote(opts.ReplyTo))
 	}
 	return strings.Join(parts, " ") + " < " + shellQuote(spoolPath)
-}
-
-func originalFlagValue(args []string, name string) string {
-	var value string
-	for i, arg := range args {
-		switch {
-		case arg == name && i+1 < len(args):
-			value = args[i+1]
-		case strings.HasPrefix(arg, name+"="):
-			value = strings.TrimPrefix(arg, name+"=")
-		}
-	}
-	return value
 }
 
 // applyAskHeading prepends a `## ASK` heading if the body doesn't already

@@ -124,11 +124,13 @@ func (b *inboxBinding) Consume(id string, handler func(Msg) error) (int, error) 
 		}
 		// Post-consume the delivery slot is freed, so drop the EEXIST dedup key:
 		// a later resend of the SAME (to,from,seq) must RE-LAND, matching the real
-		// FS where EEXIST-as-no-op holds only pre-consume/pre-archive (once the file
-		// is archived, a re-landed copy relies on receiver-side Key/Deduper to
-		// collapse the duplicate effect — NOT on delivery dedup). Done at COMMIT
-		// only (after handler success + the crash check), so a crash before commit
-		// keeps the slot present and EEXIST remains a no-op (C1 at-least-once holds).
+		// FS where EEXIST-as-no-op holds only pre-consume/pre-archive. Once archived
+		// there is no delivery-side or protocol-level receiver-side dedup backstop;
+		// a re-landed copy is a second delivery and the covenant is handler
+		// idempotency (the optional Key/Deduper helper below is a demo aid only,
+		// not a protocol backstop). Done at COMMIT only (after handler success +
+		// the crash check), so a crash before commit keeps the slot present and
+		// EEXIST remains a no-op (C1 consume at-least-once holds).
 		if msgs[i].Seq > 0 {
 			delete(b.delivered, fmt.Sprintf("%s|%s|%d", id, msgs[i].From, msgs[i].Seq))
 		}

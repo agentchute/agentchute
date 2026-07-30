@@ -85,14 +85,14 @@ func TestSendSpoolsBodyOnPostStdinFailure(t *testing.T) {
 
 func TestSendSpoolRetryPreservesAskSemantics(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	body := "review this"
+	body := "--reply-by=2h"
 
 	var sendErr error
 	withCwd(t, root, func() {
 		sendErr = withRecipientRemovedAfterPreflight(t, cfg, "codex", func() error {
 			return cmdSend([]string{
 				"--from", "claude-code", "--to", "codex",
-				"--ask", "--reply-by=45m", "--body", body,
+				"--ask", "-reply-by", "45m", "--body", body,
 			})
 		})
 	})
@@ -102,7 +102,8 @@ func TestSendSpoolRetryPreservesAskSemantics(t *testing.T) {
 	spoolPath := onlySendSpool(t, cfg, "claude-code")
 	assertSendSpool(t, spoolPath, body)
 	reportedSpoolPath := canonicalTestPath(t, spoolPath)
-	if !strings.Contains(sendErr.Error(), "--ask --reply-by '45m' < "+shellQuote(reportedSpoolPath)) {
+	if !strings.Contains(sendErr.Error(), "--ask --reply-by '45m0s' < "+shellQuote(reportedSpoolPath)) ||
+		strings.Contains(sendErr.Error(), "--reply-by '2h'") {
 		t.Fatalf("retry line lost ask semantics:\n%v", sendErr)
 	}
 
@@ -122,7 +123,7 @@ func TestSendSpoolRetryPreservesAskSemantics(t *testing.T) {
 
 	delivered := readMostRecentInboxMessage(t, cfg, "codex")
 	if !strings.Contains(delivered, "reply_required: true") ||
-		!strings.Contains(delivered, "## ASK\n\nreview this") {
+		!strings.Contains(delivered, "## ASK\n\n--reply-by=2h") {
 		t.Fatalf("retried ask lost wire semantics:\n%s", delivered)
 	}
 	owed, err := loop.LoadOwedLedger(cfg, "claude-code")
@@ -238,6 +239,7 @@ func TestSendPostLinkSyncFailureIsPartialSuccess(t *testing.T) {
 			stdout, sendErr = captureStdout(t, func() error {
 				return cmdSend([]string{
 					"--from", "claude-code", "--to", "codex",
+					"--ask", "--reply-by", "45m",
 					"--body", "linked before sync failed",
 				})
 			})
@@ -255,8 +257,19 @@ func TestSendPostLinkSyncFailureIsPartialSuccess(t *testing.T) {
 		t.Fatal("post-link sync failure created a spool file")
 	}
 	delivered := readMostRecentInboxMessage(t, cfg, "codex")
-	if !strings.Contains(delivered, "linked before sync failed") {
+	if !strings.Contains(delivered, "reply_required: true") ||
+		!strings.Contains(delivered, "linked before sync failed") {
 		t.Fatalf("linked message missing after partial success:\n%s", delivered)
+	}
+	owed, err := loop.LoadOwedLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owed.Owed) != 1 {
+		t.Fatalf("owed entries = %d, want 1", len(owed.Owed))
+	}
+	if got := owed.Owed[0].By.Sub(owed.Owed[0].RecordedAt); got != 45*time.Minute {
+		t.Fatalf("reply-by interval = %s, want 45m", got)
 	}
 }
 
