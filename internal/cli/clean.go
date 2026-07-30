@@ -248,16 +248,16 @@ func cmdCleanMailbox(cfg *loop.Config, target string, apply, jsonOut bool, now t
 
 	// Re-check the guard AND perform the removal under the SAME
 	// WithAgentLock(target) critical section (review fix): publishRegistrationOnce
-	// (register.go) and AcquireServeLease's reclaim path already serialize on
-	// this exact per-agent lock, so a concurrent `boot`/`serve` for `target`
-	// that would recreate its registration is FORCED to wait until this
-	// whole recheck+remove completes — closing the window where the plan
-	// above (run before --yes takes any lock) goes stale between the
-	// unlocked recheck and the removal. (AcquireServeLease's FRESH-acquire
-	// fast path is intentionally unlocked — see lease.go — so this does not
-	// independently guard against a brand-new lease appearing mid-window;
-	// mailboxCleanRefusal's own serve-claim read still catches it as long as
-	// the claim file exists by the time the re-check runs.)
+	// (register.go) and BOTH of AcquireServeLease's paths — fresh-acquire and
+	// reclaim (lease.go, unified under one lock as of the fresh-acquire-lock
+	// fix; comment corrected — it used to describe the fresh-acquire path as
+	// unlocked, which was exactly the gap codex reproduced against this
+	// command) — already serialize on this exact per-agent lock. A concurrent
+	// `boot`/`serve` for `target`, whether creating a brand-new claim or
+	// reclaiming a stale one, is FORCED to wait until this whole
+	// recheck+remove completes — closing the window where the plan above
+	// (run before --yes takes any lock) goes stale between the unlocked plan
+	// read and the removal.
 	//
 	// Side effect, noted per review: WithAgentLock's ensurePrivateDir creates
 	// state/<target>/ even for a target that never had a registration at

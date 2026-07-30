@@ -41,45 +41,17 @@ var (
 var agentIDPattern = `[a-z0-9][a-z0-9-]*`
 
 // InferSenderFromFilename returns the sender slug captured from a canonical seq
-// filename (`from-<from>_seq-<020d>.md`). Used by `check` to attribute a
-// corrective notice when a malformed file is quarantined; a name that is not a
-// valid seq filename yields ok=false and the caller falls back to frontmatter
-// inference. The captured slug is validated by ParseSeqFilename.
+// filename (`from-<from>_seq-<020d>.md`). Retained caller-less for B6
+// dual-read (v2.5 plan A6): its production caller — the §11.1 corrective
+// notify path — was deleted along with the rest of that send, but B6 extends
+// this helper to recognize both the seq and timestamp filename grammars. A
+// name that is not a valid seq filename yields ok=false. The captured slug is
+// validated by ParseSeqFilename.
 func InferSenderFromFilename(filename string) (string, bool) {
 	if from, _, ok := ParseSeqFilename(filename); ok {
 		return from, true
 	}
 	return "", false
-}
-
-// frontmatterFromRE captures the `from:` scalar inside an already-isolated
-// frontmatter block. Tolerant of optional surrounding quotes; rejects
-// multi-line scalars.
-var frontmatterFromRE = regexp.MustCompile(`(?m)^from:[[:space:]]+"?([A-Za-z0-9_.-]+)"?[[:space:]]*$`)
-
-// InferSenderFromFrontmatter best-effort reads path and extracts the `from:`
-// scalar ONLY from the first YAML frontmatter block (between the leading
-// `---` and the next `---` line). Body-level lines containing `from:` are
-// ignored — they're text, not protocol fields. Returns ok=false if the file
-// can't be opened, no frontmatter block exists, no `from:` is present in the
-// block, or the value doesn't pass ValidateAgentID.
-func InferSenderFromFrontmatter(path string) (string, bool) {
-	data, err := ReadFileLimit(path, MaxInboxMessageBytes)
-	if err != nil {
-		return "", false
-	}
-	block, ok := firstFrontmatterBlock(data)
-	if !ok {
-		return "", false
-	}
-	m := frontmatterFromRE.FindStringSubmatch(block)
-	if m == nil {
-		return "", false
-	}
-	if err := ValidateAgentID(m[1]); err != nil {
-		return "", false
-	}
-	return m[1], true
 }
 
 // firstFrontmatterBlock returns the content between the file's leading `---`

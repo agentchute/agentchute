@@ -103,112 +103,6 @@ body
 	}
 }
 
-func TestCorrectiveBodyFormat(t *testing.T) {
-	got := CorrectiveBody(
-		".agentchute/loop/malformed/2026-05-12T04-00-00Z_to-claude-code_bad.md",
-		"filename does not match the canonical seq format (§6.1)",
-		"§6.1",
-	)
-	want := "malformed item: .agentchute/loop/malformed/2026-05-12T04-00-00Z_to-claude-code_bad.md\n" +
-		"reason: filename does not match the canonical seq format (§6.1)\n" +
-		"action: re-send per AGENTCHUTE.md §6.1\n"
-	if got != want {
-		t.Errorf("CorrectiveBody mismatch:\n got  %q\n want %q", got, want)
-	}
-}
-
-func TestSendCorrectiveWritesMessageAndSkipsPokeForEmptyTarget(t *testing.T) {
-	cfg := setupAnnounceFixture(t)
-	newReg(t, cfg, "claude-code", "anthropic", "")    // self
-	offender := newReg(t, cfg, "codex", "openai", "") // offender (pull-only: delivery is inbox-write only, no poke)
-
-	msg, err := SendCorrective(cfg, "claude-code", offender.AgentID,
-		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := os.ReadFile(msg.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(body)
-	// protocol-v2 envelope cut: the corrective no longer emits task/status; its
-	// content carries the §11.1 corrective body (CorrectiveBody) instead.
-	for _, want := range []string{
-		"malformed item: .agentchute/loop/malformed/bad.md",
-		"reason: filename does not match §6.1",
-		"action: re-send per AGENTCHUTE.md §6.1",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("corrective message missing %q:\n%s", want, text)
-		}
-	}
-}
-
-// TestSendCorrectiveRetryWithSameItemDedups is N8 (deep-analysis-v2, step-6
-// adopted): a SendCorrective call retried with the IDENTICAL arguments (the
-// realistic retry shape -- a caller re-issuing the same already-computed
-// corrective after a transient failure, not re-quarantining a fresh file)
-// must re-issue the SAME seq, not consume a new one -- exactly one file must
-// land in the offender's inbox.
-func TestSendCorrectiveRetryWithSameItemDedups(t *testing.T) {
-	cfg := setupAnnounceFixture(t)
-	newReg(t, cfg, "claude-code", "anthropic", "") // self
-	offender := newReg(t, cfg, "codex", "openai", "")
-
-	msg1, err := SendCorrective(cfg, "claude-code", offender.AgentID,
-		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	msg2, err := SendCorrective(cfg, "claude-code", offender.AgentID,
-		".agentchute/loop/malformed/bad.md", "filename does not match §6.1", "§6.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if msg1.Filename != msg2.Filename {
-		t.Fatalf("retrying SendCorrective with identical arguments allocated a new seq: %q vs %q", msg1.Filename, msg2.Filename)
-	}
-
-	entries, err := os.ReadDir(cfg.AgentInboxDir(offender.AgentID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("want 1 corrective delivered for a same-arguments retry, got %d", len(entries))
-	}
-}
-
-// TestSendCorrectiveDifferentItemAllocatesDistinctSeq is the non-regression
-// half: a DIFFERENT malformed item (different content) must not collide with
-// an unrelated corrective's key.
-func TestSendCorrectiveDifferentItemAllocatesDistinctSeq(t *testing.T) {
-	cfg := setupAnnounceFixture(t)
-	newReg(t, cfg, "claude-code", "anthropic", "")
-	offender := newReg(t, cfg, "codex", "openai", "")
-
-	msg1, err := SendCorrective(cfg, "claude-code", offender.AgentID,
-		".agentchute/loop/malformed/bad1.md", "filename does not match §6.1", "§6.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	msg2, err := SendCorrective(cfg, "claude-code", offender.AgentID,
-		".agentchute/loop/malformed/bad2.md", "filename does not match §6.1", "§6.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if msg1.Filename == msg2.Filename {
-		t.Fatalf("two distinct malformed items collided on the same seq: %q", msg1.Filename)
-	}
-	entries, err := os.ReadDir(cfg.AgentInboxDir(offender.AgentID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("want 2 correctives delivered for 2 distinct items, got %d", len(entries))
-	}
-}
-
 func TestAnnounceEnrollmentNoPeers(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
 	self := newReg(t, cfg, "claude-code", "anthropic", "I do synthesis.")
@@ -319,13 +213,11 @@ func TestAnnouncementBodyEmbedsBio(t *testing.T) {
 	}
 }
 
-// Simple-again Gate 6a (pull-only): newRunnerReg and the three poke tests
-// (TestAnnounceEnrollment_RefusesUnownedRunnerSocket,
-// TestSendCorrective_RefusesUnownedRunnerSocket,
-// TestAnnounceEnrollment_OwnedRunnerSocketPokes) were removed. Their subject —
-// the registration-driven wake poke (and its recipient-binding refusal) inside
-// AnnounceEnrollment / SendCorrective — no longer exists: both now deliver by
-// the inbox file write alone and never poke.
+// Simple-again Gate 6a (pull-only): newRunnerReg and three historical poke
+// tests covering AnnounceEnrollment's and the (now-deleted, v2.5 plan A6)
+// §11.1 corrective send's registration-driven wake poke were removed. Their
+// subject no longer exists: delivery is the inbox file write alone, never a
+// poke.
 
 func setupAnnounceFixture(t *testing.T) *Config {
 	t.Helper()
