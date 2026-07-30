@@ -126,6 +126,28 @@ func TestCleanOwedNoExpiredIsNoop(t *testing.T) {
 	})
 }
 
+// TestCleanOwedPlanIsLockFree is the review's should-fix: plan mode
+// (no --yes) must not create state/<id>/ at all — WithAgentLock's
+// ensurePrivateDir side effect was doing exactly that even when nothing else
+// was written, breaking the "plan mutates nothing" promise. Uses an id with
+// no prior state of its own (RecordOwed/etc. never called for it), so any
+// state/<id>/ appearing can only be this command's own side effect.
+func TestCleanOwedPlanIsLockFree(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmdClean([]string{"--as", "never-touched", "--owed"}); err != nil {
+			t.Fatalf("clean --owed (plan) err = %v", err)
+		}
+		if _, statErr := os.Stat(cfg.AgentStateDir("never-touched")); !os.IsNotExist(statErr) {
+			t.Fatalf("plan mode created state/<id>/ (WithAgentLock side effect): stat err = %v, want IsNotExist", statErr)
+		}
+	})
+}
+
 func TestCleanMailboxRefusesOnLiveRegistration(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {

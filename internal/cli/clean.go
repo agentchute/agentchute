@@ -106,11 +106,38 @@ type cleanOwedResult struct {
 }
 
 // cmdCleanOwed prunes (or, without --yes, plans pruning) asker's own expired
-// `.owed` entries. Runs under WithAgentLock(asker) so a concurrent
+// `.owed` entries.
+//
+// Plan mode (apply=false) is a plain, LOCK-FREE read (review should-fix):
+// WithAgentLock's ensurePrivateDir side effect creates state/<id>/ even when
+// nothing else is written, which broke the "plan mutates nothing" promise
+// every other mode of this command honors. A lock-free read of an
+// atomically-written ledger (SaveOwedLedger uses tmp+rename) can never
+// observe a torn file, so this loses no safety — only the (already-inherent
+// to any plan-then-apply design) possibility that the plan is stale by the
+// time --yes actually runs, which --yes's own fresh read already accounts for.
+//
+// Apply mode runs under WithAgentLock(asker) so a concurrent
 // RecordOwed/ClearOwed (from the agent's own `check`/`send`) cannot race the
 // read-modify-write.
 func cmdCleanOwed(cfg *loop.Config, agentID string, apply, jsonOut bool, now time.Time) error {
 	result := cleanOwedResult{Agent: agentID, Pruned: []string{}}
+
+	if !apply {
+		ledger, err := loop.LoadOwedLedger(cfg, agentID)
+		if err != nil {
+			return fmt.Errorf("load owed ledger: %w", err)
+		}
+		for _, e := range ledger.ExpiredOwed(now) {
+			result.Pruned = append(result.Pruned, e.Key().RefString())
+		}
+		if jsonOut {
+			return emitCleanJSON(result)
+		}
+		emitCleanOwedText(result, apply)
+		return nil
+	}
+
 	err := loop.WithAgentLock(cfg, agentID, func() error {
 		ledger, err := loop.LoadOwedLedger(cfg, agentID)
 		if err != nil {
@@ -128,7 +155,7 @@ func cmdCleanOwed(cfg *loop.Config, agentID string, apply, jsonOut bool, now tim
 			result.Pruned = append(result.Pruned, e.Key().RefString())
 			expiredKeys[e.Key()] = true
 		}
-		if !apply || len(expired) == 0 {
+		if len(expired) == 0 {
 			return nil
 		}
 		kept := make([]loop.OwedEntry, 0, len(ledger.Owed))

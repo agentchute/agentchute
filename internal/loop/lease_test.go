@@ -430,3 +430,51 @@ func TestReleaseLeaseFencedDoesNotDeleteNewOwner(t *testing.T) {
 		t.Fatalf("claim token = %q, want NEW-OWNER", c.ServeToken)
 	}
 }
+
+// TestAcquireServeLeaseFreshAcquireExcludedByExternalLock is the review's
+// blocker fix (plan A4, found by codex against the clean --mailbox command):
+// a concurrent fresh-acquire (no existing claim at all) must be excluded by
+// ANY holder of WithAgentLock(id), not just AcquireServeLease's own internal
+// reclaim path. Before this fix, the fresh-acquire link ran on an unlocked
+// fast path, so an external caller (e.g. a destructive command) holding
+// WithAgentLock(id) for its own critical section could not prevent a
+// brand-new claim from appearing mid-section — codex reproduced exactly
+// this against clean.go with a large inbox to widen the window.
+func TestAcquireServeLeaseFreshAcquireExcludedByExternalLock(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	go func() {
+		_ = WithAgentLock(cfg, "alice", func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	done := make(chan struct{})
+	var lease *ServeLease
+	var acquireErr error
+	go func() {
+		lease, acquireErr = AcquireServeLease(cfg, "alice")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("AcquireServeLease completed while an external holder still held WithAgentLock(id) — the fresh-acquire path is not excluded")
+	case <-time.After(100 * time.Millisecond):
+		// expected: still blocked on the lock.
+	}
+
+	close(release)
+	<-done
+	if acquireErr != nil {
+		t.Fatalf("AcquireServeLease after the external holder released err = %v", acquireErr)
+	}
+	if lease == nil {
+		t.Fatal("expected a lease once the external holder released")
+	}
+}
