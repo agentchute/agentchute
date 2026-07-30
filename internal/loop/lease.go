@@ -128,12 +128,20 @@ func marshalClaim(c *ServeClaim) ([]byte, error) {
 // claim (protocol-v2 §6b acceptance 1). On a stale claim it reclaims only via
 // the R1 liveness rule: same-host requires pid-proof failure (a frozen-but-alive
 // process keeps its id); cross-host uses freshness/timeout only (pid is not
-// provable across hosts). Reclaim runs under withAgentLock (the same lock
-// RenewLease/ReleaseLease take): the read→staleness-decision→rename is one
-// mutually-exclusive CAS, so two concurrent reclaimers cannot both win. A loser
-// observes the now-fresh claim under the lock and fails closed (any residual
-// cross-host / clock-skew double-reclaim window is contained by the fence on
-// every subsequent write — protocol-v2 §7).
+// provable across hosts).
+//
+// EVERYTHING — the fresh-acquire link attempt AND the stale-reclaim CAS —
+// runs under ONE withAgentLock(id) critical section (the same lock
+// RenewLease/ReleaseLease take, and the same lock any other caller, e.g. a
+// destructive command, can use to get true mutual exclusion against a claim
+// appearing) (review fix, plan A4 blocker: a previous unlocked fresh-acquire
+// "fast path" let a brand-new claim appear inside a caller's own
+// withAgentLock(id) critical section, since that caller's lock never
+// contended with this one). link-no-clobber is already atomic on its own —
+// the lock was never required for "exactly one fresh-acquirer wins", only for
+// closing this external-exclusion gap — so unifying the two paths costs one
+// extra (uncontended, cheap) lock acquisition on the common case and changes
+// no observable behavior otherwise.
 func AcquireServeLease(cfg *Config, id string) (*ServeLease, error) {
 	if err := ValidateAgentID(id); err != nil {
 		return nil, err
@@ -162,11 +170,6 @@ func AcquireServeLease(cfg *Config, id string) (*ServeLease, error) {
 		return nil, err
 	}
 
-	// Fresh-acquire FAST PATH (unlocked): link-no-clobber a unique temp inode
-	// into place. link is atomic, so at most one concurrent fresh-acquirer wins
-	// here; the rest get EEXIST and fall through to the locked reclaim CAS below.
-	// The temp inode is kept (defer-removed) so the EEXIST/release-race branch can
-	// re-link it under the lock without rebuilding it.
 	tempFile, err := os.CreateTemp(stateDir, tempFilePrefix+"*")
 	if err != nil {
 		return nil, err
@@ -177,42 +180,41 @@ func AcquireServeLease(cfg *Config, id string) (*ServeLease, error) {
 		return nil, err
 	}
 	path := claimPath(cfg, id)
-	linkErr := linkNoClobber(tempPath, path)
-	if linkErr == nil {
-		return &ServeLease{cfg: cfg, ID: id, Token: token}, nil
-	}
-	if !errors.Is(linkErr, os.ErrExist) {
-		return nil, fmt.Errorf("acquire serve lease %s: %w", path, linkErr)
-	}
 
-	// EEXIST: a claim already exists. Resolve fresh-vs-stale UNDER withAgentLock
-	// (the same lock RenewLease/ReleaseLease take) so the read→staleness-decision
-	// →write is one mutually-exclusive CAS. Two unlocked reclaimers could
-	// otherwise both pass the staleness check and both rename — the prior read-
-	// back was NOT authoritative. We RE-READ inside the lock because the claim may
-	// have changed since the unlocked link attempt above (a holder may have
-	// released, or a concurrent reclaimer/fresh-acquirer may have won it).
-	//
 	// withAgentLock is NON-reentrant (filelock_unix.go): nothing in this closure
 	// may call a function that itself takes withAgentLock(cfg,id).
 	var lease *ServeLease
 	lockErr := withAgentLock(cfg, id, func() error {
-		// The entry-time `now` is stale after blocking on the lock; re-sample.
+		// Fresh-acquire attempt, now INSIDE the lock: link-no-clobber a unique
+		// temp inode into place. No claim exists yet in the common case, so
+		// this succeeds immediately.
+		linkErr := linkNoClobber(tempPath, path)
+		if linkErr == nil {
+			lease = &ServeLease{cfg: cfg, ID: id, Token: token}
+			return nil
+		}
+		if !errors.Is(linkErr, os.ErrExist) {
+			return fmt.Errorf("acquire serve lease %s: %w", path, linkErr)
+		}
+
+		// EEXIST: a claim already exists. Resolve fresh-vs-stale — still under
+		// the SAME lock acquisition as the attempt above, so the
+		// read→staleness-decision→rename is one mutually-exclusive CAS. Two
+		// concurrent reclaimers can no longer both pass the staleness check and
+		// both rename.
 		nowInLock := time.Now().UTC()
 		existing, rerr := readClaim(path)
 		if rerr != nil {
 			if errors.Is(rerr, os.ErrNotExist) {
-				// (a) The holder released between our EEXIST and acquiring the lock.
-				// Try a fresh link of our temp claim. Do NOT rename: a rename would
-				// clobber a concurrent FRESH-acquirer that may have linked first
-				// (the fast path is unlocked, so it races us here).
+				// The holder released between our EEXIST and this re-read.
+				// Try a fresh link of our temp claim.
 				linkErr2 := linkNoClobber(tempPath, path)
 				if linkErr2 == nil {
 					lease = &ServeLease{cfg: cfg, ID: id, Token: token}
 					return nil
 				}
 				if errors.Is(linkErr2, os.ErrExist) {
-					return ErrLeaseHeld // a concurrent fresh-acquirer beat us.
+					return ErrLeaseHeld // impossible to reach concurrently now (same lock), kept for the released-then-relinked-by-us-only case; defensive.
 				}
 				return fmt.Errorf("acquire serve lease %s: %w", path, linkErr2)
 			}
