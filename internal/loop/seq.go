@@ -31,9 +31,11 @@ import (
 // consumes last_issued+1, never an occupied seq. link()-EEXIST on the canonical
 // path means "this exact (to,from,seq) is STILL PRESENT in the inbox", so a
 // crash-uncertain resend is a no-op ONLY while the message remains UNCONSUMED.
-// Once consumed (archived) the file is gone, link no longer EEXISTs, and
-// post-consume idempotency relies on receiver-side Key dedup. (Pre-consume, this
-// folds the delivery-dedup half of C1 into the substrate.)
+// Once consumed (archived) the file is gone, link no longer EEXISTs, so a later
+// resend of the same (to,from,seq) RE-LANDS as a new delivery — it is NOT
+// deduplicated by the protocol. There is no receiver-side dedup backstop; the
+// covenant is handler idempotency. (Pre-consume, EEXIST folds the delivery-dedup
+// half of C1 into the substrate.)
 
 // MsgID is the committed protocol-v2 delivery key. It is the shared, load-bearing
 // identity used by seq.go (writer/parser) and owed.go (obligation key).
@@ -142,8 +144,9 @@ func ParseSeqFilename(name string) (from string, seq uint64, ok bool) {
 // const) ONLY so tests can shrink it to exercise the pruning path; production
 // keeps the larger window. A crash-resend whose key was pruned out of the
 // window (only on a very delayed resume) allocates a FRESH seq and lands a
-// duplicate copy — relying on receiver-side Key dedup as the backstop. The
-// window is sized for immediate post-crash resume.
+// duplicate copy. There is no receiver-side dedup backstop for that duplicate;
+// the covenant is handler idempotency. The window is sized for immediate
+// post-crash resume.
 var seqRecentWindow uint64 = 256
 
 // MaxSeqStateBytes caps the per-(from,to) seq state file. Bounded by the recent
@@ -334,50 +337,53 @@ func pruneSeqRecent(st *seqState) {
 	st.Recent = kept
 }
 
-// writeSeqMessage lands content at inboxDir/<id.Filename()> via a tmp+link
-// discipline: a UNIQUE temp inode (os.CreateTemp) -> write+fsync ->
-// linkNoClobber to the canonical path -> remove temp -> fsync dir.
-//
-// link-EEXIST is NOT an error: the canonical (to,from,seq) path already exists,
-// so the substrate confirms "this exact identity is STILL PRESENT in the inbox."
-// alreadyLanded=true is returned (success), making a crash-uncertain resend a
-// no-op ONLY while the message remains UNCONSUMED. Post-consume the archived
-// file is gone, EEXIST no longer fires, and idempotency relies on receiver Key
-// dedup (D2 + the pre-consume delivery-dedup half of C1, in the filesystem).
-func writeSeqMessage(inboxDir string, id MsgID, content []byte) (alreadyLanded bool, err error) {
+// syncSeqInboxDir is the final post-link durability barrier. It is a package
+// variable so tests can prove that a failure after the canonical link exists is
+// reported as committed rather than as a safe-to-retry failure.
+var syncSeqInboxDir = syncDir
+
+// writeSeqMessageWithCommit lands content at inboxDir/<id.Filename()> via a
+// tmp+link discipline and reports whether the canonical link exists.
+func writeSeqMessageWithCommit(inboxDir string, id MsgID, content []byte) (alreadyLanded, committed bool, err error) {
 	if err := ValidateAgentID(id.From); err != nil {
-		return false, fmt.Errorf("from: %w", err)
+		return false, false, fmt.Errorf("from: %w", err)
 	}
 	if id.Seq == 0 {
-		return false, fmt.Errorf("writeSeqMessage: seq must be >= 1")
+		return false, false, fmt.Errorf("writeSeqMessage: seq must be >= 1")
 	}
 	if !dirExists(inboxDir) {
-		return false, os.ErrNotExist
+		return false, false, os.ErrNotExist
 	}
 
 	tempFile, err := os.CreateTemp(inboxDir, tempFilePrefix+"*")
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	tempPath := tempFile.Name()
 	defer func() { _ = os.Remove(tempPath) }()
 	if err := writeAndSyncOpenFile(tempFile, content); err != nil {
-		return false, err
+		return false, false, err
 	}
 
 	finalPath := filepath.Join(inboxDir, id.Filename())
 	if err := linkNoClobber(tempPath, finalPath); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			// This exact (to,from,seq) is still present in the inbox — safe no-op
-			// success (pre-consume; post-consume relies on receiver Key dedup).
-			return true, nil
+			// success while unconsumed. Post-consume the path is free again, so a
+			// resend re-lands; there is no receiver-side dedup backstop.
+			return true, true, nil
 		}
-		return false, fmt.Errorf("link to %s: %w", finalPath, err)
+		return false, false, fmt.Errorf("link to %s: %w", finalPath, err)
 	}
-	if err := syncDir(inboxDir); err != nil {
-		return false, err
+	if err := syncSeqInboxDir(inboxDir); err != nil {
+		return false, true, err
 	}
-	return false, nil
+	return false, true, nil
+}
+
+func writeSeqMessage(inboxDir string, id MsgID, content []byte) (alreadyLanded bool, err error) {
+	alreadyLanded, _, err = writeSeqMessageWithCommit(inboxDir, id, content)
+	return alreadyLanded, err
 }
 
 // SendSeqMessage allocates the next durable seq for (from,to) and lands content
@@ -388,9 +394,21 @@ func writeSeqMessage(inboxDir string, id MsgID, content []byte) (alreadyLanded b
 //
 // idempotencyKey and serveToken behave exactly as documented on AllocateSeq.
 func SendSeqMessage(cfg *Config, from, to string, content []byte, idempotencyKey, serveToken string) (MsgID, error) {
-	seq, err := AllocateSeq(cfg, from, to, idempotencyKey, serveToken)
+	id, _, err := SendSeqMessageWithCommit(cfg, from, to, content, idempotencyKey, serveToken)
 	if err != nil {
 		return MsgID{}, err
+	}
+	return id, err
+}
+
+// SendSeqMessageWithCommit is SendSeqMessage with an explicit commit boundary.
+// committed is true once the canonical inbox link exists, including when a
+// later directory-sync barrier fails. Callers must not recommend resending a
+// committed delivery.
+func SendSeqMessageWithCommit(cfg *Config, from, to string, content []byte, idempotencyKey, serveToken string) (MsgID, bool, error) {
+	seq, err := AllocateSeq(cfg, from, to, idempotencyKey, serveToken)
+	if err != nil {
+		return MsgID{}, false, err
 	}
 	id := MsgID{To: to, From: from, Seq: seq}
 	// Defense-in-depth (post-reclaim no-WRITE): re-verify the fence AFTER the
@@ -403,11 +421,12 @@ func SendSeqMessage(cfg *Config, from, to string, content []byte, idempotencyKey
 	// enforced when fenced (serveToken != ""); empty = intentionally unfenced.
 	if serveToken != "" {
 		if err := VerifyFence(cfg, from, serveToken); err != nil {
-			return MsgID{}, err
+			return MsgID{}, false, err
 		}
 	}
-	if _, err := writeSeqMessage(cfg.AgentInboxDir(to), id, content); err != nil {
-		return MsgID{}, err
+	_, committed, err := writeSeqMessageWithCommit(cfg.AgentInboxDir(to), id, content)
+	if err != nil {
+		return id, committed, err
 	}
-	return id, nil
+	return id, committed, nil
 }
