@@ -69,8 +69,8 @@ func TestSendToUnregisteredRecipientNoSeqBurn(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error sending to unregistered recipient")
 		}
-		if !strings.Contains(err.Error(), "not registered") {
-			t.Fatalf("error = %v, want 'not registered'", err)
+		if !strings.Contains(err.Error(), `unknown agent "ghost"`) {
+			t.Fatalf("error = %v, want unknown-agent error", err)
 		}
 		// A legitimate send to a real recipient must still start at seq 1,
 		// proving the failed send did not advance codex's (codex,ghost) — and,
