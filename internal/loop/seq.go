@@ -31,9 +31,11 @@ import (
 // consumes last_issued+1, never an occupied seq. link()-EEXIST on the canonical
 // path means "this exact (to,from,seq) is STILL PRESENT in the inbox", so a
 // crash-uncertain resend is a no-op ONLY while the message remains UNCONSUMED.
-// Once consumed (archived) the file is gone, link no longer EEXISTs, and
-// post-consume idempotency relies on receiver-side Key dedup. (Pre-consume, this
-// folds the delivery-dedup half of C1 into the substrate.)
+// Once consumed (archived) the file is gone, link no longer EEXISTs, so a later
+// resend of the same (to,from,seq) RE-LANDS as a new delivery — it is NOT
+// deduplicated by the protocol. There is no receiver-side dedup backstop; the
+// covenant is handler idempotency. (Pre-consume, EEXIST folds the delivery-dedup
+// half of C1 into the substrate.)
 
 // MsgID is the committed protocol-v2 delivery key. It is the shared, load-bearing
 // identity used by seq.go (writer/parser) and owed.go (obligation key).
@@ -142,8 +144,9 @@ func ParseSeqFilename(name string) (from string, seq uint64, ok bool) {
 // const) ONLY so tests can shrink it to exercise the pruning path; production
 // keeps the larger window. A crash-resend whose key was pruned out of the
 // window (only on a very delayed resume) allocates a FRESH seq and lands a
-// duplicate copy — relying on receiver-side Key dedup as the backstop. The
-// window is sized for immediate post-crash resume.
+// duplicate copy. There is no receiver-side dedup backstop for that duplicate;
+// the covenant is handler idempotency. The window is sized for immediate
+// post-crash resume.
 var seqRecentWindow uint64 = 256
 
 // MaxSeqStateBytes caps the per-(from,to) seq state file. Bounded by the recent
@@ -369,7 +372,8 @@ func writeSeqMessage(inboxDir string, id MsgID, content []byte) (alreadyLanded b
 	if err := linkNoClobber(tempPath, finalPath); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			// This exact (to,from,seq) is still present in the inbox — safe no-op
-			// success (pre-consume; post-consume relies on receiver Key dedup).
+			// success while unconsumed. Post-consume the path is free again, so a
+			// resend re-lands; there is no receiver-side dedup backstop.
 			return true, nil
 		}
 		return false, fmt.Errorf("link to %s: %w", finalPath, err)

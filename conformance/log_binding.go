@@ -99,7 +99,9 @@ func (b *logBinding) Deliver(to string, m Msg) error {
 		return fmt.Errorf("unknown recipient %q (mailbox dead / not registered)", to)
 	}
 	if m.Seq > 0 {
-		// Same EEXIST-idempotency as the inbox binding, keyed (to,from,seq).
+		// Delivery-side EEXIST-style idempotency only, keyed (to,from,seq).
+		// This is not a receiver-side dedup backstop; post-delivery handler
+		// duplicates (if any) are the handler's problem (idempotency covenant).
 		k := fmt.Sprintf("%s|%s|%d", to, m.From, m.Seq)
 		if b.delivered[k] {
 			return nil
