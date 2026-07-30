@@ -225,7 +225,7 @@ type runnerRuntime struct {
 	pollWG             sync.WaitGroup
 	shutdownRequested  atomic.Bool
 	pendingWake        bool
-	wasPending         bool // previous tick's hasPendingInboxMail, for period-start detection (A2/C16-C17)
+	injectedThisPeriod bool // true once a cue has SUCCEEDED for the current pending period (A2/C16-C17, review fix)
 	lastInjection      time.Time
 	lastPoll           time.Time
 	lastOutputUnixNano atomic.Int64
@@ -570,22 +570,26 @@ func (r *runnerRuntime) pollOnce() {
 	// Re-cue predicate (v2.5 plan A2, C16/C17): cue whenever mail is pending —
 	// including mail already present at startup, and skipped/malformed files
 	// (gate blocks until `check` quarantines them). No per-filename seen-set:
-	// a period starts when hasPendingInboxMail transitions false->true, and
-	// gets an immediate, non-recue cue attempt (so a genuinely new arrival
-	// gets the configured --interrupt-policy treatment). Once a wake is
-	// already in flight (pendingWake), we do not re-enqueue — enqueueWake
-	// itself guards that. Once the period's mail has actually been injected
-	// (lastInjection set, pendingWake cleared), later re-cues within the same
-	// still-pending period fire every recueInterval, recue=true, which forces
-	// after-idle semantics regardless of --interrupt-policy (C17).
+	// injectedThisPeriod tracks whether a cue has SUCCEEDED yet for the
+	// current pending period — NOT merely been attempted (review fix: a
+	// failed first injection must not downgrade the period to recue=true,
+	// or a continuously busy wrapper under after-grace/always could suppress
+	// the escalation retry indefinitely, since recue=true always waits for
+	// idle regardless of --interrupt-policy). The period resets (ready to
+	// treat the next arrival as genuinely new) the moment the inbox is
+	// observed empty — here, and in injectIfPending's drained-mail skip path.
+	// Once a wake is already in flight (pendingWake), we do not re-enqueue —
+	// enqueueWake itself guards that.
 	pending := r.hasPendingInboxMail()
 	r.mu.Lock()
-	periodStart := pending && !r.wasPending
-	r.wasPending = pending
+	if !pending {
+		r.injectedThisPeriod = false
+	}
+	injected := r.injectedThisPeriod
 	lastInjection := r.lastInjection
 	r.mu.Unlock()
-	if pending && (periodStart || lastInjection.IsZero() || now.Sub(lastInjection) >= recueInterval) {
-		r.enqueueWake(!periodStart)
+	if pending && (!injected || now.Sub(lastInjection) >= recueInterval) {
+		r.enqueueWake(injected)
 	}
 
 	r.mu.Lock()
@@ -651,10 +655,17 @@ func (r *runnerRuntime) injectLoop() {
 // stuck true forever when the inbox drained out from under a queued wake —
 // runner.json would report pending_wake:true against an empty inbox
 // indefinitely, since only a successful injectPrompt cleared it.
+//
+// It also resets injectedThisPeriod (review fix): this is an observed-empty
+// transition exactly like pollOnce's own, so mail arriving before the next
+// poll tick must be treated as a genuinely NEW period (recue=false) rather
+// than misclassified as a continuation of the just-ended one, which could
+// wait out up to recueInterval before cuing.
 func (r *runnerRuntime) injectIfPending() {
 	if !r.hasPendingInboxMail() {
 		r.mu.Lock()
 		r.pendingWake = false
+		r.injectedThisPeriod = false
 		r.mu.Unlock()
 		_ = r.saveState()
 		return
@@ -733,6 +744,13 @@ func (r *runnerRuntime) injectPrompt() {
 		// brand-new mail arriving later — defeating the whole point of this
 		// slice. lastInjection is deliberately NOT set: nothing was actually
 		// delivered, so the recueInterval countdown must not start.
+		// injectedThisPeriod is deliberately left UNTOUCHED (review fix): a
+		// failed attempt must not be treated as a delivered first cue (the
+		// next poll should still retry with the configured --interrupt-policy
+		// escalation, not downgrade to a silent recue=true), but if a PRIOR
+		// attempt this period already succeeded, that earlier success must
+		// still stand — only pollOnce/injectIfPending's observed-empty resets
+		// clear this flag.
 		r.mu.Lock()
 		r.pendingWake = false
 		r.mu.Unlock()
@@ -743,6 +761,7 @@ func (r *runnerRuntime) injectPrompt() {
 	r.mu.Lock()
 	r.pendingWake = false
 	r.lastInjection = now
+	r.injectedThisPeriod = true
 	r.mu.Unlock()
 	_ = r.saveState()
 }
@@ -889,8 +908,27 @@ func (r *runnerRuntime) saveState() error {
 	return r.saveStateWithStatus("active")
 }
 
+// afterSaveStateSnapshotHook, when non-nil, fires inside saveStateWithStatus
+// AFTER the snapshot is taken but BEFORE the durable write — while r.mu is
+// STILL HELD. Test-only seam proving the snapshot-plus-write is one atomic
+// critical section (a concurrent caller cannot mutate state or start its own
+// write until this one fully completes, so a slow writer's stale snapshot can
+// never "lap" a fresher concurrent write onto disk). nil in production.
+var afterSaveStateSnapshotHook func()
+
+// saveStateWithStatus snapshots the runtime's state AND performs the durable
+// write under the SAME r.mu critical section (review fix): pollOnce,
+// enqueueWake, injectIfPending, and injectPrompt all call this concurrently
+// from two different goroutines (poll loop, inject loop). Releasing the lock
+// between snapshot and write let two concurrent callers' writes land in
+// EITHER order regardless of which snapshot was actually fresher — a slow
+// writer holding a stale (e.g. pendingWake=true) snapshot could rename its
+// file AFTER a faster, fresher (pendingWake=false) writer, resurrecting the
+// exact stale runner.json state this slice exists to prevent. Holding the
+// lock for the full duration serializes every write in true snapshot order.
 func (r *runnerRuntime) saveStateWithStatus(status string) error {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	st := loop.RunnerState{
 		AgentID:       r.opts.AgentID,
 		Host:          localHostname(),
@@ -902,7 +940,9 @@ func (r *runnerRuntime) saveStateWithStatus(status string) error {
 		PendingWake:   r.pendingWake,
 		Status:        status,
 	}
-	r.mu.Unlock()
+	if afterSaveStateSnapshotHook != nil {
+		afterSaveStateSnapshotHook()
+	}
 	return loop.SaveRunnerState(r.cfg, st)
 }
 

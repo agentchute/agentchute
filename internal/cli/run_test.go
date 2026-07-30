@@ -556,6 +556,7 @@ func TestRunnerRecuesAfterInterval(t *testing.T) {
 	rt.mu.Lock()
 	rt.lastInjection = time.Now().UTC()
 	rt.pendingWake = false
+	rt.injectedThisPeriod = true
 	rt.mu.Unlock()
 
 	// Mail is still pending and the (shrunken) interval has not elapsed: no
@@ -753,9 +754,215 @@ func TestInjectPromptFailureClearsPendingWake(t *testing.T) {
 
 	// A later poll, with the mail still genuinely pending, must still be able
 	// to queue a fresh wake — proving the runner is not permanently jammed.
+	// It must be recue=FALSE (review fix, codex finding #1): a failed
+	// attempt never delivered a first cue, so the retry still deserves the
+	// configured --interrupt-policy escalation, not a silent recue=true —
+	// otherwise a continuously busy wrapper under always/after-grace could
+	// suppress the escalation retry indefinitely (recue=true always just
+	// waits for idle, regardless of policy).
 	rt.pollOnce()
-	if !rt.drainWake() {
+	recue, had := rt.drainWakeRecue()
+	if !had {
 		t.Fatal("runner did not re-cue after a failed injection attempt")
+	}
+	if recue {
+		t.Fatal("retry after a failed injection was queued recue=true — the escalation-eligible first-cue treatment was lost")
+	}
+}
+
+// TestRunnerFailedInjectionStillEscalatesOnRetry is codex finding #1's most
+// direct reproduction: under always-interrupt-policy with a continuously busy
+// wrapper, a FAILED first injection attempt must not downgrade the period —
+// the very next retry attempt must still send Ctrl-C (escalate) rather than
+// silently switching to after-idle-only waiting, which could suppress the
+// retry for as long as the wrapper stays busy.
+func TestRunnerFailedInjectionStillEscalatesOnRetry(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	rt.diag = newRunnerDiagnostics(cfg, "runner-test")
+	defer rt.diag.close()
+	rt.opts.InterruptPolicy = interruptAlways
+	rt.opts.IdleGrace = time.Hour // never idle within this test's lifetime
+	rt.lastOutputUnixNano.Store(time.Now().UnixNano())
+
+	inbox := cfg.AgentInboxDir("runner-test")
+	mustWrite(t, filepath.Join(inbox, "not-a-seq-name.md"), []byte("body"))
+
+	// First poll queues the first cue (recue=false); simulate the failed
+	// injection attempt (ptmx is nil, so injectPrompt's writePTY fails).
+	rt.pollOnce()
+	if _, had := rt.drainWakeRecue(); !had {
+		t.Fatal("first poll did not queue a wake")
+	}
+	rt.mu.Lock()
+	rt.pendingWake = true
+	rt.mu.Unlock()
+	rt.injectIfPending()
+
+	// Next poll's retry must still be recue=false...
+	rt.pollOnce()
+	recue, had := rt.drainWakeRecue()
+	if !had || recue {
+		t.Fatalf("retry after failed injection: had=%v recue=%v, want had=true recue=false", had, recue)
+	}
+
+	// ...and waitForInjectionWindow(false) under always-policy, while still
+	// busy, must escalate (send Ctrl-C) rather than block waiting for idle.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+	rt.ptmx = pw
+
+	done := make(chan bool, 1)
+	go func() { done <- rt.waitForInjectionWindow(recue) }()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("waitForInjectionWindow returned false unexpectedly")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitForInjectionWindow(recue=false) under always-policy did not escalate while busy — the retry lost its first-cue treatment")
+	}
+	if err := pw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	gotBytes, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gotBytes), "\x03") {
+		t.Fatalf("waitForInjectionWindow did not write Ctrl-C; got %q", gotBytes)
+	}
+}
+
+// TestRunnerDrainedPeriodResetsThroughProductionPath is codex finding #2's
+// production-path reproduction: injectIfPending's own drained-mail skip path
+// (not a manually-set field) must reset the period, so mail arriving right
+// after is treated as genuinely new (recue=false within one tick) instead of
+// being misclassified as a continuation of the just-ended period.
+func TestRunnerDrainedPeriodResetsThroughProductionPath(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	rt.diag = newRunnerDiagnostics(cfg, "runner-test")
+	defer rt.diag.close()
+	inbox := cfg.AgentInboxDir("runner-test")
+
+	first := filepath.Join(inbox, loop.MsgID{From: "codex", Seq: 1}.Filename())
+	mustWrite(t, first, []byte("first"))
+
+	// Establish the precondition a real successful injection would leave:
+	// the period has already delivered a cue this round.
+	rt.mu.Lock()
+	rt.injectedThisPeriod = true
+	rt.pendingWake = true
+	rt.mu.Unlock()
+
+	// Simulate the message being claimed (drained) by the agent's own check,
+	// then drive injectIfPending's ACTUAL skip path (production code, not a
+	// manually-set field) to observe the now-empty inbox and reset the period.
+	if err := os.Remove(first); err != nil {
+		t.Fatal(err)
+	}
+	rt.injectIfPending()
+	rt.mu.Lock()
+	stillTracking := rt.injectedThisPeriod
+	rt.mu.Unlock()
+	if stillTracking {
+		t.Fatal("injectIfPending's drained-mail skip path did not reset injectedThisPeriod")
+	}
+
+	// A brand-new message arriving right after must cue within one tick,
+	// recue=false — not wait out recueInterval as a misclassified continuation.
+	second := filepath.Join(inbox, loop.MsgID{From: "codex", Seq: 2}.Filename())
+	mustWrite(t, second, []byte("second"))
+	rt.pollOnce()
+	recue, had := rt.drainWakeRecue()
+	if !had {
+		t.Fatal("new mail after a drained period did not cue within one tick")
+	}
+	if recue {
+		t.Fatal("new mail after a drained period was queued recue=true — the period reset did not take effect")
+	}
+}
+
+// TestSaveStateSerializesSnapshotAndWrite is codex finding #3's reproduction:
+// saveStateWithStatus's snapshot and its durable write must be one atomic
+// critical section under r.mu. A second concurrent caller must be unable to
+// even mutate shared state (let alone complete its own write) while the
+// first is mid-write — otherwise a slow writer holding a stale snapshot
+// could rename its file AFTER a faster, fresher concurrent write, silently
+// resurrecting stale runner.json state.
+func TestSaveStateSerializesSnapshotAndWrite(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	afterSaveStateSnapshotHook = func() {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() { afterSaveStateSnapshotHook = nil })
+
+	rt.mu.Lock()
+	rt.pendingWake = true
+	rt.mu.Unlock()
+
+	firstDone := make(chan struct{})
+	go func() {
+		_ = rt.saveState() // snapshots pendingWake=true, then pauses mid-write (still holding r.mu)
+		close(firstDone)
+	}()
+	<-entered
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		rt.mu.Lock() // must block: the first call still holds r.mu
+		rt.pendingWake = false
+		rt.mu.Unlock()
+		_ = rt.saveState()
+		close(secondDone)
+	}()
+	<-secondStarted
+
+	select {
+	case <-secondDone:
+		t.Fatal("second caller mutated state and wrote while the first still held the lock mid-write — snapshot+write is not one atomic critical section")
+	case <-time.After(100 * time.Millisecond):
+		// expected: still blocked on r.mu.
+	}
+
+	// Clear the hook before releasing: it already fired for the first
+	// (in-flight) call, and must not fire again for the second caller's own
+	// saveState call once the lock frees up (the hook closure isn't
+	// reentrant-safe across two separate saveStateWithStatus invocations).
+	afterSaveStateSnapshotHook = nil
+	close(release)
+	<-firstDone
+	<-secondDone
+
+	got, err := loop.LoadRunnerState(cfg, "runner-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PendingWake {
+		t.Fatal("the first (stale, pendingWake=true) write landed after the second (fresh, pendingWake=false) write — writes are not serialized in snapshot order")
 	}
 }
 
@@ -779,10 +986,11 @@ func TestRunnerNewPeriodCuesWithinOneTickDespiteRecentInjection(t *testing.T) {
 	inbox := cfg.AgentInboxDir("runner-test")
 
 	// A previous, unrelated period was injected moments ago and has since
-	// fully resolved (mail claimed elsewhere, wasPending/pendingWake clear).
+	// fully resolved (mail claimed elsewhere, injectedThisPeriod/pendingWake
+	// clear).
 	rt.mu.Lock()
 	rt.lastInjection = time.Now().UTC()
-	rt.wasPending = false
+	rt.injectedThisPeriod = false
 	rt.pendingWake = false
 	rt.mu.Unlock()
 
