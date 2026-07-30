@@ -188,6 +188,95 @@ func TestCleanMailboxRefusesOnFreshServeClaim(t *testing.T) {
 	})
 }
 
+// TestCleanMailboxApplyRefusesOnLiveRegistration is the BLOCKER fix (review):
+// the plan-mode refusal tests above never pass --yes, and — critically — a
+// test that merely seeds the live signal BEFORE calling cmdClean cannot
+// distinguish "the first (plan-time) check refused" from "the apply-path
+// re-check refused", since with no state change between them EITHER check
+// alone would refuse. That's exactly how a mutation deleting the re-check
+// entirely left every prior TestClean* green. This test instead seeds NO
+// live signal up front (the first check PASSES) and injects the
+// registration via afterCleanMailboxFirstCheckHook — a seam that fires only
+// after that first check has already passed — so only the apply-path
+// re-check can be what catches it.
+func TestCleanMailboxApplyRefusesOnLiveRegistration(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inbox := cfg.AgentInboxDir("abandoned")
+		mustWriteSeqInbox(t, inbox, "peer", 1, []byte("---\nfrom: peer\n---\n\nhi\n"))
+
+		afterCleanMailboxFirstCheckHook = func() {
+			reg := &loop.Registration{
+				AgentID:     "abandoned",
+				Vendor:      "test",
+				ControlRepo: cfg.ControlRepo,
+				LastSeen:    time.Now().UTC(),
+				Status:      loop.StatusActive,
+			}
+			if werr := loop.WriteRegistration(cfg.AgentRegistrationPath("abandoned"), reg); werr != nil {
+				t.Fatal(werr)
+			}
+		}
+		t.Cleanup(func() { afterCleanMailboxFirstCheckHook = nil })
+
+		err = cmdClean([]string{"--mailbox", "abandoned", "--yes"})
+		if err == nil {
+			t.Fatal("expected the apply-path re-check to refuse once a registration row appears after the first check")
+		}
+		if !strings.Contains(err.Error(), "registration row") {
+			t.Fatalf("err = %v, want a registration-row refusal", err)
+		}
+		if _, statErr := os.Stat(inbox); statErr != nil {
+			t.Fatalf("mailbox was removed despite the re-check's refusal: %v", statErr)
+		}
+	})
+}
+
+// TestCleanMailboxApplyRefusesOnFreshServeClaim is the BLOCKER fix's other
+// half: same isolation technique, this time injecting a fresh serve lease
+// after the first check has already passed.
+func TestCleanMailboxApplyRefusesOnFreshServeClaim(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inbox := cfg.AgentInboxDir("abandoned")
+		mustWriteSeqInbox(t, inbox, "peer", 1, []byte("---\nfrom: peer\n---\n\nhi\n"))
+
+		var lease *loop.ServeLease
+		afterCleanMailboxFirstCheckHook = func() {
+			l, lerr := loop.AcquireServeLease(cfg, "abandoned")
+			if lerr != nil {
+				t.Fatal(lerr)
+			}
+			lease = l
+		}
+		t.Cleanup(func() {
+			afterCleanMailboxFirstCheckHook = nil
+			if lease != nil {
+				_ = loop.ReleaseLease(lease)
+			}
+		})
+
+		err = cmdClean([]string{"--mailbox", "abandoned", "--yes"})
+		if err == nil {
+			t.Fatal("expected the apply-path re-check to refuse once a fresh serve lease appears after the first check")
+		}
+		if !strings.Contains(err.Error(), "serve lease") {
+			t.Fatalf("err = %v, want a serve-lease refusal", err)
+		}
+		if _, statErr := os.Stat(inbox); statErr != nil {
+			t.Fatalf("mailbox was removed despite the re-check's refusal: %v", statErr)
+		}
+	})
+}
+
 // No registration row and a STALE serve claim (not absent — stale): the
 // removal must proceed. ClaimIsStale, not mere presence, is the guard.
 func TestCleanMailboxAllowsOnStaleServeClaim(t *testing.T) {
@@ -315,6 +404,88 @@ func TestCleanJSONShape(t *testing.T) {
 		}
 		if mailboxResult.Target != "abandoned" || mailboxResult.Applied || mailboxResult.Refused != "" {
 			t.Fatalf("mailbox JSON shape = %+v, want target=abandoned, applied=false, refused=\"\"", mailboxResult)
+		}
+	})
+}
+
+// TestCleanMailboxTypoTargetReportsNoMailbox is the review's should-fix: a
+// nonexistent/typo'd --mailbox target must not report "removed" (Applied:
+// true) just because os.RemoveAll on an absent path returns nil — it must
+// report distinctly that there was nothing to remove.
+func TestCleanMailboxTypoTargetReportsNoMailbox(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		out, err := captureStdout(t, func() error {
+			return cmdClean([]string{"--mailbox", "totally-made-up-typo", "--yes"})
+		})
+		if err != nil {
+			t.Fatalf("clean --mailbox on a nonexistent target err = %v, want nil", err)
+		}
+		if !strings.Contains(out, "no mailbox exists") {
+			t.Fatalf("output = %q, want a distinct no-mailbox-exists message", out)
+		}
+		if strings.Contains(out, "removed mailbox") {
+			t.Fatalf("output falsely claimed a removal: %q", out)
+		}
+	})
+}
+
+func TestCleanMailboxTypoTargetJSONReportsNotApplied(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		out, err := captureStdout(t, func() error {
+			return cmdClean([]string{"--mailbox", "totally-made-up-typo", "--yes", "--json"})
+		})
+		if err != nil {
+			t.Fatalf("clean --mailbox --json on a nonexistent target err = %v, want nil", err)
+		}
+		var result cleanMailboxResult
+		if jerr := json.Unmarshal([]byte(out), &result); jerr != nil {
+			t.Fatalf("--json did not decode: %v\noutput: %s", jerr, out)
+		}
+		if result.Applied {
+			t.Fatalf("result = %+v, want applied=false for a target with no mailbox", result)
+		}
+	})
+}
+
+// TestCleanMailboxApplyTakesTargetLock confirms the review's should-fix
+// actually landed: the re-check+removal now runs under
+// loop.WithAgentLock(target), which — via ensurePrivateDir — creates
+// state/<target>/ as an observable side effect. This is the same lock
+// publishRegistrationOnce (register.go) takes, so a concurrent revival of
+// target's registration is now serialized against this command instead of
+// racing it.
+func TestCleanMailboxApplyTakesTargetLock(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteSeqInbox(t, cfg.AgentInboxDir("abandoned"), "peer", 1, []byte("---\nfrom: peer\n---\n\nhi\n"))
+
+		if err := cmdClean([]string{"--mailbox", "abandoned", "--yes"}); err != nil {
+			t.Fatalf("clean --mailbox --yes err = %v", err)
+		}
+		if _, statErr := os.Stat(cfg.AgentStateDir("abandoned")); statErr != nil {
+			t.Fatalf("state dir for target not created — WithAgentLock(target) was not taken: %v", statErr)
+		}
+	})
+}
+
+// TestCleanOwedRequiresExplicitIdentity is the review's nit: --owed must not
+// fall through to the contextual-guess identity fallback — a destructive
+// command should error rather than guess whose obligations to prune.
+func TestCleanOwedRequiresExplicitIdentity(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		err := cmdClean([]string{"--owed"})
+		if err == nil {
+			t.Fatal("expected an error when --owed is given with no --as and no AGENTCHUTE_AGENT_ID")
+		}
+		if !strings.Contains(err.Error(), "explicit identity") {
+			t.Fatalf("err = %v, want an explicit-identity usage error", err)
 		}
 	})
 }

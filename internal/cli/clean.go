@@ -72,6 +72,14 @@ func cmdClean(args []string) error {
 	now := time.Now().UTC()
 
 	if owed {
+		// Destructive command: require EXPLICIT identity (--as or the env
+		// var), never the contextual-guess fallback resolveAgentID otherwise
+		// falls through to (review nit — B4 deletes that fallback fleet-wide
+		// soon, but this command shouldn't guess whose obligations to prune
+		// in the meantime).
+		if strings.TrimSpace(agentID) == "" && strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID")) == "" {
+			return cleanUsage(fmt.Errorf("--owed requires an explicit identity: pass --as <id> or set AGENTCHUTE_AGENT_ID"))
+		}
 		agentID, err = resolveAgentID(agentID, vendor, cfg)
 		if err != nil {
 			return err
@@ -109,6 +117,12 @@ func cmdCleanOwed(cfg *loop.Config, agentID string, apply, jsonOut bool, now tim
 			return fmt.Errorf("load owed ledger: %w", err)
 		}
 		expired := ledger.ExpiredOwed(now)
+		// Keyed by MsgID, not counted: RecordOwed's own API is idempotent per
+		// key and can never create two entries with the same (to,from,seq),
+		// so this can't observe a real duplicate through normal use. A
+		// hand-edited ledger with a duplicate key would have BOTH instances
+		// pruned together if either is expired — not reachable via the API,
+		// so left as a documented limitation rather than a count-based fix.
 		expiredKeys := make(map[loop.MsgID]bool, len(expired))
 		for _, e := range expired {
 			result.Pruned = append(result.Pruned, e.Key().RefString())
@@ -162,6 +176,10 @@ type cleanMailboxResult struct {
 	Applied  bool   `json:"applied"`
 }
 
+// afterCleanMailboxFirstCheckHook is a test-only seam; see its call site in
+// cmdCleanMailbox. nil in production.
+var afterCleanMailboxFirstCheckHook func()
+
 // cmdCleanMailbox deletes (or, without --yes, plans deleting) an abandoned
 // peer's entire inbox tree (including `.claimed` residue, which lives under
 // it — AgentClaimedDir is a child of AgentInboxDir). Refuses unless the
@@ -192,27 +210,74 @@ func cmdCleanMailbox(cfg *loop.Config, target string, apply, jsonOut bool, now t
 		return nil
 	}
 
-	// TOCTOU re-check immediately before the destructive removal: the plan
-	// above may be stale by the time --yes actually runs (a peer could have
-	// re-registered or re-acquired a lease in between).
-	if refusal := mailboxCleanRefusal(cfg, target, now); refusal != "" {
-		result.Refused = refusal
+	// Test seam: fires after the first (plan-time) refusal check has PASSED,
+	// before the apply-path re-check below. Lets a test inject a live signal
+	// into exactly the TOCTOU window this re-check exists to close, so a
+	// test can prove the RE-CHECK (not just the first check, which by then
+	// has already passed) is what refuses. nil in production.
+	if afterCleanMailboxFirstCheckHook != nil {
+		afterCleanMailboxFirstCheckHook()
+	}
+
+	// Re-check the guard AND perform the removal under the SAME
+	// WithAgentLock(target) critical section (review fix): publishRegistrationOnce
+	// (register.go) and AcquireServeLease's reclaim path already serialize on
+	// this exact per-agent lock, so a concurrent `boot`/`serve` for `target`
+	// that would recreate its registration is FORCED to wait until this
+	// whole recheck+remove completes — closing the window where the plan
+	// above (run before --yes takes any lock) goes stale between the
+	// unlocked recheck and the removal. (AcquireServeLease's FRESH-acquire
+	// fast path is intentionally unlocked — see lease.go — so this does not
+	// independently guard against a brand-new lease appearing mid-window;
+	// mailboxCleanRefusal's own serve-claim read still catches it as long as
+	// the claim file exists by the time the re-check runs.)
+	//
+	// Side effect, noted per review: WithAgentLock's ensurePrivateDir creates
+	// state/<target>/ even for a target that never had a registration at
+	// all (a pure typo). Harmless here — an empty directory for an id
+	// already established (by the FIRST refusal check, before any lock) to
+	// have no live registration or claim.
+	var removed bool
+	err := loop.WithAgentLock(cfg, target, func() error {
+		if refusal := mailboxCleanRefusal(cfg, target, now); refusal != "" {
+			result.Refused = refusal
+			return fmt.Errorf("clean --mailbox %s: guard re-check failed: %s", target, refusal)
+		}
+		if _, statErr := os.Lstat(inboxDir); statErr != nil {
+			if os.IsNotExist(statErr) {
+				return nil // nothing to remove; not an error, not a removal either.
+			}
+			return fmt.Errorf("stat mailbox %s: %w", target, statErr)
+		}
+		if err := os.RemoveAll(inboxDir); err != nil {
+			return fmt.Errorf("remove mailbox %s: %w", target, err)
+		}
+		removed = true
+		return nil
+	})
+	if err != nil {
+		// Emit whatever result state accumulated (Refused set for a guard
+		// failure, empty for a stat/remove error) before returning — every
+		// failure path reports structured output in --json mode, matching
+		// the plan-mode and first-refusal paths above (review nit: the
+		// original RemoveAll-failure path emitted no JSON at all).
 		if jsonOut {
 			if jerr := emitCleanJSON(result); jerr != nil {
 				return jerr
 			}
-		} else {
-			fmt.Printf("refused (guard re-check failed): %s\n", refusal)
+		} else if result.Refused != "" {
+			fmt.Printf("refused (guard re-check failed): %s\n", result.Refused)
 		}
-		return fmt.Errorf("clean --mailbox %s: guard re-check failed: %s", target, refusal)
+		return err
 	}
 
-	if err := os.RemoveAll(inboxDir); err != nil {
-		return fmt.Errorf("remove mailbox %s: %w", target, err)
-	}
-	result.Applied = true
+	result.Applied = removed
 	if jsonOut {
 		return emitCleanJSON(result)
+	}
+	if !removed {
+		fmt.Printf("no mailbox exists for %q: %s\n", target, inboxDir)
+		return nil
 	}
 	fmt.Printf("removed mailbox for %q: %s\n", target, inboxDir)
 	return nil
