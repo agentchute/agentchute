@@ -49,6 +49,20 @@ func mustWriteSeqInbox(t *testing.T, inboxDir, from string, seq uint64, content 
 	mustWrite(t, filepath.Join(inboxDir, name), content)
 }
 
+// mustWriteAgedInbox is mustWriteSeqInbox plus a back-dated mtime, for tests
+// exercising the check age banner (v2.5 plan A3, C18): age is sourced from
+// file mtime today (Message.Timestamp), so back-dating mtime is how a test
+// makes a message read as `age` old.
+func mustWriteAgedInbox(t *testing.T, inboxDir, from string, seq uint64, content []byte, age time.Duration) {
+	t.Helper()
+	mustWriteSeqInbox(t, inboxDir, from, seq, content)
+	path := filepath.Join(inboxDir, loop.MsgID{From: from, Seq: seq}.Filename())
+	aged := time.Now().Add(-age)
+	if err := os.Chtimes(path, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func withFakeTmuxTargets(t *testing.T, targets ...string) {
 	t.Helper()
 	old := tmuxProbeBinary
