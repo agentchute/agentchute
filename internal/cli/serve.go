@@ -30,6 +30,14 @@ const (
 	codexEnhancedEnter  = "\x1b[13;1u"
 )
 
+// recueInterval bounds how often the runner re-cues while unread mail sits in
+// the inbox and the last cue hasn't been consumed (v2.5 plan A2 / decision
+// §8). Package var (not a const) ONLY so tests can shrink it (same pattern as
+// seqRecentWindow/liveWindow/leaseTimeout); production keeps 60s. Do not
+// shrink below ~10s in production: it must stay well above IdleGrace so
+// re-cues never chase their own echo.
+var recueInterval = 60 * time.Second
+
 type interruptPolicy string
 
 const (
@@ -217,13 +225,13 @@ type runnerRuntime struct {
 	pollWG             sync.WaitGroup
 	shutdownRequested  atomic.Bool
 	pendingWake        bool
+	wasPending         bool // previous tick's hasPendingInboxMail, for period-start detection (A2/C16-C17)
 	lastInjection      time.Time
 	lastPoll           time.Time
-	seenInboxFiles     map[string]struct{}
 	lastOutputUnixNano atomic.Int64
 	lastInputUnixNano  atomic.Int64
 
-	wakeCh chan struct{}
+	wakeCh chan bool // true = re-cue (retry), false = first cue of a pending period
 	stopCh chan struct{}
 }
 
@@ -388,19 +396,18 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	}
 
 	rt := &runnerRuntime{
-		cfg:            cfg,
-		opts:           opts,
-		cwd:            cwd,
-		started:        time.Now().UTC(),
-		childPID:       cmd.Process.Pid,
-		cmd:            cmd,
-		ptmx:           ptmx,
-		lease:          lease,
-		done:           done,
-		diag:           diag,
-		wakeCh:         make(chan struct{}, 1),
-		stopCh:         make(chan struct{}),
-		seenInboxFiles: make(map[string]struct{}),
+		cfg:      cfg,
+		opts:     opts,
+		cwd:      cwd,
+		started:  time.Now().UTC(),
+		childPID: cmd.Process.Pid,
+		cmd:      cmd,
+		ptmx:     ptmx,
+		lease:    lease,
+		done:     done,
+		diag:     diag,
+		wakeCh:   make(chan bool, 1),
+		stopCh:   make(chan struct{}),
 	}
 	nowUnix := time.Now().UnixNano()
 	rt.lastOutputUnixNano.Store(nowUnix)
@@ -529,18 +536,18 @@ func (r *runnerRuntime) pollLoop() {
 	defer r.pollWG.Done()
 	ticker := time.NewTicker(time.Duration(r.opts.IntervalSeconds) * time.Second)
 	defer ticker.Stop()
-	r.pollOnce(false)
+	r.pollOnce()
 	for {
 		select {
 		case <-r.stopCh:
 			return
 		case <-ticker.C:
-			r.pollOnce(true)
+			r.pollOnce()
 		}
 	}
 }
 
-func (r *runnerRuntime) pollOnce(enqueueNew bool) {
+func (r *runnerRuntime) pollOnce() {
 	now := time.Now().UTC()
 	// Fence verify + heartbeat the serve lease (protocol-v2 §6b). ErrFenced means
 	// we were RECLAIMED — another serve now owns this id — so we must stop
@@ -559,38 +566,28 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	if err := loop.UpdateLastSeen(r.cfg, r.opts.AgentID, now); err != nil {
 		r.logf("agentchute serve: update last_seen: %v\n", err)
 	}
-	// Track a SEEN-filename snapshot across BOTH parsed messages and skipped
-	// (malformed/unparseable) files. Lexicographic-newest tracking misses two
-	// real cases: (1) malformed files never matched a Message at all yet gate
-	// blocks until `check` quarantines them, and (2) a valid message whose
-	// sender-encoded filename timestamp sorts BEFORE the last observed name
-	// (clock skew, back-dated send) would never become the "newest". Any
-	// filename not already in the set is unseen mail and must enqueue a wake.
-	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(r.cfg.AgentInboxDir(r.opts.AgentID))
-	if err != nil && !errors.Is(err, loop.ErrInboxMissing) {
-		r.logf("agentchute serve: list inbox: %v\n", err)
-	}
+
+	// Re-cue predicate (v2.5 plan A2, C16/C17): cue whenever mail is pending —
+	// including mail already present at startup, and skipped/malformed files
+	// (gate blocks until `check` quarantines them). No per-filename seen-set:
+	// a period starts when hasPendingInboxMail transitions false->true, and
+	// gets an immediate, non-recue cue attempt (so a genuinely new arrival
+	// gets the configured --interrupt-policy treatment). Once a wake is
+	// already in flight (pendingWake), we do not re-enqueue — enqueueWake
+	// itself guards that. Once the period's mail has actually been injected
+	// (lastInjection set, pendingWake cleared), later re-cues within the same
+	// still-pending period fire every recueInterval, recue=true, which forces
+	// after-idle semantics regardless of --interrupt-policy (C17).
+	pending := r.hasPendingInboxMail()
 	r.mu.Lock()
-	if r.seenInboxFiles == nil {
-		r.seenInboxFiles = make(map[string]struct{})
-	}
-	hasUnseen := false
-	for _, m := range msgs {
-		if _, ok := r.seenInboxFiles[m.Filename]; !ok {
-			r.seenInboxFiles[m.Filename] = struct{}{}
-			hasUnseen = true
-		}
-	}
-	for _, name := range skipped {
-		if _, ok := r.seenInboxFiles[name]; !ok {
-			r.seenInboxFiles[name] = struct{}{}
-			hasUnseen = true
-		}
-	}
+	periodStart := pending && !r.wasPending
+	r.wasPending = pending
+	lastInjection := r.lastInjection
 	r.mu.Unlock()
-	if hasUnseen && enqueueNew {
-		r.enqueueWake()
+	if pending && (periodStart || lastInjection.IsZero() || now.Sub(lastInjection) >= recueInterval) {
+		r.enqueueWake(!periodStart)
 	}
+
 	r.mu.Lock()
 	r.lastPoll = now
 	r.mu.Unlock()
@@ -599,15 +596,32 @@ func (r *runnerRuntime) pollOnce(enqueueNew bool) {
 	}
 }
 
-func (r *runnerRuntime) enqueueWake() {
+// enqueueWake queues a wake for injectLoop. recue=false is the first cue of a
+// pending period (the configured --interrupt-policy applies); recue=true is a
+// retry of still-unread mail (always waits for idle, C17).
+//
+// Gated on pendingWake (not just the channel's own non-blocking send): once a
+// wake is queued, pollOnce must not re-enqueue while it is still in flight —
+// including the window where injectLoop has already RECEIVED the value from
+// wakeCh (so the channel itself is empty again) but is still blocked inside
+// waitForInjectionWindow waiting for idle. A bare non-blocking send would
+// succeed and queue a redundant second wake during that window; gating on
+// pendingWake closes it and, as a side effect, also means a queued recue=false
+// can never be overwritten by a later recue=true (nothing gets queued at all
+// while pendingWake is set).
+func (r *runnerRuntime) enqueueWake(recue bool) {
 	if r.shutdownRequested.Load() {
 		return
 	}
 	r.mu.Lock()
+	if r.pendingWake {
+		r.mu.Unlock()
+		return
+	}
 	r.pendingWake = true
 	r.mu.Unlock()
 	select {
-	case r.wakeCh <- struct{}{}:
+	case r.wakeCh <- recue:
 	default:
 	}
 	_ = r.saveState()
@@ -618,8 +632,8 @@ func (r *runnerRuntime) injectLoop() {
 		select {
 		case <-r.stopCh:
 			return
-		case <-r.wakeCh:
-			if r.waitForInjectionWindow() {
+		case recue := <-r.wakeCh:
+			if r.waitForInjectionWindow(recue) {
 				r.injectIfPending()
 			}
 		}
@@ -632,8 +646,17 @@ func (r *runnerRuntime) injectLoop() {
 // already claimed (moved inbox -> .claimed) by the time this cue reaches the
 // front of injectLoop, producing a spurious "check inbox" prompt into an
 // already-empty inbox. Single call site (the only caller of injectPrompt).
+//
+// The skip path clears pendingWake (v2.5 plan A2): today's code left it
+// stuck true forever when the inbox drained out from under a queued wake —
+// runner.json would report pending_wake:true against an empty inbox
+// indefinitely, since only a successful injectPrompt cleared it.
 func (r *runnerRuntime) injectIfPending() {
 	if !r.hasPendingInboxMail() {
+		r.mu.Lock()
+		r.pendingWake = false
+		r.mu.Unlock()
+		_ = r.saveState()
 		return
 	}
 	r.injectPrompt()
@@ -652,7 +675,13 @@ func (r *runnerRuntime) hasPendingInboxMail() bool {
 	return len(msgs) > 0 || len(skipped) > 0
 }
 
-func (r *runnerRuntime) waitForInjectionWindow() bool {
+// waitForInjectionWindow blocks until it is safe to inject, or false if the
+// runner is shutting down. recue=true (a retry of an already-cued, still
+// unread pending period) always waits for idle regardless of
+// --interrupt-policy (C17): the Ctrl-C escalation of after-grace/always
+// applies only to the first injection of a pending period — repeated Ctrl-C
+// every recueInterval would abuse a busy wrapper.
+func (r *runnerRuntime) waitForInjectionWindow(recue bool) bool {
 	started := time.Now()
 	for {
 		if r.shutdownRequested.Load() {
@@ -661,19 +690,21 @@ func (r *runnerRuntime) waitForInjectionWindow() bool {
 		if r.isIdle() {
 			return true
 		}
-		switch r.opts.InterruptPolicy {
-		case interruptAfterIdle:
-			// Keep waiting.
-		case interruptAfterGrace:
-			if time.Since(started) >= r.opts.BusyGrace {
+		if !recue {
+			switch r.opts.InterruptPolicy {
+			case interruptAfterIdle:
+				// Keep waiting.
+			case interruptAfterGrace:
+				if time.Since(started) >= r.opts.BusyGrace {
+					_ = r.writePTY([]byte{0x03})
+					time.Sleep(300 * time.Millisecond)
+					return true
+				}
+			case interruptAlways:
 				_ = r.writePTY([]byte{0x03})
 				time.Sleep(300 * time.Millisecond)
 				return true
 			}
-		case interruptAlways:
-			_ = r.writePTY([]byte{0x03})
-			time.Sleep(300 * time.Millisecond)
-			return true
 		}
 		select {
 		case <-r.stopCh:

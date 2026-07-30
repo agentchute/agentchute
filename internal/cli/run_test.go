@@ -204,7 +204,7 @@ func TestRunnerPollShutsDownWhenFenced(t *testing.T) {
 	}
 	mustWrite(t, filepath.Join(cfg.AgentStateDir("runner-test"), "serve.claim"), data)
 
-	rt.pollOnce(true)
+	rt.pollOnce()
 
 	if !rt.shutdownRequested.Load() {
 		t.Fatal("fenced runner did not request shutdown on the next tick")
@@ -244,7 +244,7 @@ func TestRunnerFencedShutdownLogsAndBuffersFatal(t *testing.T) {
 	mustWrite(t, filepath.Join(cfg.AgentStateDir("runner-test"), "serve.claim"), data)
 
 	stderr := captureStderr(t, func() {
-		rt.pollOnce(true)
+		rt.pollOnce()
 	})
 	if stderr != "" {
 		t.Fatalf("fenced shutdown wrote raw stderr: %q", stderr)
@@ -404,22 +404,30 @@ func newPollTestRuntime(t *testing.T, cfg *loop.Config, agentID string) *runnerR
 		cfg:     cfg,
 		opts:    runnerOptions{AgentID: agentID, Vendor: "test", IntervalSeconds: 5},
 		started: time.Now().UTC(),
-		wakeCh:  make(chan struct{}, 1),
+		wakeCh:  make(chan bool, 1),
 		stopCh:  make(chan struct{}),
 	}
 	return rt
 }
 
 func (r *runnerRuntime) drainWake() bool {
+	_, had := r.drainWakeRecue()
+	return had
+}
+
+// drainWakeRecue drains a queued wake (if any) and reports its recue value.
+// had=false means no wake was queued (pendingWake was already false); recue
+// is meaningless when had is false.
+func (r *runnerRuntime) drainWakeRecue() (recue bool, had bool) {
 	r.mu.Lock()
-	pending := r.pendingWake
+	had = r.pendingWake
 	r.pendingWake = false
 	r.mu.Unlock()
 	select {
-	case <-r.wakeCh:
+	case recue = <-r.wakeCh:
 	default:
 	}
-	return pending
+	return recue, had
 }
 
 func captureStderr(t *testing.T, fn func()) string {
@@ -461,10 +469,10 @@ func TestRunnerPoll_WakesOnMalformedFile(t *testing.T) {
 	}
 	rt := newPollTestRuntime(t, cfg, "runner-test")
 
-	// First poll seeds the seen-set with an empty inbox (no wake).
-	rt.pollOnce(false)
+	// First poll: empty inbox, no wake.
+	rt.pollOnce()
 	if rt.drainWake() {
-		t.Fatal("unexpected wake on seeding poll of empty inbox")
+		t.Fatal("unexpected wake on poll of empty inbox")
 	}
 
 	// A hand-written file with an unrecognized (non-seq) name — parses as
@@ -472,15 +480,20 @@ func TestRunnerPoll_WakesOnMalformedFile(t *testing.T) {
 	malformed := filepath.Join(cfg.AgentInboxDir("runner-test"), "not-a-seq-name.md")
 	mustWrite(t, malformed, []byte("body"))
 
-	rt.pollOnce(true)
+	rt.pollOnce()
 	if !rt.drainWake() {
 		t.Fatal("runner did not wake on a malformed (skipped) inbox file")
 	}
 }
 
-// A valid new file whose seq filename sorts BEFORE the last-observed filename
-// (a lower seq landing after a higher one) must still wake the runner. The old
-// lexicographic-newest tracking would miss such out-of-order mail.
+// A2 (v2.5 plan): the runner's first ("seeding") poll no longer silently
+// snapshots pre-existing mail into a seen-set before deciding whether to wake
+// — startup mail cues immediately, same as mail arriving mid-session. This
+// inverts the pre-A2 assertion (INVERT per the plan). The scenario this test
+// used to guard against (a lexicographic-older seq filename landing after a
+// newer one, defeating "newest observed" tracking) no longer applies: pollOnce
+// has no per-filename seen-set left to fool, only a pending/not-pending
+// (hasPendingInboxMail) check.
 func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
@@ -490,22 +503,17 @@ func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 	rt := newPollTestRuntime(t, cfg, "runner-test")
 	inbox := cfg.AgentInboxDir("runner-test")
 
-	// A higher-seq message is already present and observed on the seeding poll.
+	// A message is already present before the runner ever polls.
 	newer := filepath.Join(inbox, loop.MsgID{From: "codex", Seq: 5}.Filename())
 	mustWrite(t, newer, []byte("newer"))
-	rt.pollOnce(false)
-	if rt.drainWake() {
-		t.Fatal("unexpected wake on seeding poll")
+
+	rt.pollOnce()
+	recue, had := rt.drainWakeRecue()
+	if !had {
+		t.Fatal("runner did not wake on pre-existing (startup) inbox mail")
 	}
-
-	// A valid message whose seq filename sorts BEFORE the observed newest (a
-	// lower seq landing after a higher one).
-	backdated := filepath.Join(inbox, loop.MsgID{From: "codex", Seq: 2}.Filename())
-	mustWrite(t, backdated, []byte("back-dated"))
-
-	rt.pollOnce(true)
-	if !rt.drainWake() {
-		t.Fatal("runner did not wake on a valid back-dated inbox file")
+	if recue {
+		t.Fatal("startup cue was recue=true, want the first-of-period recue=false")
 	}
 }
 
@@ -514,6 +522,187 @@ func TestRunnerPoll_WakesOnBackdatedFilename(t *testing.T) {
 // registration. Gate 6a (pull-only): TestRunnerPollLoop_WritesReachableAt was
 // removed. pollOnce no longer reproves or records ReachableAt (the own-wake
 // reprove call at serve.go's poll tick was deleted), so there is nothing to assert.
+
+// TestRunnerRecuesAfterInterval proves the C16 re-cue predicate end to end:
+// the first poll on newly-pending mail cues immediately (recue=false); an
+// immediate re-poll (interval not elapsed, mail still pending) does not
+// re-queue; once recueInterval elapses with the mail still unread, the next
+// poll re-cues with recue=true.
+func TestRunnerRecuesAfterInterval(t *testing.T) {
+	origInterval := recueInterval
+	recueInterval = 50 * time.Millisecond
+	t.Cleanup(func() { recueInterval = origInterval })
+
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	mustWrite(t, filepath.Join(cfg.AgentInboxDir("runner-test"), "not-a-seq-name.md"), []byte("body"))
+
+	// First poll: period start, immediate cue, recue=false.
+	rt.pollOnce()
+	recue, had := rt.drainWakeRecue()
+	if !had || recue {
+		t.Fatalf("first poll: had=%v recue=%v, want had=true recue=false", had, recue)
+	}
+
+	// Simulate the cue having actually been injected, as injectPrompt would.
+	rt.mu.Lock()
+	rt.lastInjection = time.Now().UTC()
+	rt.pendingWake = false
+	rt.mu.Unlock()
+
+	// Mail is still pending and the (shrunken) interval has not elapsed: no
+	// re-cue yet.
+	rt.pollOnce()
+	if rt.drainWake() {
+		t.Fatal("re-cued before recueInterval elapsed")
+	}
+
+	// After the interval elapses, the next poll re-cues, recue=true.
+	time.Sleep(recueInterval + 30*time.Millisecond)
+	rt.pollOnce()
+	recue, had = rt.drainWakeRecue()
+	if !had || !recue {
+		t.Fatalf("after interval: had=%v recue=%v, want had=true recue=true", had, recue)
+	}
+}
+
+// TestRunnerRecueWaitsForIdle proves C17: a re-cue (recue=true) must NEVER
+// escalate via Ctrl-C, even under --interrupt-policy=always, while the
+// wrapper is busy — it waits for idle unconditionally. The Ctrl-C escalation
+// is reserved for the first injection of a pending period (recue=false).
+func TestRunnerRecueWaitsForIdle(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	rt.opts.InterruptPolicy = interruptAlways
+	rt.opts.IdleGrace = time.Hour // never idle within this test's lifetime
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+
+	rt.ptmx = pw
+	rt.lastOutputUnixNano.Store(time.Now().UnixNano()) // force "busy"
+
+	done := make(chan bool, 1)
+	go func() { done <- rt.waitForInjectionWindow(true) }()
+
+	select {
+	case <-done:
+		t.Fatal("waitForInjectionWindow(recue=true) returned while busy under always policy — must wait for idle, not escalate")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	close(rt.stopCh)
+	if got := <-done; got {
+		t.Fatal("waitForInjectionWindow should return false on shutdown, not true")
+	}
+
+	if err := pw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	gotBytes, err := io.ReadAll(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotBytes) != 0 {
+		t.Fatalf("waitForInjectionWindow(recue=true) wrote %q, want no bytes (no Ctrl-C escalation on a re-cue)", gotBytes)
+	}
+}
+
+// TestRunnerStartupMailCues proves the wiring, not just the pollOnce unit:
+// pollLoop's own first (pre-ticker) call cues mail that was present before
+// the runner ever started, with recue=false (the first-of-period treatment).
+func TestRunnerStartupMailCues(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	rt.opts.IntervalSeconds = 5 // ticker must not fire during this test
+	inbox := cfg.AgentInboxDir("runner-test")
+	mustWriteSeqInbox(t, inbox, "peer", 1, []byte("---\nfrom: peer\nto: runner-test\n---\n\nhi\n"))
+
+	rt.pollWG.Add(1)
+	go rt.pollLoop()
+	t.Cleanup(func() {
+		close(rt.stopCh)
+		rt.pollWG.Wait()
+	})
+
+	select {
+	case recue := <-rt.wakeCh:
+		if recue {
+			t.Fatal("startup cue was recue=true, want the first-of-period recue=false")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pollLoop did not cue pre-existing (startup) mail")
+	}
+}
+
+// TestInjectIfPendingSkipClearsPendingWake proves the stale-flag fix (A2):
+// when injectIfPending's re-check finds the inbox already drained (the M4
+// claim race), it must clear pendingWake — not leave runner.json reporting
+// pending_wake:true against an empty inbox forever.
+func TestInjectIfPendingSkipClearsPendingWake(t *testing.T) {
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := newPollTestRuntime(t, cfg, "runner-test")
+	rt.diag = newRunnerDiagnostics(cfg, "runner-test")
+	defer rt.diag.close()
+
+	inbox := cfg.AgentInboxDir("runner-test")
+	mustWriteSeqInbox(t, inbox, "peer", 1, []byte("---\nfrom: peer\nto: runner-test\n---\n\nhi\n"))
+	msgs, _, err := loop.ListInboxMessagesWithSkipped(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("seed: got %d inbox messages, want 1", len(msgs))
+	}
+	// Simulate the claim race: `check` (from an earlier cue) claims the mail
+	// before THIS wake gets to inject.
+	if _, err := loop.ClaimMessage(msgs[0], cfg.AgentClaimedDir("runner-test")); err != nil {
+		t.Fatal(err)
+	}
+
+	rt.mu.Lock()
+	rt.pendingWake = true
+	rt.mu.Unlock()
+	if err := rt.saveState(); err != nil {
+		t.Fatal(err)
+	}
+
+	rt.injectIfPending()
+
+	rt.mu.Lock()
+	stillPending := rt.pendingWake
+	rt.mu.Unlock()
+	if stillPending {
+		t.Fatal("injectIfPending's skip path left pendingWake stuck true on an already-drained inbox")
+	}
+
+	got, err := loop.LoadRunnerState(cfg, "runner-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PendingWake {
+		t.Fatal("runner.json still shows pending_wake:true after an inject attempt on a drained inbox")
+	}
+}
 
 func setupShortRunFixture(t *testing.T) string {
 	t.Helper()
