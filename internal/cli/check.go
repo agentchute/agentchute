@@ -12,6 +12,19 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
+// oldMailBannerAfter is the age threshold (v2.5 plan A3, C18) past which
+// `check` announces a message's age above its body. Decision §4: the tool
+// surfaces age loudly, the reader judges relevance — no expiry, no auto-action.
+const oldMailBannerAfter = 24 * time.Hour
+
+// messageAge returns how long ago msg was sent, relative to now. Age source
+// today is always msg.Timestamp (file mtime) — the filename-timestamp
+// grammar doesn't exist yet (v2.5 plan B7). This is the one place plan slice
+// B6 edits to add the new-format filename-timestamp branch alongside mtime.
+func messageAge(msg loop.Message, now time.Time) time.Duration {
+	return now.Sub(msg.Timestamp)
+}
+
 func cmdCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -148,9 +161,13 @@ func cmdCheck(args []string) error {
 		displayConsumed(cfg, agentID, msg, content, true, now)
 	}
 
+	// (v2.5 plan A3, review fix): the empty-inbox line no longer returns
+	// early — it must fall through to the claim loop below (a no-op when
+	// msgs is empty) and on to the C19 prune offer at the very end, which
+	// needs to run AFTER any obligation-discharging replies in THIS turn's
+	// own claim loop have already been processed (see that comment).
 	if len(msgs) == 0 && len(redelivered) == 0 {
 		fmt.Println("(inbox empty)")
-		return nil
 	}
 
 	claimed := 0
@@ -206,7 +223,7 @@ func cmdCheck(args []string) error {
 			// flip (ClearOwed) is a state mutation too, so displayConsumed's
 			// no-side-effect display is appropriate here — we pass a read-only
 			// flag below.
-			displayConsumedReadOnly(agentID, msg, content)
+			displayConsumedReadOnly(agentID, msg, content, now)
 			claimed++
 			continue
 		}
@@ -234,6 +251,25 @@ func cmdCheck(args []string) error {
 		}
 	}
 
+	// C19 (v2.5 plan A3): offer this agent's own expired reply obligations
+	// for pruning. Print-only — never auto-removes; `agentchute clean --owed`
+	// (plan A4) is the explicit, human-triggered command that actually
+	// prunes them. Deliberately placed AFTER the claim loop above (review
+	// fix): a reply consumed by THIS turn can discharge (ClearOwed) the very
+	// obligation being offered here — computing the offer any earlier would
+	// print a stale obligation moments before the same turn clears it. Not
+	// gated on --no-archive or on there being any mail to claim this turn
+	// (the empty-inbox branch above falls through rather than returning), so
+	// a returning agent with no new mail still sees a weeks-old obligation.
+	if owed, oerr := loop.LoadOwedLedger(cfg, agentID); oerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: owed-reply ledger is corrupt or unreadable; inspect `state/%s/owed.json`\n", agentID)
+	} else {
+		for _, e := range owed.ExpiredOwed(now) {
+			fmt.Printf("stale reply obligation (%s, expired %s ago) — prune with: agentchute clean --owed --as %s\n",
+				e.Key().RefString(), now.Sub(e.By).Round(time.Second), agentID)
+		}
+	}
+
 	return nil
 }
 
@@ -248,7 +284,7 @@ func cmdCheck(args []string) error {
 //     reply must carry as --reply-to / in_reply_to so the asker can clear their
 //     obligation when they consume our reply.
 func displayConsumed(cfg *loop.Config, agentID string, msg loop.Message, content []byte, redelivered bool, now time.Time) {
-	printConsumedBody(msg, content, redelivered)
+	printConsumedBody(msg, content, redelivered, now)
 
 	fm := loop.ParseMessageFrontmatter(content)
 
@@ -269,12 +305,20 @@ func displayConsumed(cfg *loop.Config, agentID string, msg loop.Message, content
 
 // displayConsumedReadOnly is the --no-archive (dry-run) display: it prints the
 // body and the reply ref but performs NO state mutation (no ClearOwed).
-func displayConsumedReadOnly(agentID string, msg loop.Message, content []byte) {
-	printConsumedBody(msg, content, false)
+func displayConsumedReadOnly(agentID string, msg loop.Message, content []byte, now time.Time) {
+	printConsumedBody(msg, content, false, now)
 	printReplyRefIfRequired(agentID, msg, loop.ParseMessageFrontmatter(content))
 }
 
-func printConsumedBody(msg loop.Message, content []byte, redelivered bool) {
+// printConsumedBody prints the C18 age banner (v2.5 plan A3) above the
+// header when msg is older than oldMailBannerAfter, then the header and body
+// exactly as before. The banner is program-generated text (never peer
+// content), so it is printed directly and is NOT run through
+// sanitizeControlBytes — only the message body needs that treatment.
+func printConsumedBody(msg loop.Message, content []byte, redelivered bool, now time.Time) {
+	if age := messageAge(msg, now); age > oldMailBannerAfter {
+		fmt.Printf("[!] this message is %d days old (sent %s)\n", int(age.Hours()/24), msg.Timestamp.UTC().Format("2006-01-02"))
+	}
 	if redelivered {
 		fmt.Printf("---- %s [REDELIVERED — uncommitted from a prior turn; `agentchute ack` to commit] ----\n", msg.Filename)
 	} else {
