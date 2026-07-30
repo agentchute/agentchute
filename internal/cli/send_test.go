@@ -31,11 +31,11 @@ func TestSendFailsForUnregisteredRecipient(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error sending to unregistered recipient (missing inbox dir), got nil")
 		}
-		if !strings.Contains(err.Error(), "recipient \"recipient\" is not registered") {
+		if got, want := err.Error(), `unknown agent "recipient": no inbox/registration. Check the id (agentchute status).`; got != want {
 			t.Errorf("unexpected error message: %v", err)
 		}
-		if !strings.Contains(err.Error(), "run agentchute register --as recipient first") {
-			t.Errorf("error message missing suggestion: %v", err)
+		if strings.Contains(err.Error(), "register") {
+			t.Errorf("error message coaches recipient registration: %v", err)
 		}
 	})
 }
