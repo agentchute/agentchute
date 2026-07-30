@@ -161,28 +161,13 @@ func cmdCheck(args []string) error {
 		displayConsumed(cfg, agentID, msg, content, true, now)
 	}
 
-	// C19 (v2.5 plan A3): offer this agent's own expired reply obligations
-	// for pruning. Print-only — never auto-removes; `agentchute clean --owed`
-	// (plan A4) is the explicit, human-triggered command that actually
-	// prunes them. Placed here, ahead of the "(inbox empty)" early return
-	// below (deviation from the slice's literal anchor point, disclosed in
-	// the PR): the anchor point cited in the plan sits AFTER that return, so
-	// an empty inbox with a stale obligation would never see the offer —
-	// this is read-only and not gated on --no-archive or on there being any
-	// mail to claim this turn, so it runs unconditionally once self is known
-	// to be registered.
-	if owed, oerr := loop.LoadOwedLedger(cfg, agentID); oerr != nil {
-		fmt.Fprintf(os.Stderr, "warning: owed-reply ledger is corrupt or unreadable; inspect `state/%s/owed.json`\n", agentID)
-	} else {
-		for _, e := range owed.ExpiredOwed(now) {
-			fmt.Printf("stale reply obligation (%s, expired %s ago) — prune with: agentchute clean --owed --as %s\n",
-				e.Key().RefString(), now.Sub(e.By).Round(time.Second), agentID)
-		}
-	}
-
+	// (v2.5 plan A3, review fix): the empty-inbox line no longer returns
+	// early — it must fall through to the claim loop below (a no-op when
+	// msgs is empty) and on to the C19 prune offer at the very end, which
+	// needs to run AFTER any obligation-discharging replies in THIS turn's
+	// own claim loop have already been processed (see that comment).
 	if len(msgs) == 0 && len(redelivered) == 0 {
 		fmt.Println("(inbox empty)")
-		return nil
 	}
 
 	claimed := 0
@@ -263,6 +248,25 @@ func cmdCheck(args []string) error {
 		if err := loop.UpdateLastActive(cfg, agentID, now); err != nil {
 			// Non-fatal: messages are claimed; only the timestamp update lost.
 			fmt.Fprintf(os.Stderr, "warning: failed to update last_active (%v)\n", err)
+		}
+	}
+
+	// C19 (v2.5 plan A3): offer this agent's own expired reply obligations
+	// for pruning. Print-only — never auto-removes; `agentchute clean --owed`
+	// (plan A4) is the explicit, human-triggered command that actually
+	// prunes them. Deliberately placed AFTER the claim loop above (review
+	// fix): a reply consumed by THIS turn can discharge (ClearOwed) the very
+	// obligation being offered here — computing the offer any earlier would
+	// print a stale obligation moments before the same turn clears it. Not
+	// gated on --no-archive or on there being any mail to claim this turn
+	// (the empty-inbox branch above falls through rather than returning), so
+	// a returning agent with no new mail still sees a weeks-old obligation.
+	if owed, oerr := loop.LoadOwedLedger(cfg, agentID); oerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: owed-reply ledger is corrupt or unreadable; inspect `state/%s/owed.json`\n", agentID)
+	} else {
+		for _, e := range owed.ExpiredOwed(now) {
+			fmt.Printf("stale reply obligation (%s, expired %s ago) — prune with: agentchute clean --owed --as %s\n",
+				e.Key().RefString(), now.Sub(e.By).Round(time.Second), agentID)
 		}
 	}
 
