@@ -42,14 +42,15 @@ to mean to be more than a claim.
 | **D1** atomic visibility | a mid-delivery message is never observable | readers acting on a half-written message |
 | **D2** no-overwrite | N concurrent deliveries all survive | a clobber silently dropping a message under load |
 | **O1** per-sender FIFO | one sender's order is preserved; cross-sender is advisory | reordering a sender's own messages / claiming a false total order |
-| **C1** at-least-once + idempotent | crash after act re-delivers; `msg_key` dedups | at-most-once consume losing a message on a crash |
+| **C1** consume at-least-once | crash after act re-delivers (handler must be idempotent; no protocol receiver-side dedup backstop) | at-most-once consume losing a message on a crash |
 | **E1** envelope | unknown fields ignored; `From` required | a future field breaking old receivers; an anonymous message |
 | **B1** privacy | inbox keeps bodies private; log does not | — (this one *encodes the fork*, see below) |
 
 `go test -v` shows R1–E1 simply passing on both models. **C1** is the
 load-bearing one: it injects a crash at the worst moment (after the handler
-acts, before the consume commits) and asserts re-delivery, then shows `msg_key`
-collapsing the duplicate.
+acts, before the consume commits) and asserts re-delivery. Any collapse of a
+duplicate effect is the handler's job (idempotency covenant); the suite may demo
+an opt-in key helper, but that is not a protocol receiver-side dedup backstop.
 
 ## Vector format
 

@@ -2,14 +2,16 @@ package conformance
 
 import "testing"
 
-// TestInbox_PostConsumeResendRelandsThenKeyDedup pins the corrected post-consume
+// TestInbox_PostConsumeResendRelandsThenKeyDedup pins post-consume delivery
 // semantics for the INBOX binding: once a message is consumed+committed the inbox
 // slot is freed, so a later resend of the SAME (to,from,seq) must RE-LAND — it is
 // NOT suppressed by delivery (EEXIST) dedup forever. This matches the real FS,
-// where EEXIST-as-no-op holds only PRE-consume/pre-archive; after the file is
-// archived a re-landed copy relies on the RECEIVER's Key/Deduper to collapse the
-// duplicate EFFECT. (Before the fix the in-memory `delivered` map deduped forever,
-// over-optimistically green-lighting a post-consume dedup the FS does not provide.)
+// where EEXIST-as-no-op holds only PRE-consume/pre-archive. There is no protocol
+// receiver-side dedup backstop after archive; a re-land is a second delivery.
+// The Key/Deduper stanza below only demonstrates an OPT-IN handler-side aid that
+// can collapse effects by key — not a substrate or protocol backstop. (Before a
+// prior fix the in-memory `delivered` map deduped forever, over-optimistically
+// green-lighting a post-consume delivery dedup the FS does not provide.)
 //
 // Inbox-only on purpose: the shared-log binding legitimately retains a committed
 // delivery identity forever (the record stays in the append-only log), so this is
@@ -39,8 +41,9 @@ func TestInbox_PostConsumeResendRelandsThenKeyDedup(t *testing.T) {
 		t.Fatalf("post-consume resend must be visible again (re-land); saw %d — delivery dedup wrongly suppressed it", len(got))
 	}
 
-	// The RECEIVER's Key/Deduper is what collapses the duplicate EFFECT across the
-	// original consume and the re-landed resend (both Key k1) -> exactly one effect.
+	// OPT-IN handler aid only (not a protocol backstop): Key/Deduper can collapse
+	// the duplicate EFFECT across the original consume and the re-landed resend
+	// (both Key k1) -> exactly one effect when the handler chooses to use it.
 	d := NewDeduper()
 	effects := 0
 	apply := func(m Msg) error {
@@ -50,6 +53,6 @@ func TestInbox_PostConsumeResendRelandsThenKeyDedup(t *testing.T) {
 	_, cerr := b.Consume("bob", apply)
 	must(t, cerr) // the re-landed resend
 	if effects != 1 {
-		t.Fatalf("receiver Key dedup must collapse original + post-consume resend to ONE effect; got %d", effects)
+		t.Fatalf("opt-in Key/Deduper must collapse original + post-consume resend to ONE effect; got %d", effects)
 	}
 }

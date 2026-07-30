@@ -13,6 +13,14 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
+// afterSendPreflightHook is a test seam for the recipient-disappears race:
+// preflight has passed and the body has been read, but delivery has not begun.
+var afterSendPreflightHook func()
+
+var sendSeqMessageWithCommit = loop.SendSeqMessageWithCommit
+
+var sendStdin = os.Stdin
+
 // cmdSend writes an inbound message to a recipient's inbox. Pull-only: delivery
 // is unconditional (write the inbox file); senders never poke a wake target.
 // Messaging extensions (AGENTCHUTE.md §6 reply obligations):
@@ -48,6 +56,15 @@ func cmdSend(args []string) error {
 	if fs.NArg() != 0 {
 		return sendUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
+	var replyBySet, replyToSet bool
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "reply-by":
+			replyBySet = true
+		case "reply-to":
+			replyToSet = true
+		}
+	})
 
 	toID = strings.TrimSpace(toID)
 	if toID == "" {
@@ -89,19 +106,39 @@ func cmdSend(args []string) error {
 		return fmt.Errorf("--from: %w", err)
 	}
 
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse invalid
+	// sender or recipient state before reading stdin, so a piped body remains
+	// untouched on every preflight failure.
+	selfPath := cfg.AgentRegistrationPath(fromID)
+	if _, err := os.Stat(selfPath); err == nil {
+		if err := loop.UpdateLastSeen(cfg, fromID, time.Now().UTC()); err != nil {
+			return fmt.Errorf("update last_seen for %s: %w", fromID, err)
+		}
+	} else if os.IsNotExist(err) {
+		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", fromID, fromID)
+	} else {
+		return fmt.Errorf("stat own registration: %w", err)
+	}
+
+	inboxDir := cfg.AgentInboxDir(toID)
+	if fi, statErr := os.Stat(inboxDir); statErr != nil || !fi.IsDir() {
+		return unknownRecipientError(toID, os.ErrNotExist)
+	}
+
 	if body == "" {
 		// Read stdin only when it's piped/redirected; never block waiting on a
 		// human typing into an interactive terminal. If stdin is a character
 		// device (TTY), send an empty body and let the caller pass --body
 		// explicitly if they want content.
-		if info, err := os.Stdin.Stat(); err == nil && (info.Mode()&os.ModeCharDevice) == 0 {
-			bodyBytes, err := io.ReadAll(os.Stdin)
+		if info, err := sendStdin.Stat(); err == nil && (info.Mode()&os.ModeCharDevice) == 0 {
+			bodyBytes, err := io.ReadAll(sendStdin)
 			if err != nil {
 				return fmt.Errorf("read body from stdin: %w", err)
 			}
 			body = string(bodyBytes)
 		}
 	}
+	rawBody := body
 
 	// --ask salience polish: prepend the `## ASK` heading if not already
 	// present. Pure body manipulation; the reply_required frontmatter
@@ -122,21 +159,6 @@ func cmdSend(args []string) error {
 
 	now := time.Now().UTC()
 
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse to send
-	// from an unregistered agent. The outbound message would carry a
-	// `from:` field naming an agent that peers can't discover or
-	// reply to.
-	selfPath := cfg.AgentRegistrationPath(fromID)
-	if _, err := os.Stat(selfPath); err == nil {
-		if err := loop.UpdateLastSeen(cfg, fromID, now); err != nil {
-			return fmt.Errorf("update last_seen for %s: %w", fromID, err)
-		}
-	} else if os.IsNotExist(err) {
-		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", fromID, fromID)
-	} else {
-		return fmt.Errorf("stat own registration: %w", err)
-	}
-
 	content := loop.ComposeMessage(fromID, replyTo, body)
 	if ask {
 		content = applyReplyRequiredFrontmatter(content)
@@ -147,15 +169,8 @@ func cmdSend(args []string) error {
 	// durable per-(from,to) seq replaces the legacy crypto/rand nonce — it makes
 	// the lexicographic inbox sort exact per-sender FIFO (the live O1 fix) and
 	// folds delivery-dedup into the substrate (link-EEXIST on a resend).
-	inboxDir := cfg.AgentInboxDir(toID)
-	// Preflight the recipient inbox BEFORE allocating a seq. AllocateSeq durably
-	// bumps the sender's (from,to) counter before writeSeqMessage checks the
-	// inbox, so a send to a missing/unregistered recipient would otherwise burn
-	// a seq (a legal gap) and persist sender state before the os.ErrNotExist
-	// surfaces. This stat keeps the old no-side-effect-on-bad-recipient behavior
-	// and the same remediation message.
-	if fi, statErr := os.Stat(inboxDir); statErr != nil || !fi.IsDir() {
-		return fmt.Errorf("write inbox message: recipient %q is not registered; run agentchute register --as %s first (%w)", toID, toID, os.ErrNotExist)
+	if afterSendPreflightHook != nil {
+		afterSendPreflightHook()
 	}
 	// idempotencyKey defaults to "": send has no stable per-message content key,
 	// so a sender crash between the durable seq commit and the link loses the
@@ -169,16 +184,32 @@ func cmdSend(args []string) error {
 	// active serve-lease fence, so a write from a fenced (reclaimed) agent fails
 	// closed (AllocateSeq VerifyFence -> ErrFenced). Empty env (no serve lease) =>
 	// intentionally unfenced.
-	id, err := loop.SendSeqMessage(cfg, fromID, toID, content, idempotencyKey, os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("write inbox message: recipient %q is not registered; run agentchute register --as %s first (%w)", toID, toID, err)
-		}
-		return fmt.Errorf("write inbox message: %w", err)
+	id, committed, sendErr := sendSeqMessageWithCommit(cfg, fromID, toID, content, idempotencyKey, os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
+	retry := sendRetryOptions{
+		Ask:        ask,
+		ReplyBy:    replyBy.String(),
+		ReplyBySet: replyBySet,
+		ReplyTo:    replyTo,
+		ReplyToSet: replyToSet,
+	}
+	if sendErr != nil && !committed {
+		return preserveSendBody(cfg, fromID, toID, rawBody, now, retry, sendErr)
 	}
 	// The on-wire identity is (to,from,seq): `to` is the inbox directory, (from,seq)
 	// the filename. No sender-asserted message_id is emitted (v0.9.0).
 	msg := loop.Message{Filename: id.Filename(), Path: filepath.Join(inboxDir, id.Filename())}
+	result := sendResult{
+		Filename: msg.Filename,
+		Path:     msg.Path,
+		From:     fromID,
+		To:       toID,
+	}
+	if sendErr != nil {
+		if err := emitSendResult(result, jsonOut); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "WARNING: message delivered but inbox durability sync failed: %v. Do NOT resend.\n", sendErr)
+	}
 
 	// Asker-owned obligation (protocol-v2 / Gate 5): when we ASK for a reply,
 	// record that WE are owed a reply to (to=recipient, from=us, seq) by a
@@ -193,7 +224,13 @@ func cmdSend(args []string) error {
 			deadline = now.Add(replyBy)
 		}
 		if err := loop.RecordOwed(cfg, fromID, id, deadline, now); err != nil {
-			return fmt.Errorf("record owed obligation for %s: %w", id.Filename(), err)
+			if sendErr == nil {
+				if emitErr := emitSendResult(result, jsonOut); emitErr != nil {
+					return emitErr
+				}
+			}
+			fmt.Fprintf(os.Stderr, "WARNING: reply-obligation bookkeeping failed: %v. Do NOT resend.\n", err)
+			return nil
 		}
 	}
 
@@ -201,21 +238,10 @@ func cmdSend(args []string) error {
 	// `in_reply_to` ref (emitted by ComposeMessage above) so the ASKER's `.owed`
 	// obligation discharges when they consume this reply (ClearOwed, check.go).
 	// There is NO recipient-side ledger to mutate here.
-	result := sendResult{
-		Filename: msg.Filename,
-		Path:     msg.Path,
-		From:     fromID,
-		To:       toID,
+	if sendErr != nil {
+		return nil
 	}
-
-	if jsonOut {
-		if err := emitSendJSON(result); err != nil {
-			return err
-		}
-	} else {
-		emitSendText(result)
-	}
-	return nil
+	return emitSendResult(result, jsonOut)
 }
 
 // sendResult is the structured shape of `send`'s output (the same fields
@@ -238,6 +264,103 @@ func emitSendJSON(r sendResult) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(r)
+}
+
+func emitSendResult(r sendResult, jsonOut bool) error {
+	if jsonOut {
+		return emitSendJSON(r)
+	}
+	emitSendText(r)
+	return nil
+}
+
+type sendRetryOptions struct {
+	Ask        bool
+	ReplyBy    string
+	ReplyBySet bool
+	ReplyTo    string
+	ReplyToSet bool
+}
+
+func unknownRecipientError(to string, cause error) error {
+	return unknownRecipientSendError{to: to, cause: cause}
+}
+
+type unknownRecipientSendError struct {
+	to    string
+	cause error
+}
+
+func (e unknownRecipientSendError) Error() string {
+	return fmt.Sprintf("unknown agent %q: no inbox/registration. Check the id (agentchute status).", e.to)
+}
+
+func (e unknownRecipientSendError) Unwrap() error {
+	return e.cause
+}
+
+func preserveSendBody(cfg *loop.Config, from, to, body string, now time.Time, retry sendRetryOptions, cause error) error {
+	spoolPath, spoolErr := writeSendSpool(cfg, from, to, body, now)
+	baseErr := fmt.Errorf("write inbox message: %w", cause)
+	if os.IsNotExist(cause) {
+		baseErr = unknownRecipientError(to, cause)
+	}
+	if spoolErr != nil {
+		return fmt.Errorf("%w; body preservation failed: %v", baseErr, spoolErr)
+	}
+	return fmt.Errorf("%w\nbody preserved at %s; retry with: %s", baseErr, spoolPath, sendRetryCommand(from, to, spoolPath, retry))
+}
+
+func writeSendSpool(cfg *loop.Config, from, to, body string, now time.Time) (string, error) {
+	spoolDir := filepath.Join(cfg.AgentStateDir(from), "spool")
+	if err := os.MkdirAll(spoolDir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(spoolDir, formatSendSpoolStamp(now)+"_to-"+to+".md")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	cleanup := true
+	defer func() {
+		_ = f.Close()
+		if cleanup {
+			_ = os.Remove(path)
+		}
+	}()
+	if err := f.Chmod(0o600); err != nil {
+		return "", err
+	}
+	if _, err := io.WriteString(f, body); err != nil {
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	cleanup = false
+	return path, nil
+}
+
+func formatSendSpoolStamp(t time.Time) string {
+	t = t.UTC()
+	return t.Format("20060102T150405") + fmt.Sprintf("%06dZ", t.Nanosecond()/1000)
+}
+
+func sendRetryCommand(from, to, spoolPath string, opts sendRetryOptions) string {
+	parts := []string{"agentchute", "send", "--to", to, "--from", from}
+	if opts.Ask {
+		parts = append(parts, "--ask")
+	}
+	if opts.ReplyBySet {
+		parts = append(parts, "--reply-by", shellQuote(opts.ReplyBy))
+	}
+	if opts.ReplyToSet {
+		parts = append(parts, "--reply-to", shellQuote(opts.ReplyTo))
+	}
+	return strings.Join(parts, " ") + " < " + shellQuote(spoolPath)
 }
 
 // applyAskHeading prepends a `## ASK` heading if the body doesn't already

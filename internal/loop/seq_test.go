@@ -1,13 +1,43 @@
 package loop
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 )
+
+func TestSendSeqMessageWithCommitReportsPostLinkSyncFailure(t *testing.T) {
+	cfg := newSeqTestConfig(t)
+	mkInbox(t, cfg, "bob")
+	originalSync := syncSeqInboxDir
+	syncSeqInboxDir = func(string) error {
+		return errors.New("forced post-link sync failure")
+	}
+	defer func() { syncSeqInboxDir = originalSync }()
+
+	id, committed, err := SendSeqMessageWithCommit(cfg, "alice", "bob", []byte("landed"), "k1", "")
+	if err == nil || !strings.Contains(err.Error(), "forced post-link sync failure") {
+		t.Fatalf("err = %v, want forced sync failure", err)
+	}
+	if !committed {
+		t.Fatal("committed = false after successful canonical link")
+	}
+	if id.Seq != 1 {
+		t.Fatalf("id = %+v, want seq 1", id)
+	}
+	data, readErr := os.ReadFile(filepath.Join(cfg.AgentInboxDir("bob"), id.Filename()))
+	if readErr != nil {
+		t.Fatalf("committed file missing: %v", readErr)
+	}
+	if string(data) != "landed" {
+		t.Fatalf("committed body = %q, want landed", data)
+	}
+}
 
 func newSeqTestConfig(t *testing.T) *Config {
 	t.Helper()
