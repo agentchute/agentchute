@@ -210,11 +210,6 @@ func TestTurnEndCodexHookStopClearShapeMatchesGate(t *testing.T) {
 		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
 			t.Fatal(err)
 		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 		out, err := captureStdout(t, func() error {
 			return cmdTurnEnd(append(turnEndArgs(), "--codex-hook", "Stop"))
 		})

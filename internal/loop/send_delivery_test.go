@@ -41,7 +41,7 @@ func TestCheckRecipientReachabilityFreshAndStale(t *testing.T) {
 		t.Fatalf("rr.Fresh = false for a just-registered row, age=%s threshold=%s", rr.Age, rr.Threshold)
 	}
 
-	stale := &Registration{AgentID: "stale", Vendor: "agentchute", ControlRepo: cfg.ControlRepo, LastSeen: now.Add(-2 * time.Hour), Status: StatusActive}
+	stale := &Registration{AgentID: "stale", Vendor: "agentchute", ControlRepo: cfg.ControlRepo, LastSeen: now.Add(-2 * time.Hour)}
 	if err := WriteRegistration(cfg.AgentRegistrationPath("stale"), stale); err != nil {
 		t.Fatal(err)
 	}

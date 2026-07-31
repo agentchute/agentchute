@@ -66,13 +66,15 @@ func TestDoctorMissingScaffoldBlocks(t *testing.T) {
 	}
 }
 
+// v2.5 plan B5: the `live` dir scan was removed from findStaleTempFiles along
+// with live.go — a stale temp file under it is no longer a directory that
+// exists, let alone one this check walks.
 func TestDoctorWarnsOnStaleTempFiles(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	now := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
 	inboxDir := cfg.AgentInboxDir("codex")
 	stateDir := cfg.AgentStateDir("codex")
-	liveDir := filepath.Join(cfg.LoopDir, "live")
-	for _, dir := range []string{inboxDir, stateDir, liveDir} {
+	for _, dir := range []string{inboxDir, stateDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -80,17 +82,16 @@ func TestDoctorWarnsOnStaleTempFiles(t *testing.T) {
 	staleInbox := filepath.Join(inboxDir, ".tmp_inbox")
 	staleState := filepath.Join(stateDir, ".tmp_lease")
 	staleAgent := filepath.Join(cfg.AgentsDir(), ".tmp_codex.md_123")
-	staleLive := filepath.Join(liveDir, ".tmp_codex.live_123")
 	freshInbox := filepath.Join(inboxDir, ".tmp_fresh")
 	normalState := filepath.Join(stateDir, "serve.claim")
-	for _, path := range []string{staleInbox, staleState, staleAgent, staleLive, freshInbox, normalState} {
+	for _, path := range []string{staleInbox, staleState, staleAgent, freshInbox, normalState} {
 		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	staleTime := now.Add(-2 * time.Hour)
 	freshTime := now.Add(-30 * time.Minute)
-	for _, path := range []string{staleInbox, staleState, staleAgent, staleLive} {
+	for _, path := range []string{staleInbox, staleState, staleAgent} {
 		if err := os.Chtimes(path, staleTime, staleTime); err != nil {
 			t.Fatal(err)
 		}
@@ -105,10 +106,9 @@ func TestDoctorWarnsOnStaleTempFiles(t *testing.T) {
 		t.Fatalf("stale_temp_files severity = %q, want WARN; message=%q", got.Severity, got.Message)
 	}
 	for _, want := range []string{
-		"4 stale .tmp_* file(s)",
+		"3 stale .tmp_* file(s)",
 		".agentchute/loop/agents/.tmp_codex.md_123",
 		".agentchute/loop/inbox/codex/.tmp_inbox",
-		".agentchute/loop/live/.tmp_codex.live_123",
 		".agentchute/loop/state/codex/.tmp_lease",
 	} {
 		if !strings.Contains(got.Message, want) {
@@ -456,7 +456,6 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 		ControlRepo: cfg.ControlRepo,
 		Host:        "doctor-test",
 		LastSeen:    time.Now().UTC().Truncate(time.Second),
-		Status:      loop.StatusActive,
 	}
 	if err := loop.WriteRegistration(regPath, reg); err != nil {
 		t.Fatal(err)
@@ -464,9 +463,6 @@ func TestDoctorPerAgentChecksRunWithAgentID(t *testing.T) {
 	if err := os.MkdirAll(cfg.AgentInboxDir("claude-code"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// GATE 3: registration_freshness reads `.live`; give this healthy agent a
-	// fresh presence fact so the check is OK rather than warning on absent .live.
-	mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC())
 
 	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 
@@ -496,7 +492,6 @@ func TestDoctorProtocolVersionAbsentIsSilent(t *testing.T) {
 			ControlRepo:     cfg.ControlRepo,
 			Host:            "doctor-test",
 			LastSeen:        now,
-			Status:          loop.StatusActive,
 		},
 		{
 			AgentID:     "gemini-cli",
@@ -504,7 +499,6 @@ func TestDoctorProtocolVersionAbsentIsSilent(t *testing.T) {
 			ControlRepo: cfg.ControlRepo,
 			Host:        "doctor-test",
 			LastSeen:    now,
-			Status:      loop.StatusActive,
 		},
 	} {
 		if err := loop.WriteRegistration(cfg.AgentRegistrationPath(reg.AgentID), reg); err != nil {
@@ -530,7 +524,6 @@ func TestDoctorProtocolVersionMismatchWarns(t *testing.T) {
 		ControlRepo:     cfg.ControlRepo,
 		Host:            "doctor-test",
 		LastSeen:        time.Now().UTC().Truncate(time.Second),
-		Status:          loop.StatusActive,
 	}
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(reg.AgentID), reg); err != nil {
 		t.Fatal(err)
@@ -668,99 +661,8 @@ func TestWrapperResolutionHandlesExplicitPrefixedIDs(t *testing.T) {
 	}
 }
 
-// WI-E3: the launch-bypass check WARNS (never BLOCKS) when a runner setup has a
-// wrapper that enrolled raw (launched_by=manual / unset), and stays OK for a
-// managed (runner) enrollment. It must never flip the runner default or block.
-func TestDoctor_WarnsOnRawWrapperBypass(t *testing.T) {
-	writeReg := func(t *testing.T, cfg *loop.Config, launchedBy string) {
-		t.Helper()
-		reg := &loop.Registration{
-			AgentID:     "gemini-cli",
-			Vendor:      "google",
-			ControlRepo: cfg.ControlRepo,
-			LastSeen:    time.Now().UTC(),
-			Status:      loop.StatusActive,
-			LaunchedBy:  launchedBy,
-		}
-		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("gemini-cli"), reg); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(cfg.AgentInboxDir("gemini-cli"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// Runner is configured; an empty shim dir (not on PATH) keeps the shadowing
-	// probe quiet so the provenance signal is isolated.
-	t.Run("manual provenance warns, never blocks", func(t *testing.T) {
-		cfg := newDoctorCfg(t)
-		writeReg(t, cfg, loop.LaunchedByManual)
-		r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{
-			Now:       time.Now().UTC(),
-			PathEnv:   "/usr/bin",
-			PoolState: &setupPoolState{Wake: "runner"},
-		})
-		got := findCheck(t, r, "launch_provenance")
-		if got.Severity != severityWarn {
-			t.Fatalf("launch_provenance severity = %q, want WARN; msg=%q", got.Severity, got.Message)
-		}
-		// "never blocks": the bypass check is WARN at most — it must NEVER be a
-		// BLOCKER regardless of provenance (other unrelated checks may block in
-		// this minimal fixture; this one is what we assert on).
-		if got.Severity == severityBlocker {
-			t.Fatalf("launch-bypass check must never be a BLOCKER; got %q", got.Severity)
-		}
-		if !strings.Contains(got.Message, "ac serve gemini") {
-			t.Fatalf("warn message should name the fix `ac serve gemini`: %q", got.Message)
-		}
-	})
-
-	t.Run("absent provenance warns", func(t *testing.T) {
-		cfg := newDoctorCfg(t)
-		writeReg(t, cfg, "")
-		r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{
-			Now:       time.Now().UTC(),
-			PathEnv:   "/usr/bin",
-			PoolState: &setupPoolState{Wake: "runner"},
-		})
-		got := findCheck(t, r, "launch_provenance")
-		if got.Severity != severityWarn {
-			t.Fatalf("absent-provenance severity = %q, want WARN; msg=%q", got.Severity, got.Message)
-		}
-	})
-
-	t.Run("runner provenance is OK", func(t *testing.T) {
-		cfg := newDoctorCfg(t)
-		writeReg(t, cfg, loop.LaunchedByRunner)
-		r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{
-			Now:       time.Now().UTC(),
-			PathEnv:   "/usr/bin",
-			PoolState: &setupPoolState{Wake: "runner"},
-		})
-		got := findCheck(t, r, "launch_provenance")
-		if got.Severity != severityOK {
-			t.Fatalf("runner-provenance severity = %q, want OK; msg=%q", got.Severity, got.Message)
-		}
-	})
-
-	t.Run("non-runner setup skips", func(t *testing.T) {
-		cfg := newDoctorCfg(t)
-		writeReg(t, cfg, loop.LaunchedByManual)
-		r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{
-			Now:       time.Now().UTC(),
-			PathEnv:   "/usr/bin",
-			PoolState: &setupPoolState{Wake: "tmux"},
-		})
-		got := findCheck(t, r, "launch_provenance")
-		if got.Severity != severitySkip {
-			t.Fatalf("non-runner setup severity = %q, want SKIP; msg=%q", got.Severity, got.Message)
-		}
-	})
-}
-
-// GATE 3: registration_freshness diagnoses presence from the `.live` fact, NOT
-// registration last_seen. A stale OR absent `.live` warns even when the
-// registration's own last_seen is fresh; a fresh `.live` flips it back to OK.
+// v2.5 plan B5: registration_freshness reads the registration's own
+// last_seen directly (`.live` is deleted).
 func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	regPath := cfg.AgentRegistrationPath("claude-code")
@@ -768,10 +670,7 @@ func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 		AgentID:     "claude-code",
 		Vendor:      "anthropic",
 		ControlRepo: cfg.ControlRepo,
-		// Registration last_seen is FRESH on purpose — staleness must come from
-		// `.live`, not here.
-		LastSeen: time.Now().UTC().Truncate(time.Second),
-		Status:   loop.StatusActive,
+		LastSeen:    time.Now().UTC().Truncate(time.Second),
 	}
 	if err := loop.WriteRegistration(regPath, reg); err != nil {
 		t.Fatal(err)
@@ -780,28 +679,18 @@ func TestDoctorWarnsOnStaleRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Stale `.live` => WARN (despite the fresh registration last_seen).
-	mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC().Add(-2*StaleRegThreshold))
+	// Fresh registration => OK.
 	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
+	if got := findCheck(t, r, "registration_freshness"); got.Severity != severityOK {
+		t.Errorf("fresh registration severity = %q, want OK; msg=%q", got.Severity, got.Message)
+	}
+
+	// Backdated registration => WARN (not BLOCKER; doctor diagnoses, gate enforces).
+	backdateRegistration(t, cfg, "claude-code", time.Now().UTC().Add(-2*StaleRegThreshold))
+	r = runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "registration_freshness")
 	if got.Severity != severityWarn {
-		t.Errorf("stale .live severity = %q, want WARN (not BLOCKER; doctor diagnoses, gate enforces)", got.Severity)
-	}
-
-	// Absent `.live` => WARN too.
-	if err := os.Remove(filepath.Join(cfg.LoopDir, "live", "claude-code.live")); err != nil {
-		t.Fatal(err)
-	}
-	r = runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
-	if got := findCheck(t, r, "registration_freshness"); got.Severity != severityWarn {
-		t.Errorf("absent .live severity = %q, want WARN", got.Severity)
-	}
-
-	// Fresh `.live` => OK (freshness SOURCE is `.live`).
-	mustWriteLiveAt(t, cfg, "claude-code", time.Now().UTC())
-	r = runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
-	if got := findCheck(t, r, "registration_freshness"); got.Severity != severityOK {
-		t.Errorf("fresh .live severity = %q, want OK; msg=%q", got.Severity, got.Message)
+		t.Errorf("stale registration severity = %q, want WARN (not BLOCKER; doctor diagnoses, gate enforces)", got.Severity)
 	}
 }
 
@@ -819,7 +708,6 @@ func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 		Vendor:      "anthropic",
 		ControlRepo: cfg.ControlRepo,
 		LastSeen:    time.Now().UTC().Truncate(time.Second),
-		Status:      loop.StatusActive,
 	}
 	if err := loop.WriteRegistration(regPath, reg); err != nil {
 		t.Fatal(err)
@@ -830,7 +718,6 @@ func TestDoctorWarnsOnUnreadInboxNotBlocks(t *testing.T) {
 	}
 	mustWriteSeqInbox(t, inbox, "codex", 1,
 		[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
-	mustWriteFreshPollerHeartbeat(t, cfg, "claude-code")
 
 	r := runDoctorChecks(cfg, "claude-code", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "inbox_state")
@@ -1004,21 +891,5 @@ func TestDoctorGuardLatchAgeCorruptFileWarns(t *testing.T) {
 	}
 	if !strings.Contains(got.Message, "corrupt") {
 		t.Errorf("message should say the latch is corrupt: %q", got.Message)
-	}
-}
-
-func TestAcServeHintForAgentExplicitPrefixedIDs(t *testing.T) {
-	cases := map[string]string{
-		"codex":             "ac serve codex",
-		"codex-review":      "ac serve codex",
-		"gemini-cli-review": "ac serve gemini",
-		"claude-code":       "ac serve claude",
-		"grok-review":       "ac serve grok",
-		"totally-unknown":   "ac serve <wrapper>",
-	}
-	for id, want := range cases {
-		if got := acServeHintForAgent(id); got != want {
-			t.Errorf("acServeHintForAgent(%q) = %q, want %q", id, got, want)
-		}
 	}
 }

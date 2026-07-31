@@ -294,13 +294,26 @@ func TestScanWipeLiveSignalsRefusesLiveRunner(t *testing.T) {
 	}
 }
 
-func TestScanWipeLiveSignalsRefusesForeignHostPresence(t *testing.T) {
+// v2.5 plan B5: the old cross-host `.live` presence scan is deleted; a fresh
+// registration row now refuses the wipe regardless of which host it names
+// (unlike the runner-PID check, a registration's own heartbeat age is not
+// host-provable, so it is checked for every candidate id unconditionally).
+func TestScanWipeLiveSignalsRefusesFreshRegistrationAnyHost(t *testing.T) {
 	_, cfg := newWipeTestRepo(t)
 	const id = "codex"
-	mustWriteLiveAt(t, cfg, id, time.Now()) // mustWriteLiveAt stamps Host="test-host"
-	reasons := scanWipeLiveSignals(cfg, nil)
-	if len(reasons) == 0 || !strings.Contains(strings.Join(reasons, "\n"), "another host") {
-		t.Fatalf("expected a foreign-host presence refusal, got %v", reasons)
+	reg := &loop.Registration{
+		AgentID:     id,
+		Vendor:      "openai",
+		ControlRepo: cfg.ControlRepo,
+		Host:        "some-other-host",
+		LastSeen:    time.Now().UTC(),
+	}
+	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(id), reg); err != nil {
+		t.Fatal(err)
+	}
+	reasons := scanWipeLiveSignals(cfg, []string{id})
+	if len(reasons) == 0 || !strings.Contains(strings.Join(reasons, "\n"), "fresh registration") {
+		t.Fatalf("expected a fresh-registration refusal, got %v", reasons)
 	}
 }
 
@@ -382,12 +395,6 @@ func TestSetupCommandMatchesRunnerPool(t *testing.T) {
 	legacyRun := "/usr/local/bin/agentchute run --control-repo " + root + " --loop-dir " + cfg.LoopDir
 	if !setupCommandMatchesRunnerPool(legacyRun, cfg) {
 		t.Fatalf("live pre-upgrade `agentchute run` supervisor must still match for cleanup: %q", legacyRun)
-	}
-
-	// A poller carries --as <id>; the poller matcher still requires it.
-	poller := "/usr/local/bin/agentchute poller run --as codex-x --control-repo " + root
-	if !setupCommandMatches(poller, "codex-x", "poller run", cfg) {
-		t.Fatalf("poller cmdline with --as must match: %q", poller)
 	}
 
 	// A foreign pool / non-agentchute process must NOT match (still ambiguous ->

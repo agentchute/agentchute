@@ -17,7 +17,6 @@ func seedSweepRegistration(t *testing.T, cfg *Config, agentID string, lastSeen t
 		Vendor:      "agentchute",
 		ControlRepo: cfg.ControlRepo,
 		LastSeen:    lastSeen,
-		Status:      StatusActive,
 	}
 	if err := WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
 		t.Fatalf("seed registration %s: %v", agentID, err)
@@ -154,7 +153,7 @@ func TestSweepStaleRegistrationsUnderLockRecheckBacksOffOnRevival(t *testing.T) 
 		if err != nil {
 			t.Fatalf("revival acquire: %v", err)
 		}
-		template := Registration{AgentID: "revived", Vendor: "agentchute", ControlRepo: cfg.ControlRepo, Status: StatusActive}
+		template := Registration{AgentID: "revived", Vendor: "agentchute", ControlRepo: cfg.ControlRepo}
 		if err := HeartbeatRegistration(cfg, template, lease.Token); err != nil {
 			t.Fatalf("revival heartbeat: %v", err)
 		}

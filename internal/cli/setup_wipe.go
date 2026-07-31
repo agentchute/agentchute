@@ -541,30 +541,23 @@ func rescanWipeLeftovers(loopDir string) []string {
 // an ambiguous local process recorded for this pool whose cmdline can't be
 // verified (FAIL CLOSED), an active local wrapper session, and any FRESH
 // presence (.live) or serve.claim owned by ANOTHER HOST.
+// scanWipeLiveSignals refuses to wipe on any sign of a live bus (v2.5 plan
+// B5: `.live`, the detached poller, and session ancestry are all deleted —
+// the refusal now rests on the surviving runner-state PID check, fresh
+// registration rows, and the foreign-host serve-claim scan).
 func scanWipeLiveSignals(cfg *loop.Config, agentIDs []string) []string {
 	var reasons []string
 	now := time.Now().UTC()
 	localHost := strings.TrimSpace(localHostname())
 
 	for _, id := range agentIDs {
-		if hb, err := loop.LoadPollerHeartbeat(cfg, id); err == nil {
-			if setupLocalHost(hb.Host) && hb.PID > 0 && setupProcessAlive(hb.PID) {
-				cmdline := setupProcessCommandLine(hb.PID)
-				if setupCommandMatches(cmdline, id, "poller run", cfg) {
-					reasons = append(reasons, fmt.Sprintf("live poller for %s (pid=%d) is still running; stop it before wiping", id, hb.PID))
-				} else {
-					reasons = append(reasons, fmt.Sprintf("ambiguous live process pid=%d recorded as poller for %s (cmdline did not match this pool); refusing (fail closed)", hb.PID, id))
-				}
-			}
-		}
 		if st, err := loop.LoadRunnerState(cfg, id); err == nil {
 			if setupLocalHost(st.Host) && st.RunnerPID > 0 && setupProcessAlive(st.RunnerPID) {
 				cmdline := setupProcessCommandLine(st.RunnerPID)
 				// Runner attribution: runner.json binds this pid to <id>, the pid is
 				// alive, and the cmdline is an `agentchute serve` for THIS pool. A runner
 				// may receive its explicit id through AGENTCHUTE_AGENT_ID, so we must NOT
-				// require the agent id in the cmdline. The poller
-				// case below keeps the agent-id check (pollers DO carry --as).
+				// require the agent id in the cmdline.
 				if setupCommandMatchesRunnerPool(cmdline, cfg) {
 					reasons = append(reasons, fmt.Sprintf("live runner for %s (pid=%d) is still running; stop it before wiping", id, st.RunnerPID))
 				} else {
@@ -572,56 +565,25 @@ func scanWipeLiveSignals(cfg *loop.Config, agentIDs []string) []string {
 				}
 			}
 		}
-		if sess, err := loop.LoadActiveSession(cfg, id); err == nil {
-			if alive, reason := activeSessionAliveAtWithReason(sess, now); alive {
-				reasons = append(reasons, fmt.Sprintf("active wrapper session for %s (%s); close or restart it before wiping", id, reason))
+		// Fresh registration row, ANY host: unlike the PID check above (only
+		// provable same-host), a registration's own heartbeat age is a direct
+		// data signal that this id may still be live somewhere on a shared
+		// bus — wiping would destroy that enrollment regardless of which
+		// host last touched it.
+		if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(id)); err == nil {
+			age := now.Sub(reg.LastSeen)
+			if age < 0 {
+				age = 0
+			}
+			if age < loop.StaleAfter(cfg) {
+				reasons = append(reasons, fmt.Sprintf("fresh registration for %s (last_seen age %s); refusing to wipe a live bus", id, age.Round(time.Second)))
 			}
 		}
 	}
 
-	reasons = append(reasons, scanWipeLivePresence(cfg, localHost, now)...)
 	reasons = append(reasons, scanForeignWipeServeClaims(cfg, localHost, now)...)
 	sort.Strings(reasons)
 	return reasons
-}
-
-// scanWipeLivePresence refuses on any FRESH .live presence fact that signals a
-// genuinely-live agent on this bus: a fresh fact owned by ANOTHER HOST (a shared
-// cross-host bus must not be wiped from one host), OR a fresh local fact whose
-// PID is still alive (a live agent — possibly outside the configured pool). A
-// fresh-but-dead local fact (e.g. a pool agent we just stopped, whose .live is
-// still inside the freshness window) does NOT block the wipe, because its PID is
-// no longer alive.
-func scanWipeLivePresence(cfg *loop.Config, localHost string, now time.Time) []string {
-	var out []string
-	entries, _ := os.ReadDir(filepath.Join(cfg.LoopDir, "live"))
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".live") {
-			continue
-		}
-		id := strings.TrimSuffix(name, ".live")
-		live, err := loop.ReadLive(cfg, id)
-		if err != nil {
-			continue
-		}
-		age := now.Sub(live.LastSeen.UTC())
-		if age < 0 {
-			age = 0
-		}
-		if age >= loop.LiveWindow() {
-			continue
-		}
-		h := strings.TrimSpace(live.Host)
-		if h != "" && localHost != "" && h != localHost {
-			out = append(out, fmt.Sprintf("fresh presence for %s on another host %q; refusing to wipe a shared live bus", id, h))
-			continue
-		}
-		if (h == "" || localHost == "" || h == localHost) && live.PID > 0 && setupProcessAlive(live.PID) {
-			out = append(out, fmt.Sprintf("fresh presence for %s from a live local agent (pid=%d); stop it before wiping", id, live.PID))
-		}
-	}
-	return out
 }
 
 // scanForeignWipeServeClaims refuses on any FRESH serve.claim held by another
@@ -658,11 +620,6 @@ func scanForeignWipeServeClaims(cfg *loop.Config, localHost string, now time.Tim
 // ids stopped and any warnings, for the plan printout.
 func wipeStopLocalProcesses(cfg *loop.Config, agentIDs []string) (stopped, warnings []string) {
 	for _, id := range agentIDs {
-		if ok, warn := stopSetupPoller(cfg, id); warn != "" {
-			warnings = append(warnings, warn)
-		} else if ok {
-			stopped = append(stopped, id+" (poller)")
-		}
 		if ok, warn := stopSetupRunner(cfg, id); warn != "" {
 			warnings = append(warnings, warn)
 		} else if ok {
@@ -681,15 +638,10 @@ func wipeStopLocalProcesses(cfg *loop.Config, agentIDs []string) (stopped, warni
 	return stopped, warnings
 }
 
-// wipeRecordedPIDsDead reports whether every local poller/runner PID recorded
-// for these ids is no longer alive.
+// wipeRecordedPIDsDead reports whether every local runner PID recorded for
+// these ids is no longer alive.
 func wipeRecordedPIDsDead(cfg *loop.Config, agentIDs []string) bool {
 	for _, id := range agentIDs {
-		if hb, err := loop.LoadPollerHeartbeat(cfg, id); err == nil {
-			if setupLocalHost(hb.Host) && hb.PID > 0 && setupProcessAlive(hb.PID) {
-				return false
-			}
-		}
 		if st, err := loop.LoadRunnerState(cfg, id); err == nil {
 			if setupLocalHost(st.Host) && st.RunnerPID > 0 && setupProcessAlive(st.RunnerPID) {
 				return false

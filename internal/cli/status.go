@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -65,63 +64,34 @@ func cmdStatus(args []string) error {
 		return fmt.Errorf("stat own registration: %w", err)
 	}
 
-	regs, err := readRegistrations(cfg)
-	if err != nil {
-		return err
+	regs, warnings := readRegistrations(cfg)
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
 
 	printStatus(os.Stdout, cfg, regs, now)
-	printUnenrolledSection(os.Stdout, cfg)
 	return nil
-}
-
-// printUnenrolledSection appends the read-only "PRESENT BUT NOT ENROLLED"
-// section: wrappers present in this pool with no live registration. Quiet when
-// there are none or the scan fails gracefully (nothing is printed).
-func printUnenrolledSection(w io.Writer, cfg *loop.Config) {
-	found, err := scanUnenrolledWrappers(cfg)
-	if err != nil || len(found) == 0 {
-		return
-	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "PRESENT BUT NOT ENROLLED (wrappers in this pool with no live registration):")
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "KIND\tHINT\tCWD\tSUGGESTION")
-	for _, p := range found {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.Kind, p.Hint, formatDash(p.Cwd), p.Suggestion)
-	}
-	_ = tw.Flush()
 }
 
 func statusUsage(err error) error {
 	return fmt.Errorf("%w\nusage: agentchute status --as <agent-id> [--control-repo <path>] [--loop-dir <path>]", err)
 }
 
-func readRegistrations(cfg *loop.Config) (map[string]*loop.Registration, error) {
-	entries, err := os.ReadDir(cfg.AgentsDir())
-	if err != nil {
-		// Fresh pool with no agents registered yet: that's a valid state
-		// for a read-only pool-overview, not an error.
-		if os.IsNotExist(err) {
-			return map[string]*loop.Registration{}, nil
-		}
-		return nil, fmt.Errorf("read agents dir: %w", err)
-	}
-
-	regs := make(map[string]*loop.Registration)
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || name == "README.md" || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".example.md") {
-			continue
-		}
-		path := filepath.Join(cfg.AgentsDir(), name)
-		reg, err := loop.ReadRegistration(path)
-		if err != nil {
-			return nil, err
-		}
+// readRegistrations reads every registration in the pool leniently (v2.5 plan
+// B5): one corrupt or unreadable row must not abort `status` for the whole
+// pool — it is surfaced as a warning instead, and every other row still
+// renders.
+func readRegistrations(cfg *loop.Config) (map[string]*loop.Registration, []string) {
+	regList, errs := loop.ReadRegistrationsLenient(cfg.AgentsDir())
+	regs := make(map[string]*loop.Registration, len(regList))
+	for _, reg := range regList {
 		regs[reg.AgentID] = reg
 	}
-	return regs, nil
+	var warnings []string
+	for _, e := range errs {
+		warnings = append(warnings, e.Error())
+	}
+	return regs, warnings
 }
 
 func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registration, now time.Time) {
@@ -134,20 +104,19 @@ func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registrati
 	fmt.Fprintln(w)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	// Pull-only (Gate 6c): registrations carry no wake state and presence is the
-	// `.live` fact. There is no WAKE / REACHABLE / CACHED column; LAST_SEEN/AGE
-	// come from `.live` (loop.LiveLastSeen), absent => "-".
+	// Pull-only (Gate 6c): registrations carry no wake state. There is no
+	// WAKE / REACHABLE / CACHED column; LAST_SEEN/AGE come from the
+	// registration's own heartbeat (v2.5 plan B5 — `.live` is deleted).
 	fmt.Fprintln(tw, "AGENT\tSTATUS\tINBOX\tLAST_SEEN\tAGE\tHOST\tPROTO")
 	for _, id := range loop.RegistrationsByAgentID(regs) {
 		reg := regs[id]
 		inboxDepth := countInbox(cfg.AgentInboxDir(id))
-		liveSeen, _ := loop.LiveLastSeen(cfg, reg.AgentID)
 		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
 			reg.AgentID,
-			reg.Status,
+			registrationStatusLabel(cfg, reg, now),
 			inboxDepth,
-			formatMaybeTime(liveSeen),
-			formatAge(now, liveSeen),
+			formatMaybeTime(reg.LastSeen),
+			formatAge(now, reg.LastSeen),
 			formatDash(reg.Host),
 			formatProtocolVersion(reg.ProtocolVersion),
 		)
@@ -167,6 +136,30 @@ func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registrati
 			fmt.Fprintf(w, "- %s\n", warning)
 		}
 	}
+}
+
+// registrationStatusLabel derives a display STATUS for a registration row
+// (v2.5 plan B5: the .live-published Status field is gone). A live serve
+// claim is the strongest signal — it means a fresh lease immunizes an
+// old-looking row (C12: never call a row stale-would-sweep when a claim
+// still owns it, since the sweep itself would back off too) — checked first,
+// mirroring SweepStaleRegistrations' own claimProvablyDead ordering. Absent
+// that, the row's own age vs the pool's stale_after decides fresh vs stale.
+// Single hyphenated token (no embedded spaces) so simple whitespace-based
+// column parsing of this output — including this package's own
+// statusColumnValue test helper — never misaligns a later column.
+func registrationStatusLabel(cfg *loop.Config, reg *loop.Registration, now time.Time) string {
+	if claim, err := loop.ReadServeClaim(cfg, reg.AgentID); err == nil && !loop.ClaimIsStale(claim, now) {
+		return "lease-held"
+	}
+	age := now.Sub(reg.LastSeen)
+	if age < 0 {
+		age = 0
+	}
+	if age > loop.StaleAfter(cfg) {
+		return "stale-would-sweep"
+	}
+	return "fresh"
 }
 
 func countInbox(dir string) int {

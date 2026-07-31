@@ -65,22 +65,3 @@ func LoadRunnerState(cfg *Config, agentID string) (*RunnerState, error) {
 	}
 	return &st, nil
 }
-
-// RegistrationReachable reports whether reg's agent is reachable under pull-only
-// coordination.
-//
-// Simple-again Gate 6b (pull-only): the runner RECEIVE socket was removed (Gate
-// 6a retired every sender; 6b deletes the receive side), so there is no wake
-// endpoint to dial — "reachable by poke" no longer exists. Reachability now
-// means LIVENESS: the agent's `.live` presence fact is fresh (loop.IsLive, R1).
-// An absent/stale/unreadable `.live` reads not-reachable, which is the safe
-// direction. The timeout parameter is retained for signature compatibility but
-// is unused. The sole remaining caller is poller ensure; the status REACHABLE
-// column and register's runner-primary selection that also called it were both
-// removed (Gate 6c stripped every registration wake-field read).
-func RegistrationReachable(cfg *Config, reg *Registration, _ time.Duration) bool {
-	if cfg == nil || reg == nil {
-		return false
-	}
-	return IsLive(cfg, reg.AgentID, liveWindow, time.Now())
-}

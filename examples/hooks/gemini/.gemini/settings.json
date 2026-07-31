@@ -5,11 +5,6 @@
         "matcher": "startup",
         "hooks": [
           {
-            "name": "agentchute-poller",
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --quiet"
-          },
-          {
             "name": "agentchute-boot",
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --context-only"
@@ -25,11 +20,6 @@
             "name": "agentchute-turn-end",
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --json"
-          },
-          {
-            "name": "agentchute-poller",
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --quiet"
           },
           {
             "name": "agentchute-pending",

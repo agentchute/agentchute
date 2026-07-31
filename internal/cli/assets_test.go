@@ -24,8 +24,8 @@ import (
 //
 // The repo root is derived from this file's compile-time path via
 // runtime.Caller, NOT from the working directory. That keeps setup correct even
-// when the test binary is re-exec'd as a subprocess helper with a different cwd
-// (e.g. TestActiveSessionSelfCheckHelperProcess), which runs TestMain too.
+// when the test binary is re-exec'd as a subprocess helper with a different
+// cwd, which runs TestMain too.
 func TestMain(m *testing.M) {
 	root := repoRootForTests()
 

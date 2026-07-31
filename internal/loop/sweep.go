@@ -89,7 +89,7 @@ func SweepStaleRegistrations(cfg *Config, selfID string, now time.Time) ([]strin
 			// A stray non-agent-id .md file (a hand-dropped note, a typo) is
 			// not a registration candidate at all — never a sweep failure.
 			// Every other directory enumerator in this codebase already
-			// guards this (presence_scan.go, setup_wipe.go); an unguarded
+			// guards this (setup_wipe.go); an unguarded
 			// candidate here would reach sweepOneCandidate's withAgentLock,
 			// which hard-errors on an invalid id and would abort the WHOLE
 			// pass before any later (sorted) candidate is even considered

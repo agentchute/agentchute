@@ -47,20 +47,14 @@ func ReadFileLimit(path string, max int64) ([]byte, error) {
 	return data, nil
 }
 
-type Status string
-
-const (
-	StatusActive    Status = "active"
-	StatusExhausted Status = "exhausted"
-	StatusOffline   Status = "offline"
-)
-
 // Registration is the parsed live agent registration frontmatter plus body.
 //
 // Pull-only (simple-again Gate 6c): a registration publishes NO wake state.
-// Delivery is inbox-directory + atomic write; presence/liveness is the
-// recipient's own `.live` file (loop.IsLive). There is no wake_method/wake_target
-// and no reachability cache — every consumer reads `.live` for presence.
+// Delivery is inbox-directory + atomic write. Reachability is derived from
+// LastSeen (age vs the pool's stale_after / gate's stricter StaleRegThreshold)
+// plus, where it matters, a live serve claim (v2.5 plan B5 — .live, the
+// detached poller, session ancestry, and the status/provenance extras are all
+// gone; LastSeen + the serve claim are now the only freshness sources).
 type Registration struct {
 	AgentID         string
 	ProtocolVersion int
@@ -69,31 +63,9 @@ type Registration struct {
 	WorkingRepos    []string
 	Host            string
 	LastSeen        time.Time
-	Status          Status
-	RestartAt       *time.Time
-	LastActive      *time.Time
-
-	// WI-E3 launch provenance (AGENTCHUTE.md §5.1). Advisory and
-	// backward-compatible: records HOW this lane enrolled so verify views (E1)
-	// are truthful and the launch-bypass warning can detect a raw launch. Absent
-	// = old behavior (every pre-upgrade registration); the fields are only
-	// emitted when populated, so a plain registration serializes byte-identically
-	// to the pre-upgrade format. None of these gate delivery — they are
-	// diagnostic only.
-	LaunchedBy string // one of runner|hook|manual|poller (empty = unknown/legacy).
-	ShimName   string // the ac-* launcher shim that fronted this lane, when known.
-	HookEvent  string // the hook lifecycle event that enrolled (e.g. boot, self-check).
 
 	Body string
 }
-
-// WI-E3 launch-provenance values for Registration.LaunchedBy. Advisory only.
-const (
-	LaunchedByRunner = "runner" // started under `agentchute serve` (the runner owns the lane).
-	LaunchedByHook   = "hook"   // a SessionStart-class lifecycle hook ran boot/self-check.
-	LaunchedByManual = "manual" // a hand-run `agentchute register` (or raw/passthrough enroll).
-	LaunchedByPoller = "poller" // enrolled/refreshed by a recipient-side poller.
-)
 
 // ReadRegistration parses an agentchute live registration file.
 func ReadRegistration(path string) (*Registration, error) {
@@ -114,11 +86,7 @@ func ReadRegistration(path string) (*Registration, error) {
 		ControlRepo:     fields.scalar("control_repo"),
 		WorkingRepos:    fields.list("working_repos"),
 		Host:            fields.scalar("host"),
-		Status:          Status(fields.scalar("status")),
 		Body:            body,
-	}
-	if reg.Status == "" {
-		reg.Status = StatusActive
 	}
 
 	if lastSeen := fields.scalar("last_seen"); lastSeen != "" {
@@ -129,26 +97,13 @@ func ReadRegistration(path string) (*Registration, error) {
 		reg.LastSeen = parsed
 	}
 
-	if restartAt := fields.scalar("restart_at"); restartAt != "" {
-		parsed, err := parseTimestamp(restartAt)
-		if err != nil {
-			return nil, fmt.Errorf("restart_at: %w", err)
-		}
-		reg.RestartAt = &parsed
-	}
-
-	if lastActive := fields.scalar("last_active"); lastActive != "" {
-		parsed, err := parseTimestamp(lastActive)
-		if err != nil {
-			return nil, fmt.Errorf("last_active: %w", err)
-		}
-		reg.LastActive = &parsed
-	}
-
-	// WI-E3 launch provenance (backward-compatible: absent fields = old behavior).
-	reg.LaunchedBy = fields.scalar("launched_by")
-	reg.ShimName = fields.scalar("shim_name")
-	reg.HookEvent = fields.scalar("hook_event")
+	// v2.5 plan B5 dual-read courtesy: status/restart_at/last_active/
+	// launched_by/shim_name/hook_event are retired fields. An OLD row still
+	// carries them on disk for one release — parseFrontmatter already parses
+	// them into `fields` as ordinary key:value pairs; simply not reading them
+	// here is what "tolerate and drop" means. No explicit ignore-list or
+	// error path is needed: an old row's presence of these keys was never
+	// itself a parse failure, so removing the reads is the entire migration.
 
 	if err := reg.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -229,20 +184,11 @@ func WriteRegistrationExclusive(path string, r *Registration) error {
 // a paused-then-resumed laptop) writes NOTHING on ErrFenced — it cannot
 // resurrect a row another serve now owns.
 //
-// Merge: template wins for every field EXCEPT Body, WorkingRepos, and
-// LastActive, which the on-disk row wins for when one exists — those are
-// user/other-command-owned (`register`/`boot --working-repo`, a hand-edited
-// bio, `check`'s UpdateLastActive) and must survive ticks the runner's own
-// template has no opinion on. Launch provenance (LaunchedBy/ShimName/
-// HookEvent) follows publishRegistrationOnce's own established rule: a
-// non-empty template value wins (the runner's template DOES know its own
-// LaunchedBy/ShimName), empty falls back to the existing row — so a tick
-// never silently wipes provenance the template simply didn't set (e.g.
-// HookEvent, which heartbeatTemplate never populates) (codex/claude-code
-// review, PR #91 round 2, SHOULD-FIX 4: a per-5s-tick blind template-wins
-// merge was erasing both within one tick — a real regression against the
-// invariant performRegister's own regression test already protects). When no
-// row exists yet, template is written as-is.
+// Merge: template wins for every field EXCEPT Body and WorkingRepos, which
+// the on-disk row wins for when one exists — those are user/other-command-
+// owned (`register`/`boot --working-repo`, a hand-edited bio) and must
+// survive ticks the runner's own template has no opinion on. When no row
+// exists yet, template is written as-is.
 func HeartbeatRegistration(cfg *Config, template Registration, leaseToken string) error {
 	if leaseToken == "" {
 		return fmt.Errorf("HeartbeatRegistration: empty lease token (heartbeat is serve-only)")
@@ -259,48 +205,11 @@ func HeartbeatRegistration(cfg *Config, template Registration, leaseToken string
 		if existing, err := ReadRegistration(path); err == nil {
 			reg.Body = existing.Body
 			reg.WorkingRepos = existing.WorkingRepos
-			reg.LastActive = existing.LastActive
-			if strings.TrimSpace(template.LaunchedBy) == "" {
-				reg.LaunchedBy = existing.LaunchedBy
-			}
-			if strings.TrimSpace(template.ShimName) == "" {
-				reg.ShimName = existing.ShimName
-			}
-			if strings.TrimSpace(template.HookEvent) == "" {
-				reg.HookEvent = existing.HookEvent
-			}
 		} else if !os.IsNotExist(err) {
 			return err
 		}
 		reg.LastSeen = time.Now().UTC()
-		if err := WriteRegistration(path, &reg); err != nil {
-			return err
-		}
-		// B1 note (plan §4 risk list — the B5 dependency): keep the WriteLive
-		// call here so the tree keeps compiling and `.live`-driven presence
-		// readers stay accurate until B5 deletes live.go and this call along
-		// with it. busy=false: busy is advisory and set only by serve
-		// elsewhere (Gate 6). WriteLive is a separate atomic file write and
-		// takes no agent lock, so this nested call is safe (withAgentLock is
-		// non-reentrant).
-		return WriteLive(cfg, template.AgentID, false)
-	})
-}
-
-// UpdateLastActive updates last_active via the same structured path as other
-// registration writes. Runs under the per-agent lock so a concurrent
-// HeartbeatRegistration tick cannot lose this update (the tick's own merge
-// preserves LastActive precisely so it survives a concurrent write here).
-func UpdateLastActive(cfg *Config, agentID string, t time.Time) error {
-	return withAgentLock(cfg, agentID, func() error {
-		path := cfg.AgentRegistrationPath(agentID)
-		reg, err := ReadRegistration(path)
-		if err != nil {
-			return err
-		}
-		lastActive := t.UTC()
-		reg.LastActive = &lastActive
-		return WriteRegistration(path, reg)
+		return WriteRegistration(path, &reg)
 	})
 }
 
@@ -328,9 +237,6 @@ func (r *Registration) Validate() error {
 	}
 	if r.LastSeen.IsZero() {
 		return fmt.Errorf("last_seen is required")
-	}
-	if !validStatus(r.Status) {
-		return fmt.Errorf("status must be one of %q, %q, %q", StatusActive, StatusExhausted, StatusOffline)
 	}
 	return nil
 }
@@ -424,11 +330,6 @@ func parseFrontmatter(data string) (frontmatterFields, string, error) {
 }
 
 func formatRegistration(r *Registration) string {
-	status := r.Status
-	if status == "" {
-		status = StatusActive
-	}
-
 	var b strings.Builder
 	b.WriteString("---\n")
 	writeScalar(&b, "agent_id", r.AgentID)
@@ -449,24 +350,6 @@ func formatRegistration(r *Registration) string {
 		writeScalar(&b, "host", r.Host)
 	}
 	writeScalar(&b, "last_seen", formatTimestamp(r.LastSeen))
-	writeScalar(&b, "status", string(status))
-	if r.RestartAt != nil {
-		writeScalar(&b, "restart_at", formatTimestamp(*r.RestartAt))
-	}
-	if r.LastActive != nil {
-		writeScalar(&b, "last_active", formatTimestamp(*r.LastActive))
-	}
-	// WI-E3 launch provenance: only emitted when populated, so a plain
-	// registration serializes byte-identically to the pre-upgrade format.
-	if strings.TrimSpace(r.LaunchedBy) != "" {
-		writeScalar(&b, "launched_by", r.LaunchedBy)
-	}
-	if strings.TrimSpace(r.ShimName) != "" {
-		writeScalar(&b, "shim_name", r.ShimName)
-	}
-	if strings.TrimSpace(r.HookEvent) != "" {
-		writeScalar(&b, "hook_event", r.HookEvent)
-	}
 	b.WriteString("---\n")
 	if strings.TrimSpace(r.Body) != "" {
 		b.WriteString("\n")
@@ -534,15 +417,6 @@ func parseTimestamp(value string) (time.Time, error) {
 
 func formatTimestamp(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
-}
-
-func validStatus(status Status) bool {
-	switch status {
-	case "", StatusActive, StatusExhausted, StatusOffline:
-		return true
-	default:
-		return false
-	}
 }
 
 func atomicWriteFile(path string, data []byte) error {

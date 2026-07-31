@@ -51,11 +51,6 @@ func cmdBoot(args []string) error {
 		Bio:        bio,
 		ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN"),
 	}
-	// WI-E3 provenance: boot is a SessionStart-class hook enroll. When it fires
-	// INSIDE the runner (AGENTCHUTE_RUNNER=1 set on the runner's child), the
-	// runner owns the lane — record `runner` so the provenance is not demoted to
-	// `hook`, keeping the verify view truthful for runner-launched wrappers.
-	opts.LaunchedBy, opts.HookEvent = hookLaunchProvenance("boot")
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "host":
@@ -94,9 +89,6 @@ func cmdBoot(args []string) error {
 	result, err := performRegister(cfg, opts, now)
 	if err != nil {
 		return err
-	}
-	if err := saveActiveSessionHeartbeat(cfg, agentID, "boot", now); err != nil {
-		return fmt.Errorf("write active session heartbeat: %w", err)
 	}
 
 	// C11: boot is one of the two sweep triggers (the other is serve's slow

@@ -17,7 +17,6 @@ import (
 
 type setupRuntimeResetResult struct {
 	Agents       []string
-	Pollers      []string
 	Runners      []string
 	RuntimeFiles []string
 	Warnings     []string
@@ -31,11 +30,6 @@ func resetSetupRuntimeState(root string, cfg *loop.Config, wrappers []string) se
 	agentIDs, warnings := setupResetAgentIDs(root, cfg, wrappers)
 	result := setupRuntimeResetResult{Agents: agentIDs, Warnings: warnings}
 	for _, agentID := range agentIDs {
-		if stopped, warning := stopSetupPoller(cfg, agentID); warning != "" {
-			result.Warnings = append(result.Warnings, warning)
-		} else if stopped {
-			result.Pollers = append(result.Pollers, agentID)
-		}
 		if stopped, warning := stopSetupRunner(cfg, agentID); warning != "" {
 			result.Warnings = append(result.Warnings, warning)
 		} else if stopped {
@@ -49,7 +43,6 @@ func resetSetupRuntimeState(root string, cfg *loop.Config, wrappers []string) se
 			}
 		}
 	}
-	sort.Strings(result.Pollers)
 	sort.Strings(result.Runners)
 	sort.Strings(result.RuntimeFiles)
 	sort.Strings(result.Warnings)
@@ -182,30 +175,9 @@ func setupAgentMatchesCanonical(agentID string, allowed []string) bool {
 
 func setupRuntimeStatePaths(cfg *loop.Config, agentID string) []string {
 	return []string{
-		cfg.PollerHeartbeatPath(agentID),
-		cfg.ActiveSessionPath(agentID),
 		cfg.RunnerStatePath(agentID),
 		cfg.RunnerSocketPath(agentID),
 	}
-}
-
-func stopSetupPoller(cfg *loop.Config, agentID string) (bool, string) {
-	hb, err := loop.LoadPollerHeartbeat(cfg, agentID)
-	if err != nil {
-		return false, ""
-	}
-	if !setupLocalHost(hb.Host) || hb.PID <= 0 || !setupProcessAlive(hb.PID) {
-		return false, ""
-	}
-	cmdline := setupProcessCommandLine(hb.PID)
-	if !setupCommandMatches(cmdline, agentID, "poller run", cfg) {
-		return false, fmt.Sprintf("not stopping poller for %s pid=%d; process command did not match this agentchute pool", agentID, hb.PID)
-	}
-	if err := setupSignalProcess(hb.PID, syscall.SIGTERM); err != nil {
-		return false, fmt.Sprintf("stop poller for %s pid=%d: %v", agentID, hb.PID, err)
-	}
-	waitSetupProcessExit(hb.PID, 500*time.Millisecond)
-	return true, ""
 }
 
 func stopSetupRunner(cfg *loop.Config, agentID string) (bool, string) {
@@ -246,13 +218,6 @@ func waitSetupProcessExit(pid int, timeout time.Duration) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-}
-
-func setupCommandMatches(cmdline, agentID, subcommand string, cfg *loop.Config) bool {
-	if !setupCommandMatchesPool(cmdline, subcommand, cfg) {
-		return false
-	}
-	return setupCommandHasAgentID(cmdline, agentID)
 }
 
 // setupCommandMatchesRunnerPool attributes a live RUNNER to THIS pool. Unlike a
@@ -373,29 +338,6 @@ func setupPathsEquivalent(a, b string) bool {
 	ca := setupPathCandidates(a)
 	for c := range setupPathCandidates(b) {
 		if c != "" && ca[c] {
-			return true
-		}
-	}
-	return false
-}
-
-func setupCommandHasAgentID(cmdline, agentID string) bool {
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
-		return false
-	}
-	fields := strings.Fields(cmdline)
-	for i, field := range fields {
-		switch {
-		case field == agentID:
-			return true
-		case field == "--as="+agentID:
-			return true
-		case field == "--agent-id="+agentID:
-			return true
-		case strings.HasPrefix(field, "AGENTCHUTE_AGENT_ID=") && strings.TrimPrefix(field, "AGENTCHUTE_AGENT_ID=") == agentID:
-			return true
-		case (field == "--as" || field == "--agent-id") && i+1 < len(fields) && fields[i+1] == agentID:
 			return true
 		}
 	}

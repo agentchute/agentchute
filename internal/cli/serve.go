@@ -21,9 +21,14 @@ import (
 
 const (
 	defaultRunnerIntervalSeconds = 5
-	defaultRunnerIdleGrace       = 2 * time.Second
-	defaultRunnerBusyGrace       = 30 * time.Second
-	defaultRunnerPrompt          = "[agentchute] check inbox"
+	// minServeIntervalSeconds floors --interval (v2.5 plan B5: relocated from
+	// the now-deleted internal/loop/poller.go's MinPollerIntervalSeconds,
+	// which this same value validated for both the detached poller and
+	// serve).
+	minServeIntervalSeconds = 5
+	defaultRunnerIdleGrace  = 2 * time.Second
+	defaultRunnerBusyGrace  = 30 * time.Second
+	defaultRunnerPrompt     = "[agentchute] check inbox"
 
 	bracketedPasteStart = "\x1b[200~"
 	bracketedPasteEnd   = "\x1b[201~"
@@ -33,7 +38,7 @@ const (
 // recueInterval bounds how often the runner re-cues while unread mail sits in
 // the inbox and the last cue hasn't been consumed (v2.5 plan A2 / decision
 // §8). Package var (not a const) ONLY so tests can shrink it (same pattern as
-// seqRecentWindow/liveWindow/leaseTimeout); production keeps 60s. Do not
+// seqRecentWindow/leaseTimeout); production keeps 60s. Do not
 // shrink below ~10s in production: it must stay well above IdleGrace so
 // re-cues never chase their own echo.
 var recueInterval = 60 * time.Second
@@ -88,8 +93,8 @@ func cmdServe(args []string) error {
 		return runUsage(err)
 	}
 
-	if opts.IntervalSeconds < loop.MinPollerIntervalSeconds {
-		return fmt.Errorf("--interval must be >= %d seconds", loop.MinPollerIntervalSeconds)
+	if opts.IntervalSeconds < minServeIntervalSeconds {
+		return fmt.Errorf("--interval must be >= %d seconds", minServeIntervalSeconds)
 	}
 	if opts.InterruptPolicy == "" {
 		opts.InterruptPolicy = interruptAfterIdle
@@ -464,6 +469,31 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	return nil
 }
 
+// localHostname returns the current host's name, trimmed. Best-effort: an
+// os.Hostname() failure returns "".
+func localHostname() string {
+	host, _ := os.Hostname()
+	return strings.TrimSpace(host)
+}
+
+// withoutEnv returns env (an os.Environ()-shaped slice) with every entry
+// whose key is in keys removed.
+func withoutEnv(env []string, keys ...string) []string {
+	blocked := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		blocked[key] = true
+	}
+	filtered := env[:0]
+	for _, kv := range env {
+		key, _, ok := strings.Cut(kv, "=")
+		if ok && blocked[key] {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
+}
+
 func runnerChildEnv(cfg *loop.Config, opts runnerOptions, serveToken string) []string {
 	// Strip any inherited AGENTCHUTE_GUARD before conditionally re-adding it
 	// below: os.Environ() carries THIS process's own env, which is nonempty
@@ -505,10 +535,6 @@ func registerRunner(cfg *loop.Config, opts runnerOptions, serveToken string, now
 		Host:         localHostname(),
 		HostProvided: true,
 		ServeToken:   serveToken,
-		// WI-E3 provenance: the runner owns this lane. ShimName is threaded from
-		// the launcher shim (cmdShimsExec passes --shim-name) when present.
-		LaunchedBy: loop.LaunchedByRunner,
-		ShimName:   opts.ShimName,
 	}, now)
 	return err
 }
@@ -518,8 +544,8 @@ func registerRunner(cfg *loop.Config, opts runnerOptions, serveToken string, now
 // registerRunner passes to performRegister for the runner's initial write.
 // Built once in runWrapper and reused for the lifetime of the process: it is
 // what a swept-then-recreated row comes back as, and what every tick
-// re-asserts for AgentID/Vendor/ControlRepo/Host/provenance (Body and
-// WorkingRepos come from the on-disk row instead — see HeartbeatRegistration).
+// re-asserts for AgentID/Vendor/ControlRepo/Host (Body and WorkingRepos come
+// from the on-disk row instead — see HeartbeatRegistration).
 func heartbeatTemplate(cfg *loop.Config, opts runnerOptions) loop.Registration {
 	return loop.Registration{
 		AgentID:         opts.AgentID,
@@ -528,9 +554,6 @@ func heartbeatTemplate(cfg *loop.Config, opts runnerOptions) loop.Registration {
 		ControlRepo:     cfg.ControlRepo,
 		WorkingRepos:    []string{cfg.ControlRepo},
 		Host:            localHostname(),
-		Status:          loop.StatusActive,
-		LaunchedBy:      loop.LaunchedByRunner,
-		ShimName:        opts.ShimName,
 	}
 }
 

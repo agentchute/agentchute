@@ -14,8 +14,8 @@ import (
 // Pull-only (simple-again Gate 6c): the wake-autodetect / wake-preserve /
 // tmux-pane-dedup / same-pane-prune / pane-lock / defer-to-existing register
 // tests were removed with the apparatus they exercised. A registration carries
-// no wake state; register's retained behavior is: write the record + the initial
-// `.live` presence + explicit-id duplicate-owner refusal.
+// no wake state; register's retained behavior is: write the record + explicit-
+// id duplicate-owner refusal.
 
 func TestRegister_RMWUnderAgentLock(t *testing.T) {
 	root := t.TempDir()
@@ -45,7 +45,6 @@ func TestRegister_RMWUnderAgentLock(t *testing.T) {
 			Vendor:       "anthropic",
 			ControlRepo:  cfg.ControlRepo,
 			WorkingRepos: []string{cfg.ControlRepo},
-			Status:       loop.StatusActive,
 		}
 
 		var wg sync.WaitGroup
@@ -115,75 +114,6 @@ func TestRegisterWritesProtocolVersion(t *testing.T) {
 	})
 }
 
-// TestRegister_NoLostUpdateVsConcurrentUpdateLastSeen asserts that a
-// performRegister merge cannot silently clobber a concurrently-recorded
-// last_active. performRegister preserves existing.LastActive across the
-// read-merge-write; without the lock its stale read could overwrite a
-// last_active written by an interleaved UpdateLastActive (lost update). With
-// the lock the read and write are atomic, so the recorded last_active survives.
-func TestRegister_NoLostUpdateVsConcurrentUpdateLastSeen(t *testing.T) {
-	root := t.TempDir()
-	withCwd(t, root, func() {
-		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
-		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-		if err != nil {
-			t.Fatal(err)
-		}
-		const agentID = "claude-code"
-		base := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
-
-		// Seed.
-		if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, base); err != nil {
-			t.Fatal(err)
-		}
-
-		lastActive := base.Add(48 * time.Hour)
-		var wg sync.WaitGroup
-		errs := make(chan error, 64)
-
-		// Writer that records a definite last_active, racing many re-registers.
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := loop.UpdateLastActive(cfg, agentID, lastActive); err != nil {
-				errs <- err
-			}
-		}()
-		for i := 0; i < 40; i++ {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, base.Add(time.Duration(i)*time.Second)); err != nil {
-					errs <- err
-				}
-			}(i)
-		}
-		wg.Wait()
-		close(errs)
-		for err := range errs {
-			t.Fatalf("concurrent mutation: %v", err)
-		}
-
-		// After UpdateLastActive committed, a re-register merge must preserve it,
-		// not roll it back to nil. Run one final register to settle ordering, then
-		// assert last_active is present.
-		if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, base.Add(time.Hour)); err != nil {
-			t.Fatal(err)
-		}
-		reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if reg.LastActive == nil {
-			t.Fatal("last_active was clobbered to nil by a stale register merge (lost update)")
-		}
-		if !reg.LastActive.Equal(lastActive) {
-			t.Fatalf("last_active = %v, want %v (preserved across merge)", reg.LastActive, lastActive)
-		}
-	})
-}
-
 // TestRegister_InboxExistsBeforeRegistrationVisible: after register returns the
 // inbox dir exists; the inbox/state dirs are created BEFORE the registration file
 // is published, so a peer can never observe a live registration with no inbox.
@@ -220,9 +150,8 @@ func TestRegister_InboxExistsBeforeRegistrationVisible(t *testing.T) {
 	})
 }
 
-// Pull-only: a successful register writes the record AND publishes the initial
-// `.live` presence fact (Gate 3), with NO wake state on the record.
-func TestRegister_WritesRecordAndInitialLive(t *testing.T) {
+// Pull-only: a successful register writes the record, with NO wake state on it.
+func TestRegister_WritesRecord(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
@@ -237,55 +166,8 @@ func TestRegister_WritesRecordAndInitialLive(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// The registration record is written.
 		if _, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID)); err != nil {
 			t.Fatalf("registration unreadable: %v", err)
-		}
-		// The initial `.live` presence fact is published.
-		liveSeen, ok := loop.LiveLastSeen(cfg, agentID)
-		if !ok || liveSeen.IsZero() {
-			t.Fatalf("register did not publish an initial .live presence fact (ok=%v seen=%v)", ok, liveSeen)
-		}
-	})
-}
-
-// Re-running register on an agent that was previously marked exhausted or offline
-// must reset Status to active and clear RestartAt.
-func TestRegisterClearsStaleStatusAndRestartAt(t *testing.T) {
-	root := t.TempDir()
-	withCwd(t, root, func() {
-		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
-		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
-
-		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test"}); err != nil {
-			t.Fatal(err)
-		}
-
-		regPath := filepath.Join(root, ".agentchute", "loop", "agents", "test-agent.md")
-		reg, err := loop.ReadRegistration(regPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		future := time.Now().Add(time.Hour).UTC()
-		reg.Status = loop.StatusExhausted
-		reg.RestartAt = &future
-		if err := loop.WriteRegistration(regPath, reg); err != nil {
-			t.Fatal(err)
-		}
-
-		if err := cmdRegister([]string{"--as", "test-agent", "--vendor", "test"}); err != nil {
-			t.Fatal(err)
-		}
-
-		reg, err = loop.ReadRegistration(regPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if reg.Status != loop.StatusActive {
-			t.Errorf("Status = %q, want active", reg.Status)
-		}
-		if reg.RestartAt != nil {
-			t.Errorf("RestartAt = %v, want nil", reg.RestartAt)
 		}
 	})
 }

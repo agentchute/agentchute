@@ -73,7 +73,6 @@ func mkFreshRecipient(t *testing.T, cfg *Config, to string) {
 		Vendor:      "agentchute",
 		ControlRepo: cfg.ControlRepo,
 		LastSeen:    time.Now().UTC(),
-		Status:      StatusActive,
 	}
 	if err := WriteRegistration(cfg.AgentRegistrationPath(to), reg); err != nil {
 		t.Fatalf("mkFreshRecipient %s: %v", to, err)

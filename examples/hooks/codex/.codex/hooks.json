@@ -6,11 +6,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --quiet",
-            "statusMessage": "agentchute: poller"
-          },
-          {
-            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --codex-hook SessionStart",
             "statusMessage": "agentchute: boot"
           }
@@ -24,11 +19,6 @@
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} self-check --quiet",
             "statusMessage": "agentchute: self-check"
-          },
-          {
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --quiet",
-            "statusMessage": "agentchute: poller"
           },
           {
             "type": "command",

@@ -24,8 +24,9 @@ import (
 // function once delivered. Reply obligations live exclusively on the asker side.
 //
 // A dead recipient still surfaces TWICE OVER — the asker's expired obligation
-// (here) AND the recipient's stale `.live` (live.go) — so the asker never waits
-// on a corpse.
+// (here) AND the recipient's own stale registration age (v2.5 plan B5: `.live`
+// is deleted; presence is registration `last_seen` age plus a live serve
+// claim) — so the asker never waits on a corpse.
 //
 // KEY: the primary key is the trusted committed old or new message identity.
 // From == the asker (== the ledger owner); To == the recipient the asker is
