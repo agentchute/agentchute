@@ -192,7 +192,6 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 		checkSpecFreshness(cfg),
 		checkProtocolVersions(cfg),
 		checkStaleTempFiles(cfg, opts.Now),
-		checkStaleWorktrees(cfg),
 		checkBinaryOnPath(),
 		checkHookFilePresence(cfg, agentID),
 		checkHookContentSanity(cfg),
@@ -434,117 +433,6 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
-}
-
-// gitWorktreeEntry is one entry from `git worktree list --porcelain`.
-type gitWorktreeEntry struct {
-	path     string
-	head     string
-	branch   string // "" for a detached-HEAD worktree
-	locked   bool
-	prunable bool
-}
-
-// listGitWorktrees parses `git worktree list --porcelain`, run in
-// controlRepo. The first returned entry is always the main worktree itself.
-// Any failure (not a git repo, git not on PATH, ...) surfaces as an error;
-// callers must fail open, not block a diagnostic on it.
-func listGitWorktrees(controlRepo string) ([]gitWorktreeEntry, error) {
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
-	cmd.Dir = controlRepo
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	var entries []gitWorktreeEntry
-	var cur gitWorktreeEntry
-	flush := func() {
-		if cur.path != "" {
-			entries = append(entries, cur)
-		}
-		cur = gitWorktreeEntry{}
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		switch {
-		case line == "":
-			flush()
-		case strings.HasPrefix(line, "worktree "):
-			cur.path = strings.TrimPrefix(line, "worktree ")
-		case strings.HasPrefix(line, "HEAD "):
-			cur.head = strings.TrimPrefix(line, "HEAD ")
-		case strings.HasPrefix(line, "branch "):
-			cur.branch = strings.TrimPrefix(line, "branch ")
-		case line == "locked" || strings.HasPrefix(line, "locked "):
-			cur.locked = true
-		case line == "prunable" || strings.HasPrefix(line, "prunable "):
-			cur.prunable = true
-		}
-	}
-	flush()
-	return entries, nil
-}
-
-// gitRefMergedIntoOriginMain reports whether ref is reachable from
-// origin/main via local git plumbing only — no fetch, so a stale local
-// origin/main under-reports (a false negative, silent) rather than ever
-// over-reporting (a false positive, a wrongly-flagged live worktree).
-// `git merge-base --is-ancestor` exits 0 (true), 1 (false, a real answer),
-// or anything else for "cannot determine" (unknown revision, no origin/main,
-// git missing, ...), which is treated the same as false — never flag what
-// can't be confirmed.
-func gitRefMergedIntoOriginMain(controlRepo, ref string) bool {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", ref, "origin/main")
-	cmd.Dir = controlRepo
-	err := cmd.Run()
-	if err == nil {
-		return true
-	}
-	return false
-}
-
-// checkStaleWorktrees WARNs when a registered git worktree, other than the
-// main one, is done with its work and just sitting there: its checked-out
-// branch (or, for a detached-HEAD review checkout, its pinned commit) is
-// already reachable from origin/main. Offline and cheap by construction —
-// see gitRefMergedIntoOriginMain. Locked worktrees (a live lane's session —
-// CLAUDE.md's EnterWorktree locks the ones it creates) and prunable ones
-// (directory already gone — `git worktree prune`'s job, not this check's)
-// are skipped. This targets the "done but nobody removed it" class that
-// left 53 registered worktrees (27 of them stale review-pr* checkouts) and
-// ~190 dead branches accumulated over the v1.5.x program before cleanup —
-// visible early now instead of discovered 53 deep.
-func checkStaleWorktrees(cfg *loop.Config) doctorCheck {
-	entries, err := listGitWorktrees(cfg.ControlRepo)
-	if err != nil {
-		return doctorCheck{Name: "stale_worktrees", Severity: severityOK, Message: "worktree scan unavailable (not a git repo, or git not on PATH)"}
-	}
-	if len(entries) <= 1 {
-		return doctorCheck{Name: "stale_worktrees", Severity: severityOK, Message: "no linked worktrees registered"}
-	}
-
-	var stale []string
-	for _, w := range entries[1:] { // [0] is always the main worktree
-		if w.locked || w.prunable {
-			continue
-		}
-		ref, label := w.branch, w.branch
-		if ref == "" {
-			ref = w.head
-			label = w.head[:minInt(8, len(w.head))] + " (detached)"
-		}
-		if ref == "" || !gitRefMergedIntoOriginMain(cfg.ControlRepo, ref) {
-			continue
-		}
-		stale = append(stale, fmt.Sprintf("%s (%s)", w.path, label))
-	}
-	if len(stale) == 0 {
-		return doctorCheck{Name: "stale_worktrees", Severity: severityOK, Message: fmt.Sprintf("%d worktree(s) registered, none stale", len(entries)-1)}
-	}
-	return doctorCheck{
-		Name:     "stale_worktrees",
-		Severity: severityWarn,
-		Message:  fmt.Sprintf("%d worktree(s) already merged into origin/main and safe to remove: %s — `git worktree remove <path>` after confirming", len(stale), strings.Join(stale, ", ")),
-	}
 }
 
 func checkBinaryOnPath() doctorCheck {
