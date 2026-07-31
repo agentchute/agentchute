@@ -39,8 +39,9 @@ func cmdSelfCheck(args []string) error {
 	}
 
 	opts := registerOpts{
-		Host: host,
-		Bio:  bio,
+		Host:       host,
+		Bio:        bio,
+		ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN"),
 	}
 	// WI-E3 provenance: self-check is a lifecycle hook enroll. Under the runner
 	// (AGENTCHUTE_RUNNER=1) it records `runner` so the runner lane is not demoted.
@@ -103,8 +104,8 @@ func cmdSelfCheck(args []string) error {
 // between the two entry points.
 //
 // opts must already carry the caller's Host/Bio/LaunchedBy/HookEvent; this
-// fills in AgentID/Vendor/ContextualIdentity/ContextualBaseID on it (hence the
-// pointer — callers that need the resolved opts.Vendor afterward, like
+// fills in AgentID/Vendor on it (hence the pointer — callers that need the
+// resolved opts.Vendor afterward, like
 // cmdSelfCheck's status report, see it without a second resolve) and returns
 // the resolved agent id alongside performRegister's result.
 //
@@ -118,11 +119,7 @@ func cmdSelfCheck(args []string) error {
 // determined at all) returns "" — that is the one case nothing downstream can
 // proceed on.
 func selfRepairRegistration(cfg *loop.Config, opts *registerOpts, agentIDFlag, vendorFlag, source string, now time.Time) (string, *registerResult, error) {
-	contextualBase, contextual, err := contextualIdentityBase(agentIDFlag, vendorFlag)
-	if err != nil {
-		return "", nil, err
-	}
-	agentID, err := resolveAgentID(agentIDFlag, vendorFlag, cfg)
+	agentID, err := resolveAgentID(agentIDFlag)
 	if err != nil {
 		return "", nil, err
 	}
@@ -131,8 +128,6 @@ func selfRepairRegistration(cfg *loop.Config, opts *registerOpts, agentIDFlag, v
 	}
 	opts.AgentID = agentID
 	opts.Vendor = resolveAgentVendor(vendorFlag, agentID, cfg)
-	opts.ContextualIdentity = contextual
-	opts.ContextualBaseID = contextualBase
 
 	result, err := performRegister(cfg, *opts, now)
 	if err != nil {

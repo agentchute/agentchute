@@ -642,9 +642,9 @@ func TestDoctorAcDispatcherResolution(t *testing.T) {
 	}
 }
 
-// hookWrapperForAgent and shimNamesForAgent must resolve contextual ids
-// (codex-agentchute) to their canonical wrapper, not only exact base ids.
-func TestWrapperResolutionHandlesContextualIDs(t *testing.T) {
+// hookWrapperForAgent and shimNamesForAgent must resolve explicitly named
+// wrapper-prefixed ids to their canonical wrapper, not only exact base ids.
+func TestWrapperResolutionHandlesExplicitPrefixedIDs(t *testing.T) {
 	cases := []struct {
 		id          string
 		wantWrapper string
@@ -652,10 +652,10 @@ func TestWrapperResolutionHandlesContextualIDs(t *testing.T) {
 		wantShim    string
 	}{
 		{"codex", "codex", true, "ac-codex"},
-		{"codex-agentchute", "codex", true, "ac-codex"},
-		{"claude-code-agentchute", "claude-code", true, "ac-claude"},
-		{"gemini-cli-agentchute", "gemini-cli", true, "ac-gemini"},
-		{"grok-agentchute", "", false, "ac-grok"}, // hookless, but still shimmed
+		{"codex-review", "codex", true, "ac-codex"},
+		{"claude-code-review", "claude-code", true, "ac-claude"},
+		{"gemini-cli-review", "gemini-cli", true, "ac-gemini"},
+		{"grok-review", "", false, "ac-grok"}, // hookless, but still shimmed
 	}
 	for _, tc := range cases {
 		w, ok := hookWrapperForAgent(tc.id)
@@ -1007,14 +1007,14 @@ func TestDoctorGuardLatchAgeCorruptFileWarns(t *testing.T) {
 	}
 }
 
-func TestAcServeHintForAgent_ContextualIDs(t *testing.T) {
+func TestAcServeHintForAgentExplicitPrefixedIDs(t *testing.T) {
 	cases := map[string]string{
-		"codex":                 "ac serve codex",
-		"codex-agentchute":      "ac serve codex",  // contextual id
-		"gemini-cli-agentchute": "ac serve gemini", // contextual id, aliased wrapper
-		"claude-code":           "ac serve claude",
-		"grok-agentchute":       "ac serve grok",
-		"totally-unknown":       "ac serve <wrapper>",
+		"codex":             "ac serve codex",
+		"codex-review":      "ac serve codex",
+		"gemini-cli-review": "ac serve gemini",
+		"claude-code":       "ac serve claude",
+		"grok-review":       "ac serve grok",
+		"totally-unknown":   "ac serve <wrapper>",
 	}
 	for id, want := range cases {
 		if got := acServeHintForAgent(id); got != want {

@@ -43,6 +43,8 @@ func setupBootFixture(t *testing.T) string {
 	t.Helper()
 	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
 	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+	t.Setenv("AGENTCHUTE_AGENT_ID", "")
+	t.Setenv("AGENTCHUTE_SERVE_TOKEN", "")
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
@@ -193,6 +195,67 @@ func TestBootWithUnreadMailReturnsBlocked(t *testing.T) {
 		if !got.Blocked {
 			t.Error("Blocked = false on unread mail")
 		}
+	})
+}
+
+func TestBootInheritedMailNoteFiresOnlyForPredatingMail(t *testing.T) {
+	const want = `inbox contains mail from before this registration — a previous "claude-code" may have existed`
+
+	t.Run("predating mail", func(t *testing.T) {
+		root := setupBootFixture(t)
+		withCwd(t, root, func() {
+			if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) }); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustWriteAgedInbox(t, cfg.AgentInboxDir("claude-code"), "codex", 1, []byte("---\nfrom: codex\n---\n\nold\n"), time.Hour)
+
+			out, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) })
+			if !errors.Is(err, errBlocked) {
+				t.Fatalf("err = %v, want errBlocked", err)
+			}
+			var got bootStatus
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Notes) != 1 || got.Notes[0] != want {
+				t.Fatalf("notes = %q, want [%q]", got.Notes, want)
+			}
+		})
+	})
+
+	t.Run("newer mail", func(t *testing.T) {
+		root := setupBootFixture(t)
+		withCwd(t, root, func() {
+			if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) }); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustWriteSeqInbox(t, cfg.AgentInboxDir("claude-code"), "codex", 1, []byte("---\nfrom: codex\n---\n\nnew\n"))
+			path := filepath.Join(cfg.AgentInboxDir("claude-code"), loop.MsgID{From: "codex", Seq: 1}.Filename())
+			future := time.Now().UTC().Add(time.Hour)
+			if err := os.Chtimes(path, future, future); err != nil {
+				t.Fatal(err)
+			}
+
+			out, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) })
+			if !errors.Is(err, errBlocked) {
+				t.Fatalf("err = %v, want errBlocked", err)
+			}
+			var got bootStatus
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Notes) != 0 {
+				t.Fatalf("notes = %q, want none", got.Notes)
+			}
+		})
 	})
 }
 

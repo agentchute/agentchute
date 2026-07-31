@@ -64,8 +64,6 @@ type runnerOptions struct {
 	IdleGrace       time.Duration
 	BusyGrace       time.Duration
 	WrapperArgs     []string
-	ContextualID    bool
-	ContextualBase  string
 	ShimName        string // ac-* launcher shim that started this lane (provenance).
 	Guarded         bool   // wrapper's hooks can clear the guard latch (v2.5 A7/C22); serve exports AGENTCHUTE_GUARD=1 only when true.
 }
@@ -137,11 +135,7 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	contextualBase, contextual, err := contextualIdentityBase(opts.AgentID, opts.Vendor)
-	if err != nil {
-		return err
-	}
-	opts.AgentID, err = resolveAgentID(opts.AgentID, opts.Vendor, cfg)
+	opts.AgentID, err = resolveAgentID(opts.AgentID)
 	if err != nil {
 		return err
 	}
@@ -155,8 +149,6 @@ func cmdServe(args []string) error {
 	if err := loop.ValidateAgentID(opts.Vendor); err != nil {
 		return fmt.Errorf("--vendor: %w", err)
 	}
-	opts.ContextualID = contextual
-	opts.ContextualBase = contextualBase
 	return runWrapper(cfg, opts, cwd)
 }
 
@@ -388,7 +380,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	if err := registerRunner(cfg, opts, time.Now().UTC()); err != nil {
+	if err := registerRunner(cfg, opts, lease.Token, time.Now().UTC()); err != nil {
 		_ = ptmx.Close()
 		_ = cmd.Process.Kill()
 		<-done
@@ -502,18 +494,17 @@ func runnerChildEnv(cfg *loop.Config, opts runnerOptions, serveToken string) []s
 	return env
 }
 
-func registerRunner(cfg *loop.Config, opts runnerOptions, now time.Time) error {
+func registerRunner(cfg *loop.Config, opts runnerOptions, serveToken string, now time.Time) error {
 	// Pull-only (Gate 6c): the runner publishes no wake target — it owns the wake
 	// path via the PTY supervisor, not a registration field. The registration is
 	// a plain no-wake record.
 	_, err := performRegister(cfg, registerOpts{
-		AgentID:            opts.AgentID,
-		Vendor:             opts.Vendor,
-		WorkingRepos:       []string{cfg.ControlRepo},
-		Host:               localHostname(),
-		HostProvided:       true,
-		ContextualIdentity: opts.ContextualID,
-		ContextualBaseID:   opts.ContextualBase,
+		AgentID:      opts.AgentID,
+		Vendor:       opts.Vendor,
+		WorkingRepos: []string{cfg.ControlRepo},
+		Host:         localHostname(),
+		HostProvided: true,
+		ServeToken:   serveToken,
 		// WI-E3 provenance: the runner owns this lane. ShimName is threaded from
 		// the launcher shim (cmdShimsExec passes --shim-name) when present.
 		LaunchedBy: loop.LaunchedByRunner,

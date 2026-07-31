@@ -47,8 +47,9 @@ func cmdBoot(args []string) error {
 	}
 
 	opts := registerOpts{
-		Host: host,
-		Bio:  bio,
+		Host:       host,
+		Bio:        bio,
+		ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN"),
 	}
 	// WI-E3 provenance: boot is a SessionStart-class hook enroll. When it fires
 	// INSIDE the runner (AGENTCHUTE_RUNNER=1 set on the runner's child), the
@@ -79,11 +80,7 @@ func cmdBoot(args []string) error {
 		return err
 	}
 
-	contextualBase, contextual, err := contextualIdentityBase(agentID, vendor)
-	if err != nil {
-		return err
-	}
-	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	agentID, err = resolveAgentID(agentID)
 	if err != nil {
 		return err
 	}
@@ -92,8 +89,6 @@ func cmdBoot(args []string) error {
 	}
 	opts.AgentID = agentID
 	opts.Vendor = resolveAgentVendor(vendor, agentID, cfg)
-	opts.ContextualIdentity = contextual
-	opts.ContextualBaseID = contextualBase
 
 	now := time.Now().UTC()
 	result, err := performRegister(cfg, opts, now)
@@ -119,7 +114,11 @@ func cmdBoot(args []string) error {
 		return fmt.Errorf("list inbox: %w", err)
 	}
 	unread := make([]pendingEntry, 0, len(msgs))
+	inheritedMail := false
 	for _, msg := range msgs {
+		if msg.Timestamp.Before(result.Reg.LastSeen) {
+			inheritedMail = true
+		}
 		entry := pendingEntry{
 			From:      msg.Sender,
 			Filename:  msg.Filename,
@@ -131,6 +130,10 @@ func cmdBoot(args []string) error {
 			}
 		}
 		unread = append(unread, entry)
+	}
+	var notes []string
+	if inheritedMail {
+		notes = append(notes, fmt.Sprintf("inbox contains mail from before this registration — a previous %q may have existed", agentID))
 	}
 
 	// Reply obligations are asker-owned only (v0.9.0): the recipient is never
@@ -146,6 +149,7 @@ func cmdBoot(args []string) error {
 		MalformedCount: len(skipped),
 		Host:           result.ResolvedHost,
 		Warnings:       result.Warnings,
+		Notes:          notes,
 		Blocked:        len(unread) > 0,
 	}
 
@@ -184,6 +188,7 @@ type bootStatus struct {
 	MalformedCount int            `json:"malformed_count,omitempty"`
 	Host           string         `json:"host,omitempty"`
 	Warnings       []string       `json:"warnings,omitempty"`
+	Notes          []string       `json:"notes,omitempty"`
 	Blocked        bool           `json:"blocked"`
 
 	// StaleReg reserved for forward-compat with the boot JSON wire shape's
@@ -221,6 +226,9 @@ func emitBootText(s bootStatus, quiet bool) {
 	}
 	for _, warning := range s.Warnings {
 		fmt.Printf("  warning: %s\n", warning)
+	}
+	for _, note := range s.Notes {
+		fmt.Printf("  note: %s\n", note)
 	}
 }
 
@@ -265,6 +273,9 @@ func writeBootContext(w io.Writer, s bootStatus) {
 	}
 	for _, warning := range s.Warnings {
 		fmt.Fprintf(w, "\nagentchute warning: %s", warning)
+	}
+	for _, note := range s.Notes {
+		fmt.Fprintf(w, "\nagentchute note: %s", note)
 	}
 }
 

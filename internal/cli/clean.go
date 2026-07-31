@@ -73,14 +73,11 @@ func cmdClean(args []string) error {
 
 	if owed {
 		// Destructive command: require EXPLICIT identity (--as or the env
-		// var), never the contextual-guess fallback resolveAgentID otherwise
-		// falls through to (review nit — B4 deletes that fallback fleet-wide
-		// soon, but this command shouldn't guess whose obligations to prune
-		// in the meantime).
+		// var); never guess whose obligations to prune.
 		if strings.TrimSpace(agentID) == "" && strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID")) == "" {
 			return cleanUsage(fmt.Errorf("--owed requires an explicit identity: pass --as <id> or set AGENTCHUTE_AGENT_ID"))
 		}
-		agentID, err = resolveAgentID(agentID, vendor, cfg)
+		agentID, err = resolveAgentID(agentID)
 		if err != nil {
 			return err
 		}

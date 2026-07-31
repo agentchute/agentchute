@@ -73,23 +73,23 @@ func TestStatusAsRefusesMissingSelfRegistration(t *testing.T) {
 		if !strings.Contains(err.Error(), "not registered") {
 			t.Errorf("error missing 'not registered' wording: %v", err)
 		}
-		// status's error also mentions the bare-status escape hatch.
-		if !strings.Contains(err.Error(), "omit --as") {
-			t.Errorf("error missing 'omit --as' escape hatch: %v", err)
+		if !strings.Contains(err.Error(), "agentchute boot --as claude-code") {
+			t.Errorf("error missing boot pointer: %v", err)
 		}
 	})
 }
 
-func TestStatusBareStillWorksWithoutRegistration(t *testing.T) {
-	// Pool-overview status (no --as) is a side-effect-free read; it must
-	// not refuse even when no agent is registered.
+func TestStatusBareRequiresIdentity(t *testing.T) {
 	root := setupBootFixture(t)
 	withCwd(t, root, func() {
 		_, err := captureStdout(t, func() error {
 			return cmdStatus(nil)
 		})
-		if err != nil {
-			t.Errorf("status with no --as should work even with no registrations; got %v", err)
+		if err == nil {
+			t.Fatal("status with no identity returned nil error")
+		}
+		if err.Error() != missingAgentIdentityHint {
+			t.Fatalf("error = %q, want %q", err, missingAgentIdentityHint)
 		}
 	})
 }

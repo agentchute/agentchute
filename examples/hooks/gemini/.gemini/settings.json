@@ -7,12 +7,12 @@
           {
             "name": "agentchute-poller",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor google --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --quiet"
           },
           {
             "name": "agentchute-boot",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} boot --vendor google --context-only"
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --context-only"
           }
         ]
       }
@@ -29,12 +29,12 @@
           {
             "name": "agentchute-poller",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor google --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --quiet"
           },
           {
             "name": "agentchute-pending",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} pending --vendor google --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --json"
           }
         ]
       }

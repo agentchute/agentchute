@@ -303,8 +303,9 @@ func cmdShimsExec(args []string) error {
 		"--control-repo", cfg.ControlRepo,
 		"--loop-dir", cfg.LoopDir,
 		"--shim-name", spec.Name,
-		"--",
 	}
+	runArgs = append(runArgs, ensureDispatchIdentity(nil, spec.AgentID, os.Getenv("AGENTCHUTE_AGENT_ID"))...)
+	runArgs = append(runArgs, "--")
 	runArgs = append(runArgs, wrapperArgs...)
 	return execReplace(agentchuteBin, runArgs, os.Environ())
 }

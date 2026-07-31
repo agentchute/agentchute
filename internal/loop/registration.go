@@ -165,16 +165,16 @@ func WriteRegistration(path string, r *Registration) error {
 }
 
 // WriteRegistrationExclusive writes a fresh registration and fails with
-// os.ErrExist if the path already exists. Used by contextual identity startup
-// so two simultaneous agents do not silently claim the same first ID.
+// os.ErrExist if the path already exists. Registration startup uses it so a
+// concurrent creator is re-read before a same-id merge is allowed.
 //
 // The destination is published atomically: content is written to a temp file
 // first, then hard-linked into place. os.Link fails with EEXIST (recognized by
 // os.IsExist) when the target already exists, preserving exclusive semantics —
 // but unlike an O_EXCL create followed by a separate write, the visible file is
-// never observed empty. That matters under the SessionStart race: a losing
-// racer that reads the just-created registration must see its full record
-// before deciding whether to adopt it or suffix to a fresh id.
+// never observed empty. A losing racer that reads the just-created
+// registration must see its full record before deciding whether it may adopt
+// the id.
 func WriteRegistrationExclusive(path string, r *Registration) error {
 	if err := r.Validate(); err != nil {
 		return err
@@ -207,7 +207,7 @@ func WriteRegistrationExclusive(path string, r *Registration) error {
 		return err
 	}
 	if err := os.Link(tmpName, path); err != nil {
-		return err // EEXIST surfaces as os.IsExist for the contextual-collision loop.
+		return err // EEXIST surfaces as os.IsExist for the registration retry.
 	}
 	_ = syncDir(dir)
 	return nil
@@ -624,7 +624,7 @@ func (e RegistrationReadError) Error() string {
 // the existing layout convention).
 //
 // Use this when one bad registration must NOT abort a multi-peer scan —
-// notably contextual-identity allocation (`identity`) and the update/setup
+// notably identity checks and the update/setup
 // re-sync (`update`), which enumerate every peer and must log/warn a single
 // unparseable entry and continue. Strict callers (single-registration ops,
 // the `status` command) should keep using ReadRegistration directly.

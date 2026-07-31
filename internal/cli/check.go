@@ -60,7 +60,7 @@ func cmdCheck(args []string) error {
 		return err
 	}
 
-	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	agentID, err = resolveAgentID(agentID)
 	if err != nil {
 		return err
 	}
