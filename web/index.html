@@ -300,8 +300,8 @@
         <p class="lbl">what changed in v2.5</p>
         <h2>We broke it on purpose.</h2>
         <p>We stopped using our own agents for three weeks. When we came back, one had a message waiting that had been unread for <b>twenty-three days</b>. Nothing had failed — the message was delivered exactly as designed, sitting intact in the right inbox. That was the problem. We had built a mailbox that accepted letters for people who had moved out, and never mentioned it to anyone.</p>
-        <p>So v2.5 makes absence visible. <b>An agent that stops answering stops receiving:</b> registrations go stale, and sending to one fails right away instead of disappearing into a mailbox nobody will open. Message names became timestamps, which let us delete a lot of machinery that existed to keep counters in step.</p>
-        <p><b>It is a real break.</b> A v2.5 agent reads everything a v2 agent wrote, but not the other way round — so every agent sharing a pool moves together. At 1.0 we said this would only happen through a deprecation process. It didn't, and we would rather say so here than let you find out from a stack trace.</p>
+        <p>So v2.5 makes absence visible. When an agent's supervisor stops heartbeating, its registration goes stale — about an hour by default — and <b>sending to it fails right away</b> instead of disappearing into a mailbox nobody will open. Long jobs are fine: the supervisor keeps heartbeating whether the model is busy or idle. Message names became timestamps, which let us delete a lot of machinery that existed to keep counters in step.</p>
+        <p><b>It is a real break.</b> A v2.5 agent still reads normal v2 mail; a v2 agent cannot read v2.5 names — so every agent sharing a pool moves together. At 1.0 we said this would only happen through a deprecation process. It didn't, and we would rather say so here than let you find out from a stack trace.</p>
         <p class="fine">$ agentchute update — then restart every lane</p>
       </div>
     </section>
@@ -311,11 +311,11 @@
       <h2>Five primitives. The rest is your choice.</h2>
       <div class="prims">
         <div class="prim"><h3>per-recipient inbox</h3><p>Each agent owns an ordered message stream. Senders deliver into it; the recipient owns consumption.</p></div>
-        <div class="prim"><h3>identified messages</h3><p>Every message has a durable committed identity. A sender's messages stay in order — with no clock.</p></div>
+        <div class="prim"><h3>identified messages</h3><p>Every message has a durable identity — a timestamp and a random suffix. Conversation order rides the reply chain.</p></div>
         <div class="prim"><h3>no-overwrite delivery</h3><p>A sender never clobbers an existing message. A collision is refused and retried under a fresh identity — delivery is at-most-once, not deduped.</p></div>
         <div class="prim"><h3>recipient reads its own inbox</h3><p>Pull, not push. Senders write and walk away; the message waits until the recipient reads it.</p></div>
         <div class="prim"><h3>self-registration + presence</h3><p>Each agent publishes a small record and a liveness heartbeat, read on demand.</p></div>
-        <div class="prim"><h3 style="color:var(--faint)">…pinned by vectors</h3><p class="em">14 vectors as language-neutral JSON, run against both bindings — plus a 251-line stdlib-Python proof. Pass the vectors in any language and you're conformant.</p></div>
+        <div class="prim"><h3 style="color:var(--faint)">…pinned by vectors</h3><p class="em">Conformance is a set of language-neutral vectors. Pass them in any language and you're on the wire.</p></div>
       </div>
     </section>
 
@@ -335,7 +335,7 @@
           <p>agentchute is not a multi-agent framework. No task graphs, no role election, no central broker, no SDK, no SaaS tier. If you wanted those, this is the wrong tool — and that's fine.</p>
         </div>
         <ul class="clean">
-          <li><b>Not a delivery broker.</b> <span>Delivery is best-effort and idempotent; the recipient reads on its own cadence. Need retries and exactly-once? Use a queue.</span></li>
+          <li><b>Not a delivery broker.</b> <span>Delivery is best-effort and at-most-once; the recipient reads on its own cadence. Need retries and exactly-once? Use a queue.</span></li>
           <li><b>Not an auth system.</b> <span>Messages are unsigned plain text. If you don't trust your peers, don't run them on your machine.</span></li>
           <li><b>Not a router.</b> <span>Agents are peers; senders pick recipients explicitly. No wildcard, no broadcast, no role election.</span></li>
           <li><b>Not a product.</b> <span>A protocol and a faithful reference implementation, maintained for spec fidelity. Alternates welcome — the vectors prove them.</span></li>
