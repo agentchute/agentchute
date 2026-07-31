@@ -17,10 +17,9 @@ import (
 // surfaces age loudly, the reader judges relevance — no expiry, no auto-action.
 const oldMailBannerAfter = 24 * time.Hour
 
-// messageAge returns how long ago msg was sent, relative to now. Age source
-// today is always msg.Timestamp (file mtime) — the filename-timestamp
-// grammar doesn't exist yet (v2.5 plan B7). This is the one place plan slice
-// B6 edits to add the new-format filename-timestamp branch alongside mtime.
+// messageAge returns how long ago msg was sent, relative to now. The lister
+// populates msg.Timestamp from the embedded timestamp for new-format messages
+// and from file mtime for legacy seq messages.
 func messageAge(msg loop.Message, now time.Time) time.Duration {
 	return now.Sub(msg.Timestamp)
 }

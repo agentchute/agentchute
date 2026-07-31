@@ -254,34 +254,66 @@ func TestListInboxMessagesWithSkippedReportsMalformedNames(t *testing.T) {
 
 func TestListInboxMessagesWithSkippedAcceptsOldAndTimestampFormats(t *testing.T) {
 	inbox := t.TempDir()
-	writeSeqInbox(t, inbox, "codex", 1, []byte("old\n"))
-	tsID := TsID{
-		From:   "gemini-cli",
-		Stamp:  "20260730T182415123456Z",
+	old1 := MsgID{From: "codex", Seq: 1}
+	old2 := MsgID{From: "codex", Seq: 2}
+	writeSeqInbox(t, inbox, old2.From, old2.Seq, []byte("old-2\n"))
+	writeSeqInbox(t, inbox, old1.From, old1.Seq, []byte("old-1\n"))
+	new1 := TsID{
+		From:   "codex",
+		Stamp:  "20260730T182415123455Z",
 		Suffix: testTsSuffix,
 	}
-	mustWrite(t, filepath.Join(inbox, tsID.Filename()), []byte("new\n"))
+	new2 := TsID{
+		From:   "codex",
+		Stamp:  "20260730T182415123456Z",
+		Suffix: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	mustWrite(t, filepath.Join(inbox, new2.Filename()), []byte("new-2\n"))
+	mustWrite(t, filepath.Join(inbox, new1.Filename()), []byte("new-1\n"))
 	mustWrite(t, filepath.Join(inbox, "garbage.md"), []byte("bad\n"))
 
 	msgs, skipped, err := ListInboxMessagesWithSkipped(inbox)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(msgs) != 2 {
-		t.Fatalf("msgs = %#v, want old and timestamp messages", msgs)
+	if len(msgs) != 4 {
+		t.Fatalf("msgs = %#v, want two old and two timestamp messages", msgs)
 	}
-	got := map[string]string{}
-	for _, msg := range msgs {
-		got[msg.Filename] = msg.Sender
-	}
-	if got[(MsgID{From: "codex", Seq: 1}).Filename()] != "codex" {
-		t.Fatalf("old message missing or wrong sender: %#v", got)
-	}
-	if got[tsID.Filename()] != "gemini-cli" {
-		t.Fatalf("timestamp message missing or wrong sender: %#v", got)
+	wantOrder := []string{old1.Filename(), old2.Filename(), new1.Filename(), new2.Filename()}
+	for i, want := range wantOrder {
+		if msgs[i].Filename != want || msgs[i].Sender != "codex" {
+			t.Fatalf("msgs[%d] = %+v, want codex message %s; full order=%#v", i, msgs[i], want, msgs)
+		}
 	}
 	if len(skipped) != 1 || skipped[0] != "garbage.md" {
 		t.Fatalf("skipped = %v, want [garbage.md]", skipped)
+	}
+}
+
+func TestListClaimedMessagesUsesMixedFormatPerSenderOrder(t *testing.T) {
+	claimed := t.TempDir()
+	old1 := MsgID{From: "codex", Seq: 1}
+	old2 := MsgID{From: "codex", Seq: 2}
+	new1 := TsID{From: "codex", Stamp: "20260730T182415123455Z", Suffix: testTsSuffix}
+	new2 := TsID{From: "codex", Stamp: "20260730T182415123456Z", Suffix: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+
+	writeSeqInbox(t, claimed, old2.From, old2.Seq, []byte("old-2\n"))
+	writeSeqInbox(t, claimed, old1.From, old1.Seq, []byte("old-1\n"))
+	mustWrite(t, filepath.Join(claimed, new2.Filename()), []byte("new-2\n"))
+	mustWrite(t, filepath.Join(claimed, new1.Filename()), []byte("new-1\n"))
+
+	msgs, err := ListClaimedMessages(claimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOrder := []string{old1.Filename(), old2.Filename(), new1.Filename(), new2.Filename()}
+	if len(msgs) != len(wantOrder) {
+		t.Fatalf("msgs = %#v, want %d mixed-format messages", msgs, len(wantOrder))
+	}
+	for i, want := range wantOrder {
+		if msgs[i].Filename != want {
+			t.Fatalf("msgs[%d] = %s, want %s; full order=%#v", i, msgs[i].Filename, want, msgs)
+		}
 	}
 }
 

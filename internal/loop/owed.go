@@ -12,8 +12,8 @@ import (
 // owed.go — the ASKER-OWNED obligation ledger, the SOLE reply-obligation
 // mechanism (v0.9.0 `.owed` redesign; protocol-v2 TEAM-DECISION §3).
 //
-// The reply obligation is asker-owned only: "I am owed a reply to (to,from,seq)
-// from <recipient> by <T>." Held as an asker-LOCAL `.owed` ledger
+// The reply obligation is asker-owned only: "I am owed a reply to this committed
+// delivery identity from <recipient> by <T>." Held as an asker-LOCAL `.owed` ledger
 // (single-writer, atomic rename). The gate reads ONLY its own `.owed`; it never
 // scans peers. It is NON-BLOCKING: an outstanding/expired obligation surfaces as
 // a gate WARNING, never a finish blocker.
@@ -245,9 +245,6 @@ func ClearOwed(cfg *Config, asker string, identity OwedIdentity) error {
 		return fmt.Errorf("ClearOwed: identity is nil")
 	}
 	key := identity.OwedKey()
-	if err := validateOwedKey(key); err != nil {
-		return fmt.Errorf("ClearOwed: %w", err)
-	}
 	return withAgentLock(cfg, asker, func() error {
 		ledger, err := LoadOwedLedger(cfg, asker)
 		if err != nil {

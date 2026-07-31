@@ -15,12 +15,12 @@ import (
 //
 // Timestamp is populated from the timestamp-format filename when present, or
 // from file mtime for legacy seq messages. It is advisory display/staleness
-// data only; ordering stays filename-lexicographic.
+// data only; ordering uses the parsed delivery identity.
 type Message struct {
 	Path      string    // absolute path to the file
 	Filename  string    // basename (just the file name, no directory)
 	Sender    string    // sender agent_id parsed from the filename
-	Timestamp time.Time // file mtime (advisory display/staleness only, never an ordering key)
+	Timestamp time.Time // embedded stamp or legacy mtime; advisory only
 }
 
 const (
@@ -98,11 +98,10 @@ func QuarantineInboxFile(srcPath, malformedDir, recipient string, now time.Time)
 	return destPath, nil
 }
 
-// ListInboxMessages returns inbox messages for a recipient, sorted oldest-first
-// by filename (canonical `from-<from>_seq-<020d>` — lexicographic = per-sender
-// seq FIFO). Skips temp files (.tmp_ prefix),
-// dotfiles (e.g., .DS_Store), and any file whose name does not parse per
-// §6.1. Returns an empty slice if the inbox dir is missing or empty.
+// ListInboxMessages returns inbox messages for a recipient, sorted by sender,
+// then legacy-before-timestamp grammar, then each grammar's own key. It skips
+// temp files (.tmp_ prefix), dotfiles (e.g., .DS_Store), and names that parse
+// as neither supported grammar. A missing or empty inbox returns an empty slice.
 //
 // Use ListInboxMessagesWithSkipped when callers need to surface filenames that
 // look like message attempts but failed parsing (e.g., to warn an operator
@@ -162,9 +161,9 @@ func ListInboxMessagesWithSkipped(inboxDir string) ([]Message, []string, error) 
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		// A file whose name parses as the canonical seq format is a real message;
-		// only a genuinely-unrecognized name is `skipped` (and thus subject to the
-		// §11 quarantine + corrective).
+		// A file whose name parses as either canonical grammar is a real message;
+		// only a genuinely-unrecognized name is `skipped` (and thus subject to
+		// §11 quarantine).
 		msg, ok := parseAnyInboxName(name, modTime)
 		if !ok {
 			skipped = append(skipped, name)
@@ -179,12 +178,45 @@ func ListInboxMessagesWithSkipped(inboxDir string) ([]Message, []string, error) 
 		msgs = append(msgs, msg)
 	}
 
-	// Filename-lexicographic sort yields exact per-sender FIFO: within a sender
-	// the zero-padded %020d seq compares numerically. Cross-sender order is
-	// advisory (O1), satisfied by the sender-slug grouping the names impose.
-	sort.Slice(msgs, func(i, j int) bool { return msgs[i].Filename < msgs[j].Filename })
+	sortInboxMessages(msgs)
 	sort.Strings(skipped)
 	return msgs, skipped, nil
+}
+
+// sortInboxMessages preserves per-sender FIFO through the one-way migration:
+// all legacy messages from a sender precede timestamp-format messages, and each
+// grammar is ordered by its own monotonic key. Cross-sender order is advisory.
+func sortInboxMessages(msgs []Message) {
+	sort.Slice(msgs, func(i, j int) bool {
+		a, b := msgs[i], msgs[j]
+		if a.Sender != b.Sender {
+			return a.Sender < b.Sender
+		}
+
+		_, aSeq, aOld := ParseSeqFilename(a.Filename)
+		_, bSeq, bOld := ParseSeqFilename(b.Filename)
+		if aOld != bOld {
+			return aOld
+		}
+		if aOld {
+			if aSeq != bSeq {
+				return aSeq < bSeq
+			}
+			return a.Filename < b.Filename
+		}
+
+		aTs, aNew := ParseTsFilename(a.Filename)
+		bTs, bNew := ParseTsFilename(b.Filename)
+		if aNew && bNew {
+			if aTs.Stamp != bTs.Stamp {
+				return aTs.Stamp < bTs.Stamp
+			}
+			if aTs.Suffix != bTs.Suffix {
+				return aTs.Suffix < bTs.Suffix
+			}
+		}
+		return a.Filename < b.Filename
+	})
 }
 
 // isRegularDirEntry reports whether entry is a plain regular file (not a
@@ -303,13 +335,13 @@ func ArchiveMessage(msg Message, archiveDir, recipient string, consumedAt time.T
 // discipline. Returns the claimed-copy path.
 //
 // IDEMPOTENT / DEDUP (modeled on ArchiveMessage's EEXIST/SameFile path): the
-// canonical (to,from,seq) name encodes IDENTITY, so if it already sits in
-// claimedDir — whether the same inode (a re-claim) or a fresh inode (a resend
-// that re-landed the SAME identity in the inbox while the original was already
-// claimed) — the inbox source is the SAME protocol message. We DROP it (remove
-// the source) and return the already-claimed copy rather than erroring. (This is
-// the one divergence from ArchiveMessage, which errors on a different-inode
-// EEXIST; for a claim a same-identity resend is a benign duplicate to discard.)
+// canonical delivery name encodes IDENTITY, so if it already sits in claimedDir
+// — whether the same inode (a re-claim) or a fresh inode (a resend that re-landed
+// the SAME identity in the inbox while the original was already claimed) — the
+// inbox source is the SAME protocol message. We DROP it (remove the source) and
+// return the already-claimed copy rather than erroring. (This is the one
+// divergence from ArchiveMessage, which errors on a different-inode EEXIST; for
+// a claim a same-identity resend is a benign duplicate to discard.)
 func ClaimMessage(msg Message, claimedDir string) (string, error) {
 	if msg.Path == "" || msg.Filename == "" {
 		return "", fmt.Errorf("ClaimMessage: message Path and Filename required")
@@ -367,10 +399,9 @@ func ClaimMessage(msg Message, claimedDir string) (string, error) {
 
 // ListClaimedMessages returns the uncommitted residue in claimedDir — messages
 // CLAIMED by a prior `check` but not yet COMMITTED by `ack` (e.g. the agent
-// crashed, or hasn't run ack). It reuses parseAnyInboxName + the same
-// filename-lexicographic sort as the inbox lister. A missing claimedDir is not
-// an error (no residue → empty slice). Unrecognized residue is skipped silently
-// (it never came from a claim).
+// crashed, or hasn't run ack). It reuses parseAnyInboxName and the same
+// identity-aware sort as the inbox lister. A missing claimedDir is not an error
+// (no residue → empty slice). Unrecognized residue is skipped silently.
 func ListClaimedMessages(claimedDir string) ([]Message, error) {
 	entries, err := readInboxDir(claimedDir)
 	if err != nil {
@@ -407,7 +438,7 @@ func ListClaimedMessages(claimedDir string) ([]Message, error) {
 		msg.Filename = name
 		msgs = append(msgs, msg)
 	}
-	sort.Slice(msgs, func(i, j int) bool { return msgs[i].Filename < msgs[j].Filename })
+	sortInboxMessages(msgs)
 	return msgs, nil
 }
 

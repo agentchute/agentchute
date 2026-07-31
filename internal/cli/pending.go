@@ -232,7 +232,7 @@ func emitPendingText(entries []pendingEntry, owed []loop.OwedEntry, malformed in
 }
 
 // owedLine renders a single asker-owned obligation: the peer we are awaiting a
-// reply from and the canonical (to,from,seq) ref the reply must echo.
+// reply from and the canonical old or timestamp ref the reply must echo.
 func owedLine(o loop.OwedEntry) string {
 	return fmt.Sprintf("awaiting reply from %s — %s", o.To, o.Key().RefString())
 }

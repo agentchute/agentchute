@@ -151,6 +151,8 @@ The committed identity is the full delivery key `(to, from, seq)`:
 
 The reference encoding is the canonical filename `from-<from>_seq-<020d>.md` (`seq` zero-padded to 20 digits). A plain lexicographic sort of one sender's files is therefore **exact per-sender FIFO with no clock**. Cross-sender order is **advisory arrival order** (non-normative) — the protocol does not promise a global total order (a real total order would need a freshness CAS the mount can't cheaply give, and is unneeded).
 
+During the v2.5 dual-read migration, the reference implementation preserves per-sender FIFO for the one-way, pool-at-once cutover by sorting legacy seq messages before timestamp-format messages, then sorting each grammar by its own monotonic key. Known migration-window limitation: if a pool writes timestamp-format messages, rolls back and writes new legacy messages, then rolls forward again, the old-first grammar rank can place those rollback writes before earlier timestamp writes. Using file mtime as a cross-grammar key is worse because copying and archiving can perturb it; no global ordering machinery is added for this two-transition edge case.
+
 `seq` is **write-ahead durable**: the counter is committed *before* the message links, so a crash can only ever produce a GAP (an allocated seq whose message never landed), never a reuse for different content. Gaps are legal — `seq` is identity + sort key, not a no-gap contract.
 
 The canonical `from-<from>_seq-<020d>.md` is the only inbox filename format. A name that does not parse as a canonical seq filename is unrecognized: it is skipped by the lister and quarantined by `check` (§11.1).

@@ -86,6 +86,26 @@ func TestRecordThenClearTimestampIdentity(t *testing.T) {
 	}
 }
 
+func TestRecordOwedRejectsFilenameTsIDUntilRecipientIsSet(t *testing.T) {
+	cfg := newOwedTestConfig(t)
+	now := time.Now()
+	id, ok := ParseTsFilename("20260730T182415123456Z_from-alice_r" + testTsSuffix + ".md")
+	if !ok {
+		t.Fatal("ParseTsFilename failed")
+	}
+	if id.To != "" {
+		t.Fatalf("filename-derived TsID.To = %q, want empty", id.To)
+	}
+	if err := RecordOwed(cfg, "alice", id, now.Add(time.Hour), now); err == nil {
+		t.Fatal("RecordOwed accepted filename-derived TsID without setting To")
+	}
+
+	id.To = "bob"
+	if err := RecordOwed(cfg, "alice", id, now.Add(time.Hour), now); err != nil {
+		t.Fatalf("RecordOwed rejected TsID after setting To: %v", err)
+	}
+}
+
 func TestClearOwedMatchesOnlySameIdentityForm(t *testing.T) {
 	cfg := newOwedTestConfig(t)
 	now := time.Now()
