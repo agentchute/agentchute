@@ -150,6 +150,15 @@ func TestGuardForeignLatchTreatedUnset(t *testing.T) {
 	})
 }
 
+// TestGuardDenyListMatchingTable is the guard-latch-livelock fix's
+// regression lock (brief test cases 1-3, 7): the "allow" rows for
+// git push/tag, gh pr create/merge, gh release, ssh, scp are the actual
+// livelock fix — MUST FAIL on the pre-fix binary, where these were denied
+// and produced the "check arms the latch; the turn's own push is denied"
+// deadlock (hit claude-code x2, sonnet on PR #110, codex on PR #111 the same
+// day). Every agentchute-subcommand / hook-config-write / curl-wget/rm-rf
+// row must stay denied under every spelling — subtraction, not a rewrite of
+// the regex-based defense.
 func TestGuardDenyListMatchingTable(t *testing.T) {
 	root, cfg := setupConsumeFixture(t)
 	withCwd(t, root, func() {
@@ -166,14 +175,20 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 			cmd        string
 			wantDenied bool
 		}{
-			{"git push", "git push origin main", true},
-			{"git tag", "git tag v1.0.0", true},
-			{"gh release", "gh release create v1.0.0", true},
-			{"gh pr merge", "gh pr merge 42", true},
+			// Livelock fix: cut from the deny list — none of these can touch
+			// claimed-but-uncommitted mail or the end-of-turn handler.
+			{"git push", "git push origin HEAD", false},
+			{"git tag", "git tag -a v1.5.1 -m x", false},
+			{"gh pr create", "gh pr create", false},
+			{"gh pr merge", "gh pr merge 110", false},
+			{"gh release", "gh release create v1.5.1", false},
+			{"ssh", "ssh host", false},
+			{"scp", "scp a b:/c", false},
+			// Kept: curl/wget can move an arbitrary payload off the command
+			// line and reach turn-end/rm -rf/hook-config rewrites with no
+			// denied token of their own.
 			{"curl", "curl https://example.com", true},
 			{"wget", "wget https://example.com", true},
-			{"ssh", "ssh some-host", true},
-			{"scp", "scp file some-host:", true},
 			{"rm -rf", "rm -rf /tmp/x", true},
 			{"claude settings write", "echo x > .claude/settings.json", true},
 			{"codex hooks write", "echo x > .codex/hooks.json", true},
@@ -188,7 +203,8 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 			// dispatcher spelling, its fully-expanded dispatch exec form, the
 			// templated env-var form, and extra whitespace all bypassed the
 			// old plain-substring match — proven live to self-clear the
-			// latch mid-turn and disarm the entire deny list.
+			// latch mid-turn and disarm the entire deny list. UNCHANGED by
+			// the livelock fix — guardAgentchuteSubcmdRE is untouched.
 			{"ac dispatcher spelling", "ac turn-end --json", true},
 			{"ac ack", "ac ack --as bob", true},
 			{"ac check", "ac check --as bob", true},
@@ -196,14 +212,27 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 			{"dispatch exec form (= shim-dir)", "agentchute dispatch --shim-dir=/Users/alex/.agentchute/bin -- turn-end --json", true},
 			{"dispatch exec form via ac token", "ac dispatch -- turn-end --json", true},
 			{"templated AGENTCHUTE_BIN form", "${AGENTCHUTE_BIN:-agentchute} turn-end --json", true},
-			{"bare $AGENTCHUTE_BIN form", "$AGENTCHUTE_BIN turn-end --json", true},
+			{"bare $AGENTCHUTE_BIN form", "$AGENTCHUTE_BIN ack --as bob", true},
 			{"double-space", "agentchute  turn-end --json", true},
+			// Heredoc/quoted-body disarm lock (brief test case 4): no
+			// stripper was added, so a heredoc marker or a commented-out
+			// `<<EOF` line does nothing special — the plain command text
+			// still contains "agentchute turn-end"/"agentchute check"
+			// literally and is still denied. Fails if anyone later adds a
+			// heredoc-body stripper (the rejected design: it was attacked
+			// into a universal disarm, `echo "<<EOF" && agentchute turn-end`
+			// clearing its own latch).
+			{"heredoc marker then turn-end", `echo "<<EOF" && agentchute turn-end`, true},
+			{"commented heredoc then check", "# <<EOF\nagentchute check", true},
 			{"benign ls", "ls -la", false},
 			{"benign git status", "git status", false},
 			{"benign go test", "go test ./...", false},
 			{"benign gh pr view", "gh pr view 42", false},
 			{"benign word containing ac", "pac turn-end", false},
 			{"benign word ending in ac", "trac turn-end", false},
+			// Word-boundary precision (brief test case 7): self-check is a
+			// distinct subcommand from check and must stay allowed.
+			{"agentchute self-check", "agentchute self-check --quiet", false},
 		}
 		for _, c := range cases {
 			d := evaluateGuardInvocation("", "", "", c.cmd)
@@ -211,10 +240,61 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 				t.Errorf("%s: cmd=%q allowed=%v, want denied=%v", c.name, c.cmd, d.Allowed, c.wantDenied)
 			}
 			if c.wantDenied && d.Reason != guardDenyReason {
-				t.Errorf("%s: reason = %q, want the fixed C25 deny reason", c.name, d.Reason)
+				t.Errorf("%s: reason = %q, want the fixed deny reason", c.name, d.Reason)
 			}
 		}
 	})
+}
+
+// TestGuardMutatedDenyListStillDeniesAgentchuteSubcommands is the
+// guard-latch-livelock fix's mutation test (brief test case 5): with
+// guardPipelineDenySubstrings emptied out entirely, `agentchute turn-end`
+// and `ac check` must still be denied — proving the defense for the
+// agentchute subcommands lives in guardAgentchuteSubcmdRE, not in the
+// substring list this fix just cut down.
+func TestGuardMutatedDenyListStillDeniesAgentchuteSubcommands(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-1")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+		t.Setenv("AGENTCHUTE_AGENT_ID", "bob")
+		if err := loop.SetGuardLatch(cfg, "bob", "tok-1"); err != nil {
+			t.Fatal(err)
+		}
+
+		old := guardPipelineDenySubstrings
+		guardPipelineDenySubstrings = nil
+		t.Cleanup(func() { guardPipelineDenySubstrings = old })
+
+		for _, cmd := range []string{"agentchute turn-end --as bob", "ac check --as bob"} {
+			d := evaluateGuardInvocation("", "", "", cmd)
+			if d.Allowed {
+				t.Errorf("cmd=%q allowed with an empty pipeline deny list; the agentchute-subcommand defense must live in the regex, not the list", cmd)
+			}
+		}
+	})
+}
+
+// TestGuardDenyReasonNamesSection15 is the guard-latch-livelock fix's
+// wording lock (brief test case 6): the deny reason must name the correct
+// section (§15, not the old §9) and the causal-integrity framing
+// ("turn-end"), and must no longer claim to guard general "scope-expanding"
+// actions — that claim became false the moment push/tag/release left the
+// deny list.
+func TestGuardDenyReasonNamesSection15(t *testing.T) {
+	if !strings.Contains(guardDenyReason, "§15") {
+		t.Errorf("guardDenyReason = %q, want it to name §15", guardDenyReason)
+	}
+	if !strings.Contains(guardDenyReason, "turn-end") {
+		t.Errorf("guardDenyReason = %q, want it to name turn-end", guardDenyReason)
+	}
+	if strings.Contains(guardDenyReason, "§9") {
+		t.Errorf("guardDenyReason = %q, must not still claim §9", guardDenyReason)
+	}
+	if strings.Contains(guardDenyReason, "scope-expanding") {
+		t.Errorf("guardDenyReason = %q, must not claim general scope-expanding coverage (no longer true)", guardDenyReason)
+	}
 }
 
 func TestGuardAllowWhenNoToken(t *testing.T) {

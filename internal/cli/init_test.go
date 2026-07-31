@@ -18,11 +18,11 @@ func TestInitFreshEmpty(t *testing.T) {
 	}
 
 	expectAction(t, plan, "AGENTCHUTE.md", "write")
-	expectAction(t, plan, "CLAUDE.md", "create v28")
-	expectAction(t, plan, "CODEX.md", "create v28")
-	expectAction(t, plan, "GEMINI.md", "create v28")
-	expectAction(t, plan, "GROK.md", "create v28")
-	expectAction(t, plan, "AGENTS.md", "create v28")
+	expectAction(t, plan, "CLAUDE.md", "create v29")
+	expectAction(t, plan, "CODEX.md", "create v29")
+	expectAction(t, plan, "GEMINI.md", "create v29")
+	expectAction(t, plan, "GROK.md", "create v29")
+	expectAction(t, plan, "AGENTS.md", "create v29")
 	expectAction(t, plan, ".gitignore", "skip") // not in git
 	expectAction(t, plan, ".agentchute/loop/agents", "mkdir 0700")
 	expectAction(t, plan, ".agentchute/loop/inbox", "mkdir 0700")
@@ -81,14 +81,14 @@ func TestInitPrependsBlockWhenNoMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "prepend v28")
+	expectAction(t, plan, "CLAUDE.md", "prepend v29")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "agentchute-enrollment v28 begin") {
+	if !strings.Contains(string(got), "agentchute-enrollment v29 begin") {
 		t.Errorf("CLAUDE.md missing marker after prepend:\n%s", got)
 	}
 	if !strings.HasSuffix(string(got), originalContent) {
@@ -143,7 +143,7 @@ func TestInitReplacesDriftedV1Content(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "replace v1→v28")
+	expectAction(t, plan, "CLAUDE.md", "replace v1→v29")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
@@ -167,7 +167,7 @@ func TestInitUpgradesV11EnrollmentBlockToV13(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CODEX.md", "replace v11→v28")
+	expectAction(t, plan, "CODEX.md", "replace v11→v29")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CODEX.md"))
@@ -189,7 +189,7 @@ func TestInitUpgradesV11EnrollmentBlockToV13(t *testing.T) {
 // Existing file with a future version marker → leave alone with warning.
 func TestInitLeavesNewerVersionAlone(t *testing.T) {
 	root := t.TempDir()
-	future := "<!-- agentchute-enrollment v29 begin -->\nfuture\n<!-- agentchute-enrollment v29 end -->\n"
+	future := "<!-- agentchute-enrollment v30 begin -->\nfuture\n<!-- agentchute-enrollment v30 end -->\n"
 	mustWrite(t, filepath.Join(root, "CLAUDE.md"), []byte(future))
 
 	plan, err := computeInitPlan(root, "agentchute", false)
@@ -208,6 +208,53 @@ func TestInitLeavesNewerVersionAlone(t *testing.T) {
 		}
 	}
 	t.Fatal("CLAUDE.md action not found in plan")
+}
+
+// TestInitUpgradesV28EnrollmentToV29 is the guard-latch-livelock fix's
+// enrollment-bump lock (brief test case 12): a v28 repo file re-renders its
+// marked region to the current v29 template — reported as a clean version
+// upgrade ("replace v28→v29"), a distinct action string from planEnrollmentFile's
+// same-version "replace vN drift" branch, so the two never get confused in
+// plan output. TestInitLeavesNewerVersionAlone (this file, now pinned to a
+// v30 fixture) already proves the complementary direction: an older binary
+// encountering a marker newer than its own enrollmentVersion skips with a
+// warning rather than rewriting — the same generic branch a literal v28
+// binary against a v29 file would take, which cannot be built as a second
+// binary within this same test run.
+func TestInitUpgradesV28EnrollmentToV29(t *testing.T) {
+	root := t.TempDir()
+	old := "<!-- agentchute-enrollment v28 begin -->\nstale v28 content\n<!-- agentchute-enrollment v28 end -->\n\nMy notes.\n"
+	mustWrite(t, filepath.Join(root, "CLAUDE.md"), []byte(old))
+
+	plan, err := computeInitPlan(root, "agentchute", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range plan.Actions {
+		if a.Target != "CLAUDE.md" {
+			continue
+		}
+		if a.Action != "replace v28→v29" {
+			t.Errorf("action = %q, want %q", a.Action, "replace v28→v29")
+		}
+		if strings.Contains(a.Detail, "drift") {
+			t.Errorf("a clean older-version upgrade must not be reported as same-version drift: %+v", a)
+		}
+	}
+	applyAll(t, plan)
+	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "agentchute-enrollment v29 begin") {
+		t.Errorf("CLAUDE.md was not upgraded to v29:\n%s", got)
+	}
+	if strings.Contains(string(got), "stale v28 content") {
+		t.Errorf("CLAUDE.md still contains stale v28 content after upgrade:\n%s", got)
+	}
+	if !strings.Contains(string(got), "My notes.") {
+		t.Errorf("CLAUDE.md lost preserved user content after upgrade:\n%s", got)
+	}
 }
 
 // Multiple agentchute-enrollment markers → hard fail at plan time.

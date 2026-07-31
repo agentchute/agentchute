@@ -12,38 +12,53 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// guard.go — `agentchute guard --pre-tool-use` (v2.5 plan A7, C25): the
-// PreToolUse-family hook entry that denies a narrow, documented list of
-// high-blast-radius tool invocations while THIS session holds unacked
-// claimed mail (per-session guard latch, loop/guard.go). Defense-in-depth
-// only, honestly framed (plan §15 / grok P3): C25 is case-insensitive
-// substring matching against the tool's own command text — an injected
-// instruction can alias around it (e.g. quoting, path tricks). It is not a
-// hard security boundary and must never be presented as one.
+// guard.go — `agentchute guard --pre-tool-use` (v2.5 plan A7, C25; scope
+// narrowed by the guard-latch-livelock fix, docs/decisions/
+// agentchute-v2.5-implementation-plan.md's C25 row is now historical — see
+// AGENTCHUTE.md §15 for the current scope): the PreToolUse-family hook entry
+// that denies a short, best-effort SUBSET of tool invocations while THIS
+// session holds unacked claimed mail (per-session guard latch,
+// loop/guard.go) — specifically, the causal path between "mail claimed" and
+// "mail committed" (destroying the claim, or disabling the handler that
+// commits it). It is NOT a general scope-expansion guard: every wake cue
+// mandates checking inbox at turn start, which arms the latch, so a guard
+// that also denied pushes/tags/releases denied exactly the action an
+// implementer's turn exists to perform (three lanes livelocked on it the
+// same day: claude-code x2, sonnet on PR #110, codex on PR #111). Alex's
+// ruling: mail-integrity-only guard, accepting that a guarded lane is no
+// longer mechanically protected against scope-expanding actions — that
+// control becomes prose (§15's sender-routing rule) and routing judgment,
+// same as it always was for unguarded lanes. Defense-in-depth only, honestly
+// framed: C25 is case-insensitive substring matching against the tool's own
+// command text — an injected instruction can alias around it (e.g. quoting,
+// path tricks). It is not a hard security boundary and must never be
+// presented as one.
 //
 // Fails OPEN (allows) whenever it cannot cleanly resolve an armed session or
 // this agent's id: a misconfigured or partially-wired guard must never
 // itself wedge a serve lane (decision §9 rev 2.3, grok P2).
 
 // guardDenyReason is the fixed decision text emitted on every deny,
-// regardless of which deny-list entry matched (C25's exact wording).
-const guardDenyReason = "claimed mail is pending ack; scope-expanding tools and ack/check are denied until the end-of-turn handler archives it (agentchute §9 guard)"
+// regardless of which deny-list entry matched.
+const guardDenyReason = "claimed mail is not yet committed; commands that could destroy it or disable the end-of-turn handler are denied until turn-end runs (agentchute §15 guard)"
 
-// guardDenySubstrings are matched case-insensitively against the tool's
-// command text (tool_name + tool_input's string fields, joined). Plain
-// substring match, not argv parsing — documented best-effort (C25). The
-// agentchute subcommands themselves are NOT here: they need word-bounded,
+// guardPipelineDenySubstrings are matched case-insensitively against the
+// tool's command text (tool_name + tool_input's string fields, joined).
+// Plain substring match, not argv parsing — documented best-effort. Renamed
+// from guardDenySubstrings (guard-latch-livelock fix): this is no longer a
+// general high-blast-radius list — `git push`, `git tag`, `gh release`, `gh
+// pr merge`, `ssh`, `scp` were cut (pure subtraction; Alex's ruling covers
+// exactly this) because none of them can touch claimed-but-uncommitted mail
+// or the end-of-turn handler, so denying them only produced the livelock
+// with no mail-integrity benefit. `curl`/`wget` stay: `curl … | sh` moves an
+// arbitrary payload off the command line and can reach `turn-end`/`rm
+// -rf`/hook-config rewrites with no denied token of its own. The agentchute
+// subcommands themselves are NOT here: they need word-bounded,
 // binary-token-aware matching (guardAgentchuteSubcmdRE below), not a literal
 // substring — see that regex's doc comment.
-var guardDenySubstrings = []string{
-	"git push",
-	"git tag",
-	"gh release",
-	"gh pr merge",
+var guardPipelineDenySubstrings = []string{
 	"curl",
 	"wget",
-	"ssh",
-	"scp",
 	"rm -rf",
 	".claude/settings.json",
 	".codex/hooks.json",
@@ -212,15 +227,15 @@ func evaluateGuardDecision(cfg *loop.Config, agentID, session, toolCmd string) g
 	return guardDecision{Allowed: true}
 }
 
-// guardCommandDenied reports whether toolCmd matches any C25 deny-list
-// entry, case-insensitive substring match.
+// guardCommandDenied reports whether toolCmd matches guardAgentchuteSubcmdRE
+// or any guardPipelineDenySubstrings entry, case-insensitive.
 func guardCommandDenied(toolCmd string) bool {
 	lower := strings.ToLower(toolCmd)
 	normalized := guardDispatchPrefixRE.ReplaceAllString(lower, "")
 	if guardAgentchuteSubcmdRE.MatchString(normalized) {
 		return true
 	}
-	for _, pattern := range guardDenySubstrings {
+	for _, pattern := range guardPipelineDenySubstrings {
 		if strings.Contains(lower, pattern) {
 			return true
 		}
@@ -355,11 +370,13 @@ func guardHelp() string {
 	return strings.TrimSpace(`
 Usage: agentchute guard --pre-tool-use [flags]
 
-PreToolUse-family hook entry (v2.5 plan A7/C25): denies a documented list of
-high-blast-radius tool invocations while this session holds claimed-but-unacked
-mail. Defense-in-depth only (best-effort substring matching, not a hard
-security boundary) — allows everything when the guard is not armed for this
-process (no serve session, or the wrapper's hooks cannot clear the latch).
+PreToolUse-family hook entry (v2.5 plan A7): denies a short, best-effort
+SUBSET of tool invocations — the causal path between claiming mail and
+committing it — while this session holds claimed-but-unacked mail. NOT a
+general scope-expansion guard (see AGENTCHUTE.md §15). Defense-in-depth only
+(best-effort substring matching, not a hard security boundary) — allows
+everything when the guard is not armed for this process (no serve session,
+or the wrapper's hooks cannot clear the latch).
 
 Flags:
   --pre-tool-use        required marker for this mode
