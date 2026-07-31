@@ -52,14 +52,16 @@ import (
 //     guard denies it (deliberately deny-listed, so a same-turn instruction
 //     can't clear its own latch and disarm the rest of the deny list for the
 //     remainder of the turn). The recovery path here is instead
-//     `agentchute guard --clear-stale` (guard.go): it force-clears a latch
-//     by AGE rather than session identity or the deny list, so it stays
-//     usable precisely when neither hook can help, while its age gate (a
-//     latch must be older than --older-than, default 30m) means it can never
-//     be used to instantly clear a session's own fresh latch mid-turn —
-//     preserving the same-turn-bypass protection turn-end's own deny-listing
-//     exists for (codex review PR #89 round 3 finding #1; claude-code review
-//     round 4; TestMixedHookTrustStateRecoversViaClearStale).
+//     `agentchute guard --recover` (guard.go): it restores ONLY mailbox
+//     access (ack/check/turn-end), setting a session-sticky mark that keeps
+//     scope-expanding tools denied for the rest of THIS session regardless
+//     of latch state — cleared only by an actual relaunch (a new serve
+//     token), never by anything a model can invoke, including turn-end
+//     itself once recovered (codex review PR #89 round 3 finding #1; grok's
+//     A1 attack on an earlier age-based draft; claude-code review round 4
+//     ruling; TestMixedHookTrustStateRecoversViaGuardRecover). turn-end
+//     itself does not need to know about the recovered mark — it archives
+//     and gates exactly as always regardless — but see step 3 below.
 func cmdTurnEnd(args []string) error {
 	fs := flag.NewFlagSet("turn-end", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -175,6 +177,16 @@ func cmdTurnEnd(args []string) error {
 	status, err := evaluateGate(cfg, agentID, gatePhaseFinish, false, false, now)
 	if err != nil {
 		return err
+	}
+
+	// This session may be running in degraded guard state (it ran
+	// `guard --recover` earlier this same session): mailbox commands work
+	// normally, but scope-expanding tools stay denied until relaunch. turn-end
+	// still archives and gates exactly as always regardless — this is purely
+	// an informational warning (claude-code review round 4 item 3), never a
+	// reason to alter turn-end's own behavior.
+	if session != "" && guardRecoveredForSession(cfg, agentID, session) {
+		fmt.Fprintln(os.Stderr, "warning: this session is in degraded guard state (ran `guard --recover` earlier); scope-expanding tools remain denied until relaunch")
 	}
 
 	if codexHook == "Stop" {

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"testing"
-	"time"
 )
 
 // TestGuardLatchRoundTrip is the basic set/read/clear contract at the
@@ -97,92 +96,73 @@ func TestReadGuardLatchAbsentSurfacesErrNotExist(t *testing.T) {
 	}
 }
 
-// mustWriteGuardLatchAt writes a latch directly with a specific SetAt,
-// bypassing SetGuardLatch (which always stamps time.Now()) — a test fixture
-// for exercising ClearStaleGuardLatch's age gate.
-func mustWriteGuardLatchAt(t *testing.T, cfg *Config, id, session string, setAt time.Time) {
-	t.Helper()
-	if err := ensurePrivateDir(cfg.AgentStateDir(id)); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeGuardLatch(cfg, id, &GuardLatch{V: 1, Session: session, SetAt: setAt}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestClearStaleGuardLatchNoLatch(t *testing.T) {
+// TestGuardRecoveredMarkRoundTrip is the basic set/read contract for the
+// mixed hook-trust recovery mark (mirrors TestGuardLatchRoundTrip).
+func TestGuardRecoveredMarkRoundTrip(t *testing.T) {
 	cfg := newLeaseTestConfig(t)
-	cleared, found, _, err := ClearStaleGuardLatch(cfg, "bob", 30*time.Minute, time.Now().UTC())
-	if err != nil {
-		t.Fatalf("ClearStaleGuardLatch: %v", err)
+	if err := SetGuardRecoveredMark(cfg, "bob", "tok-1"); err != nil {
+		t.Fatalf("SetGuardRecoveredMark: %v", err)
 	}
-	if found || cleared {
-		t.Fatalf("found=%v cleared=%v, want both false for no latch", found, cleared)
+	mark, err := ReadGuardRecoveredMark(cfg, "bob")
+	if err != nil {
+		t.Fatalf("ReadGuardRecoveredMark: %v", err)
+	}
+	if mark.Session != "tok-1" || mark.V != 1 {
+		t.Fatalf("mark = %+v, want session tok-1 v1", mark)
 	}
 }
 
-func TestClearStaleGuardLatchRefusesYoungLatch(t *testing.T) {
+func TestReadGuardRecoveredMarkAbsentSurfacesErrNotExist(t *testing.T) {
 	cfg := newLeaseTestConfig(t)
-	now := time.Now().UTC()
-	mustWriteGuardLatchAt(t, cfg, "bob", "tok-1", now.Add(-5*time.Minute))
-
-	cleared, found, age, err := ClearStaleGuardLatch(cfg, "bob", 30*time.Minute, now)
-	if err != nil {
-		t.Fatalf("ClearStaleGuardLatch: %v", err)
-	}
-	if !found {
-		t.Fatal("found = false, want true")
-	}
-	if cleared {
-		t.Fatal("cleared = true, want false (latch is only 5m old, under the 30m threshold)")
-	}
-	if age < 4*time.Minute || age > 6*time.Minute {
-		t.Errorf("age = %v, want ~5m", age)
-	}
-	// The latch must survive untouched.
-	if _, err := ReadGuardLatch(cfg, "bob"); err != nil {
-		t.Fatalf("latch should still be present after a refused clear: %v", err)
+	_, err := ReadGuardRecoveredMark(cfg, "bob")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v, want os.ErrNotExist", err)
 	}
 }
 
-// TestClearStaleGuardLatchClearsOldLatchRegardlessOfSession is the core
-// property: age, not session identity, authorizes the clear. A latch set by
-// a completely different (or nonexistent) session is cleared once old
-// enough — this is what makes it usable as a recovery path when we cannot
-// prove which session (if any) is still alive.
-func TestClearStaleGuardLatchClearsOldLatchRegardlessOfSession(t *testing.T) {
-	cfg := newLeaseTestConfig(t)
-	now := time.Now().UTC()
-	mustWriteGuardLatchAt(t, cfg, "bob", "tok-someone-else", now.Add(-45*time.Minute))
-
-	cleared, found, age, err := ClearStaleGuardLatch(cfg, "bob", 30*time.Minute, now)
-	if err != nil {
-		t.Fatalf("ClearStaleGuardLatch: %v", err)
-	}
-	if !found || !cleared {
-		t.Fatalf("found=%v cleared=%v, want both true for a 45m-old latch with a 30m threshold", found, cleared)
-	}
-	if age < 44*time.Minute || age > 46*time.Minute {
-		t.Errorf("age = %v, want ~45m", age)
-	}
-	if _, err := ReadGuardLatch(cfg, "bob"); !os.IsNotExist(err) {
-		t.Fatalf("latch should be gone; err=%v", err)
-	}
-}
-
-func TestClearStaleGuardLatchTreatsCorruptFileAsNotFound(t *testing.T) {
+// TestSetGuardRecoveredMarkOverwritesCorruptFile mirrors
+// TestSetGuardLatchOverwritesCorruptFile: a hand-corrupted mark file must
+// never refuse a fresh set.
+func TestSetGuardRecoveredMarkOverwritesCorruptFile(t *testing.T) {
 	cfg := newLeaseTestConfig(t)
 	if err := ensurePrivateDir(cfg.AgentStateDir("bob")); err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWriteFile(cfg.GuardLatchPath("bob"), []byte("{not valid json")); err != nil {
+	if err := atomicWriteFile(cfg.GuardRecoveredMarkPath("bob"), []byte("{not valid json")); err != nil {
 		t.Fatal(err)
 	}
-	cleared, found, _, err := ClearStaleGuardLatch(cfg, "bob", 30*time.Minute, time.Now().UTC())
-	if err != nil {
-		t.Fatalf("ClearStaleGuardLatch must fail open on a corrupt file, not error: %v", err)
+	if err := SetGuardRecoveredMark(cfg, "bob", "tok-fresh"); err != nil {
+		t.Fatalf("SetGuardRecoveredMark over a corrupt file must succeed: %v", err)
 	}
-	if found || cleared {
-		t.Fatalf("found=%v cleared=%v, want both false for a corrupt file", found, cleared)
+	mark, err := ReadGuardRecoveredMark(cfg, "bob")
+	if err != nil {
+		t.Fatalf("ReadGuardRecoveredMark after overwrite: %v", err)
+	}
+	if mark.Session != "tok-fresh" {
+		t.Fatalf("mark.Session = %q, want tok-fresh", mark.Session)
+	}
+}
+
+// TestGuardRecoveredMarkIdempotentForSameSession confirms re-setting the
+// SAME session's mark does not error (a model running --recover twice in
+// one session must not fail).
+func TestGuardRecoveredMarkIdempotentForSameSession(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	if err := SetGuardRecoveredMark(cfg, "bob", "tok-1"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := ReadGuardRecoveredMark(cfg, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SetGuardRecoveredMark(cfg, "bob", "tok-1"); err != nil {
+		t.Fatalf("re-setting the same session must succeed: %v", err)
+	}
+	second, err := ReadGuardRecoveredMark(cfg, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.SetAt.Equal(second.SetAt) {
+		t.Errorf("SetAt changed on a same-session re-set: %v -> %v", first.SetAt, second.SetAt)
 	}
 }

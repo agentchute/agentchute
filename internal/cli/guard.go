@@ -26,15 +26,25 @@ import (
 // this agent's id: a misconfigured or partially-wired guard must never
 // itself wedge a serve lane (decision §9 rev 2.3, grok P2).
 
-// guardDenyReason is the fixed decision text emitted on every deny,
-// regardless of which deny-list entry matched (C25's exact wording).
+// guardDenyReason is the fixed decision text emitted on a deny caused by this
+// session's own guard latch (C25's exact wording; applies to both mailbox
+// and scope-expanding commands when the latch itself is the reason).
 const guardDenyReason = "claimed mail is pending ack; scope-expanding tools and ack/check are denied until the end-of-turn handler archives it (agentchute §9 guard)"
+
+// guardRecoveredDenyReason is the deny text for a scope-expanding command
+// denied by the SESSION-STICKY recovered mark rather than the latch itself
+// (mixed hook-trust recovery — see cmdGuardRecover's doc comment). Distinct
+// wording so a human/model sees WHY: not "mail is pending", but "you already
+// recovered mailbox access this session and traded away scope-expanding
+// capability for the rest of it."
+const guardRecoveredDenyReason = "this session ran `guard --recover` earlier; scope-expanding tools stay denied for the rest of the session — relaunch (a fresh serve session) to restore them (agentchute §9 guard)"
 
 // guardDenySubstrings are matched case-insensitively against the tool's
 // command text (tool_name + tool_input's string fields, joined). Plain
 // substring match, not argv parsing — documented best-effort (C25). The
 // agentchute subcommands themselves are NOT here: they need word-bounded,
-// binary-token-aware matching (guardAgentchuteSubcmdRE below), not a literal
+// binary-token-aware matching (guardMailboxSubcmdRE / guardScopeExpandingSubcmdRE
+// below), not a literal
 // substring — see that regex's doc comment.
 var guardDenySubstrings = []string{
 	"git push",
@@ -59,30 +69,41 @@ var guardDenySubstrings = []string{
 // optional). Without stripping this, "agentchute dispatch -- turn-end" —
 // literally what `ac turn-end` expands to — would not contain "agentchute"
 // and "turn-end" as adjacent tokens and would slip past
-// guardAgentchuteSubcmdRE untouched (claude-code review, PR #89: proven as a
+// guardMailboxSubcmdRE/guardScopeExpandingSubcmdRE untouched (claude-code
+// review, PR #89: proven as a
 // live bypass that self-cleared the latch mid-turn and disarmed the entire
 // deny list for the rest of the turn).
 var guardDispatchPrefixRE = regexp.MustCompile(`\bdispatch\b(?:[ \t]+--shim-dir(?:=\S+|[ \t]+\S+))?(?:[ \t]+--)?[ \t]+`)
 
-// guardAgentchuteSubcmdRE matches any of the sensitive agentchute
-// subcommands (C25) regardless of which spelling of the binary invoked
-// them: the templated `${AGENTCHUTE_BIN:-agentchute}` form, a bare
-// `$AGENTCHUTE_BIN`, the literal `agentchute` binary name, or the `ac`
-// dispatcher this repo's own hooks/docs teach as the normal way to invoke
-// it. Word-bounded (`\b`), not a plain substring, so it is immune to extra
-// whitespace between the binary token and the subcommand — the plain
-// substring form this replaced missed `ac turn-end`, `$AGENTCHUTE_BIN
-// turn-end`, and even doubled-space `agentchute  turn-end` (claude-code
-// review, PR #89; doctor.go:38's hookCheckSubcmdRE is the existing precedent
-// in this codebase for matching the binary token robustly instead of a bare
-// substring). Apply AFTER guardDispatchPrefixRE strips any dispatch layer.
-// The `\b` word-boundary is scoped to ONLY the bare-word alternatives
-// (agentchute|ac): a leading `\b` applied uniformly across the whole
-// alternation fails to match the $-prefixed forms at all, since `$` is a
-// non-word character and a boundary can never hold between two non-word
-// characters (e.g. string-start immediately followed by `$`) — caught by
-// this file's own test suite once both forms were exercised together.
-var guardAgentchuteSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+(?:ack|check|turn-end|update|setup|clean)\b`)
+// guardBinaryTokenAlt is the shared alternation matching any spelling of the
+// agentchute binary invocation: the templated `${AGENTCHUTE_BIN:-agentchute}`
+// form, a bare `$AGENTCHUTE_BIN`, the literal `agentchute` binary name, or
+// the `ac` dispatcher this repo's own hooks/docs teach as the normal way to
+// invoke it. Word-bounded (`\b`) on the bare-word alternatives ONLY: a
+// leading `\b` applied uniformly across the whole alternation fails to match
+// the $-prefixed forms at all, since `$` is a non-word character and a
+// boundary can never hold between two non-word characters (e.g.
+// string-start immediately followed by `$`) — caught by this file's own
+// test suite once both forms were exercised together.
+const guardBinaryTokenAlt = `(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)`
+
+// guardMailboxSubcmdRE matches the "mailbox" subcommands (C25/mixed
+// hook-trust recovery): ack/check/turn-end, the two-phase-consume and
+// end-of-turn commands whose sole purpose is committing or reading THIS
+// agent's own mail. These deny ONLY while this session's OWN latch is set;
+// `guard --recover` restores them unconditionally (there is nothing
+// dangerous about an agent reading/committing its own mail) — unlike the
+// scope-expanding set below, which stays denied by the session-sticky
+// recovered mark even after a recover.
+var guardMailboxSubcmdRE = regexp.MustCompile(guardBinaryTokenAlt + `[ \t]+(?:ack|check|turn-end)\b`)
+
+// guardScopeExpandingSubcmdRE matches the remaining denied agentchute
+// subcommands: update (replaces the binary), setup (rewrites hook/PATH
+// wiring — could disable the guard's own future enforcement), and clean
+// (prunes persistent state). Classified as scope-expanding, not mailbox:
+// each can tamper with the binary/hook/state surface itself, which is
+// exactly the class of action `guard --recover` must NOT restore.
+var guardScopeExpandingSubcmdRE = regexp.MustCompile(guardBinaryTokenAlt + `[ \t]+(?:update|setup|clean)\b`)
 
 // resolveGuardSession returns the session key guard operations should latch
 // against, or "" if the guard is disabled for this process (C22). The guard
@@ -115,16 +136,14 @@ func cmdGuard(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	var agentID, controlRepo, loopDir, codexHook, geminiHook string
-	var preToolUse, clearStale bool
-	var olderThan time.Duration
+	var preToolUse, doRecover bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&preToolUse, "pre-tool-use", false, "evaluate a PreToolUse-family hook decision from stdin JSON")
 	fs.StringVar(&codexHook, "codex-hook", "", "emit codex's PreToolUse-equivalent decision JSON")
 	fs.StringVar(&geminiHook, "gemini-hook", "", "emit Gemini's BeforeTool-family decision JSON")
-	fs.BoolVar(&clearStale, "clear-stale", false, "recovery: force-clear this agent's guard latch if it is at least --older-than old, regardless of session")
-	fs.DurationVar(&olderThan, "older-than", defaultGuardStaleThreshold, "age threshold for --clear-stale")
+	fs.BoolVar(&doRecover, "recover", false, "mixed hook-trust recovery: restore mailbox access (ack/check/turn-end), trading away scope-expanding tools for the rest of this session")
 
 	if err := fs.Parse(args); err != nil {
 		return guardUsage(err)
@@ -133,11 +152,11 @@ func cmdGuard(args []string) error {
 		return guardUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	if clearStale {
+	if doRecover {
 		if preToolUse {
-			return guardUsage(fmt.Errorf("--clear-stale and --pre-tool-use are mutually exclusive"))
+			return guardUsage(fmt.Errorf("--recover and --pre-tool-use are mutually exclusive"))
 		}
-		return cmdGuardClearStale(agentID, controlRepo, loopDir, olderThan)
+		return cmdGuardRecover(agentID, controlRepo, loopDir)
 	}
 	if !preToolUse {
 		return guardUsage(fmt.Errorf("--pre-tool-use is required"))
@@ -158,28 +177,53 @@ func cmdGuard(args []string) error {
 	}
 }
 
-// defaultGuardStaleThreshold is how old a guard latch must be before
-// --clear-stale will touch it. Long enough that no legitimate single turn
-// is plausibly still holding it (matches StaleRegThreshold's own "this is
-// clearly abandoned" reasoning in gate.go), short enough that a genuinely
-// wedged lane (the mixed hook-trust state — PreToolUse active, Stop
-// independently disabled — that leaves NEITHER the automatic nor the manual
-// turn-end recovery path usable) doesn't stay stuck indefinitely.
-const defaultGuardStaleThreshold = 30 * time.Minute
-
-// cmdGuardClearStale resolves identity the same minimal way cmdGuard's
-// --pre-tool-use path does (env/--as only, no contextual-default guessing —
-// this is a recovery tool, not a registration path) and force-clears a
-// stale latch via loop.ClearStaleGuardLatch. See that function's doc
-// comment for the full safety reasoning (age, not session identity, is the
-// authorization here).
-func cmdGuardClearStale(agentIDFlag, controlRepo, loopDir string, olderThan time.Duration) error {
+// cmdGuardRecover implements `agentchute guard --recover`: the mixed
+// hook-trust recovery path (codex review round 3 finding #1; grok's A1
+// attack on an earlier same-turn-unlock-prone draft; claude-code review
+// round 4 ruling). It is NOT reachable through the deny list (neither
+// guardMailboxSubcmdRE nor guardScopeExpandingSubcmdRE list "guard" as a
+// sensitive subcommand).
+//
+// Design: recovering the mailbox and recovering scope-expanding capability
+// are NOT the same act. --recover grants ONLY the former:
+//  1. Requires an ARMED session (resolveGuardSession() != "") — grok's J-R6:
+//     hookless/hand-run lanes (no serve token, or no AGENTCHUTE_GUARD bit)
+//     get no new state or ceremony; it's a pure no-op.
+//  2. Archives THIS session's own claimed mail using the exact same
+//     own-latch-only predicate turn-end step 1 uses (archiveAllClaimed) —
+//     NEVER a foreign/dead latch's residue, preserving the P1 guarantee.
+//  3. Clears the OWN latch (loop.ClearGuardLatch, session-matched — same
+//     semantics as turn-end step 2, not age-based).
+//  4. Sets a durable, SESSION-STICKY "recovered" mark (loop.
+//     SetGuardRecoveredMark) that keeps scope-expanding tools denied for
+//     the REST of this session, cleared only by a session boundary (a new,
+//     different serve token from a fresh launch) — nothing a model can
+//     invoke clears it, not turn-end, not ack, not check, not a second
+//     recover. This is what makes recovering safe: an injected "recover,
+//     then push" instruction gains the mailbox and nothing else, because
+//     evaluateGuardDecision's split predicate (below) checks the recovered
+//     mark independently of the latch for scope-expanding commands.
+//
+// An earlier draft tried to gate the mark's clearance on "only a genuine
+// end-of-turn hook run" — grok's A1 attack showed that signal is forgeable
+// by construction (a model tool call can replicate any flags the real hook
+// uses), so recover→turn-end (now allowed, since mailbox is unconditionally
+// restored)→[whatever cleared the mark]→push would fully unlock. Tying
+// clearance to the serve token instead means the ONLY way to clear it is an
+// actual new `ac serve` launch, which mints a fresh token no Bash tool call
+// can fabricate.
+func cmdGuardRecover(agentIDFlag, controlRepo, loopDir string) error {
+	session := resolveGuardSession()
+	if session == "" {
+		fmt.Println("(guard is disarmed for this process; nothing to recover)")
+		return nil
+	}
 	id := strings.TrimSpace(agentIDFlag)
 	if id == "" {
 		id = strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID"))
 	}
 	if id == "" {
-		return fmt.Errorf("agentchute guard --clear-stale: no agent id (pass --as or set $AGENTCHUTE_AGENT_ID)")
+		return fmt.Errorf("agentchute guard --recover: no agent id (pass --as or set $AGENTCHUTE_AGENT_ID)")
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -199,18 +243,25 @@ func cmdGuardClearStale(agentIDFlag, controlRepo, loopDir string, olderThan time
 		return err
 	}
 
-	cleared, found, age, err := loop.ClearStaleGuardLatch(cfg, id, olderThan, time.Now().UTC())
-	if err != nil {
-		return err
+	now := time.Now().UTC()
+	latch, lerr := loop.ReadGuardLatch(cfg, id)
+	ownLatch := lerr == nil && latch.Session == session
+
+	var acked []ackItem
+	if ownLatch {
+		acked, err = archiveAllClaimed(cfg, id, now)
+		if err != nil {
+			return err
+		}
 	}
-	if !found {
-		fmt.Println("(no guard latch to clear)")
-		return nil
+	if err := loop.ClearGuardLatch(cfg, id, session); err != nil {
+		return fmt.Errorf("clear guard latch: %w", err)
 	}
-	if !cleared {
-		return fmt.Errorf("guard latch is only %s old (< --older-than %s); refusing — this may be an active turn, not an abandoned one", age.Round(time.Second), olderThan)
+	if err := loop.SetGuardRecoveredMark(cfg, id, session); err != nil {
+		return fmt.Errorf("set guard recovered mark: %w", err)
 	}
-	fmt.Printf("cleared stale guard latch for %s (age %s)\n", id, age.Round(time.Second))
+
+	fmt.Printf("recovered mailbox access for %s (archived %d message(s)); scope-expanding tools stay denied for the rest of this session — relaunch to restore full capability\n", id, len(acked))
 	return nil
 }
 
@@ -258,41 +309,84 @@ func evaluateGuardInvocation(agentIDFlag, controlRepo, loopDir, toolCmd string) 
 	return evaluateGuardDecision(cfg, id, session, toolCmd)
 }
 
-// evaluateGuardDecision applies the C25 deny list against toolCmd, but ONLY
-// when this agent's guard latch is currently held by `session` (C23): a
-// latch that is absent, unreadable/corrupt, or belongs to a different
-// (foreign/dead) session never triggers a deny (loop.ReadGuardLatch's own
-// doc comment covers the foreign-latch case; this function fails open on any
-// read error rather than propagate it, since a corrupt latch file must never
-// become a way to wedge a lane shut).
+// guardCmdCategory classifies a tool invocation for the split deny
+// predicate (mixed hook-trust recovery): mailbox commands deny only on this
+// session's own latch; scope-expanding commands deny on the latch OR the
+// session-sticky recovered mark (see cmdGuardRecover's doc comment).
+type guardCmdCategory int
+
+const (
+	guardCmdNeither guardCmdCategory = iota
+	guardCmdMailbox
+	guardCmdScope
+)
+
+// classifyGuardCommand reports which C25 deny-list category toolCmd matches,
+// case-insensitive, after stripping any dispatch-prefix layer.
+func classifyGuardCommand(toolCmd string) guardCmdCategory {
+	lower := strings.ToLower(toolCmd)
+	normalized := guardDispatchPrefixRE.ReplaceAllString(lower, "")
+	if guardMailboxSubcmdRE.MatchString(normalized) {
+		return guardCmdMailbox
+	}
+	if guardScopeExpandingSubcmdRE.MatchString(normalized) {
+		return guardCmdScope
+	}
+	for _, pattern := range guardDenySubstrings {
+		if strings.Contains(lower, pattern) {
+			return guardCmdScope
+		}
+	}
+	return guardCmdNeither
+}
+
+// evaluateGuardDecision applies the C25 deny predicate against toolCmd.
+// Mailbox commands (ack/check/turn-end) deny ONLY while this session's own
+// guard latch is set (C23): a latch that is absent, unreadable/corrupt, or
+// belongs to a different (foreign/dead) session never triggers a mailbox
+// deny (loop.ReadGuardLatch's own doc comment covers the foreign-latch
+// case; this function fails open on any latch read error rather than
+// propagate it, since a corrupt latch file must never become a way to
+// wedge a lane shut). Scope-expanding commands ALSO deny when this
+// session's recovered mark is set (mixed hook-trust recovery — grok's A1
+// attack on an earlier draft is exactly why this check is independent of
+// the latch: `guard --recover` clears the latch unconditionally, so scope
+// commands need their OWN, non-model-clearable signal).
 func evaluateGuardDecision(cfg *loop.Config, agentID, session, toolCmd string) guardDecision {
-	latch, err := loop.ReadGuardLatch(cfg, agentID)
-	if err != nil {
-		return guardDecision{Allowed: true}
-	}
-	if latch.Session != session {
-		return guardDecision{Allowed: true}
-	}
-	if guardCommandDenied(toolCmd) {
-		return guardDecision{Allowed: false, Reason: guardDenyReason}
+	latch, lerr := loop.ReadGuardLatch(cfg, agentID)
+	ownLatch := lerr == nil && latch.Session == session
+
+	switch classifyGuardCommand(toolCmd) {
+	case guardCmdMailbox:
+		if ownLatch {
+			return guardDecision{Allowed: false, Reason: guardDenyReason}
+		}
+	case guardCmdScope:
+		if ownLatch {
+			return guardDecision{Allowed: false, Reason: guardDenyReason}
+		}
+		if guardRecoveredForSession(cfg, agentID, session) {
+			return guardDecision{Allowed: false, Reason: guardRecoveredDenyReason}
+		}
 	}
 	return guardDecision{Allowed: true}
 }
 
-// guardCommandDenied reports whether toolCmd matches any C25 deny-list
-// entry, case-insensitive substring match.
-func guardCommandDenied(toolCmd string) bool {
-	lower := strings.ToLower(toolCmd)
-	normalized := guardDispatchPrefixRE.ReplaceAllString(lower, "")
-	if guardAgentchuteSubcmdRE.MatchString(normalized) {
-		return true
+// guardRecoveredForSession reports whether id's session-sticky recovered
+// mark applies to `session` — i.e. THIS session already ran
+// `guard --recover` and has not since been relaunched (a relaunch mints a
+// new, different serve token, making any prior mark inert — same "dead
+// latch" pattern the guard latch itself uses). A mark that fails to read at
+// all (corrupt/unreadable) fails CLOSED here — the opposite of the latch's
+// own fail-open posture — deliberately: this signal's whole job is
+// preventing regained scope-expanding capability, so a corrupted file must
+// never become a way to regain it.
+func guardRecoveredForSession(cfg *loop.Config, id, session string) bool {
+	mark, err := loop.ReadGuardRecoveredMark(cfg, id)
+	if err != nil {
+		return !os.IsNotExist(err) // absent => never recovered; anything else (corrupt) => fail closed.
 	}
-	for _, pattern := range guardDenySubstrings {
-		if strings.Contains(lower, pattern) {
-			return true
-		}
-	}
-	return false
+	return mark.Session == session
 }
 
 // guardHookInput is the tolerant shape of a PreToolUse-family hook's stdin
@@ -421,7 +515,7 @@ func guardHelpErr() error {
 func guardHelp() string {
 	return strings.TrimSpace(`
 Usage: agentchute guard --pre-tool-use [flags]
-       agentchute guard --clear-stale [--older-than <dur>] [flags]
+       agentchute guard --recover [flags]
 
 PreToolUse-family hook entry (v2.5 plan A7/C25): denies a documented list of
 high-blast-radius tool invocations while this session holds claimed-but-unacked
@@ -429,21 +523,22 @@ mail. Defense-in-depth only (best-effort substring matching, not a hard
 security boundary) — allows everything when the guard is not armed for this
 process (no serve session, or the wrapper's hooks cannot clear the latch).
 
---clear-stale is the recovery path for a lane wedged by a mixed hook-trust
-state (a vendor's PreToolUse guard hook active while its Stop hook — which
-would normally run turn-end — is independently disabled or failing): in that
-state the active guard also denies a direct turn-end invocation, since
-turn-end is deliberately deny-listed to prevent a same-turn self-unlock
-bypass. --clear-stale force-clears the latch by AGE instead of session
-identity — a latch at least --older-than old (default 30m) is presumed
-abandoned regardless of which session set it. A latch younger than the
-threshold is left untouched and the command refuses (exit 1), since it might
-be an active turn.
+--recover is the mixed-hook-trust recovery path: a vendor's PreToolUse guard
+hook active while its Stop hook (which would normally run turn-end) is
+independently disabled or failing denies a direct turn-end invocation too
+(turn-end is deliberately deny-listed to prevent a same-turn self-unlock
+bypass), wedging the lane. --recover restores ONLY mailbox access
+(ack/check/turn-end): it archives this session's own claimed mail, clears its
+own latch, and sets a session-sticky mark that keeps scope-expanding tools
+(pushes, releases, network fetches, deletions, update/setup/clean, hook-config
+writes) denied for the REST of this session regardless of latch state.
+Nothing a model can invoke clears that mark — only a session boundary (a
+fresh ` + "`ac serve`" + ` launch, which mints a new, different serve token) does.
+No-op when the guard is disarmed for this process.
 
 Flags:
   --pre-tool-use        evaluate a PreToolUse decision from stdin JSON (default mode)
-  --clear-stale         recovery: force-clear a stale guard latch by age
-  --older-than <dur>    age threshold for --clear-stale (default 30m)
+  --recover             mixed hook-trust recovery: restore mailbox access only
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)

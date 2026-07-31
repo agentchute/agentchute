@@ -116,65 +116,93 @@ func ClearGuardLatch(cfg *Config, id, session string) error {
 	})
 }
 
-// ClearStaleGuardLatch is the recovery path for a lane wedged by a mixed
-// hook-trust state — e.g. a vendor whose PreToolUse guard hook is active
-// while its Stop hook (which would normally run turn-end) is independently
-// disabled or failing (codex review, PR #89 round 3 finding #1; claude-code
-// review round 4). In that state the active guard denies a model's own
-// direct `turn-end` invocation too (turn-end is deliberately deny-listed to
-// prevent a same-turn self-unlock bypass), so neither the automatic nor the
-// manual recovery path works. This is the third path: age, not session
-// identity, is the authorization. A latch old enough that no legitimate
-// single turn could still be holding it is presumed abandoned and force-
-// cleared regardless of which session (if any) set it — deliberately NOT
-// gated on a session match, since the whole point is recovering when we
-// cannot prove which session (if any) is still alive.
-//
-// Returns cleared=true only if a latch existed, read back successfully, AND
-// was at least olderThan old. A latch younger than olderThan is left
-// UNTOUCHED and returns cleared=false, found=true, err=nil — refusing is the
-// safe default (it might be an active turn), not an error. No latch at all,
-// or one that fails to read (corrupt), returns cleared=false, found=false,
-// err=nil: there is nothing this call needs to do in either case.
-//
-// This is intentionally NOT reachable through cmdGuard's --pre-tool-use deny
-// list (guard.go's guardAgentchuteSubcmdRE does not list "guard" as a
-// sensitive subcommand): age-gating, not the deny list, is what keeps this
-// safe from being used to instantly clear a session's own FRESH latch mid-
-// turn — the same latch a model would want to bypass is, by construction,
-// too young to qualify.
-//
-// found reports whether a latch existed and read back successfully at all
-// (decoupled from cleared/age, which would otherwise be ambiguous between
-// "no latch" and "a latch so fresh its age rounds to zero").
-func ClearStaleGuardLatch(cfg *Config, id string, olderThan time.Duration, now time.Time) (cleared, found bool, age time.Duration, err error) {
+// GuardRecoveredMark is the on-disk shape at <loop>/state/<id>/guard.recovered
+// (v2.5 plan A7 addendum, mixed hook-trust recovery — codex review round 3
+// finding #1, tightened by grok's A1 attack on an earlier draft, ruled by
+// claude-code review round 4). It records that THIS session ran
+// `guard --recover`: its mailbox capability (ack/check/turn-end) was
+// restored, but scope-expanding tools stay denied for the rest of the
+// session — cleared ONLY by a session boundary (a new, different serve
+// token from a fresh launch), never by anything a model can invoke. See
+// cmdGuard's --recover doc comment (cli/guard.go) for the full design
+// rationale, including why an age- or latch-based clear alone is NOT
+// sufficient (grok's A1: recover → mailbox unlocked → turn-end → clears
+// whatever gated the mark → scope tools unlocked too, if the mark were
+// clearable by anything short of an actual relaunch).
+type GuardRecoveredMark struct {
+	V       int       `json:"v"`
+	Session string    `json:"session"`
+	SetAt   time.Time `json:"set_at"`
+}
+
+// SetGuardRecoveredMark durably records that `session` has recovered id's
+// guard. Idempotent for the same session (re-running --recover does not
+// disturb SetAt).
+func SetGuardRecoveredMark(cfg *Config, id, session string) error {
 	if err := ValidateAgentID(id); err != nil {
-		return false, false, 0, err
+		return err
 	}
-	err = withAgentLock(cfg, id, func() error {
-		existing, rerr := readGuardLatch(cfg, id)
-		if rerr != nil {
-			return nil // absent or corrupt: nothing to clear here.
+	if session == "" {
+		return fmt.Errorf("SetGuardRecoveredMark: session must not be empty")
+	}
+	return withAgentLock(cfg, id, func() error {
+		existing, err := readGuardRecoveredMark(cfg, id)
+		if err != nil {
+			existing = nil // absent or corrupt: nothing to preserve; always safe to (re)write.
 		}
-		found = true
-		a := now.Sub(existing.SetAt)
-		if a < 0 {
-			a = 0 // future-dated (clock skew) reads as fresh, never stale.
+		if existing != nil && existing.Session == session {
+			return nil
 		}
-		age = a
-		if age < olderThan {
-			return nil // too young to presume abandoned; refuse (cleared stays false).
+		mark := GuardRecoveredMark{V: 1, Session: session, SetAt: time.Now().UTC()}
+		return writeGuardRecoveredMark(cfg, id, &mark)
+	})
+}
+
+// ReadGuardRecoveredMark reads id's recovered mark. Absent surfaces
+// os.ErrNotExist. Callers deciding policy on a read error MUST choose their
+// own fail direction deliberately: unlike the latch (which always fails
+// open), the recovered mark fails open for MAILBOX purposes but fails
+// CLOSED (treat as still recovered/restricted) for SCOPE-expanding
+// purposes — a corrupted mark file must never become a way to regain
+// scope-expanding capability. See evaluateGuardDecision (cli/guard.go).
+func ReadGuardRecoveredMark(cfg *Config, id string) (*GuardRecoveredMark, error) {
+	if err := ValidateAgentID(id); err != nil {
+		return nil, err
+	}
+	var mark *GuardRecoveredMark
+	err := withAgentLock(cfg, id, func() error {
+		m, err := readGuardRecoveredMark(cfg, id)
+		if err != nil {
+			return err
 		}
-		if rmErr := os.Remove(cfg.GuardLatchPath(id)); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			return fmt.Errorf("clear stale guard latch %s: %w", id, rmErr)
-		}
-		if serr := syncDir(cfg.AgentStateDir(id)); serr != nil {
-			return serr
-		}
-		cleared = true
+		mark = m
 		return nil
 	})
-	return cleared, found, age, err
+	if err != nil {
+		return nil, err
+	}
+	return mark, nil
+}
+
+func readGuardRecoveredMark(cfg *Config, id string) (*GuardRecoveredMark, error) {
+	data, err := ReadFileLimit(cfg.GuardRecoveredMarkPath(id), MaxGuardLatchBytes)
+	if err != nil {
+		return nil, err
+	}
+	var mark GuardRecoveredMark
+	if err := json.Unmarshal(data, &mark); err != nil {
+		return nil, fmt.Errorf("parse guard recovered mark %s: %w", id, err)
+	}
+	return &mark, nil
+}
+
+func writeGuardRecoveredMark(cfg *Config, id string, mark *GuardRecoveredMark) error {
+	data, err := json.MarshalIndent(mark, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal guard recovered mark: %w", err)
+	}
+	data = append(data, '\n')
+	return atomicWriteFile(cfg.GuardRecoveredMarkPath(id), data)
 }
 
 // readGuardLatch is the lock-free body shared by the exported, lock-taking

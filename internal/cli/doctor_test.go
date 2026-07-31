@@ -930,6 +930,44 @@ func TestCmdDoctorDiscoveryFailureBlocks(t *testing.T) {
 	})
 }
 
+// TestDoctorGuardRecoveredState is claude-code review PR #89 round 4 item 6:
+// doctor surfaces a present guard-recovered mark as a WARN (never a
+// blocker — the mark's security property lives in the guard's own deny
+// predicate, not in doctor), and clean when absent.
+func TestDoctorGuardRecoveredStateAbsent(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	got := checkGuardRecoveredState(cfg, "bob")
+	if got.Severity != severityOK {
+		t.Errorf("guard_recovered_state severity = %q, want OK when absent; msg=%q", got.Severity, got.Message)
+	}
+}
+
+func TestDoctorGuardRecoveredStatePresent(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	if err := loop.SetGuardRecoveredMark(cfg, "bob", "tok-1"); err != nil {
+		t.Fatal(err)
+	}
+	got := checkGuardRecoveredState(cfg, "bob")
+	if got.Severity != severityWarn {
+		t.Errorf("guard_recovered_state severity = %q, want WARN when present; msg=%q", got.Severity, got.Message)
+	}
+	if !strings.Contains(got.Message, "guard --recover") || !strings.Contains(got.Message, "relaunch") {
+		t.Errorf("message missing recover/relaunch remediation text: %q", got.Message)
+	}
+}
+
+func TestDoctorGuardRecoveredStateCorruptFile(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	mustWrite(t, cfg.GuardRecoveredMarkPath("bob"), []byte("{not valid json"))
+	got := checkGuardRecoveredState(cfg, "bob")
+	if got.Severity != severityWarn {
+		t.Errorf("guard_recovered_state severity = %q, want WARN for a corrupt file; msg=%q", got.Severity, got.Message)
+	}
+	if !strings.Contains(got.Message, "corrupt") {
+		t.Errorf("message should say the mark is corrupt: %q", got.Message)
+	}
+}
+
 func TestAcServeHintForAgent_ContextualIDs(t *testing.T) {
 	cases := map[string]string{
 		"codex":                 "ac serve codex",

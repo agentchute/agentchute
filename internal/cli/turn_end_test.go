@@ -493,3 +493,32 @@ func TestTurnEndNoTokenArchivesDespiteStaleLatch(t *testing.T) {
 		}
 	})
 }
+
+// TestTurnEndWarnsWhenSessionIsRecovered is claude-code review round 4 item
+// 3: turn-end must still archive/gate exactly as always while a session's
+// recovered mark is set, but should print an informational warning that the
+// session is in degraded guard state.
+func TestTurnEndWarnsWhenSessionIsRecovered(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-1")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+		if err := loop.SetGuardRecoveredMark(cfg, "bob", "tok-1"); err != nil {
+			t.Fatal(err)
+		}
+
+		var turnEndErr error
+		stderr := captureStderr(t, func() {
+			_, turnEndErr = captureStdout(t, func() error {
+				return cmdTurnEnd([]string{"--as", "bob", "--vendor", "openai", "--json"})
+			})
+		})
+		if turnEndErr != nil {
+			t.Fatalf("turn-end must still work normally while recovered: %v", turnEndErr)
+		}
+		if !strings.Contains(stderr, "degraded guard state") {
+			t.Errorf("expected a degraded-guard-state warning on stderr, got %q", stderr)
+		}
+	})
+}

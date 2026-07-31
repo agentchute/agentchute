@@ -430,54 +430,106 @@ func TestGuardLatchSurvivesClaimedDrainedOutsideTurnEnd(t *testing.T) {
 // latch is a no-op success; a young latch is refused; an old latch clears
 // REGARDLESS of a session mismatch, since age (not session identity) is the
 // authorization here.
-func TestCmdGuardClearStale(t *testing.T) {
+// TestCmdGuardRecoverNoOpsWhenDisarmed is grok's J-R6: a hookless/hand-run
+// lane (no serve token, or no AGENTCHUTE_GUARD bit) gains no new state or
+// ceremony from --recover — pure no-op.
+func TestCmdGuardRecoverNoOpsWhenDisarmed(t *testing.T) {
 	root, cfg := setupConsumeFixture(t)
 	withCwd(t, root, func() {
+		clearGuardEnv(t)
 		out, err := captureStdout(t, func() error {
-			return cmdGuard([]string{"--clear-stale", "--as", "bob"})
+			return cmdGuard([]string{"--recover", "--as", "bob"})
 		})
 		if err != nil {
-			t.Fatalf("--clear-stale with no latch: %v", err)
+			t.Fatalf("--recover while disarmed: %v", err)
 		}
-		if !strings.Contains(out, "no guard latch") {
-			t.Errorf("expected a no-op message, got %q", out)
+		if !strings.Contains(out, "disarmed") {
+			t.Errorf("expected a disarmed no-op message, got %q", out)
 		}
-
-		if err := loop.SetGuardLatch(cfg, "bob", "tok-fresh"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := captureStdout(t, func() error {
-			return cmdGuard([]string{"--clear-stale", "--as", "bob", "--older-than", "1h"})
-		}); err == nil {
-			t.Fatal("--clear-stale on a fresh latch should refuse (exit non-nil)")
-		}
-		if _, err := loop.ReadGuardLatch(cfg, "bob"); err != nil {
-			t.Fatalf("fresh latch should survive a refused clear: %v", err)
-		}
-
-		// A latch belonging to a completely different, unresolvable session
-		// still clears once it's old enough — the whole point of this path.
-		out, err = captureStdout(t, func() error {
-			return cmdGuard([]string{"--clear-stale", "--as", "bob", "--older-than", "0s"})
-		})
-		if err != nil {
-			t.Fatalf("--clear-stale with a 0s threshold: %v\n%s", err, out)
-		}
-		if !strings.Contains(out, "cleared stale guard latch") {
-			t.Errorf("expected a cleared confirmation, got %q", out)
-		}
-		if _, err := loop.ReadGuardLatch(cfg, "bob"); !os.IsNotExist(err) {
-			t.Fatalf("latch should be gone; err=%v", err)
+		if _, err := loop.ReadGuardRecoveredMark(cfg, "bob"); !os.IsNotExist(err) {
+			t.Fatalf("no mark should be set while disarmed; err=%v", err)
 		}
 	})
 }
 
-// TestGuardClearStaleCommandItselfNotDenied confirms `guard --clear-stale`
-// is not itself on the C25 deny list: it must be reachable even while a
-// (fresh, currently-armed) latch is set, since it is the escape hatch for
-// exactly that state. Its own age gate — not the deny list — is what keeps
-// it from being usable to instantly clear a FRESH latch mid-turn.
-func TestGuardClearStaleCommandItselfNotDenied(t *testing.T) {
+// TestCmdGuardRecoverArchivesOwnLatchOnly mirrors turn-end's P1 guarantee:
+// --recover archives THIS session's own claimed mail (own-latch match) but
+// never a foreign/dead latch's residue.
+func TestCmdGuardRecoverArchivesOwnLatchOnly(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "hi"}); err != nil {
+			t.Fatalf("cmdSend: %v", err)
+		}
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-1")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err != nil {
+			t.Fatalf("cmdCheck(bob): %v", err)
+		}
+
+		out, err := captureStdout(t, func() error {
+			return cmdGuard([]string{"--recover", "--as", "bob"})
+		})
+		if err != nil {
+			t.Fatalf("--recover: %v", err)
+		}
+		if !strings.Contains(out, "recovered mailbox access") {
+			t.Errorf("expected a recovery confirmation, got %q", out)
+		}
+		if n := countMessageFiles(t, cfg.AgentClaimedDir("bob")); n != 0 {
+			t.Errorf(".claimed = %d after recover; want 0 (own-session mail committed)", n)
+		}
+		if n := countMessageFiles(t, cfg.ArchiveDir()); n != 1 {
+			t.Errorf("archive = %d after recover; want 1", n)
+		}
+		if _, err := loop.ReadGuardLatch(cfg, "bob"); !os.IsNotExist(err) {
+			t.Fatalf("own latch should be cleared after recover; err=%v", err)
+		}
+		mark, err := loop.ReadGuardRecoveredMark(cfg, "bob")
+		if err != nil {
+			t.Fatalf("recovered mark should be set: %v", err)
+		}
+		if mark.Session != "tok-1" {
+			t.Errorf("mark.Session = %q, want tok-1", mark.Session)
+		}
+	})
+}
+
+// TestCmdGuardRecoverDoesNotArchiveForeignLatch is the P1-preservation half
+// of grok's requirement: a foreign/dead latch's residue must survive
+// --recover untouched, same as it survives turn-end.
+func TestCmdGuardRecoverDoesNotArchiveForeignLatch(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		claimedDir := cfg.AgentClaimedDir("bob")
+		mustWriteSeqInbox(t, claimedDir, "alice", 1, []byte("---\nfrom: alice\nto: bob\n---\n\nresidue\n"))
+		if err := loop.SetGuardLatch(cfg, "bob", "tok-dead"); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-new")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+
+		if _, err := captureStdout(t, func() error {
+			return cmdGuard([]string{"--recover", "--as", "bob"})
+		}); err != nil {
+			t.Fatalf("--recover: %v", err)
+		}
+		if n := countMessageFiles(t, claimedDir); n != 1 {
+			t.Errorf(".claimed = %d after recover; want 1 (foreign-latch residue must survive)", n)
+		}
+		if n := countMessageFiles(t, cfg.ArchiveDir()); n != 0 {
+			t.Errorf("archive = %d after recover; want 0", n)
+		}
+	})
+}
+
+// TestGuardRecoverCommandItselfNotDenied confirms `guard --recover` is not
+// itself on the C25 deny list: it must be reachable even while a (fresh,
+// currently-armed) latch is set, since it is the escape hatch for exactly
+// that state.
+func TestGuardRecoverCommandItselfNotDenied(t *testing.T) {
 	root, cfg := setupConsumeFixture(t)
 	withCwd(t, root, func() {
 		clearGuardEnv(t)
@@ -487,21 +539,25 @@ func TestGuardClearStaleCommandItselfNotDenied(t *testing.T) {
 		if err := loop.SetGuardLatch(cfg, "bob", "tok-1"); err != nil {
 			t.Fatal(err)
 		}
-		d := evaluateGuardInvocation("", "", "", "agentchute guard --clear-stale --as bob")
+		d := evaluateGuardInvocation("", "", "", "agentchute guard --recover --as bob")
 		if !d.Allowed {
-			t.Errorf("guard --clear-stale must not be on the deny list; decision=%+v", d)
+			t.Errorf("guard --recover must not be on the deny list; decision=%+v", d)
 		}
 	})
 }
 
-// TestMixedHookTrustStateRecoversViaClearStale is the full scenario
-// claude-code/codex review round 4 (finding #1) describes: a lane where the
-// PreToolUse guard is active but Stop never runs (independently disabled).
-// A direct `turn-end` attempt stays correctly denied throughout (security
-// preserved — no same-turn self-unlock), but once the latch is old enough,
-// --clear-stale recovers the lane without ever needing session identity.
-func TestMixedHookTrustStateRecoversViaClearStale(t *testing.T) {
-	root, cfg := setupConsumeFixture(t)
+// TestMixedHookTrustStateRecoversViaGuardRecover is the full scenario codex
+// round 3 finding #1 / grok's A1 attack / claude-code review round 4
+// describe, implementing the RULED two-tier design: a lane where the
+// PreToolUse guard is active but Stop never runs. A direct `turn-end`
+// attempt is denied before recovery. After --recover: turn-end/ack/check
+// (mailbox) are allowed and committed normally, but scope-expanding tools
+// (git push, both via the direct binary name and the `ac` dispatcher
+// spelling) stay denied for the REST of the session — even AFTER running
+// the now-allowed turn-end, which is exactly the step grok's A1 attack used
+// to fully unlock an earlier, broken draft.
+func TestMixedHookTrustStateRecoversViaGuardRecover(t *testing.T) {
+	root, _ := setupConsumeFixture(t)
 	withCwd(t, root, func() {
 		clearGuardEnv(t)
 		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "hi"}); err != nil {
@@ -514,36 +570,80 @@ func TestMixedHookTrustStateRecoversViaClearStale(t *testing.T) {
 			t.Fatalf("cmdCheck(bob): %v", err)
 		}
 
-		// PreToolUse is active (this IS the mixed state): a direct turn-end
-		// attempt is denied, same as always.
-		d := evaluateGuardInvocation("", "", "", "agentchute turn-end --json")
-		if d.Allowed {
-			t.Fatal("turn-end must stay denied — the mixed state must not reopen the same-turn bypass")
+		// PreToolUse is active (the mixed state): direct turn-end AND push
+		// are both denied, same as always.
+		if evaluateGuardInvocation("", "", "", "agentchute turn-end --json").Allowed {
+			t.Fatal("turn-end must be denied before recovery")
+		}
+		if evaluateGuardInvocation("", "", "", "git push origin main").Allowed {
+			t.Fatal("push must be denied before recovery")
 		}
 
-		// Stop never runs (simulated by simply never calling cmdTurnEnd).
-		// Time passes; the latch ages past the threshold, backdating it
-		// directly rather than waiting in real time.
-		latch, err := loop.ReadGuardLatch(cfg, "bob")
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = latch
+		// Stop never runs (simulated by never calling cmdTurnEnd). Recover
+		// instead.
 		if _, err := captureStdout(t, func() error {
-			return cmdGuard([]string{"--clear-stale", "--as", "bob", "--older-than", "0s"})
+			return cmdGuard([]string{"--recover", "--as", "bob"})
 		}); err != nil {
-			t.Fatalf("--clear-stale must recover the wedged lane: %v", err)
+			t.Fatalf("--recover must succeed: %v", err)
 		}
 
-		// turn-end is still denied as a DIRECT model tool call (deny list is
-		// unaffected by --clear-stale) — but the underlying mail is no
-		// longer permanently stuck: check/ack now proceed normally since the
-		// latch is gone.
-		if _, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "bob"}) }); err != nil {
-			t.Fatalf("ack after --clear-stale must not be denied: %v", err)
+		// Mailbox restored: turn-end (any spelling) now allowed.
+		if d := evaluateGuardInvocation("", "", "", "agentchute turn-end --json"); !d.Allowed {
+			t.Fatalf("turn-end must be allowed after recover; decision=%+v", d)
 		}
-		if n := countMessageFiles(t, cfg.ArchiveDir()); n != 1 {
-			t.Errorf("archive = %d, want 1 (ack committed normally after recovery)", n)
+		if d := evaluateGuardInvocation("", "", "", "ac turn-end --json"); !d.Allowed {
+			t.Fatalf("`ac turn-end` must be allowed after recover; decision=%+v", d)
+		}
+		// Scope-expanding tools stay denied — the whole point.
+		if d := evaluateGuardInvocation("", "", "", "git push origin main"); d.Allowed {
+			t.Fatalf("push must STILL be denied after recover (session-sticky mark); decision=%+v", d)
+		}
+
+		// Actually run the now-allowed turn-end (grok's A1 attack step) and
+		// confirm push is STILL denied afterward — proving the mark is not
+		// clearable by the very command it unlocked.
+		if _, err := captureStdout(t, func() error {
+			return cmdTurnEnd([]string{"--as", "bob", "--vendor", "openai", "--json"})
+		}); err != nil {
+			t.Fatalf("turn-end after recover: %v", err)
+		}
+		if d := evaluateGuardInvocation("", "", "", "git push origin main"); d.Allowed {
+			t.Fatalf("push must STILL be denied after running turn-end post-recover (grok A1): decision=%+v", d)
+		}
+		// A second mailbox call stays allowed too — the mark only ever
+		// restricts the scope-expanding category, never mailbox.
+		if d := evaluateGuardInvocation("", "", "", "ac turn-end --json"); !d.Allowed {
+			t.Fatalf("mailbox commands must remain allowed post-recover; decision=%+v", d)
+		}
+
+		// A relaunch (new, different serve token) makes the mark inert.
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-2")
+		if d := evaluateGuardInvocation("", "", "", "git push origin main"); !d.Allowed {
+			t.Fatalf("push must be allowed again after a relaunch (new session token); decision=%+v", d)
+		}
+	})
+}
+
+// TestGuardRecoveredMarkFailsClosedOnCorruptFile is claude-code review round
+// 4 item 4: a corrupt/unreadable recovered-mark file must fail CLOSED for
+// scope-expanding purposes (treated as still recovered/restricted) — the
+// opposite of the latch's own fail-open posture, deliberately, since this
+// signal's only job is preventing regained scope-expanding capability.
+func TestGuardRecoveredMarkFailsClosedOnCorruptFile(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-1")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+		t.Setenv("AGENTCHUTE_AGENT_ID", "bob")
+		mustWrite(t, cfg.GuardRecoveredMarkPath("bob"), []byte("{not valid json"))
+		d := evaluateGuardInvocation("", "", "", "git push origin main")
+		if d.Allowed {
+			t.Fatalf("a corrupt recovered mark must fail CLOSED (deny scope tools), not open; decision=%+v", d)
+		}
+		// Mailbox commands are unaffected by the mark either way.
+		if d := evaluateGuardInvocation("", "", "", "agentchute check --as bob"); !d.Allowed {
+			t.Fatalf("mailbox commands must not be affected by the recovered mark's fail-closed posture; decision=%+v", d)
 		}
 	})
 }
