@@ -257,10 +257,10 @@ func setupCommandMatches(cmdline, agentID, subcommand string, cfg *loop.Config) 
 
 // setupCommandMatchesRunnerPool attributes a live RUNNER to THIS pool. Unlike a
 // poller (which is launched with --as <id> and so carries its agent id in the
-// cmdline), a runner is launched with the CONTEXTUAL id — it has NO --as — so its
-// cmdline never contains the agent id. The pid->id binding therefore comes from
-// the runner.json state file (state/<id>/runner.json recorded this pid for <id>),
-// and the cmdline only needs to prove the process is an `agentchute serve` for THIS
+// cmdline), a runner may receive its explicit id through AGENTCHUTE_AGENT_ID, so
+// its cmdline need not contain the agent id. The pid->id binding therefore comes
+// from the runner.json state file (state/<id>/runner.json recorded this pid for
+// <id>), and the cmdline only needs to prove the process is an `agentchute serve` for THIS
 // pool (its --control-repo/--loop-dir resolves to this pool). Requiring the agent
 // id in a runner cmdline is the false-negative this fixes: every live runner was
 // reported "ambiguous ... cmdline did not match this pool; refusing (fail closed)".
