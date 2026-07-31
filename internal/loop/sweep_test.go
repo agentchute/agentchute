@@ -233,6 +233,154 @@ func TestSweepStaleRegistrationsNeverSweepsReadmeOrExample(t *testing.T) {
 	}
 }
 
+// TestSweepStaleRegistrationsSkipsNonAgentIDFilenames: a stray .md file whose
+// basename is not a valid agent id (a hand-dropped note, a typo — anything
+// other than README.md/*.example.md, which are already allowlisted) must
+// never abort the pass. Reproduces the exact probe from PR #91 round 2,
+// BLOCKER 1: 3 stale valid rows + one uppercase NOTES.md, all aged past
+// threshold — before the fix this returned removed=[] and an error, leaving
+// every legitimately-stale row permanently un-swept on every future pass
+// (uppercase sorts before lowercase, so the poison candidate is always
+// first).
+func TestSweepStaleRegistrationsSkipsNonAgentIDFilenames(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	now := time.Now().UTC()
+	old := now.Add(-2 * time.Hour)
+	for _, id := range []string{"aaa", "bbb", "ccc"} {
+		seedSweepRegistration(t, cfg, id, old)
+	}
+	if err := ensurePrivateDir(cfg.AgentsDir()); err != nil {
+		t.Fatal(err)
+	}
+	poison := filepath.Join(cfg.AgentsDir(), "NOTES.md")
+	if err := atomicWriteFile(poison, []byte("not a registration")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(poison, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := SweepStaleRegistrations(cfg, "self", now)
+	if err != nil {
+		t.Fatalf("a stray non-agent-id filename must not abort the sweep: %v", err)
+	}
+	if len(removed) != 3 {
+		t.Fatalf("removed = %v, want all 3 valid stale rows", removed)
+	}
+	for _, id := range []string{"aaa", "bbb", "ccc"} {
+		if _, err := os.Stat(cfg.AgentRegistrationPath(id)); !os.IsNotExist(err) {
+			t.Fatalf("%s survived: stat err = %v", id, err)
+		}
+	}
+	if _, err := os.Stat(poison); err != nil {
+		t.Fatalf("NOTES.md itself should be left alone (not a registration): %v", err)
+	}
+}
+
+// TestSweepStaleRegistrationsFailsClosedOnCorruptClaim: a corrupt (unparseable)
+// serve claim must NOT be treated as "no lease, safe to delete" — that read
+// error means "cannot prove dead", so the candidate is skipped, not removed
+// (PR #91 round 2, BLOCKER 2). Before the fix this deleted the row outright.
+func TestSweepStaleRegistrationsFailsClosedOnCorruptClaim(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	now := time.Now().UTC()
+	seedSweepRegistration(t, cfg, "live", now.Add(-2*time.Hour))
+	if err := ensurePrivateDir(cfg.AgentStateDir("live")); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(claimPath(cfg, "live"), []byte("{not json")); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := SweepStaleRegistrations(cfg, "self", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want none — a corrupt claim must fail closed, not delete", removed)
+	}
+	if _, err := os.Stat(cfg.AgentRegistrationPath("live")); err != nil {
+		t.Fatalf("row with a corrupt (unprovable) claim was removed: %v", err)
+	}
+}
+
+// TestSweepStaleRegistrationsUnderLockRecheckSurvivesLeaseOnlyRevival isolates
+// the LEASE half of the under-lock re-check: the candidate's registration row
+// stays stale (no heartbeat), but a FRESH lease is acquired for it in the gap
+// between the outer scan and the per-candidate lock — mirroring a real serve
+// process starting on a stale lane before its first heartbeat tick. The
+// combined test (...BacksOffOnRevival, above) exercises age-revival and
+// lease-revival together, which cannot tell which clause is load-bearing;
+// this isolates the lease clause alone (PR #91 round 2, SHOULD-FIX 5).
+func TestSweepStaleRegistrationsUnderLockRecheckSurvivesLeaseOnlyRevival(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	now := time.Now().UTC()
+	seedSweepRegistration(t, cfg, "lease-only", now.Add(-2*time.Hour))
+	seedSweepRegistration(t, cfg, "still-dead", now.Add(-2*time.Hour))
+
+	t.Cleanup(func() { afterSweepScanHook = nil })
+	afterSweepScanHook = func() {
+		if _, err := AcquireServeLease(cfg, "lease-only"); err != nil {
+			t.Fatalf("lease-only revival acquire: %v", err)
+		}
+	}
+
+	removed, err := SweepStaleRegistrations(cfg, "self", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != "still-dead" {
+		t.Fatalf("removed = %v, want [still-dead] (a fresh lease alone must save the row)", removed)
+	}
+	if _, err := os.Stat(cfg.AgentRegistrationPath("lease-only")); err != nil {
+		t.Fatalf("lease-only-revived row was removed: %v", err)
+	}
+}
+
+// TestSweepStaleRegistrationsUnderLockRecheckSurvivesHeartbeatOnlyRevival
+// isolates the AGE half: the row's last_seen is refreshed directly (no claim
+// ever exists for it) in the gap between the outer scan and the per-candidate
+// lock. Age alone must save it (PR #91 round 2, SHOULD-FIX 5).
+func TestSweepStaleRegistrationsUnderLockRecheckSurvivesHeartbeatOnlyRevival(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	now := time.Now().UTC()
+	seedSweepRegistration(t, cfg, "heartbeat-only", now.Add(-2*time.Hour))
+	seedSweepRegistration(t, cfg, "still-dead", now.Add(-2*time.Hour))
+
+	t.Cleanup(func() { afterSweepScanHook = nil })
+	afterSweepScanHook = func() {
+		seedSweepRegistration(t, cfg, "heartbeat-only", time.Now().UTC())
+	}
+
+	removed, err := SweepStaleRegistrations(cfg, "self", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != "still-dead" {
+		t.Fatalf("removed = %v, want [still-dead] (a fresh last_seen alone must save the row)", removed)
+	}
+	if _, err := os.Stat(cfg.AgentRegistrationPath("heartbeat-only")); err != nil {
+		t.Fatalf("heartbeat-only-revived row was removed: %v", err)
+	}
+}
+
+// TestSweepStaleRegistrationsFutureLastSeenIsNotImmortal: a future-dated
+// last_seen (clock skew or a hand edit) must not grant permanent
+// sweep-immunity — grok review residual, PR #91 round 2, item 6.
+func TestSweepStaleRegistrationsFutureLastSeenIsNotImmortal(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	now := time.Now().UTC()
+	seedSweepRegistration(t, cfg, "future", now.Add(2*time.Hour))
+
+	removed, err := SweepStaleRegistrations(cfg, "self", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != "future" {
+		t.Fatalf("removed = %v, want [future] (a future last_seen must not grant immortality)", removed)
+	}
+}
+
 func TestSweepStaleRegistrationsMissingAgentsDirIsCleanEmpty(t *testing.T) {
 	cfg := newLeaseTestConfig(t)
 	removed, err := SweepStaleRegistrations(cfg, "self", time.Now().UTC())

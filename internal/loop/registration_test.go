@@ -228,6 +228,79 @@ func TestHeartbeatRegistrationPreservesWorkingRepos(t *testing.T) {
 	}
 }
 
+// TestHeartbeatRegistrationPreservesLastActive: check's UpdateLastActive
+// records activity between heartbeat ticks; a tick must not wipe it, since
+// heartbeatTemplate never carries a LastActive of its own (PR #91 round 2,
+// SHOULD-FIX 4 — a per-5s-tick merge that blindly took the template's zero
+// value here would erase check-recorded activity within one tick).
+func TestHeartbeatRegistrationPreservesLastActive(t *testing.T) {
+	cfg := newLockTestConfig(t)
+	agentID := "codex"
+	lastActive := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	existing := &Registration{
+		AgentID:     agentID,
+		Vendor:      "openai",
+		ControlRepo: "/tmp/repo",
+		LastSeen:    time.Now().UTC().Add(-time.Hour),
+		LastActive:  &lastActive,
+		Status:      StatusActive,
+	}
+	if err := WriteRegistration(cfg.AgentRegistrationPath(agentID), existing); err != nil {
+		t.Fatal(err)
+	}
+	lease := mustAcquireTestLease(t, cfg, agentID)
+
+	if err := HeartbeatRegistration(cfg, heartbeatTestTemplate(agentID), lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := ReadRegistration(cfg.AgentRegistrationPath(agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.LastActive == nil || !reg.LastActive.Equal(lastActive) {
+		t.Fatalf("LastActive = %v, want preserved %v", reg.LastActive, lastActive)
+	}
+}
+
+// TestHeartbeatRegistrationPreservesLaunchProvenanceTemplateDoesNotSet: the
+// template only carries LaunchedBy/ShimName, never HookEvent — a tick must
+// not wipe HookEvent recorded at initial enrollment (PR #91 round 2,
+// SHOULD-FIX 4).
+func TestHeartbeatRegistrationPreservesLaunchProvenanceTemplateDoesNotSet(t *testing.T) {
+	cfg := newLockTestConfig(t)
+	agentID := "codex"
+	existing := &Registration{
+		AgentID:     agentID,
+		Vendor:      "openai",
+		ControlRepo: "/tmp/repo",
+		LastSeen:    time.Now().UTC().Add(-time.Hour),
+		Status:      StatusActive,
+		LaunchedBy:  LaunchedByHook,
+		HookEvent:   "boot",
+	}
+	if err := WriteRegistration(cfg.AgentRegistrationPath(agentID), existing); err != nil {
+		t.Fatal(err)
+	}
+	lease := mustAcquireTestLease(t, cfg, agentID)
+
+	template := heartbeatTestTemplate(agentID)
+	template.LaunchedBy = LaunchedByRunner // the template DOES have an opinion on LaunchedBy...
+	// ...but not on HookEvent (heartbeatTemplate never sets it in production).
+	if err := HeartbeatRegistration(cfg, template, lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := ReadRegistration(cfg.AgentRegistrationPath(agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.LaunchedBy != LaunchedByRunner {
+		t.Fatalf("LaunchedBy = %q, want the template's non-empty value %q to win", reg.LaunchedBy, LaunchedByRunner)
+	}
+	if reg.HookEvent != "boot" {
+		t.Fatalf("HookEvent = %q, want the existing row's value preserved (template never sets it)", reg.HookEvent)
+	}
+}
+
 // TestHeartbeatRegistrationCreatesWhenMissing: a swept-away (or never-yet-
 // written) row is recreated from template rather than erroring (C13,
 // "create-from-template if missing").

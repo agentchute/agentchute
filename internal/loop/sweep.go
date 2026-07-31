@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -71,6 +72,23 @@ func SweepStaleRegistrations(cfg *Config, selfID string, now time.Time) ([]strin
 			continue
 		}
 		id := strings.TrimSuffix(name, ".md")
+		if ValidateAgentID(id) != nil {
+			// A stray non-agent-id .md file (a hand-dropped note, a typo) is
+			// not a registration candidate at all — never a sweep failure.
+			// Every other directory enumerator in this codebase already
+			// guards this (presence_scan.go, setup_wipe.go); an unguarded
+			// candidate here would reach sweepOneCandidate's withAgentLock,
+			// which hard-errors on an invalid id and would abort the WHOLE
+			// pass before any later (sorted) candidate is even considered
+			// (codex/claude-code review, PR #91 round 2, BLOCKER 1). Belt
+			// and suspenders alongside claimProvablyDead's fail-closed
+			// handling below (BLOCKER 2's fix already independently
+			// immunizes an invalid id too, since ReadServeClaim validates
+			// it and a validation error is not os.ErrNotExist) — this guard
+			// is the cheaper, more direct fix and matches the established
+			// precedent, so it is not left to that side effect alone.
+			continue
+		}
 		if id == selfID {
 			continue
 		}
@@ -82,8 +100,8 @@ func SweepStaleRegistrations(cfg *Config, selfID string, now time.Time) ([]strin
 		if age <= threshold {
 			continue
 		}
-		if claim, cerr := ReadServeClaim(cfg, id); cerr == nil && !ClaimIsStale(claim, now) {
-			continue // a fresh lease owns this id; the row is not dead.
+		if !claimProvablyDead(cfg, id, now) {
+			continue // a fresh lease owns this id, OR we can't prove otherwise.
 		}
 		candidates = append(candidates, candidate{id: id, path: path})
 	}
@@ -121,6 +139,19 @@ func SweepStaleRegistrations(cfg *Config, selfID string, now time.Time) ([]strin
 // sweepOneCandidate re-checks id's staleness (age AND lease) under
 // WithAgentLock(id) and removes its registration row iff both still hold —
 // closing the TOCTOU window between the outer scan and the delete.
+//
+// Side effect, noted per review (PR #91 round 2, SHOULD-FIX 3): like every
+// WithAgentLock(id) caller, this creates state/<id>/ + its .lock file as a
+// side effect of taking the lock — even for a candidate that turns out to
+// still be fresh (survives the re-check) and even for the id it just
+// deleted. This is the same accepted tradeoff clean.go's mailbox/owed clean
+// already documents (clean.go: cmdCleanOwed's doc comment, and the
+// WithAgentLock(target) comment in the --mailbox apply path): the lock is
+// load-bearing for correctness (it is what closes the TOCTOU window against
+// a concurrent heartbeat or serve launch), and cleaning up the directory
+// afterward would race that same concurrent activity for no correctness
+// benefit — only cosmetic state-dir accumulation for ids that no longer have
+// a live registration, which doctor/gate/status never read.
 func sweepOneCandidate(cfg *Config, id, path string, threshold time.Duration, now time.Time) (bool, error) {
 	var swept bool
 	err := withAgentLock(cfg, id, func() error {
@@ -131,8 +162,8 @@ func sweepOneCandidate(cfg *Config, id, path string, threshold time.Duration, no
 		if age <= threshold {
 			return nil // refreshed since the outer scan; not stale anymore.
 		}
-		if claim, cerr := ReadServeClaim(cfg, id); cerr == nil && !ClaimIsStale(claim, now) {
-			return nil // a fresh lease appeared since the outer scan.
+		if !claimProvablyDead(cfg, id, now) {
+			return nil // a fresh lease appeared, or its claim is no longer provably dead.
 		}
 		if err := os.Remove(path); err != nil {
 			if os.IsNotExist(err) {
@@ -149,18 +180,58 @@ func sweepOneCandidate(cfg *Config, id, path string, threshold time.Duration, no
 	return swept, nil
 }
 
+// claimProvablyDead reports whether id's serve claim can be PROVEN dead: it
+// must be genuinely absent (os.ErrNotExist) and stale-or-nonexistent is not
+// enough on its own — ClaimIsStale(nil, now) already reports true for a nil
+// claim, so the absent case is folded into the same ClaimIsStale check. Any
+// OTHER read error (corrupt JSON, an invalid id, a symlink rejected by
+// openRegularNoFollow, an oversize file, a permission error) means the claim
+// cannot be read at all — and "cannot prove ownership" must fail CLOSED here,
+// the same direction VerifyFence/AcquireServeLease already fail in for this
+// exact ambiguity (codex/claude-code review, PR #91 round 2, BLOCKER 2: the
+// prior `cerr == nil && !stale` shape failed OPEN on any non-absent error,
+// so a single corrupt claim file could delete a live lane's registration —
+// and worse, that lane could then neither self-heal via HeartbeatRegistration
+// (VerifyFence also fails closed on a parse error) nor restart serve
+// (AcquireServeLease fails closed on an unreadable claim too), silently
+// vanishing it from the pool with no recovery path).
+func claimProvablyDead(cfg *Config, id string, now time.Time) bool {
+	claim, err := ReadServeClaim(cfg, id)
+	if err == nil {
+		return ClaimIsStale(claim, now)
+	}
+	return os.IsNotExist(err)
+}
+
 // registrationAge returns path's staleness age: the parsed last_seen when the
 // file parses as a registration, or the file's mtime (C12) when it doesn't —
 // so a hand-corrupted or otherwise unparseable row is not immortal just
 // because ReadRegistration can't recover a last_seen from it. ok is false
 // only when the file itself is gone or unstatable.
+//
+// A negative age (a future-dated last_seen — clock skew or a hand edit) is
+// clamped to an arbitrarily-large positive value rather than left negative
+// (grok review residual, PR #91 round 2, item 6): unlike a serve claim's
+// staleness check, where failing a future timestamp closed as "still fresh"
+// protects a live lane from being stolen, a registration row is discoverable
+// display state, not a lock — a bogus future timestamp granting it permanent
+// sweep-immunity is the wrong failure direction here. Erring toward eventual
+// cleanup, not toward permanence, is what keeps a corrupted timestamp from
+// producing an unkillable ghost row.
 func registrationAge(path string, now time.Time) (age time.Duration, ok bool) {
 	if reg, err := ReadRegistration(path); err == nil {
-		return now.Sub(reg.LastSeen), true
+		return clampNonNegativeAge(now.Sub(reg.LastSeen)), true
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, false
 	}
-	return now.Sub(info.ModTime()), true
+	return clampNonNegativeAge(now.Sub(info.ModTime())), true
+}
+
+func clampNonNegativeAge(age time.Duration) time.Duration {
+	if age < 0 {
+		return math.MaxInt64
+	}
+	return age
 }
