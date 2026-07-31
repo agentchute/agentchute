@@ -167,6 +167,6 @@ func SendTsMessageWithCommit(cfg *Config, from, to string, content []byte, serve
 		return TsID{}, false, err
 	}
 	id := TsID{To: to, From: from, Stamp: stamp, Suffix: suffix}
-	committedID, committed, err := DeliverUnderRecipientLock(cfg, to, id, content, serveToken)
+	committedID, committed, err := DeliverUnderRecipientLock(cfg, id, content, serveToken)
 	return committedID, committed, err
 }

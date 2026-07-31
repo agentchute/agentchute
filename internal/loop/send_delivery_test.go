@@ -89,7 +89,7 @@ func TestDeliverUnderRecipientLockBacksOffWhenRecipientGoesStaleDuringLock(t *te
 	}
 
 	id := testTsID(t, "bob", "alice")
-	_, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
+	_, committed, err := DeliverUnderRecipientLock(cfg, id, []byte("x"), "")
 	if committed {
 		t.Fatal("committed = true, want false (a recipient that went stale mid-lock must not receive delivery)")
 	}
@@ -124,7 +124,7 @@ func TestDeliverUnderRecipientLockBacksOffWhenRecipientVanishesDuringLock(t *tes
 	}
 
 	id := testTsID(t, "bob", "alice")
-	_, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
+	_, committed, err := DeliverUnderRecipientLock(cfg, id, []byte("x"), "")
 	if committed {
 		t.Fatal("committed = true, want false")
 	}
@@ -182,7 +182,7 @@ func TestDeliverUnderRecipientLockBacksOffWhenRecipientBecomesMalformedDuringLoc
 	}
 
 	id := testTsID(t, "bob", "alice")
-	_, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
+	_, committed, err := DeliverUnderRecipientLock(cfg, id, []byte("x"), "")
 	if committed {
 		t.Fatal("committed = true, want false (a recipient that became malformed mid-lock must not receive delivery)")
 	}
@@ -206,7 +206,7 @@ func TestDeliverUnderRecipientLockSucceedsWhenStillFresh(t *testing.T) {
 	mkFreshRecipient(t, cfg, "bob")
 
 	id := testTsID(t, "bob", "alice")
-	committedID, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
+	committedID, committed, err := DeliverUnderRecipientLock(cfg, id, []byte("x"), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestDeliverUnderRecipientLockRetriesOnCollisionWithFreshSuffix(t *testing.T
 	rand128hex = func() (string, error) { return freshSuffix, nil }
 	t.Cleanup(func() { rand128hex = oldRand })
 
-	committedID, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("new content"), "")
+	committedID, committed, err := DeliverUnderRecipientLock(cfg, id, []byte("new content"), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestDeliverUnderRecipientLockExhaustsCollisionRetries(t *testing.T) {
 	rand128hex = func() (string, error) { return id.Suffix, nil }
 	t.Cleanup(func() { rand128hex = oldRand })
 
-	_, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("never lands"), "")
+	_, committed, err := DeliverUnderRecipientLock(cfg, id, []byte("never lands"), "")
 	if committed {
 		t.Fatal("committed = true, want false after exhausting collision retries")
 	}
@@ -335,7 +335,7 @@ func TestDeliverUnderRecipientLockRejectsMalformedIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, committed, err := DeliverUnderRecipientLock(cfg, "bob", c.id, []byte("must not land"), "")
+			_, committed, err := DeliverUnderRecipientLock(cfg, c.id, []byte("must not land"), "")
 			if err == nil {
 				t.Fatal("expected a validation error for a malformed identity")
 			}
@@ -353,5 +353,54 @@ func TestDeliverUnderRecipientLockRejectsMalformedIdentity(t *testing.T) {
 				t.Fatalf("inbox entry count changed (%d -> %d); a malformed identity must create NOTHING", len(before), len(after))
 			}
 		})
+	}
+}
+
+// TestDeliverUnderRecipientLockRecipientIsSoleSourceOfTruth is codex PR #99
+// round 3: DeliverUnderRecipientLock used to take a separate `to` parameter
+// ALONGSIDE id.To, each validated in isolation and never checked against the
+// other — a caller bug could commit a well-formed identity naming one agent
+// into a DIFFERENT agent's inbox, while the returned identity (and whatever
+// RefString/owed key a caller records from it) still named the original.
+// Fixed by DELETING the redundant parameter rather than adding a runtime
+// equality check: id.To is now the ONLY recipient source, so the two facts
+// cannot even be expressed as different values — this test confirms that
+// invariant holds end-to-end (destination and returned identity never
+// diverge) rather than asserting a mismatch is "rejected", since a mismatch
+// is no longer expressible at all.
+func TestDeliverUnderRecipientLockRecipientIsSoleSourceOfTruth(t *testing.T) {
+	cfg := newSeqTestConfig(t)
+	mkFreshRecipient(t, cfg, "bob")
+	mkFreshRecipient(t, cfg, "carol")
+
+	id := testTsID(t, "carol", "alice")
+	committedID, committed, err := DeliverUnderRecipientLock(cfg, id, []byte("for carol only"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !committed {
+		t.Fatal("committed = false, want true")
+	}
+	if committedID.To != "carol" {
+		t.Fatalf("committedID.To = %q, want carol (must match the identity's own To, not drift)", committedID.To)
+	}
+
+	bobEntries, err := os.ReadDir(cfg.AgentInboxDir("bob"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bobEntries) != 0 {
+		t.Fatalf("bob's inbox has %d entries, want 0 — delivery must never touch a recipient other than id.To", len(bobEntries))
+	}
+	data, rerr := os.ReadFile(filepath.Join(cfg.AgentInboxDir("carol"), committedID.Filename()))
+	if rerr != nil || string(data) != "for carol only" {
+		t.Fatalf("carol's inbox missing/wrong delivered content: %v %q", rerr, data)
+	}
+
+	// The obligation key a caller would record from the returned identity
+	// names the SAME recipient the file actually landed under — no reply-
+	// tracking black hole is possible (the B3 lesson, one field over).
+	if got := committedID.OwedKey().To; got != "carol" {
+		t.Fatalf("committedID.OwedKey().To = %q, want carol", got)
 	}
 }

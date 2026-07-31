@@ -275,9 +275,19 @@ var afterRecipientLockHook func()
 // AnnounceEnrollment's per-peer loop, which has none) is a fast-fail
 // optimization ONLY, never the enforcement itself — a sweep, a heartbeat, or
 // another sender can all land in the window between any earlier check and
-// here. Re-derives to's reachability under WithAgentLock(to) and, only if
-// still fresh, re-verifies id.From's fence (when serveToken != "") and links
-// content into to's inbox under id's timestamp identity (v2.5 plan B7).
+// here. Re-derives id.To's reachability under WithAgentLock(id.To) and, only
+// if still fresh, re-verifies id.From's fence (when serveToken != "") and
+// links content into id.To's inbox under id's timestamp identity (v2.5 plan
+// B7).
+//
+// The recipient is id.To ALONE — there is deliberately no separate `to`
+// parameter (codex PR #99 review, round 3): an earlier version took both,
+// validated each in isolation, and never checked they agreed, so a caller
+// bug could commit a well-formed identity naming carol into bob's inbox
+// while the returned RefString/owed key still named carol — a silent
+// reply-tracking black hole with no malformed input anywhere (the B4
+// lesson: two sources for one fact, reconciled by deleting one source,
+// beats a runtime equality check).
 //
 // On link EEXIST, retries with a FRESH random suffix (id.To/From/Stamp held
 // fixed) up to maxLinkCollisionRetries times — NEVER exists-as-success (C4).
@@ -291,13 +301,10 @@ var afterRecipientLockHook func()
 //
 // NO LOCK NESTING: id.From's OWN WithAgentLock(id.From) (taken by the
 // caller's MintSendStamp) MUST have already released before this is called —
-// never call this from inside that lock's closure. Self-send (id.From==to)
-// would deadlock the non-reentrant flock instantly if the two were ever held
-// together (C8).
-func DeliverUnderRecipientLock(cfg *Config, to string, id TsID, content []byte, serveToken string) (committedID TsID, committed bool, err error) {
-	if err := ValidateAgentID(to); err != nil {
-		return TsID{}, false, fmt.Errorf("to: %w", err)
-	}
+// never call this from inside that lock's closure. Self-send (id.From==
+// id.To) would deadlock the non-reentrant flock instantly if the two were
+// ever held together (C8).
+func DeliverUnderRecipientLock(cfg *Config, id TsID, content []byte, serveToken string) (committedID TsID, committed bool, err error) {
 	// Reject a malformed/hostile identity BEFORE taking any lock (codex PR #99
 	// review: a bad Stamp/Suffix embedding a path separator or ".." must never
 	// reach filepath.Join — mirrors B3's "a typo'd --to must not even
@@ -306,6 +313,7 @@ func DeliverUnderRecipientLock(cfg *Config, to string, id TsID, content []byte, 
 	if err := id.Validate(); err != nil {
 		return TsID{}, false, fmt.Errorf("invalid identity: %w", err)
 	}
+	to := id.To
 	lockErr := withAgentLock(cfg, to, func() error {
 		if afterRecipientLockHook != nil {
 			afterRecipientLockHook()
