@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,74 @@ func TestSendRefusesStaleRecipient(t *testing.T) {
 		t.Fatalf("direct-stale (preflight) must not use the fresh-but-racing (c) wording: %v", sendErr)
 	}
 	entries, err := os.ReadDir(cfg.AgentInboxDir("codex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 delivered messages, got %d", len(entries))
+	}
+}
+
+// TestSendRefusesMalformedRecipientAtPreflight: PR #95 P1 (codex/claude-code
+// review) — a registration row that EXISTS but fails to parse must never
+// read as reachable just because it has a fresh mtime. Caught at cmdSend's
+// own preflight: no stdin consumed, no lock taken (no state dir for the
+// recipient — WithAgentLock's ensurePrivateDir side effect must never fire
+// here), and no send attempted at all.
+//
+// Uses a recipient id that never goes through cmdRegister (unlike "codex" in
+// setupSendFixture, whose OWN registration already creates state/codex/ as a
+// side effect of WithAgentLock, unrelated to send's preflight) — the
+// registration row and inbox dir are created directly so no prior state dir
+// exists before cmdSend runs.
+func TestSendRefusesMalformedRecipientAtPreflight(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	const recipient = "malformed-agent"
+	if err := os.MkdirAll(filepath.Dir(cfg.AgentRegistrationPath(recipient)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.AgentRegistrationPath(recipient), []byte("{not a valid registration"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfg.AgentInboxDir(recipient), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	stdinPath := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(stdinPath, []byte("must remain unread"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stdin.Close() }()
+	originalStdin := sendStdin
+	sendStdin = stdin
+	defer func() { sendStdin = originalStdin }()
+
+	var sendErr error
+	withCwd(t, root, func() {
+		sendErr = cmdSend([]string{"--from", "claude-code", "--to", recipient})
+	})
+	if sendErr == nil {
+		t.Fatal("expected refusal for a malformed recipient row")
+	}
+	if !strings.Contains(sendErr.Error(), "malformed") || !strings.Contains(sendErr.Error(), "not sending") {
+		t.Fatalf("err = %v, want the malformed-row text", sendErr)
+	}
+	if strings.Contains(sendErr.Error(), "gone since") || strings.Contains(sendErr.Error(), "retry once") {
+		t.Fatalf("malformed-row text must not borrow C29(b)/(c) wording: %v", sendErr)
+	}
+	if offset, seekErr := stdin.Seek(0, 1); seekErr != nil {
+		t.Fatal(seekErr)
+	} else if offset != 0 {
+		t.Fatalf("stdin offset = %d, want 0 (unread)", offset)
+	}
+	if _, err := os.Stat(cfg.AgentStateDir(recipient)); !os.IsNotExist(err) {
+		t.Fatalf("state dir for the malformed recipient should not exist: stat err = %v", err)
+	}
+	entries, err := os.ReadDir(cfg.AgentInboxDir(recipient))
 	if err != nil {
 		t.Fatal(err)
 	}

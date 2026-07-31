@@ -431,11 +431,26 @@ func SendSeqMessageWithCommit(cfg *Config, from, to string, content []byte, idem
 // use errors.Is, not os.IsNotExist.
 var ErrRecipientUnknown = fmt.Errorf("loop: recipient has no registration row: %w", os.ErrNotExist)
 
+// ErrRecipientUnreadable classifies a recipient whose registration row EXISTS
+// but could not be parsed (a malformed agents/<to>.md — hand-edited, torn
+// write, or otherwise corrupt). Unlike ErrRecipientUnknown, the row is
+// physically present, so this is neither "no row" nor a stale-vs-fresh
+// question — a row we cannot parse proves NOTHING about reachability, and
+// must never be treated as fresh (codex/claude-code review, PR #95 P1: an
+// earlier version fell back to the file's mtime here, mirroring sweep.go's
+// registrationAge — but that fallback exists for the OPPOSITE requirement.
+// Sweep needs a corrupt row to age out rather than be immortal against
+// CLEANUP; send needs the opposite direction entirely: an unparseable row
+// must fail CLOSED against DELIVERY, exactly like VerifyFence/
+// AcquireServeLease already fail closed on an unreadable serve claim. One
+// helper's fallback cannot serve both directions, so send does not use it).
+var ErrRecipientUnreadable = errors.New("loop: recipient's registration row exists but could not be parsed")
+
 // RecipientReachability is the outcome of checking whether a recipient is
 // currently reachable enough to accept a send (B3, C29): registered, and if
 // so, how old its last heartbeat is relative to the pool's stale_after.
 type RecipientReachability struct {
-	LastSeen  time.Time     // parsed registration LastSeen, or the file's mtime for an unparseable row (C12 precedent — a row we can't parse is not a row we can prove reachable, but it is also not "no row at all").
+	LastSeen  time.Time     // parsed registration LastSeen.
 	Age       time.Duration // now - LastSeen, NOT clamped (a future-dated LastSeen reads as extra-fresh here — the safe direction for a delivery decision, unlike sweep's cleanup decision, C12/B1).
 	Threshold time.Duration // loop.StaleAfter(cfg) at the moment of the check.
 	Fresh     bool          // Age <= Threshold.
@@ -444,36 +459,26 @@ type RecipientReachability struct {
 // CheckRecipientReachability reads to's registration WITHOUT taking any lock
 // — this is send's fast, lock-free preflight (B3 §4 risk: WithAgentLock's
 // ensurePrivateDir side effect must never manufacture state/<to>/ for an
-// arbitrary --to typo). Returns ErrRecipientUnknown when no row exists at
-// all (parsed or via a bare file stat); otherwise the reachability snapshot,
-// with Fresh telling the caller whether to proceed.
+// arbitrary --to typo). Returns ErrRecipientUnknown when no row exists at all
+// (fails CLOSED against os.ErrNotExist), ErrRecipientUnreadable when a row
+// exists but fails to parse (fails CLOSED — no mtime fallback; see that
+// error's doc comment for why), or the reachability snapshot with Fresh
+// telling the caller whether to proceed.
 func CheckRecipientReachability(cfg *Config, to string, now time.Time) (RecipientReachability, error) {
 	if err := ValidateAgentID(to); err != nil {
 		return RecipientReachability{}, err
 	}
 	path := cfg.AgentRegistrationPath(to)
-	lastSeen, ok := recipientLastSeen(path)
-	if !ok {
-		return RecipientReachability{}, ErrRecipientUnknown
+	reg, err := ReadRegistration(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return RecipientReachability{}, ErrRecipientUnknown
+		}
+		return RecipientReachability{}, ErrRecipientUnreadable
 	}
 	threshold := StaleAfter(cfg)
-	age := now.UTC().Sub(lastSeen.UTC())
-	return RecipientReachability{LastSeen: lastSeen, Age: age, Threshold: threshold, Fresh: age <= threshold}, nil
-}
-
-// recipientLastSeen returns path's best-effort last_seen: the parsed
-// Registration.LastSeen when the file parses, or the file's mtime otherwise
-// (a corrupt/unparseable row still physically exists — C12's mtime-fallback
-// precedent, mirrored from sweep.go's registrationAge). ok is false only when
-// the file itself is genuinely absent.
-func recipientLastSeen(path string) (time.Time, bool) {
-	if reg, err := ReadRegistration(path); err == nil {
-		return reg.LastSeen, true
-	}
-	if info, err := os.Stat(path); err == nil {
-		return info.ModTime(), true
-	}
-	return time.Time{}, false
+	age := now.UTC().Sub(reg.LastSeen.UTC())
+	return RecipientReachability{LastSeen: reg.LastSeen, Age: age, Threshold: threshold, Fresh: age <= threshold}, nil
 }
 
 // ErrRecipientStale reports that DeliverUnderRecipientLock's re-check found
@@ -514,9 +519,10 @@ var afterRecipientLockHook func()
 // here. Re-derives to's reachability under WithAgentLock(to) and, only if
 // still fresh, re-verifies id.From's fence (when serveToken != "") and links
 // id/content into to's inbox. On any failure (ErrRecipientUnknown,
-// *ErrRecipientStale, ErrFenced) nothing is linked — the seq in id was
-// already durably allocated by the caller's AllocateSeq and is consumed as a
-// legal gap (O1 tolerates gaps; a resend needs a fresh preflight+mint).
+// ErrRecipientUnreadable, *ErrRecipientStale, ErrFenced) nothing is linked —
+// the seq in id was already durably allocated by the caller's AllocateSeq and
+// is consumed as a legal gap (O1 tolerates gaps; a resend needs a fresh
+// preflight+mint).
 //
 // NO LOCK NESTING: id.From's OWN WithAgentLock(id.From) (taken by the
 // caller's AllocateSeq) MUST have already released before this is called —

@@ -137,6 +137,9 @@ func cmdSend(args []string) error {
 		if errors.Is(rrErr, loop.ErrRecipientUnknown) {
 			return unknownRecipientError(toID, rrErr)
 		}
+		if errors.Is(rrErr, loop.ErrRecipientUnreadable) {
+			return unreadableRecipientError(toID)
+		}
 		return rrErr
 	}
 	if !rr.Fresh {
@@ -337,6 +340,16 @@ func racingRecipientError(to string) error {
 	return fmt.Errorf("%q was here seconds ago — likely mid-restart; retry once.", to)
 }
 
+// Malformed row: neither C29(a) (no row exists) nor C29(b)/(c) (a row exists
+// and is stale/racing) — a row that fails to parse tells us nothing about
+// whether `to` is reachable, so it gets its own text rather than being
+// folded into either. Telling an operator "was here, gone since <time>"
+// about a file that failed to parse would be actively misleading (codex/
+// claude-code review, PR #95 P1).
+func unreadableRecipientError(to string) error {
+	return fmt.Errorf("%q's registration could not be read (malformed); not sending. Inspect agents/%s.md by hand.", to, to)
+}
+
 // classifySendFailure maps a post-stdin delivery failure to its C29 text.
 // Reached only after cmdSend's own preflight already passed, so a stale
 // classification here is always the racing case (c), never the direct
@@ -345,6 +358,9 @@ func racingRecipientError(to string) error {
 func classifySendFailure(to string, cause error) error {
 	if errors.Is(cause, loop.ErrRecipientUnknown) {
 		return unknownRecipientError(to, cause)
+	}
+	if errors.Is(cause, loop.ErrRecipientUnreadable) {
+		return unreadableRecipientError(to)
 	}
 	if os.IsNotExist(cause) {
 		// A registration can be fresh while its inbox dir is unexpectedly

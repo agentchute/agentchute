@@ -121,6 +121,71 @@ func TestDeliverUnderRecipientLockBacksOffWhenRecipientVanishesDuringLock(t *tes
 	}
 }
 
+// TestCheckRecipientReachabilityFailsClosedOnMalformedRow: a registration row
+// that EXISTS but fails to parse must never read as reachable — a corrupt row
+// proves nothing about whether the recipient is actually there. PR #95 P1
+// (codex/claude-code): an earlier version fell back to the file's mtime here
+// (mirroring sweep.go's registrationAge, C12), so a malformed row with a
+// FRESH mtime read as Fresh=true, letting delivery commit to an agent that
+// was never confirmed reachable — precisely the black-hole this slice exists
+// to eliminate, reached through the corrupt-row door instead of the
+// never-registered door. Sweep's mtime fallback exists for the OPPOSITE
+// requirement (a corrupt row must age out, not be immortal against cleanup);
+// send needs unparseable to mean "cannot prove reachable", not "assume
+// fresh".
+func TestCheckRecipientReachabilityFailsClosedOnMalformedRow(t *testing.T) {
+	cfg := newSeqTestConfig(t)
+	if err := ensurePrivateDir(cfg.AgentsDir()); err != nil {
+		t.Fatal(err)
+	}
+	path := cfg.AgentRegistrationPath("bob")
+	if err := atomicWriteFile(path, []byte("{not a valid registration")); err != nil {
+		t.Fatal(err)
+	}
+	// Freshly written (mtime = now) — exactly the shape that fooled the old
+	// mtime fallback.
+
+	rr, err := CheckRecipientReachability(cfg, "bob", time.Now().UTC())
+	if !errors.Is(err, ErrRecipientUnreadable) {
+		t.Fatalf("err = %v, want ErrRecipientUnreadable", err)
+	}
+	if rr.Fresh {
+		t.Fatal("rr.Fresh = true for a malformed row — must never read as reachable")
+	}
+}
+
+// TestDeliverUnderRecipientLockBacksOffWhenRecipientBecomesMalformedDuringLock
+// is the malformed-row twin of the goes-stale/vanishes races above: `to`'s row
+// is fresh and well-formed at preflight time, but gets corrupted (e.g. a torn
+// concurrent write) in the gap before the per-delivery lock.
+func TestDeliverUnderRecipientLockBacksOffWhenRecipientBecomesMalformedDuringLock(t *testing.T) {
+	cfg := newSeqTestConfig(t)
+	mkFreshRecipient(t, cfg, "bob")
+
+	t.Cleanup(func() { afterRecipientLockHook = nil })
+	afterRecipientLockHook = func() {
+		if err := atomicWriteFile(cfg.AgentRegistrationPath("bob"), []byte("{not a valid registration")); err != nil {
+			t.Fatalf("corrupt bob during race window: %v", err)
+		}
+	}
+
+	id := MsgID{To: "bob", From: "alice", Seq: 1}
+	committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
+	if committed {
+		t.Fatal("committed = true, want false (a recipient that became malformed mid-lock must not receive delivery)")
+	}
+	if !errors.Is(err, ErrRecipientUnreadable) {
+		t.Fatalf("err = %v, want ErrRecipientUnreadable", err)
+	}
+	entries, rerr := os.ReadDir(cfg.AgentInboxDir("bob"))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 delivered messages, got %d", len(entries))
+	}
+}
+
 // TestDeliverUnderRecipientLockSucceedsWhenStillFresh is the control: without
 // the hook mutating anything, a genuinely fresh recipient's delivery lands
 // normally. Guards against a broken re-check that backs off unconditionally.
