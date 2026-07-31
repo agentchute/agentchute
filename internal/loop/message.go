@@ -45,9 +45,14 @@ type AnnounceResult struct {
 // tracked *.example.md files, dotfiles, and non-.md entries). It is N direct
 // sends — NOT a broadcast mechanism — and stays within AGENTCHUTE.md §7.1.
 //
-// Per-peer failures (missing inbox, malformed registration) are collected as
-// Warnings; the function does not abort on them. A returned error means the
-// agents directory itself could not be read.
+// Per-peer failures (missing inbox, malformed registration, a stale peer per
+// B3's freshness enforcement) are collected as Warnings; the function does
+// not abort on them. A returned error means the agents directory itself
+// could not be read. Delivery goes through the same locked path send.go
+// uses (SendSeqMessage -> DeliverUnderRecipientLock): a stale peer is simply
+// skipped with a warning, exactly like any other per-peer failure — there is
+// no separate preflight here (AnnounceEnrollment has no user-facing C29
+// wording to choose between; every freshness failure reads the same way).
 func AnnounceEnrollment(cfg *Config, self *Registration) (AnnounceResult, error) {
 	entries, err := os.ReadDir(cfg.AgentsDir())
 	if err != nil {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -121,9 +122,28 @@ func cmdSend(args []string) error {
 		return fmt.Errorf("stat own registration: %w", err)
 	}
 
+	// B3 (v2.5 plan): the recipient preflight is a LOCK-FREE read of to's
+	// registration — never WithAgentLock(toID) here, whose ensurePrivateDir
+	// side effect would manufacture state/<toID>/ for an arbitrary --to typo
+	// (§4 risk; TestSendTakesNoLockForUnknownRecipient pins it). This is a
+	// fast-fail optimization only, run BEFORE stdin so a piped body is never
+	// touched on a doomed send (A5 ordering) — the actual enforcement is the
+	// re-check inside loop.DeliverUnderRecipientLock, which a sweep or a
+	// heartbeat can always race against between here and there.
 	inboxDir := cfg.AgentInboxDir(toID)
-	if fi, statErr := os.Stat(inboxDir); statErr != nil || !fi.IsDir() {
-		return unknownRecipientError(toID, os.ErrNotExist)
+	now := time.Now().UTC()
+	rr, rrErr := loop.CheckRecipientReachability(cfg, toID, now)
+	if rrErr != nil {
+		if errors.Is(rrErr, loop.ErrRecipientUnknown) {
+			return unknownRecipientError(toID, rrErr)
+		}
+		if errors.Is(rrErr, loop.ErrRecipientUnreadable) {
+			return unreadableRecipientError(toID)
+		}
+		return rrErr
+	}
+	if !rr.Fresh {
+		return staleRecipientError(toID, rr)
 	}
 
 	if body == "" {
@@ -157,8 +177,6 @@ func cmdSend(args []string) error {
 			fmt.Fprintf(os.Stderr, "warning: self-send with --ask creates a self-reply obligation; per AGENTCHUTE.md §6.4 your reply MUST NOT propagate --ask\n")
 		}
 	}
-
-	now := time.Now().UTC()
 
 	content := loop.ComposeMessage(fromID, replyTo, body)
 	if ask {
@@ -283,6 +301,10 @@ type sendRetryOptions struct {
 	ReplyToSet bool
 }
 
+// C29(a): never-registered. Text is literal per the v2.5 plan — "no
+// registration row" (not "no inbox/registration") and an explicit "do NOT
+// register on their behalf" so no reading of this text can be mistaken for
+// coaching the sender to register the RECIPIENT (AGENTCHUTE.md §9).
 func unknownRecipientError(to string, cause error) error {
 	return unknownRecipientSendError{to: to, cause: cause}
 }
@@ -293,19 +315,70 @@ type unknownRecipientSendError struct {
 }
 
 func (e unknownRecipientSendError) Error() string {
-	return fmt.Sprintf("unknown agent %q: no inbox/registration. Check the id (agentchute status).", e.to)
+	return fmt.Sprintf("unknown agent %q: no registration row. Check the id (agentchute status) — do NOT register on their behalf.", e.to)
 }
 
 func (e unknownRecipientSendError) Unwrap() error {
 	return e.cause
 }
 
+// C29(b): stale, caught by cmdSend's OWN lock-free preflight — a direct,
+// non-racing classification (no send has been attempted yet; stdin has not
+// even been read).
+func staleRecipientError(to string, rr loop.RecipientReachability) error {
+	return fmt.Errorf("%q was here, gone since %s (%s ago); not sending (row older than stale_after=%s). They re-register at boot.",
+		to, rr.LastSeen.UTC().Format(time.RFC3339), rr.Age.Round(time.Second), rr.Threshold)
+}
+
+// C29(c): fresh-but-racing. Reached ONLY from loop.DeliverUnderRecipientLock
+// returning *loop.ErrRecipientStale — which, by construction, is reachable in
+// cmdSend's flow ONLY after its OWN preflight already found `to` fresh. Text
+// deliberately does not repeat "stale"/"gone since": the row was here
+// moments ago, so the honest read is a race (a fleet-wake storm mid-restart),
+// not the same failure C29(b) describes.
+func racingRecipientError(to string) error {
+	return fmt.Errorf("%q was here seconds ago — likely mid-restart; retry once.", to)
+}
+
+// Malformed row: neither C29(a) (no row exists) nor C29(b)/(c) (a row exists
+// and is stale/racing) — a row that fails to parse tells us nothing about
+// whether `to` is reachable, so it gets its own text rather than being
+// folded into either. Telling an operator "was here, gone since <time>"
+// about a file that failed to parse would be actively misleading (codex/
+// claude-code review, PR #95 P1).
+func unreadableRecipientError(to string) error {
+	return fmt.Errorf("%q's registration could not be read (malformed); not sending. Inspect agents/%s.md by hand.", to, to)
+}
+
+// classifySendFailure maps a post-stdin delivery failure to its C29 text.
+// Reached only after cmdSend's own preflight already passed, so a stale
+// classification here is always the racing case (c), never the direct
+// stale case (b) — that one is caught earlier, before any spool/retry
+// machinery even runs.
+func classifySendFailure(to string, cause error) error {
+	if errors.Is(cause, loop.ErrRecipientUnknown) {
+		return unknownRecipientError(to, cause)
+	}
+	if errors.Is(cause, loop.ErrRecipientUnreadable) {
+		return unreadableRecipientError(to)
+	}
+	if os.IsNotExist(cause) {
+		// A registration can be fresh while its inbox dir is unexpectedly
+		// gone (an inconsistent-state edge case, not a normal C29 branch);
+		// same "unknown agent" text applies since the recipient is not
+		// reachable either way.
+		return unknownRecipientError(to, cause)
+	}
+	var staleErr *loop.ErrRecipientStale
+	if errors.As(cause, &staleErr) {
+		return racingRecipientError(to)
+	}
+	return fmt.Errorf("write inbox message: %w", cause)
+}
+
 func preserveSendBody(cfg *loop.Config, from, to, body string, now time.Time, retry sendRetryOptions, cause error) error {
 	spoolPath, spoolErr := writeSendSpool(cfg, from, to, body, now)
-	baseErr := fmt.Errorf("write inbox message: %w", cause)
-	if os.IsNotExist(cause) {
-		baseErr = unknownRecipientError(to, cause)
-	}
+	baseErr := classifySendFailure(to, cause)
 	if spoolErr != nil {
 		return fmt.Errorf("%w; body preservation failed: %v", baseErr, spoolErr)
 	}
