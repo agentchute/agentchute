@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agentchute — an inbox per agent · Protocol v2, CLI 1.0</title>
-<meta name="description" content="agentchute 1.0: a small Markdown protocol for AI agent coordination. Protocol v2; reference CLI 1.0. An inbox per agent, plain files, no broker — stable, and it won't break under you.">
-<meta property="og:title" content="agentchute — an inbox per agent · Protocol v2, CLI 1.0">
-<meta property="og:description" content="Stop being the message bus for your AI agents. An inbox per agent, a Markdown message, no broker — Protocol v2, stable; it won't break under you.">
+<title>agentchute — an inbox per agent · Protocol v2.5</title>
+<meta name="description" content="agentchute v2.5: a small Markdown protocol for AI agent coordination. An inbox per agent, plain files, no broker — with a deliberate, documented wire migration.">
+<meta property="og:title" content="agentchute — an inbox per agent · Protocol v2.5">
+<meta property="og:description" content="Stop being the message bus for your AI agents. Protocol v2.5 keeps the pull-only primitives and deliberately changes the identity wire.">
 <meta property="og:url" content="https://agentchute.dev/">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://agentchute.dev/images/og-home.png">
@@ -14,8 +14,8 @@
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="agentchute — an inbox per agent · Protocol v2, CLI 1.0">
-<meta name="twitter:description" content="Stop being the message bus for your AI agents. An inbox per agent, a Markdown message, no broker — Protocol v2, stable.">
+<meta name="twitter:title" content="agentchute — an inbox per agent · Protocol v2.5">
+<meta name="twitter:description" content="Stop being the message bus for your AI agents. Protocol v2.5 keeps the pull-only primitives and deliberately changes the identity wire.">
 <meta name="twitter:image" content="https://agentchute.dev/images/og-home.png">
 <link rel="canonical" href="https://agentchute.dev/">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -176,9 +176,9 @@
 
 <div class="announce">
   <div class="wrap">
-    <span class="tag">v1.0</span>
-    <span>Protocol v2 · Reference CLI 1.0 · stable — it won't break under you</span>
-    <a href="/blog/v1-0-done-not-big.html">read the announcement →</a>
+    <span class="tag">v2.5</span>
+    <span>Deliberate wire break · pool-at-once migration</span>
+    <a href="/blog/v2-5-the-wire-broke.html">read the announcement →</a>
   </div>
 </div>
 
@@ -198,9 +198,9 @@
   <div class="wrap">
     <section class="hero">
       <div class="copy">
-        <p class="eyebrow">protocol v2 · reference cli 1.0 · stable</p>
+        <p class="eyebrow">protocol v2.5 · reference cli 2.5</p>
         <h1><span class="b">Stop being the message bus</span><span class="b">for your agents.</span></h1>
-        <p class="sub">Running agents is easy — coordinating them isn't. agentchute gives every AI agent an <b>inbox</b>. They hand off work, request review, and message each other — <b>no human relaying every step</b>, no broker, just plain files. As of 1.0: <b>stable — build on it.</b></p>
+        <p class="sub">Running agents is easy — coordinating them isn't. agentchute gives every AI agent an <b>inbox</b>. They hand off work, request review, and message each other — <b>no human relaying every step</b>, no broker, just plain files. v2.5 keeps that core and openly migrates the identity wire.</p>
 
         <div class="term" role="group" aria-label="install command">
           <span class="p">$</span> <span id="install-cmd">curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</span>
@@ -215,7 +215,7 @@
       </div>
 
       <div class="diagram stampwrap" id="demo">
-        <div class="stamp">protocol v2 · cli 1.0</div>
+        <div class="stamp">protocol v2.5 · cli 2.5</div>
         <svg viewBox="0 0 920 500" font-family="var(--mono)" role="img" aria-label="Agents — here claude, codex, gemini, grok, but any terminal-based agent works — each with its own inbox, passing Markdown messages peer to peer with no central broker.">
           <defs>
             <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -327,10 +327,10 @@
       <div class="pledge">
         <p class="lbl">what 1.0 means</p>
         <h2>Done, not big.</h2>
-        <p><b>Protocol v2 is stable.</b> Stable is SemVer-serious, not rhetorical: the covenants — the five primitives, the envelope, the identity grammar, the lifecycle guarantees — change only through a written deprecation process. The protocol can still be improved and extended — clarifications, extension profiles — but a breaking change means Protocol v3, entered the same way. Registrations now carry <span class="mono">v: 2</span> on the wire, so the version self-evidences instead of living in prose.</p>
-        <p><b>The reference CLI is 1.0.0</b>, and the whole compatibility contract is one line: CLI 1.x implements Protocol v2.</p>
-        <p><b>The honesty clause:</b> the protocol has been stable since v0.10.0, so 1.0 adds almost nothing technically new — on purpose. It adds three small things: wire self-evidence, a written versioning contract, and a stated boundary: this is <b>a protocol and a faithful reference implementation, not a product</b>. No support tier, no SLA, no roadmap-by-request. Build on it; it will not break.</p>
-        <p class="fine">$ build on this — it won't break under you</p>
+        <p><b>Protocol v2 was declared final.</b> Its primitives, envelope, and lifecycle guarantees held. Its identity grammar did not: v2.5 replaces the shared sequence counter with a timestamp and random suffix, a real wire break recorded rather than hidden.</p>
+        <p><b>The reference CLI is v2.5.0.</b> Registrations carry integer <span class="mono">v: 3</span>, rendered as Protocol v2.5 so mixed pools remain diagnosable during the cutover.</p>
+        <p><b>The honesty clause:</b> the 1.0 promise was stronger than the failure modes we had tested. v2.5 walks that claim back in the open and ships a pool-at-once migration instead of pretending this is a compatible patch.</p>
+        <p class="fine">$ the wire moved — read the cutover first</p>
       </div>
     </section>
 
@@ -400,7 +400,7 @@
 
   <div class="roadmap">
     <div class="wrap">
-      <p>The protocol is stable at v2. The roadmap is everything <em>around</em> it — certification, a cleaner cue channel, git-backed pools for multi-host.</p>
+      <p>Protocol v2.5 keeps the pull-only core and changes the identity wire. The roadmap remains everything <em>around</em> it — certification, a cleaner cue channel, and documented deployment profiles.</p>
       <a class="btn ghost" href="/blog/after-done-roadmap.html">After done: the roadmap →</a>
     </div>
   </div>
@@ -412,7 +412,7 @@
     <p class="meta">
       <a href="https://github.com/agentchute/agentchute">github</a> ·
       <a href="#protocol">spec</a> ·
-      <a href="/blog/v1-0-done-not-big.html">v1.0 announcement</a> ·
+      <a href="/blog/v2-5-the-wire-broke.html">v2.5 announcement</a> ·
       MIT · built by <a href="https://rehumanlabs.com">reHuman Labs</a>
     </p>
   </div>

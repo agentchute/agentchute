@@ -24,6 +24,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.21'
+      - name: verify module files are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
       - name: gofmt
         run: |
           out=$(gofmt -l .)
@@ -59,7 +63,8 @@ jobs:
       - name: goreleaser check
         run: goreleaser check
 
-  goreleaser:
+  release:
+    name: build, smoke, and publish exact artifacts
     needs: preflight
     runs-on: ubuntu-latest
     permissions:
@@ -84,11 +89,74 @@ jobs:
             exit 1
           fi
 
-      - name: Run GoReleaser
+      - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean
+          install-only: true
+
+      - name: Build release artifacts without publishing
+        run: goreleaser release --clean --skip=publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Smoke the exact release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="$GITHUB_REF_NAME"
+          notes="docs/releases/${tag}.md"
+          test -s "$notes"
+
+          (
+            cd dist
+            sha256sum -c checksums.txt
+          )
+
+          release_base="$RUNNER_TEMP/agentchute-release-base"
+          release_dir="$release_base/releases/download/$tag"
+          install_dir="$RUNNER_TEMP/agentchute-install/bin"
+          smoke_home="$RUNNER_TEMP/agentchute-smoke-home"
+          fixture="$RUNNER_TEMP/agentchute-doctor-fixture"
+          mkdir -p "$release_dir" "$install_dir" "$smoke_home" "$fixture"
+          cp dist/*.tar.gz dist/checksums.txt "$release_dir/"
+
+          env -i \
+            PATH="$PATH" \
+            HOME="$smoke_home" \
+            AGENTCHUTE_BASE_URL="file://$release_base" \
+            AGENTCHUTE_NO_PATH_UPDATE=1 \
+            sh install.sh --version "$tag" --to "$install_dir" --no-setup
+
+          installed="$install_dir/agentchute"
+          expected="agentchute ${tag#v}"
+          actual=$("$installed" version)
+          test "$actual" = "$expected"
+
+          metadata=$(go version -m "$installed")
+          printf '%s\n' "$metadata"
+          grep -F 'vcs.modified=false' <<<"$metadata"
+
+          git init -q "$fixture"
+          fixture_path="$install_dir:$smoke_home/.agentchute/bin:$PATH"
+          (
+            cd "$fixture"
+            env -i PATH="$fixture_path" HOME="$smoke_home" SHELL=/bin/sh AGENTCHUTE_NO_PATH_UPDATE=1 \
+              "$installed" setup --wake runner --wrappers all --yes
+            env -i PATH="$fixture_path" HOME="$smoke_home" SHELL=/bin/sh \
+              "$installed" boot --as codex --vendor openai --quiet
+            env -i PATH="$fixture_path" HOME="$smoke_home" SHELL=/bin/sh \
+              "$installed" doctor --as codex --json >doctor.json
+          )
+          jq -e '.blockers == 0 and .warnings == 0' "$fixture/doctor.json"
+
+      - name: Publish the smoked bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "agentchute $GITHUB_REF_NAME" \
+            --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
+            dist/*.tar.gz dist/checksums.txt

@@ -168,23 +168,36 @@ func TestStatusProtocolVersionColumnAndWarnings(t *testing.T) {
 			ControlRepo:     root,
 			LastSeen:        now,
 		},
+		"old": {
+			AgentID:         "old",
+			ProtocolVersion: 2,
+			Vendor:          "test",
+			ControlRepo:     root,
+			LastSeen:        now,
+		},
 	}
 
 	var out bytes.Buffer
 	printStatus(&out, cfg, regs, now)
 	text := out.String()
 
-	if got := statusColumnValue(t, text, "PROTO", "codex"); got != "v2" {
-		t.Fatalf("codex PROTO = %q, want v2:\n%s", got, text)
+	if got := statusColumnValue(t, text, "PROTO", "codex"); got != "v2.5" {
+		t.Fatalf("codex PROTO = %q, want v2.5:\n%s", got, text)
 	}
 	if got := statusColumnValue(t, text, "PROTO", "gemini-cli"); got != "legacy" {
 		t.Fatalf("gemini-cli PROTO = %q, want legacy:\n%s", got, text)
 	}
-	if got := statusColumnValue(t, text, "PROTO", "future"); got != "v3!" {
-		t.Fatalf("future PROTO = %q, want v3!:\n%s", got, text)
+	if got := statusColumnValue(t, text, "PROTO", "future"); got != "v4!" {
+		t.Fatalf("future PROTO = %q, want v4!:\n%s", got, text)
 	}
-	if !strings.Contains(text, "PROTOCOL WARNINGS:") || !strings.Contains(text, "future reports protocol v3; expected v2") {
+	if got := statusColumnValue(t, text, "PROTO", "old"); got != "v2!" {
+		t.Fatalf("old PROTO = %q, want v2!:\n%s", got, text)
+	}
+	if !strings.Contains(text, "PROTOCOL WARNINGS:") || !strings.Contains(text, "future reports protocol v4; expected v2.5") {
 		t.Fatalf("status missing protocol mismatch warning:\n%s", text)
+	}
+	if !strings.Contains(text, "old reports protocol v2; expected v2.5 — update and restart every lane before resuming sends") {
+		t.Fatalf("status missing mixed-pool restart guidance:\n%s", text)
 	}
 	if strings.Contains(text, "gemini-cli reports protocol") {
 		t.Fatalf("absent-v legacy registration must not warn:\n%s", text)

@@ -226,15 +226,22 @@ func formatProtocolVersion(version int) string {
 	case 0:
 		return "legacy"
 	case loop.CurrentProtocolVersion:
-		return fmt.Sprintf("v%d", version)
+		return protocolVersionLabel(version)
 	default:
-		return fmt.Sprintf("v%d!", version)
+		return protocolVersionLabel(version) + "!"
 	}
+}
+
+func protocolVersionLabel(version int) string {
+	if version == 3 {
+		return "v2.5"
+	}
+	return fmt.Sprintf("v%d", version)
 }
 
 func protocolVersionWarning(reg *loop.Registration) string {
 	if reg == nil || reg.ProtocolVersion == 0 || reg.ProtocolVersion == loop.CurrentProtocolVersion {
 		return ""
 	}
-	return fmt.Sprintf("%s reports protocol v%d; expected v%d", reg.AgentID, reg.ProtocolVersion, loop.CurrentProtocolVersion)
+	return fmt.Sprintf("%s reports protocol %s; expected %s — update and restart every lane before resuming sends", reg.AgentID, protocolVersionLabel(reg.ProtocolVersion), protocolVersionLabel(loop.CurrentProtocolVersion))
 }

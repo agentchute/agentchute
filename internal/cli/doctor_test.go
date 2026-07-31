@@ -533,7 +533,7 @@ func TestDoctorProtocolVersionMismatchWarns(t *testing.T) {
 	if got.Severity != severityWarn {
 		t.Fatalf("protocol_version severity = %q, want WARN; msg=%q", got.Severity, got.Message)
 	}
-	if !strings.Contains(got.Message, "future reports protocol v3; expected v2") {
+	if !strings.Contains(got.Message, "future reports protocol v4; expected v2.5 — update and restart every lane before resuming sends") {
 		t.Fatalf("protocol_version warning missing mismatch detail: %q", got.Message)
 	}
 }

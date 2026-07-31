@@ -18,7 +18,7 @@ const (
 	MaxRegistrationBytes = 1 << 20 // 1 MiB — registrations are tiny in practice.
 	MaxInboxMessageBytes = 4 << 20 // 4 MiB — free-form markdown bodies.
 
-	CurrentProtocolVersion = 2
+	CurrentProtocolVersion = 3
 )
 
 // ReadFileLimit reads up to max bytes from path, returning ErrFileTooLarge

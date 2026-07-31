@@ -108,8 +108,8 @@ func TestRegisterWritesProtocolVersion(t *testing.T) {
 			t.Fatalf("ProtocolVersion = %d, want %d", reg.ProtocolVersion, loop.CurrentProtocolVersion)
 		}
 		data := string(mustRead(t, cfg.AgentRegistrationPath("codex")))
-		if !strings.Contains(data, "\nv: 2\n") {
-			t.Fatalf("registration missing v: 2:\n%s", data)
+		if !strings.Contains(data, "\nv: 3\n") {
+			t.Fatalf("registration missing v: 3:\n%s", data)
 		}
 	})
 }
