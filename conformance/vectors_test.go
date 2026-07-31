@@ -43,6 +43,20 @@ type testVector struct {
 	OldNames     []string `json:"old_names,omitempty"`
 	NewNames     []string `json:"new_names,omitempty"`
 	GarbageNames []string `json:"garbage_names,omitempty"`
+
+	// FM1/FM2 (frontmatter_accept/frontmatter_reject): the one flat
+	// key:value envelope grammar's accept and reject tables (v2.5 plan B8),
+	// promoted from internal/loop/frontmatter_characterization_test.go.
+	AcceptCases []fmCase `json:"accept_cases,omitempty"`
+	RejectCases []fmCase `json:"reject_cases,omitempty"`
+}
+
+// fmCase is one FM1/FM2 row: a named input and, for FM1, the exact flat
+// field map ParseFrontmatterFields must return for it.
+type fmCase struct {
+	Name   string            `json:"name"`
+	Input  string            `json:"input"`
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 type vectorMsg struct {
@@ -87,7 +101,7 @@ func loadVectors(t *testing.T) map[string]testVector {
 		}
 		out[v.ID] = v
 	}
-	for _, id := range []string{"R1", "D1", "D2", "O1", "C1", "E1", "B1", "Q1", "TS1", "TS2", "TS3", "DR1"} {
+	for _, id := range []string{"R1", "D1", "D2", "O1", "C1", "E1", "B1", "Q1", "TS1", "TS2", "TS3", "DR1", "FM1", "FM2"} {
 		if _, ok := out[id]; !ok {
 			t.Fatalf("missing vector %s", id)
 		}

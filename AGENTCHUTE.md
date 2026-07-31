@@ -4,11 +4,12 @@
 
 > **Executable spec.** The normative invariants below are encoded as runnable,
 > language-neutral conformance vectors in [`conformance/`](conformance/) — seven
-> core invariants (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`) plus two crash-safety
-> vectors (`C2` universal, `Q1` inbox-profile), driven against two substrate
-> bindings (private inbox dir + shared log). Any substrate that passes its
-> applicable vectors is conformant. When prose and the suite disagree, the
-> suite wins.
+> core invariants (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`), the malformed-quarantine
+> vector (`Q1`, inbox-profile), the v2.5 wire-break vectors
+> (`TS1`/`TS2`/`TS3`/`DR1`, `DR1` inbox-profile), and the frontmatter-grammar
+> vectors (`FM1`/`FM2`), driven against two substrate bindings (private inbox
+> dir + shared log). Any substrate that passes its applicable vectors is
+> conformant. When prose and the suite disagree, the suite wins.
 
 ---
 
@@ -191,6 +192,28 @@ Encoded as optional YAML frontmatter. The **normative** envelope is small:
 - `in_reply_to` (optional): the canonical reference `to-<to>_from-<from>_seq-<020d>` of the message being answered. Consuming a reply whose `in_reply_to` matches one of the asker's outstanding `.owed` entries discharges that obligation.
 
 **Compatibility fields:** `message_id` is no longer emitted (removed in v0.9.0); the identity is `(to,from,seq)` and reply threading rides `in_reply_to` (the canonical `(to,from,seq)` ref). A `message_id` on an older in-flight message is still tolerated on read (ignored — never the identity). `to`, `task`, and `status` are no longer part of the envelope or the reference CLI at all (`to` is encoded by location; a message's subject, if any, is a body convention — the first Markdown line — not a typed field). They carry no special-case compat handling anymore; a stray `task:`/`status:`/`to:` line on an old in-flight message is simply an unrecognized field, ignored per §6.5 like any other.
+
+**Frontmatter grammar (v2.5 plan B8).** One parser (`parseFrontmatter`, the reference CLI's `internal/loop/registration.go`) implements this grammar for both message envelopes here and registration rows (§5.2) — one engine, not a per-context dialect, closing a historical validator/recorder skew where a message's envelope was gated by one parser and its fields read by another. It is a flat key:value format, not general YAML:
+
+```
+block       := "---" LF *line "---" LF
+line        := blank-line | kv-line
+kv-line     := key ":" [ SP value ] LF
+key         := 1*(ALPHA / DIGIT / "_")            ; non-empty, no leading space/tab
+value       := scalar | list-header
+list-header := LF *( SP SP "-" SP item LF )        ; only when the scalar is empty
+scalar      := 1*OCTET                            ; everything after the first ":"
+```
+
+Rules, precisely:
+- The opening and closing lines are the first line and the next line whose TRIMMED content is exactly `---`; whitespace around the delimiter itself is tolerated. A block with no closing `---` is a hard parse error for the whole message.
+- Blank lines between the delimiters are skipped.
+- Every other line MUST be a `key: value` pair with the key un-indented. An indented line, or any line without a `:` — including a `#`-prefixed comment, since this grammar has no comment syntax — is a hard parse error for the **whole block**, not a line skipped in isolation.
+- A key may appear at most once; a repeated key is a hard parse error for the whole block (no last-write-wins).
+- A `key:` with nothing after the colon on that line opens a LIST: each immediately following `  - <item>` line (after trimming) is consumed as an item; the first non-item, non-blank line ends the list and resumes normal key:value scanning. A key with no following items is an empty scalar.
+- Scalars are trimmed, then unwrapped: `strconv.Unquote` is tried first (interprets backslash escapes inside a double-quoted value); failing that, one layer of surrounding matched `"` or `'` is stripped; `null` and `~` collapse to the empty string.
+
+Unknown keys are always tolerated (§6.5) — the grammar's strictness is about **shape** (one key per line, no stray text, no indentation, no duplicates), never about which key names appear.
 
 ### 6.5 Forward compatibility
 Receivers MUST ignore unrecognized frontmatter fields. `from` is required information (§6.4). Conforming registrations emit the protocol major version in the `v:` field (emitted as `v: 2`; absent `v:` implies a silent legacy/unknown state with no warnings generated, as mixed fleets are normal). A genuine protocol-major version mismatch (where `v:` is present and does not equal 2) surfaces as a diagnostic warning (doctor/status) but is never a delivery blocker. Messages MUST be valid UTF-8. The reference CLI accepts up to 4 MiB per message.

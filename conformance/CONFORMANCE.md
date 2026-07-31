@@ -92,6 +92,25 @@ unchanged; only the delivery-side guarantee changed.
   recognizes BOTH the old `(to,from,seq)` grammar and the new timestamp
   grammar, and classifies anything else as garbage.
 
+### v2.5 plan B8 — one frontmatter grammar
+
+What used to be three hand-written parsers (one already deleted in A6) is
+now one flat key:value grammar, shared by message envelopes (§6.4) and
+registration rows (§5.2). `fm.go` reimplements it independently of the
+reference CLI's `internal/loop/parseFrontmatter` — proving the grammar, not
+just that Go code — against the same fixture set promoted from
+`internal/loop/frontmatter_characterization_test.go`.
+
+- **`TestFM1_Accept`** — every well-formed block is accepted and its fields
+  extracted exactly as documented: quoting (double, single, escaped),
+  whitespace around keys/values/delimiters, CRLF, blank lines inside the
+  block, a list header, an empty scalar, a value containing `:` or `#`, and
+  the body-only (no frontmatter at all) case.
+- **`TestFM2_Reject`** — every malformed block is rejected as a WHOLE (no
+  partial field extraction survives): an indented continuation line, a
+  duplicate key, any non-key:value line (including a `#` comment — this
+  grammar has no comment syntax), an empty key, and a missing closing `---`.
+
 ## B1 is the §5 decision, as code
 
 `TestB1_PrivacyFork` runs the *same* assertion on both models and prints opposite

@@ -12,7 +12,7 @@ implementation.
 For a copy-pasteable filesystem walkthrough, see
 [`AGENTCHUTE.md` Appendix C](AGENTCHUTE.md#appendix-c-hand-protocol-walkthrough).
 
-The conformance vectors — seven core invariants (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`), the malformed-quarantine vector (`Q1`), and the v2.5 wire-break vectors (`TS1`/`TS2`/`TS3`/`DR1`) — *are* those semantics,
+The conformance vectors — seven core invariants (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`), the malformed-quarantine vector (`Q1`), the v2.5 wire-break vectors (`TS1`/`TS2`/`TS3`/`DR1`), and the frontmatter-grammar vectors (`FM1`/`FM2`) — *are* those semantics,
 and [`conformance/`](conformance/) is the executable spec — the invariants as a
 Go test suite driven against multiple substrate bindings. An implementation that
 passes the suite is conformant; when this prose and the suite disagree, the suite

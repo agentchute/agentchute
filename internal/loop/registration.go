@@ -260,6 +260,26 @@ func (f frontmatterFields) list(key string) []string {
 	return append([]string(nil), values...)
 }
 
+// frontmatterClosingLine returns the index (>=1) of the first line that is a
+// trimmed `---`, or -1 if none is found. Finding the close is a purely
+// structural question, independent of whether the key:value content between
+// the delimiters is valid, so it is factored out here and shared by
+// parseFrontmatter and ExtractMessageBody (message.go) rather than each
+// re-implementing the same scan (v2.5 plan B8 — one engine).
+func frontmatterClosingLine(lines []string) int {
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			return i
+		}
+	}
+	return -1
+}
+
+// parseFrontmatter always computes body from the closing delimiter before
+// validating the key:value lines between them, and returns it even when a
+// per-line error is returned (every current caller ignores body when err !=
+// nil, and ExtractMessageBody needs it precisely in that case — a malformed
+// block still has a body worth displaying).
 func parseFrontmatter(data string) (frontmatterFields, string, error) {
 	text := strings.ReplaceAll(data, "\r\n", "\n")
 	lines := strings.Split(text, "\n")
@@ -267,16 +287,11 @@ func parseFrontmatter(data string) (frontmatterFields, string, error) {
 		return nil, "", fmt.Errorf("missing frontmatter opening ---")
 	}
 
-	closing := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "---" {
-			closing = i
-			break
-		}
-	}
+	closing := frontmatterClosingLine(lines)
 	if closing == -1 {
 		return nil, "", fmt.Errorf("missing frontmatter closing ---")
 	}
+	body := strings.TrimPrefix(strings.Join(lines[closing+1:], "\n"), "\n")
 
 	fields := make(frontmatterFields)
 	for i := 1; i < closing; i++ {
@@ -285,20 +300,20 @@ func parseFrontmatter(data string) (frontmatterFields, string, error) {
 			continue
 		}
 		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			return nil, "", fmt.Errorf("unexpected indented line %q", line)
+			return nil, body, fmt.Errorf("unexpected indented line %q", line)
 		}
 
 		key, value, ok := strings.Cut(line, ":")
 		if !ok {
-			return nil, "", fmt.Errorf("invalid frontmatter line %q", line)
+			return nil, body, fmt.Errorf("invalid frontmatter line %q", line)
 		}
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
 		if key == "" {
-			return nil, "", fmt.Errorf("empty frontmatter key")
+			return nil, body, fmt.Errorf("empty frontmatter key")
 		}
 		if _, exists := fields[key]; exists {
-			return nil, "", fmt.Errorf("duplicate frontmatter key %q", key)
+			return nil, body, fmt.Errorf("duplicate frontmatter key %q", key)
 		}
 
 		if value != "" {
@@ -324,8 +339,6 @@ func parseFrontmatter(data string) (frontmatterFields, string, error) {
 		fields[key] = fieldValue{list: items}
 	}
 
-	body := strings.Join(lines[closing+1:], "\n")
-	body = strings.TrimPrefix(body, "\n")
 	return fields, body, nil
 }
 
