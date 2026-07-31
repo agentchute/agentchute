@@ -400,7 +400,7 @@ func TestUpdateInvalidatesLeaseBeforeSetupResync(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := writeSetupPoolState(cfg, "runner", nil); err != nil {
+		if err := writeSetupPoolState(cfg, "runner", nil, ""); err != nil {
 			t.Fatal(err)
 		}
 		lease, err = loop.AcquireServeLease(cfg, "codex-agentchute")
