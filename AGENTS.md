@@ -184,7 +184,7 @@ Reshape freely for your own density, tone, and section order — there is no req
 - Treat the stated done-when as the definition of done. Don't exceed it, expand scope, or change what you deliver without asking first.
 - On blocking ambiguity — you genuinely cannot tell the goal, the done-when, or the scope from the message alone — do no work; reply asking one concrete question, or the specific missing facts.
 - For reversible work with only minor uncertainty, you MAY proceed, but state your assumption in your response; if it proves wrong, stop and ask.
-- Your first visible response to a task message is one of: a question, an acknowledgement of the goal and done-when, or the final result.
+- Your first visible response to a task message is one of: a question, an acknowledgement of the goal and done-when, or the final result — an acknowledgement is NOT a stopping point: continue the work in the same turn (E8) unless you are genuinely blocked, are asking a necessary question, or the acknowledgement already IS the result. Never promise a next-turn continuation without an established external trigger to fire it: once mail is committed, the inbox is empty, and the pull-only runner has nothing to cue the promised turn on.
 
 ## Working efficiently on this bus
 
