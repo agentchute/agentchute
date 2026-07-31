@@ -98,10 +98,23 @@ func cmdTurnEnd(args []string) error {
 
 	now := time.Now().UTC()
 
-	// STEP 0.
-	agentID, _, err = selfRepairRegistration(cfg, &opts, agentID, vendor, "turn-end", now)
-	if err != nil {
-		return err
+	// STEP 0. Best-effort: a registration WRITE failure (e.g. --vendor was
+	// never passed — C26 ships turn-end's hook entries env-identity-only —
+	// and this id doesn't prefix-match a canonical wrapper base closely
+	// enough for resolveAgentVendor to backfill one from an existing row)
+	// must not itself abort steps 1-3, which still need to commit THIS
+	// session's own claimed mail and clear its latch regardless (claude-code
+	// review, PR #89: the live roster id "sonnet" is exactly such an id, and
+	// the old unconditional-abort-on-error fully wedged it). Only a genuine
+	// identity-resolution failure — no id could be determined at all, so
+	// resolvedID comes back empty — leaves nothing usable to proceed with.
+	resolvedID, _, repairErr := selfRepairRegistration(cfg, &opts, agentID, vendor, "turn-end", now)
+	if resolvedID == "" {
+		return repairErr
+	}
+	agentID = resolvedID
+	if repairErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: registration self-repair failed (continuing so this session's own claimed mail still commits): %v\n", repairErr)
 	}
 
 	// STEP 1: archive .claimed UNLESS a latch exists AND belongs to a

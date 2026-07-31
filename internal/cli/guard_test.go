@@ -184,10 +184,26 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 			{"agentchute update", "agentchute update", true},
 			{"agentchute setup", "agentchute setup --yes", true},
 			{"agentchute clean", "agentchute clean --owed --as bob", true},
+			// claude-code review, PR #89 BLOCKER 1: the installed `ac`
+			// dispatcher spelling, its fully-expanded dispatch exec form, the
+			// templated env-var form, and extra whitespace all bypassed the
+			// old plain-substring match — proven live to self-clear the
+			// latch mid-turn and disarm the entire deny list.
+			{"ac dispatcher spelling", "ac turn-end --json", true},
+			{"ac ack", "ac ack --as bob", true},
+			{"ac check", "ac check --as bob", true},
+			{"dispatch exec form (spaced shim-dir)", "agentchute dispatch --shim-dir /Users/alex/.agentchute/bin -- turn-end --json", true},
+			{"dispatch exec form (= shim-dir)", "agentchute dispatch --shim-dir=/Users/alex/.agentchute/bin -- turn-end --json", true},
+			{"dispatch exec form via ac token", "ac dispatch -- turn-end --json", true},
+			{"templated AGENTCHUTE_BIN form", "${AGENTCHUTE_BIN:-agentchute} turn-end --json", true},
+			{"bare $AGENTCHUTE_BIN form", "$AGENTCHUTE_BIN turn-end --json", true},
+			{"double-space", "agentchute  turn-end --json", true},
 			{"benign ls", "ls -la", false},
 			{"benign git status", "git status", false},
 			{"benign go test", "go test ./...", false},
 			{"benign gh pr view", "gh pr view 42", false},
+			{"benign word containing ac", "pac turn-end", false},
+			{"benign word ending in ac", "trac turn-end", false},
 		}
 		for _, c := range cases {
 			d := evaluateGuardInvocation("", "", "", c.cmd)

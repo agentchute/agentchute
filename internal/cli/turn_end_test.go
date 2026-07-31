@@ -361,3 +361,71 @@ func TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd(t *testing.T) {
 		}
 	})
 }
+
+// TestTurnEndSurvivesUnresolvableVendorForNonCanonicalID is claude-code
+// review PR #89 BLOCKER 2: the shipped hook entries invoke bare `turn-end`
+// (no --vendor, by design — C26 ships it env-identity-only), so step 0's
+// self-repair needs resolveAgentVendor to backfill a vendor from an EXISTING
+// registration. A registration row can vanish out from under it (the codex
+// concurrent-hooks race turn-end step 0 exists to survive) for a roster id
+// that also does not vendor-prefix-match any canonical wrapper base (e.g.
+// "sonnet") — resolveAgentVendor then has nothing left to fall back to and
+// performRegister fails outright. The old unconditional abort-on-error left
+// this session fully wedged (claimed mail never committed, latch never
+// cleared, every later check/ack self-denied). turn-end must instead commit
+// and clear regardless, surfacing the missing-registration state as a normal
+// gate reason rather than an opaque command failure.
+func TestTurnEndSurvivesUnresolvableVendorForNonCanonicalID(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		if err := cmdRegister([]string{"--as", "sonnet", "--vendor", "anthropic"}); err != nil {
+			t.Fatalf("register sonnet: %v", err)
+		}
+		clearGuardEnv(t)
+		if err := cmdSend([]string{"--from", "alice", "--to", "sonnet", "--body", "hi"}); err != nil {
+			t.Fatalf("cmdSend: %v", err)
+		}
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-1")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "sonnet"}) }); err != nil {
+			t.Fatalf("cmdCheck(sonnet): %v", err)
+		}
+		if n := countMessageFiles(t, cfg.AgentClaimedDir("sonnet")); n != 1 {
+			t.Fatalf(".claimed = %d after claim; want 1", n)
+		}
+
+		// The concurrent-hooks race: the registration row disappears before
+		// turn-end's step 0 runs. "sonnet" does not vendor-prefix-match any
+		// canonical wrapper base, so resolveAgentVendor has no fallback.
+		if err := os.Remove(cfg.AgentRegistrationPath("sonnet")); err != nil {
+			t.Fatal(err)
+		}
+
+		// turn-end WITHOUT --vendor, exactly as the shipped hook templates
+		// invoke it (C26: env-identity-only).
+		if _, err := captureStdout(t, func() error {
+			return cmdTurnEnd([]string{"--as", "sonnet", "--json"})
+		}); err != nil && !errors.Is(err, errBlocked) {
+			t.Fatalf("turn-end must not hard-fail on an unresolvable vendor; got: %v", err)
+		}
+
+		if n := countMessageFiles(t, cfg.AgentClaimedDir("sonnet")); n != 0 {
+			t.Errorf(".claimed = %d after turn-end; want 0 (committed despite the self-repair write failing)", n)
+		}
+		if _, err := loop.ReadGuardLatch(cfg, "sonnet"); !os.IsNotExist(err) {
+			t.Errorf("latch should be cleared regardless of the self-repair failure; err=%v", err)
+		}
+
+		// The old bug left every later command self-denied against a latch
+		// that could never clear. Re-registering (the human/boot fix for the
+		// underlying missing-row problem) must be enough to work normally
+		// again — proving the latch itself, not the registration gap, was
+		// the thing standing between this session and recovery.
+		if err := cmdRegister([]string{"--as", "sonnet", "--vendor", "anthropic"}); err != nil {
+			t.Fatalf("re-register sonnet: %v", err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "sonnet"}) }); err != nil {
+			t.Fatalf("check after recovery must not be denied: %v", err)
+		}
+	})
+}

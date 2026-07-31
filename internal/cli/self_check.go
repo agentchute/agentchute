@@ -107,6 +107,16 @@ func cmdSelfCheck(args []string) error {
 // pointer — callers that need the resolved opts.Vendor afterward, like
 // cmdSelfCheck's status report, see it without a second resolve) and returns
 // the resolved agent id alongside performRegister's result.
+//
+// The returned agent id is populated as soon as IDENTITY resolves, even if
+// the registration WRITE itself then fails (e.g. --vendor was never passed
+// and this id doesn't prefix-match a canonical wrapper base closely enough
+// for resolveAgentVendor to backfill one — claude-code review, PR #89: the
+// shipped turn-end hook entries omit --vendor by design (C26), and turn-end's
+// caller needs a usable id to still run its OTHER steps even when this one
+// fails). Only a genuine identity-resolution failure (no id could be
+// determined at all) returns "" — that is the one case nothing downstream can
+// proceed on.
 func selfRepairRegistration(cfg *loop.Config, opts *registerOpts, agentIDFlag, vendorFlag, source string, now time.Time) (string, *registerResult, error) {
 	contextualBase, contextual, err := contextualIdentityBase(agentIDFlag, vendorFlag)
 	if err != nil {
@@ -126,10 +136,10 @@ func selfRepairRegistration(cfg *loop.Config, opts *registerOpts, agentIDFlag, v
 
 	result, err := performRegister(cfg, *opts, now)
 	if err != nil {
-		return "", nil, err
+		return agentID, nil, err
 	}
 	if err := saveActiveSessionHeartbeat(cfg, agentID, source, now); err != nil {
-		return "", nil, fmt.Errorf("write active session heartbeat: %w", err)
+		return agentID, result, fmt.Errorf("write active session heartbeat: %w", err)
 	}
 	return agentID, result, nil
 }

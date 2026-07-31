@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/agentchute/agentchute/internal/loop"
@@ -30,7 +31,10 @@ const guardDenyReason = "claimed mail is pending ack; scope-expanding tools and 
 
 // guardDenySubstrings are matched case-insensitively against the tool's
 // command text (tool_name + tool_input's string fields, joined). Plain
-// substring match, not argv parsing — documented best-effort (C25).
+// substring match, not argv parsing — documented best-effort (C25). The
+// agentchute subcommands themselves are NOT here: they need word-bounded,
+// binary-token-aware matching (guardAgentchuteSubcmdRE below), not a literal
+// substring — see that regex's doc comment.
 var guardDenySubstrings = []string{
 	"git push",
 	"git tag",
@@ -44,13 +48,40 @@ var guardDenySubstrings = []string{
 	".claude/settings.json",
 	".codex/hooks.json",
 	".gemini/settings.json",
-	"agentchute ack",
-	"agentchute check",
-	"agentchute turn-end",
-	"agentchute update",
-	"agentchute setup",
-	"agentchute clean",
 }
+
+// guardDispatchPrefixRE strips a `dispatch [--shim-dir[= |] <path>] [--] `
+// layer that may sit between the agentchute binary token and the real
+// subcommand: the installed `ac` dispatcher script execs exactly
+// `agentchute dispatch --shim-dir <dir> -- "$@"` (dispatch.go's
+// splitDispatchContext — --shim-dir and the `--` sentinel are both
+// optional). Without stripping this, "agentchute dispatch -- turn-end" —
+// literally what `ac turn-end` expands to — would not contain "agentchute"
+// and "turn-end" as adjacent tokens and would slip past
+// guardAgentchuteSubcmdRE untouched (claude-code review, PR #89: proven as a
+// live bypass that self-cleared the latch mid-turn and disarmed the entire
+// deny list for the rest of the turn).
+var guardDispatchPrefixRE = regexp.MustCompile(`\bdispatch\b(?:[ \t]+--shim-dir(?:=\S+|[ \t]+\S+))?(?:[ \t]+--)?[ \t]+`)
+
+// guardAgentchuteSubcmdRE matches any of the sensitive agentchute
+// subcommands (C25) regardless of which spelling of the binary invoked
+// them: the templated `${AGENTCHUTE_BIN:-agentchute}` form, a bare
+// `$AGENTCHUTE_BIN`, the literal `agentchute` binary name, or the `ac`
+// dispatcher this repo's own hooks/docs teach as the normal way to invoke
+// it. Word-bounded (`\b`), not a plain substring, so it is immune to extra
+// whitespace between the binary token and the subcommand — the plain
+// substring form this replaced missed `ac turn-end`, `$AGENTCHUTE_BIN
+// turn-end`, and even doubled-space `agentchute  turn-end` (claude-code
+// review, PR #89; doctor.go:38's hookCheckSubcmdRE is the existing precedent
+// in this codebase for matching the binary token robustly instead of a bare
+// substring). Apply AFTER guardDispatchPrefixRE strips any dispatch layer.
+// The `\b` word-boundary is scoped to ONLY the bare-word alternatives
+// (agentchute|ac): a leading `\b` applied uniformly across the whole
+// alternation fails to match the $-prefixed forms at all, since `$` is a
+// non-word character and a boundary can never hold between two non-word
+// characters (e.g. string-start immediately followed by `$`) — caught by
+// this file's own test suite once both forms were exercised together.
+var guardAgentchuteSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+(?:ack|check|turn-end|update|setup|clean)\b`)
 
 // resolveGuardSession returns the session key guard operations should latch
 // against, or "" if the guard is disabled for this process (C22). The guard
@@ -185,6 +216,10 @@ func evaluateGuardDecision(cfg *loop.Config, agentID, session, toolCmd string) g
 // entry, case-insensitive substring match.
 func guardCommandDenied(toolCmd string) bool {
 	lower := strings.ToLower(toolCmd)
+	normalized := guardDispatchPrefixRE.ReplaceAllString(lower, "")
+	if guardAgentchuteSubcmdRE.MatchString(normalized) {
+		return true
+	}
 	for _, pattern := range guardDenySubstrings {
 		if strings.Contains(lower, pattern) {
 			return true
