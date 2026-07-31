@@ -302,7 +302,11 @@ func TestCmdStatusWithoutAgentIDPrintsPoolWithoutSideEffects(t *testing.T) {
 
 // With --as set, status still ticks the caller's last_seen (preserves the
 // historical acting-agent mode).
-func TestCmdStatusWithAgentIDRefreshesLastSeen(t *testing.T) {
+// B1: CLI touches no longer refresh liveness — only serve's lease-gated
+// HeartbeatRegistration does. `status --as` still requires the agent to be
+// enrolled (the registration-exists preflight stays), but no longer bumps
+// last_seen as a side effect of that preflight.
+func TestCmdStatusWithAgentIDDoesNotRefreshLastSeen(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
@@ -347,7 +351,7 @@ func TestCmdStatusWithAgentIDRefreshesLastSeen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !after.LastSeen.After(before.LastSeen) {
-		t.Errorf("status with --as did NOT refresh last_seen: %v → %v", before.LastSeen, after.LastSeen)
+	if !after.LastSeen.Equal(before.LastSeen) {
+		t.Errorf("status with --as refreshed last_seen (B1: CLI touches must not): %v → %v", before.LastSeen, after.LastSeen)
 	}
 }

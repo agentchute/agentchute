@@ -109,11 +109,12 @@ func cmdSend(args []string) error {
 	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse invalid
 	// sender or recipient state before reading stdin, so a piped body remains
 	// untouched on every preflight failure.
+	// B1: CLI touches no longer refresh liveness — only serve's lease-gated
+	// heartbeat does (HeartbeatRegistration). This preflight only confirms
+	// the sender is enrolled at all.
 	selfPath := cfg.AgentRegistrationPath(fromID)
 	if _, err := os.Stat(selfPath); err == nil {
-		if err := loop.UpdateLastSeen(cfg, fromID, time.Now().UTC()); err != nil {
-			return fmt.Errorf("update last_seen for %s: %w", fromID, err)
-		}
+		// registered; proceed.
 	} else if os.IsNotExist(err) {
 		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", fromID, fromID)
 	} else {

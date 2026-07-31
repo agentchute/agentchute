@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
@@ -337,6 +338,74 @@ func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
 			t.Fatalf("%s should be preserved: %v", keep, err)
 		}
 	}
+}
+
+// C9: --stale-after round-trips through the pool's state/setup.json, and a
+// resync (no --stale-after passed) preserves the prior value rather than
+// silently reverting it to the 1h default.
+func TestSetupStaleAfterRoundTripsThroughPoolState(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--stale-after", "45m", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := readSetupPoolState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.StaleAfter != "45m" {
+		t.Fatalf("StaleAfter = %q, want 45m", pool.StaleAfter)
+	}
+	if got := loop.StaleAfter(cfg); got != 45*time.Minute {
+		t.Fatalf("loop.StaleAfter(cfg) = %v, want 45m", got)
+	}
+
+	// Resync without --stale-after: the prior value must survive, not revert
+	// to the 1h default.
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	pool, err = readSetupPoolState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.StaleAfter != "45m" {
+		t.Fatalf("resync StaleAfter = %q, want 45m preserved", pool.StaleAfter)
+	}
+}
+
+// C9: an invalid --stale-after value is rejected before any write.
+func TestSetupRejectsInvalidStaleAfter(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	withCwd(t, root, func() {
+		err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--stale-after", "not-a-duration", "--yes"})
+		if err == nil {
+			t.Fatal("expected an error for an invalid --stale-after value")
+		}
+	})
 }
 
 func TestSetupResetsRuntimeStateButPreservesPendingReplies(t *testing.T) {

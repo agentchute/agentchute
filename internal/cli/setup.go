@@ -39,6 +39,7 @@ type setupOptions struct {
 	ControlRepo string
 	ShimDir     string
 	Profile     string
+	StaleAfter  string
 	Yes         bool
 	DryRun      bool
 	NoProfile   bool
@@ -69,7 +70,12 @@ type setupPoolState struct {
 	Wrappers    []string `json:"wrappers"`
 	ControlRepo string   `json:"control_repo"`
 	LoopDir     string   `json:"loop_dir"`
-	UpdatedAt   string   `json:"updated_at"`
+	// StaleAfter is the C9 registration-staleness threshold (Go duration
+	// string, e.g. "1h"), read by loop.StaleAfter for the sweep/heartbeat
+	// freshness rule. Empty on state written by a pre-v2.5 binary; readers
+	// treat empty as the 1h default rather than treating it as unset config.
+	StaleAfter string `json:"stale_after,omitempty"`
+	UpdatedAt  string `json:"updated_at"`
 }
 
 func cmdSetup(args []string) error {
@@ -88,11 +94,17 @@ func cmdSetup(args []string) error {
 	fs.BoolVar(&opts.InitNew, "init", false, "allow setup to initialize a non-project directory")
 	fs.BoolVar(&opts.Reset, "reset", false, "explicitly run the runtime reset (always performed); required alongside --wipe-state")
 	fs.BoolVar(&opts.WipeState, "wipe-state", false, "DESTRUCTIVE: after reset, wipe loop runtime state (inbox/archive/malformed/live/scratch/state); requires --reset")
+	fs.StringVar(&opts.StaleAfter, "stale-after", "", "registration staleness threshold, e.g. 1h (default: prior value, or 1h on first setup)")
 	if err := fs.Parse(args); err != nil {
 		return setupUsage(err)
 	}
 	if fs.NArg() != 0 {
 		return setupUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
+	}
+	if strings.TrimSpace(opts.StaleAfter) != "" {
+		if _, err := time.ParseDuration(strings.TrimSpace(opts.StaleAfter)); err != nil {
+			return fmt.Errorf("--stale-after %q: %w", opts.StaleAfter, err)
+		}
 	}
 	// --wipe-state is destructive; require the explicit --reset affirmation
 	// alongside it. Reject --wipe-state alone with a clear (non-help) error.
@@ -218,6 +230,8 @@ Flags:
                          a live bus. Use --dry-run to preview, --yes to skip the
                          destructive confirm. Intended for the v0.7.0 -> v2
                          transition.
+  --stale-after <dur>    registration staleness threshold (Go duration, e.g. 1h;
+                         default: prior value, or 1h on first setup)
   --dry-run              print plan without writing files
   --yes                  skip confirmation prompts
 `) + "\n"
@@ -463,6 +477,9 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 		fmt.Fprintf(w, "  wrappers:     %s\n", strings.Join(wrappers, ", "))
 	}
 	fmt.Fprintf(w, "  init:         %s\n", filepath.Join(root, "AGENTCHUTE.md"))
+	if sa := strings.TrimSpace(opts.StaleAfter); sa != "" {
+		fmt.Fprintf(w, "  stale-after:  %s\n", sa)
+	}
 	if opts.WipeState {
 		fmt.Fprintln(w, "  reset:        DESTRUCTIVE wipe-state — stop local pollers/runners, then WIPE loop runtime")
 		fmt.Fprintln(w, "                state (inbox/archive/malformed/live/scratch/state) + live registrations;")
@@ -690,7 +707,19 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			}
 		}
 
-		if err := writeSetupPoolState(cfg, opts.Wake, wrappers); err != nil {
+		// C9: an explicit --stale-after wins; otherwise a resync (setup re-run,
+		// update's replay) preserves the prior pool value; a genuinely first-ever
+		// setup falls back to the 1h default. This is the "normalize-on-read"
+		// guard — the new field must never be silently dropped by a resync that
+		// only intended to touch wake/wrappers.
+		staleAfter := strings.TrimSpace(opts.StaleAfter)
+		if staleAfter == "" {
+			staleAfter = strings.TrimSpace(poolState.StaleAfter)
+		}
+		if staleAfter == "" {
+			staleAfter = loop.DefaultStaleAfter.String()
+		}
+		if err := writeSetupPoolState(cfg, opts.Wake, wrappers, staleAfter); err != nil {
 			return err
 		}
 		profiles := setupPlausibleProfiles(opts.Profile)
@@ -1240,13 +1269,13 @@ func writeSetupGlobalState(state setupGlobalState) error {
 		return err
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := atomicWriteSetupState(path, data); err != nil {
 		return fmt.Errorf("write setup state: %w", err)
 	}
 	return nil
 }
 
-func writeSetupPoolState(cfg *loop.Config, wake string, wrappers []string) error {
+func writeSetupPoolState(cfg *loop.Config, wake string, wrappers []string, staleAfter string) error {
 	stateDir := filepath.Join(cfg.LoopDir, "state")
 	if err := loop.EnsurePrivateDir(stateDir); err != nil {
 		return err
@@ -1257,6 +1286,7 @@ func writeSetupPoolState(cfg *loop.Config, wake string, wrappers []string) error
 		Wrappers:    wrappers,
 		ControlRepo: cfg.ControlRepo,
 		LoopDir:     cfg.LoopDir,
+		StaleAfter:  staleAfter,
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -1264,8 +1294,52 @@ func writeSetupPoolState(cfg *loop.Config, wake string, wrappers []string) error
 		return err
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(filepath.Join(stateDir, "setup.json"), data, 0o600); err != nil {
+	if err := atomicWriteSetupState(filepath.Join(stateDir, "setup.json"), data); err != nil {
 		return fmt.Errorf("write pool setup state: %w", err)
 	}
+	return nil
+}
+
+// atomicWriteSetupState writes data to path via temp-file-then-rename so a
+// concurrent reader (send/check/status preflights, the sweep, `doctor`) never
+// observes a torn write — C9: these now read state/setup.json on every
+// operation instead of only at setup time, so a plain os.WriteFile's
+// non-atomic write window becomes a real (if narrow) race.
+func atomicWriteSetupState(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp_"+filepath.Base(path)+"_")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	cleanup = false
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	syncDir(dir)
 	return nil
 }

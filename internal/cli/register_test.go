@@ -35,6 +35,19 @@ func TestRegister_RMWUnderAgentLock(t *testing.T) {
 		if _, err := performRegister(cfg, seed, now); err != nil {
 			t.Fatal(err)
 		}
+		// B1: the heartbeat is lease-gated, so racing it here needs a real
+		// serve lease token, not merely a timestamp.
+		lease, err := loop.AcquireServeLease(cfg, agentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template := loop.Registration{
+			AgentID:      agentID,
+			Vendor:       "anthropic",
+			ControlRepo:  cfg.ControlRepo,
+			WorkingRepos: []string{cfg.ControlRepo},
+			Status:       loop.StatusActive,
+		}
 
 		var wg sync.WaitGroup
 		errs := make(chan error, 128)
@@ -49,12 +62,12 @@ func TestRegister_RMWUnderAgentLock(t *testing.T) {
 				}
 			}(i)
 		}
-		// ...racing UpdateLastSeen on the same registration.
+		// ...racing HeartbeatRegistration on the same registration.
 		for i := 0; i < 30; i++ {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				if err := loop.UpdateLastSeen(cfg, agentID, now.Add(time.Duration(i)*time.Minute)); err != nil {
+				if err := loop.HeartbeatRegistration(cfg, template, lease.Token); err != nil {
 					errs <- err
 				}
 			}(i)
@@ -62,7 +75,7 @@ func TestRegister_RMWUnderAgentLock(t *testing.T) {
 		wg.Wait()
 		close(errs)
 		for err := range errs {
-			t.Fatalf("concurrent register/update: %v", err)
+			t.Fatalf("concurrent register/heartbeat: %v", err)
 		}
 
 		// The file must always be readable (never half-written / torn).

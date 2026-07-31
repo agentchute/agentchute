@@ -192,13 +192,25 @@ func TestWithAgentLock_BoundedWaitDoesNotDeadlock(t *testing.T) {
 	}
 }
 
-// TestUpdateLastSeen_NoLostUpdateUnderConcurrency runs concurrent UpdateLastSeen
-// calls alongside a status mutation and asserts the registration is never torn
-// (always parses) and the status mutation survives.
-func TestUpdateLastSeen_NoLostUpdateUnderConcurrency(t *testing.T) {
+// TestHeartbeatRegistration_NoLostUpdateUnderConcurrency runs concurrent
+// HeartbeatRegistration calls alongside a status mutation and asserts the
+// registration is never torn (always parses) and the status mutation
+// survives. B1: replaces the retired UpdateLastSeen version of this test —
+// the heartbeat is now lease-gated, so it needs a real serve lease token.
+func TestHeartbeatRegistration_NoLostUpdateUnderConcurrency(t *testing.T) {
 	cfg := newLockTestConfig(t)
 	const agentID = "claude-code"
 	writeTestRegistration(t, cfg, agentID, StatusActive)
+	lease, err := AcquireServeLease(cfg, agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := Registration{
+		AgentID:     agentID,
+		Vendor:      "agentchute",
+		ControlRepo: cfg.ControlRepo,
+		Status:      StatusActive,
+	}
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 64)
@@ -206,8 +218,7 @@ func TestUpdateLastSeen_NoLostUpdateUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			ts := time.Date(2026, 5, 10, 0, 0, i%60, 0, time.UTC)
-			if err := UpdateLastSeen(cfg, agentID, ts); err != nil {
+			if err := HeartbeatRegistration(cfg, template, lease.Token); err != nil {
 				errs <- err
 			}
 		}(i)
@@ -239,49 +250,6 @@ func TestUpdateLastSeen_NoLostUpdateUnderConcurrency(t *testing.T) {
 	}
 	if reg.AgentID != agentID {
 		t.Fatalf("agent_id = %q, want %q", reg.AgentID, agentID)
-	}
-}
-
-// TestRunnerOfflineNotResurrectedByConcurrentLastSeen models the serve.go shutdown
-// race: a registration marked offline must not be flipped back to active by a
-// concurrent last_seen refresh. With both writers serialized through
-// withAgentLock and the offline write applied last, the terminal state is
-// offline.
-func TestRunnerOfflineNotResurrectedByConcurrentLastSeen(t *testing.T) {
-	cfg := newLockTestConfig(t)
-	const agentID = "claude-code"
-	writeTestRegistration(t, cfg, agentID, StatusActive)
-
-	var wg sync.WaitGroup
-	// Pollers refreshing last_seen (they read whatever status is on disk).
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			_ = UpdateLastSeen(cfg, agentID, time.Date(2026, 5, 10, 0, 0, i%60, 0, time.UTC))
-		}(i)
-	}
-	wg.Wait()
-
-	// Shutdown: mark offline under the lock, AFTER pollers have joined.
-	if err := withAgentLock(cfg, agentID, func() error {
-		reg, err := ReadRegistration(cfg.AgentRegistrationPath(agentID))
-		if err != nil {
-			return err
-		}
-		reg.Status = StatusOffline
-		reg.LastSeen = time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
-		return WriteRegistration(cfg.AgentRegistrationPath(agentID), reg)
-	}); err != nil {
-		t.Fatalf("mark offline: %v", err)
-	}
-
-	reg, err := ReadRegistration(cfg.AgentRegistrationPath(agentID))
-	if err != nil {
-		t.Fatalf("read after offline: %v", err)
-	}
-	if reg.Status != StatusOffline {
-		t.Fatalf("status = %q, want offline (resurrected by concurrent last_seen)", reg.Status)
 	}
 }
 
