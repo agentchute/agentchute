@@ -213,7 +213,7 @@ func TestRunnerPollShutsDownWhenFenced(t *testing.T) {
 	}
 }
 
-func TestRunnerFencedShutdownLogsAndBuffersFatal(t *testing.T) {
+func TestRunnerInvalidatedLeaseLogsC15NoticeAndBuffersFatal(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 	if err != nil {
@@ -227,19 +227,13 @@ func TestRunnerFencedShutdownLogsAndBuffersFatal(t *testing.T) {
 	// acquiring a second one, which would fail closed (ErrLeaseHeld) against
 	// the fixture's still-fresh claim.
 
-	reclaimed := loop.ServeClaim{
-		ID:         "runner-test",
-		Host:       "other-host",
-		PID:        os.Getpid(),
-		ServeToken: "ffffffffffffffffffffffffffffffff",
-		StartedAt:  time.Now().UTC(),
-		LastSeen:   time.Now().UTC(),
-	}
-	data, err := json.Marshal(reclaimed)
+	invalidated, err := loop.InvalidateAllServeLeases(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(cfg.AgentStateDir("runner-test"), "serve.claim"), data)
+	if invalidated != 1 {
+		t.Fatalf("invalidated = %d, want 1", invalidated)
+	}
 
 	stderr := captureStderr(t, func() {
 		rt.pollOnce()
@@ -251,7 +245,7 @@ func TestRunnerFencedShutdownLogsAndBuffersFatal(t *testing.T) {
 		t.Fatal("fenced runner did not request shutdown")
 	}
 	log := readRunnerLog(t, cfg, "runner-test")
-	want := "agentchute serve: serve lease reclaimed (fenced); shutting down"
+	want := "serve: this agentchute binary was fenced out (update or identity reclaim). Restart this lane: ac serve <wrapper>"
 	if !strings.Contains(log, want) {
 		t.Fatalf("runner.log missing fenced fatal:\n%s", log)
 	}

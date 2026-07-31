@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, release/v2.5]
   pull_request:
 
 jobs:
@@ -50,5 +50,22 @@ jobs:
         run: shellcheck -s sh install.sh
       - name: shellcheck tests/install_test.sh
         run: shellcheck -s sh tests/install_test.sh
+      - name: shellcheck tests/upgrade_smoke.sh
+        run: shellcheck -s sh tests/upgrade_smoke.sh
       - name: run install_test.sh
         run: sh tests/install_test.sh
+
+  upgrade-smoke:
+    name: old-to-v2.5 upgrade rehearsal
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release/v2.5'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+          check-latest: true
+      - name: run upgrade smoke
+        run: sh tests/upgrade_smoke.sh

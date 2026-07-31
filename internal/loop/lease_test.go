@@ -3,6 +3,7 @@ package loop
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -201,6 +202,157 @@ func TestVerifyFence(t *testing.T) {
 	// Empty token is rejected (callers must pass a real fence).
 	if err := VerifyFence(cfg, "alice", ""); err == nil {
 		t.Fatal("VerifyFence with empty token must error")
+	}
+}
+
+func TestInvalidateAllServeLeasesFencesAllAndAllowsFreshAcquire(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	alice, err := AcquireServeLease(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := AcquireServeLease(cfg, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.LoopDir, "state", "setup"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := InvalidateAllServeLeases(cfg)
+	if err != nil {
+		t.Fatalf("invalidate leases: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("invalidated = %d, want 2", got)
+	}
+	for _, lease := range []*ServeLease{alice, bob} {
+		if err := RenewLease(lease); err != ErrFenced {
+			t.Fatalf("RenewLease(%s) after invalidation = %v, want ErrFenced", lease.ID, err)
+		}
+		if _, err := os.Stat(claimPath(cfg, lease.ID)); !os.IsNotExist(err) {
+			t.Fatalf("%s claim still exists after invalidation: %v", lease.ID, err)
+		}
+		if _, err := AcquireServeLease(cfg, lease.ID); err != nil {
+			t.Fatalf("fresh acquire(%s) after invalidation: %v", lease.ID, err)
+		}
+	}
+}
+
+func TestInvalidateAllServeLeasesEmptyPool(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	got, err := InvalidateAllServeLeases(cfg)
+	if err != nil {
+		t.Fatalf("invalidate empty pool: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("invalidated = %d, want 0", got)
+	}
+}
+
+func TestInvalidateAllServeLeasesContinuesPastPoisonedStateEntry(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	alice, err := AcquireServeLease(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := AcquireServeLease(cfg, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	poisonDir := filepath.Join(cfg.LoopDir, "state", "bad id")
+	if err := os.MkdirAll(poisonDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(poisonDir, "serve.claim"), []byte("poison"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := InvalidateAllServeLeases(cfg)
+	if got != 2 {
+		t.Fatalf("invalidated = %d, want 2", got)
+	}
+	if err == nil || !strings.Contains(err.Error(), `"bad id"`) {
+		t.Fatalf("error = %v, want named poisoned id", err)
+	}
+	for _, lease := range []*ServeLease{alice, bob} {
+		if err := RenewLease(lease); err != ErrFenced {
+			t.Fatalf("RenewLease(%s) after partial-error pass = %v, want ErrFenced", lease.ID, err)
+		}
+	}
+}
+
+func TestInvalidateAllServeLeasesPreservesPostSnapshotClaim(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	old, err := AcquireServeLease(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prev := afterInvalidateSnapshotHook
+	afterInvalidateSnapshotHook = func(id string) {
+		if id == "alice" {
+			overwriteClaimToken(t, cfg, id, "NEW-OWNER-TOKEN")
+		}
+	}
+	t.Cleanup(func() { afterInvalidateSnapshotHook = prev })
+
+	got, err := InvalidateAllServeLeases(cfg)
+	if err != nil {
+		t.Fatalf("invalidate leases: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("invalidated = %d, want 0 for post-snapshot owner", got)
+	}
+	if err := RenewLease(old); err != ErrFenced {
+		t.Fatalf("old lease = %v, want ErrFenced", err)
+	}
+	if err := VerifyFence(cfg, "alice", "NEW-OWNER-TOKEN"); err != nil {
+		t.Fatalf("post-snapshot owner was fenced: %v", err)
+	}
+}
+
+func TestInvalidateAllServeLeasesTakesAgentLock(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	if _, err := AcquireServeLease(cfg, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	lockHeld := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- withAgentLock(cfg, "alice", func() error {
+			close(lockHeld)
+			<-releaseLock
+			return nil
+		})
+	}()
+	<-lockHeld
+
+	invalidationDone := make(chan error, 1)
+	go func() {
+		_, err := InvalidateAllServeLeases(cfg)
+		invalidationDone <- err
+	}()
+	select {
+	case err := <-invalidationDone:
+		t.Fatalf("invalidation completed while agent lock was held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := os.Stat(claimPath(cfg, "alice")); err != nil {
+		t.Fatalf("claim changed while agent lock was held: %v", err)
+	}
+
+	close(releaseLock)
+	if err := <-lockDone; err != nil {
+		t.Fatalf("lock holder: %v", err)
+	}
+	if err := <-invalidationDone; err != nil {
+		t.Fatalf("invalidation after lock release: %v", err)
+	}
+	if _, err := os.Stat(claimPath(cfg, "alice")); !os.IsNotExist(err) {
+		t.Fatalf("claim should be removed after lock release: %v", err)
 	}
 }
 

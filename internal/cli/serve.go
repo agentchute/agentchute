@@ -596,7 +596,7 @@ func (r *runnerRuntime) pollOnce() {
 	if r.lease != nil {
 		if err := loop.RenewLease(r.lease); err != nil {
 			if errors.Is(err, loop.ErrFenced) {
-				r.bufferFatalf("agentchute serve: serve lease reclaimed (fenced); shutting down\n")
+				r.bufferFatalf("serve: this agentchute binary was fenced out (update or identity reclaim). Restart this lane: ac serve <wrapper>\n")
 				r.requestShutdown(syscall.SIGTERM)
 				return
 			}

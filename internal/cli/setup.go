@@ -203,8 +203,8 @@ Usage:
   agentchute setup [--wake runner] [--wrappers all|none|<list>] [--yes] [--dry-run]
 
 Scaffolds the control repo with agentchute init, stops local agentchute
-pollers/runners, clears stale live registrations so agents re-enroll, installs
-lifecycle hooks for the selected wrappers, and installs the
+pollers/runners, invalidates serve leases while preserving registration rows,
+installs lifecycle hooks for the selected wrappers, and installs the
 single ac dispatcher (launch a wrapper with: ac serve <wrapper>).
 
 runner is the only supported wake path: the tmux/herdr wake adapters were
@@ -485,7 +485,7 @@ func printSetupPlan(w io.Writer, root string, opts setupOptions, wrappers []stri
 		fmt.Fprintln(w, "                state (inbox/archive/malformed/live/scratch/state) + live registrations;")
 		fmt.Fprintln(w, "                preserves scaffold + state/setup.json; refuses a live bus (prompts before deleting)")
 	} else {
-		fmt.Fprintln(w, "  reset:        stop local agentchute pollers/runners and clear live agents/*.md")
+		fmt.Fprintln(w, "  reset:        stop local agentchute pollers/runners, invalidate serve leases, preserve agents/*.md")
 	}
 	if len(hookWrappers) > 0 {
 		fmt.Fprintln(w, "  hooks:        repo scope, force/idempotent")
@@ -568,12 +568,13 @@ func previousSetupShimWrappers(state setupGlobalState) []string {
 }
 
 // setupRunRuntimeReset is the DESTRUCTIVE phase of setup: it stops local
-// pollers/runners, clears runtime state files, then deletes live registrations
-// so agents re-enroll. It is a package var so tests can inject a failure to
+// pollers/runners, clears runtime state files, then invalidates every serve
+// lease so surviving supervisors fence out. Registration rows are preserved.
+// It is a package var so tests can inject a failure to
 // prove the ordering invariant below. It is invoked LAST in
 // applySetup — after every idempotent, recoverable write (init/enrollment, hooks,
 // shims, PATH block, saved setup state) has landed — so a mid-setup failure can
-// never leave the bus with cleared registrations AND no wake infrastructure.
+// never leave the bus fenced AND without wake infrastructure.
 var setupRunRuntimeReset = func(root string, cfg *loop.Config, wrappers []string) error {
 	reset := resetSetupRuntimeState(root, cfg, wrappers)
 	if len(reset.Pollers) > 0 {
@@ -588,12 +589,12 @@ var setupRunRuntimeReset = func(root string, cfg *loop.Config, wrappers []string
 	for _, warning := range reset.Warnings {
 		fmt.Printf("warning: setup reset: %s\n", warning)
 	}
-	cleared, err := clearSetupLiveRegistrations(cfg)
+	invalidated, err := loop.InvalidateAllServeLeases(cfg)
 	if err != nil {
 		return err
 	}
-	if len(cleared) > 0 {
-		fmt.Printf("cleared %d stale live registration(s): %s\n", len(cleared), strings.Join(cleared, ", "))
+	if invalidated > 0 {
+		fmt.Printf("invalidated %d serve lease(s); supervisors will exit on their next tick\n", invalidated)
 	}
 	return nil
 }
@@ -774,41 +775,6 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		printSetupCompletionGuidance(os.Stdout, opts.Wake)
 		return nil
 	})
-}
-
-func clearSetupLiveRegistrations(cfg *loop.Config) ([]string, error) {
-	entries, err := os.ReadDir(cfg.AgentsDir())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read live registrations: %w", err)
-	}
-
-	var cleared []string
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".example.md") || name == "README.md" {
-			continue
-		}
-		path := filepath.Join(cfg.AgentsDir(), name)
-		info, err := os.Lstat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("inspect live registration %s: %w", name, err)
-		}
-		if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		if err := os.Remove(path); err != nil {
-			return nil, fmt.Errorf("remove live registration %s: %w", name, err)
-		}
-		cleared = append(cleared, name)
-	}
-	sort.Strings(cleared)
-	return cleared, nil
 }
 
 func hookWrapperByName(name string) (hookWrapper, bool) {
