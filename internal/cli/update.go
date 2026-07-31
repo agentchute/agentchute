@@ -129,6 +129,11 @@ func cmdUpdate(args []string) error {
 
 		// The exact setup re-sync, replaying the saved install config.
 		setupArgs = []string{"setup", "--control-repo", cfg.ControlRepo, "--wake", storedWake, "--wrappers", wrappersArg, "--yes"}
+		if sa := strings.TrimSpace(pool.StaleAfter); sa != "" {
+			// C9: replay the pool's configured staleness threshold so a resync
+			// never silently reverts it to the 1h default.
+			setupArgs = append(setupArgs, "--stale-after", sa)
+		}
 		if sd := strings.TrimSpace(global.ShimDir); sd != "" {
 			setupArgs = append(setupArgs, "--shim-dir", sd)
 		}
@@ -472,13 +477,23 @@ func syncDir(dir string) {
 
 // activeAgentIDs returns the agent ids of live registrations on this host in
 // this pool, for the restart warning and dry-run plan.
+//
+// C9/B1 interim: soft-state registration has no reliable Status=offline
+// signal anymore (a quitting serve does nothing to its row — B1's Behavior
+// spec), so "active" is now computed the same way the sweep judges liveness:
+// row age <= the pool's configured StaleAfter threshold. This is interim
+// because it doesn't yet check the serve lease (that refinement is B2/B5's
+// concern, once lease invalidation is the forcing function); a fresh-enough
+// row is treated as active even if its owning process already exited.
 func activeAgentIDs(cfg *loop.Config) []string {
 	regs, _ := loop.ReadRegistrationsLenient(cfg.AgentsDir())
 	localHost, _ := os.Hostname()
 	localHost = strings.TrimSpace(localHost)
+	threshold := loop.StaleAfter(cfg)
+	now := time.Now().UTC()
 	var ids []string
 	for _, reg := range regs {
-		if reg.Status == loop.StatusOffline {
+		if now.Sub(reg.LastSeen) > threshold {
 			continue
 		}
 		if localHost != "" && strings.TrimSpace(reg.Host) != "" && reg.Host != localHost {

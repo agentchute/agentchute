@@ -104,6 +104,15 @@ func cmdBoot(args []string) error {
 		return fmt.Errorf("write active session heartbeat: %w", err)
 	}
 
+	// C11: boot is one of the two sweep triggers (the other is serve's slow
+	// poll tick) — register-self-first, THEN sweep peers, so a pool whose only
+	// runner is offline still gets bounded hygiene from whoever boots into it.
+	// A sweep failure is a warning, never a boot failure: hygiene is best-effort
+	// and must not block session start.
+	if _, serr := loop.SweepStaleRegistrations(cfg, agentID, now); serr != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("sweep stale registrations: %v", serr))
+	}
+
 	// Inbox peek — strictly side-effect free, same path `pending` uses.
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(result.InboxDir)
 	if err != nil {

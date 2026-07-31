@@ -38,6 +38,13 @@ const (
 // re-cues never chase their own echo.
 var recueInterval = 60 * time.Second
 
+// sweepInterval bounds how often the runner's poll tick runs
+// SweepStaleRegistrations (v2.5 plan B1, C11). Package var (same pattern as
+// recueInterval/leaseTimeout) so tests can shrink it; production keeps 10m —
+// hygiene stays lazy but bounded, and boot already covers a pool whose only
+// runner is offline.
+var sweepInterval = 10 * time.Minute
+
 type interruptPolicy string
 
 const (
@@ -221,6 +228,17 @@ type runnerRuntime struct {
 	done     <-chan error
 	diag     *runnerDiagnostics
 
+	// regTemplate is the no-wake registration template HeartbeatRegistration
+	// refreshes every tick (v2.5 plan B1, C13). Built once from the same
+	// fields registerRunner used for the initial write, so every heartbeat
+	// re-asserts the same AgentID/Vendor/ControlRepo/Host/provenance.
+	regTemplate loop.Registration
+	// lastSweep is the last time this runner ran SweepStaleRegistrations
+	// (v2.5 plan B1, C11). Zero value means "never yet" — pollOnce treats
+	// that as due immediately, matching boot's "sweep once, early" behavior
+	// for a pool whose only hygiene path is this runner.
+	lastSweep time.Time
+
 	mu                 sync.Mutex
 	ptmxMu             sync.Mutex
 	stopOnce           sync.Once
@@ -385,7 +403,6 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		_ = cmd.Process.Kill()
 		<-done
 		_ = saveRunnerOfflineState(cfg, opts.AgentID, cmd.Process.Pid, time.Now().UTC())
-		_ = markRunnerOffline(cfg, opts.AgentID)
 		_ = loop.ReleaseLease(lease)
 		return fmt.Errorf("set stdin raw mode: %w", err)
 	}
@@ -398,18 +415,19 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	}
 
 	rt := &runnerRuntime{
-		cfg:      cfg,
-		opts:     opts,
-		cwd:      cwd,
-		started:  time.Now().UTC(),
-		childPID: cmd.Process.Pid,
-		cmd:      cmd,
-		ptmx:     ptmx,
-		lease:    lease,
-		done:     done,
-		diag:     diag,
-		wakeCh:   make(chan bool, 1),
-		stopCh:   make(chan struct{}),
+		cfg:         cfg,
+		opts:        opts,
+		cwd:         cwd,
+		started:     time.Now().UTC(),
+		childPID:    cmd.Process.Pid,
+		cmd:         cmd,
+		ptmx:        ptmx,
+		lease:       lease,
+		done:        done,
+		diag:        diag,
+		regTemplate: heartbeatTemplate(cfg, opts),
+		wakeCh:      make(chan bool, 1),
+		stopCh:      make(chan struct{}),
 	}
 	nowUnix := time.Now().UnixNano()
 	rt.lastOutputUnixNano.Store(nowUnix)
@@ -420,13 +438,16 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 
 	defer func() {
 		rt.stopLoops()
-		// Wait for the poll loop to fully exit BEFORE marking offline. stopLoops
-		// only closes stopCh; a pollOnce already in flight would otherwise run
-		// its UpdateLastSeen after markRunnerOffline and resurrect Status=active.
+		// B1: a quitting agent does nothing to its registration row — no more
+		// Status=offline write here. The row simply stops heartbeating and
+		// either ages past StaleAfter (swept by boot/serve elsewhere) or gets
+		// refreshed again if this same process relaunches. Still wait for the
+		// poll loop to fully exit before proceeding: rt.pollWG.Wait() below
+		// keeps saveStateWithStatus("offline") (runner.json, not the
+		// registration) from racing a pollOnce still in flight.
 		rt.pollWG.Wait()
 		rt.closePTY()
 		_ = rt.saveStateWithStatus("offline")
-		_ = markRunnerOffline(cfg, opts.AgentID)
 		// Release the serve lease last. ErrFenced => we were already reclaimed
 		// (another serve owns the id); releasing would be a no-op and must not
 		// delete the new owner's claim, so it is not an error to report.
@@ -501,22 +522,25 @@ func registerRunner(cfg *loop.Config, opts runnerOptions, now time.Time) error {
 	return err
 }
 
-func markRunnerOffline(cfg *loop.Config, agentID string) error {
-	// Serialize against a concurrent pollOnce -> UpdateLastSeen so the offline
-	// status write is not clobbered by a stale-read last_seen refresh that would
-	// resurrect Status=active after shutdown. (The caller also joins the poll
-	// loop before invoking this, so by here no poller should still be running;
-	// the lock is belt-and-suspenders against any other writer.)
-	return loop.WithAgentLock(cfg, agentID, func() error {
-		regPath := cfg.AgentRegistrationPath(agentID)
-		reg, err := loop.ReadRegistration(regPath)
-		if err != nil {
-			return err
-		}
-		reg.Status = loop.StatusOffline
-		reg.LastSeen = time.Now().UTC()
-		return loop.WriteRegistration(regPath, reg)
-	})
+// heartbeatTemplate builds the no-wake registration template HeartbeatRegistration
+// refreshes every poll tick (v2.5 plan B1, C13), from the same fields
+// registerRunner passes to performRegister for the runner's initial write.
+// Built once in runWrapper and reused for the lifetime of the process: it is
+// what a swept-then-recreated row comes back as, and what every tick
+// re-asserts for AgentID/Vendor/ControlRepo/Host/provenance (Body and
+// WorkingRepos come from the on-disk row instead — see HeartbeatRegistration).
+func heartbeatTemplate(cfg *loop.Config, opts runnerOptions) loop.Registration {
+	return loop.Registration{
+		AgentID:         opts.AgentID,
+		ProtocolVersion: loop.CurrentProtocolVersion,
+		Vendor:          opts.Vendor,
+		ControlRepo:     cfg.ControlRepo,
+		WorkingRepos:    []string{cfg.ControlRepo},
+		Host:            localHostname(),
+		Status:          loop.StatusActive,
+		LaunchedBy:      loop.LaunchedByRunner,
+		ShimName:        opts.ShimName,
+	}
 }
 
 // refuseLiveRunnerCollision enforces id-uniqueness via the serve lease
@@ -579,8 +603,25 @@ func (r *runnerRuntime) pollOnce() {
 			r.logf("agentchute serve: renew serve lease: %v\n", err)
 		}
 	}
-	if err := loop.UpdateLastSeen(r.cfg, r.opts.AgentID, now); err != nil {
-		r.logf("agentchute serve: update last_seen: %v\n", err)
+	// Lease-gated heartbeat (v2.5 plan B1, C13): unconditional refresh of the
+	// registration row, self-healing if a sweep (ours or a peer's) removed it
+	// since the last tick. nil lease in the poll-only unit-test runtime: skip
+	// rather than pass an empty token, which HeartbeatRegistration rejects.
+	if r.lease != nil {
+		if err := loop.HeartbeatRegistration(r.cfg, r.regTemplate, r.lease.Token); err != nil {
+			r.logf("agentchute serve: heartbeat registration: %v\n", err)
+		}
+	}
+
+	// Lazy sweep (C11): bounded, 10-minute cadence. lastSweep's zero value
+	// makes the very first tick due immediately — harmless even right after
+	// boot's own sweep (nothing is stale seconds later) and useful for a pool
+	// whose runner is its only hygiene path.
+	if now.Sub(r.lastSweep) >= sweepInterval {
+		if _, err := loop.SweepStaleRegistrations(r.cfg, r.opts.AgentID, now); err != nil {
+			r.logf("agentchute serve: sweep stale registrations: %v\n", err)
+		}
+		r.lastSweep = now
 	}
 
 	// Re-cue predicate (v2.5 plan A2, C16/C17): cue whenever mail is pending —

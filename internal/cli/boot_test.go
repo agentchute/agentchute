@@ -113,6 +113,58 @@ func TestBootRefreshExistingRegistrationExitsZero(t *testing.T) {
 	})
 }
 
+// C11/B1: boot is one of the two sweep triggers. This confirms the actual
+// wiring order in cmdBoot — register self FIRST, sweep peers SECOND — by
+// seeding a stale row for BOTH self and a peer: the peer's stale, claim-dead
+// row must be swept, while self's own (also stale-looking, pre-boot) row
+// must survive and come out refreshed rather than removed.
+func TestBootRegistersSelfFirstThenSweepsStalePeers(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().UTC().Add(-2 * time.Hour) // past the 1h default StaleAfter.
+		selfReg := &loop.Registration{
+			AgentID:     "claude-code",
+			Vendor:      "anthropic",
+			ControlRepo: cfg.ControlRepo,
+			LastSeen:    old,
+			Status:      loop.StatusActive,
+		}
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code"), selfReg); err != nil {
+			t.Fatal(err)
+		}
+		peerReg := &loop.Registration{
+			AgentID:     "stale-peer",
+			Vendor:      "openai",
+			ControlRepo: cfg.ControlRepo,
+			LastSeen:    old,
+			Status:      loop.StatusActive,
+		}
+		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("stale-peer"), peerReg); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) }); err != nil {
+			t.Fatalf("cmdBoot: %v", err)
+		}
+
+		if _, err := os.Stat(cfg.AgentRegistrationPath("stale-peer")); !os.IsNotExist(err) {
+			t.Fatalf("stale peer row survived boot's sweep: stat err = %v", err)
+		}
+		self, err := loop.ReadRegistration(cfg.AgentRegistrationPath("claude-code"))
+		if err != nil {
+			t.Fatalf("self row missing after boot: %v", err)
+		}
+		if !self.LastSeen.After(old) {
+			t.Fatalf("self row was not refreshed by boot's own registration step: LastSeen = %s", self.LastSeen)
+		}
+	})
+}
+
 // Test 8 line 3: registration with 1 unread direct mail → boot exits 2.
 func TestBootWithUnreadMailReturnsBlocked(t *testing.T) {
 	root := setupBootFixture(t)

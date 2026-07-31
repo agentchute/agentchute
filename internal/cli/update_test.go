@@ -382,7 +382,7 @@ func TestCmdUpdateWrappersNoneReplays(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := writeSetupPoolState(cfg, "tmux", nil); err != nil {
+		if err := writeSetupPoolState(cfg, "tmux", nil, "1h"); err != nil {
 			t.Fatal(err)
 		}
 		out, err := captureStdout(t, func() error {
@@ -393,6 +393,31 @@ func TestCmdUpdateWrappersNoneReplays(t *testing.T) {
 		}
 		if !strings.Contains(out, "--wrappers none") {
 			t.Fatalf("re-sync plan should replay `--wrappers none`; got:\n%s", out)
+		}
+	})
+}
+
+// C9 regression: update's setup re-sync replays the pool's configured
+// --stale-after rather than silently reverting it to the 1h default.
+func TestCmdUpdateReplaysStaleAfter(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeSetupPoolState(cfg, "runner", nil, "45m"); err != nil {
+			t.Fatal(err)
+		}
+		out, err := captureStdout(t, func() error {
+			return cmdUpdate([]string{"--version", "v0.5.0", "--dry-run"})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "--stale-after 45m") {
+			t.Fatalf("re-sync plan should replay `--stale-after 45m`; got:\n%s", out)
 		}
 	})
 }

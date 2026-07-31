@@ -3,11 +3,13 @@ package loop
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -396,7 +398,7 @@ func EnsurePrivateDir(path string) error {
 // WithAgentLock runs fn while holding the exclusive per-agent file lock at
 // <loop>/state/<agent>/.lock. Exported for package-main callers (the runner)
 // that read-modify-write an agent's registration outside this package and must
-// serialize against UpdateLastSeen / ledger writes. See the build-tagged
+// serialize against HeartbeatRegistration / ledger writes. See the build-tagged
 // withAgentLock for the no-nested-lock contract: a single call stack must never
 // acquire this lock twice for the same agentID.
 func WithAgentLock(cfg *Config, agentID string, fn func() error) error {
@@ -418,6 +420,42 @@ func ensurePrivateDir(path string) error {
 		return fmt.Errorf("%s: not a directory", path)
 	}
 	return os.Chmod(path, 0o700)
+}
+
+// DefaultStaleAfter is the registration-staleness threshold (C9) applied when
+// state/setup.json is absent, unreadable, or carries no parseable
+// "stale_after" value — including every pre-v2.5 pool that has never run the
+// new `setup --stale-after` flag.
+const DefaultStaleAfter = time.Hour
+
+// staleAfterState mirrors only the one field of internal/cli's setupPoolState
+// this package needs; loop cannot import internal/cli (it would invert the
+// dependency direction), so it reads state/setup.json's JSON directly rather
+// than sharing that type.
+type staleAfterState struct {
+	StaleAfter string `json:"stale_after"`
+}
+
+// StaleAfter returns the pool's configured registration-staleness threshold
+// (C9), read directly from <loop>/state/setup.json. Tolerant by design: an
+// absent file, an unreadable/corrupt file, or an unparsable/non-positive
+// duration all fall back to DefaultStaleAfter rather than erroring — every
+// caller (the sweep, the heartbeat-driven "active" computation) needs a
+// threshold even when setup has never run or wrote an old-format file.
+func StaleAfter(cfg *Config) time.Duration {
+	data, err := os.ReadFile(filepath.Join(cfg.LoopDir, "state", "setup.json"))
+	if err != nil {
+		return DefaultStaleAfter
+	}
+	var state staleAfterState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return DefaultStaleAfter
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(state.StaleAfter))
+	if err != nil || d <= 0 {
+		return DefaultStaleAfter
+	}
+	return d
 }
 
 func fileExists(path string) bool {

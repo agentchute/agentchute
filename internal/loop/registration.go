@@ -213,31 +213,58 @@ func WriteRegistrationExclusive(path string, r *Registration) error {
 	return nil
 }
 
-// UpdateLastSeen updates last_seen via the same structured path as other
-// registration writes. The read-modify-write runs under the per-agent lock so
-// a concurrent status mutation (e.g. the runner marking itself offline) is not
-// clobbered by a stale-read overwrite, and two concurrent updaters cannot tear
-// the registration file.
-func UpdateLastSeen(cfg *Config, agentID string, t time.Time) error {
-	return withAgentLock(cfg, agentID, func() error {
-		path := cfg.AgentRegistrationPath(agentID)
-		reg, err := ReadRegistration(path)
-		if err != nil {
+// HeartbeatRegistration is the lease-gated, unconditional per-tick refresh of
+// a registration row (v2.5 plan B1, C13). It replaces UpdateLastSeen: instead
+// of a CLI touch refreshing an existing row (and erroring if the row is
+// gone), only a live `serve` process advances LastSeen, and it self-heals — a
+// row that SweepStaleRegistrations removed, or one that never existed, is
+// recreated fresh from template rather than erroring.
+//
+// SERVE-ONLY: an empty leaseToken is a caller bug (unit tests constructing one
+// directly aside), not a legitimate "no lease" case — only a process holding
+// a live serve lease should ever be advancing a row's LastSeen.
+//
+// Fencing: VerifyFence runs FIRST, inside the SAME WithAgentLock(id) critical
+// section as the read-merge-write, so a holder reclaimed between ticks (e.g.
+// a paused-then-resumed laptop) writes NOTHING on ErrFenced — it cannot
+// resurrect a row another serve now owns.
+//
+// Merge: template wins for every field EXCEPT Body and WorkingRepos, which
+// the on-disk row wins for when one exists — those two are user-editable
+// (`register`/`boot --working-repo`, a hand-edited bio) and must survive
+// ticks the runner's own template has no opinion on. When no row exists yet,
+// template is written as-is (Body/WorkingRepos included).
+func HeartbeatRegistration(cfg *Config, template Registration, leaseToken string) error {
+	if leaseToken == "" {
+		return fmt.Errorf("HeartbeatRegistration: empty lease token (heartbeat is serve-only)")
+	}
+	if err := ValidateAgentID(template.AgentID); err != nil {
+		return err
+	}
+	return withAgentLock(cfg, template.AgentID, func() error {
+		if err := VerifyFence(cfg, template.AgentID, leaseToken); err != nil {
 			return err
 		}
-		reg.LastSeen = t.UTC()
-		if err := WriteRegistration(path, reg); err != nil {
+		path := cfg.AgentRegistrationPath(template.AgentID)
+		reg := template
+		if existing, err := ReadRegistration(path); err == nil {
+			reg.Body = existing.Body
+			reg.WorkingRepos = existing.WorkingRepos
+		} else if !os.IsNotExist(err) {
 			return err
 		}
-		// GATE 3: `.live` is the SOURCE of presence/liveness. Every heartbeat
-		// site that refreshes registration last_seen (the runner tick,
-		// check.go, send.go, status.go) calls UpdateLastSeen, so republishing
-		// `.live` here gives all of them fresh presence with no per-call-site
-		// edits. busy=false: busy is advisory and is set only by serve (Gate 6).
-		// WriteLive writes a separate file atomically and does NOT take
-		// withAgentLock, so this nested call is safe (withAgentLock is
+		reg.LastSeen = time.Now().UTC()
+		if err := WriteRegistration(path, &reg); err != nil {
+			return err
+		}
+		// B1 note (plan §4 risk list — the B5 dependency): keep the WriteLive
+		// call here so the tree keeps compiling and `.live`-driven presence
+		// readers stay accurate until B5 deletes live.go and this call along
+		// with it. busy=false: busy is advisory and set only by serve
+		// elsewhere (Gate 6). WriteLive is a separate atomic file write and
+		// takes no agent lock, so this nested call is safe (withAgentLock is
 		// non-reentrant).
-		return WriteLive(cfg, agentID, false)
+		return WriteLive(cfg, template.AgentID, false)
 	})
 }
 

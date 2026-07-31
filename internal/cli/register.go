@@ -227,12 +227,12 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 	// is first established. Every enrollment path (boot, register) funnels
 	// through here, so this is the single place a freshly registered agent gets
 	// its first `.live` — letting it read LIVE immediately, before its first
-	// UpdateLastSeen heartbeat tick (runner tick / check / send / status).
-	// busy=false: busy is advisory and is set only by serve. WriteLive is a
-	// separate atomic file write and takes no agent lock, so emitting it here
-	// (after WithAgentLock has returned) is safe. Treated as fatal: with `.live`
-	// the source of liveness, a registered agent with no initial `.live` would
-	// read stale at gate/doctor until its first tick.
+	// HeartbeatRegistration tick (serve's poll loop; B1 — CLI touches no longer
+	// refresh liveness). busy=false: busy is advisory and is set only by serve.
+	// WriteLive is a separate atomic file write and takes no agent lock, so
+	// emitting it here (after WithAgentLock has returned) is safe. Treated as
+	// fatal: with `.live` the source of liveness, a registered agent with no
+	// initial `.live` would read stale at gate/doctor until its first tick.
 	if err := loop.WriteLive(cfg, opts.AgentID, false); err != nil {
 		return nil, fmt.Errorf("write initial .live presence: %w", err)
 	}

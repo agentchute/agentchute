@@ -65,11 +65,12 @@ func cmdStatus(args []string) error {
 		// acts AS the agent (refreshes its last_seen). Refuse for an
 		// unregistered id. Pool-overview status (no --as) stays
 		// unaffected and remains a side-effect-free read.
+		// B1: CLI touches no longer refresh liveness — only serve's
+		// lease-gated heartbeat does (HeartbeatRegistration). This preflight
+		// only confirms the agent is enrolled at all.
 		selfPath := cfg.AgentRegistrationPath(agentID)
 		if _, err := os.Stat(selfPath); err == nil {
-			if err := loop.UpdateLastSeen(cfg, agentID, now); err != nil {
-				return fmt.Errorf("update last_seen for %s: %w", agentID, err)
-			}
+			// registered; proceed.
 		} else if os.IsNotExist(err) {
 			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first, or omit --as to view the pool overview (AGENTCHUTE.md §5.3)", agentID, agentID)
 		} else {

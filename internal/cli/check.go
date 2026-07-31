@@ -87,13 +87,13 @@ func cmdCheck(args []string) error {
 	// for an unregistered agent. check is an active agent command — it
 	// archives, quarantines, and sends corrective notify; all of those
 	// imply the agent IS enrolled in the pool.
+	// B1: CLI touches no longer refresh liveness — only serve's lease-gated
+	// heartbeat does (HeartbeatRegistration). This preflight only confirms
+	// the agent is enrolled at all.
 	selfPath := cfg.AgentRegistrationPath(agentID)
 	selfExists := false
 	if _, err := os.Stat(selfPath); err == nil {
 		selfExists = true
-		if err := loop.UpdateLastSeen(cfg, agentID, now); err != nil {
-			return fmt.Errorf("update last_seen for %s: %w", agentID, err)
-		}
 	} else if os.IsNotExist(err) {
 		return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
 	} else {
