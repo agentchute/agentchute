@@ -104,12 +104,21 @@ just that Go code — against the same fixture set promoted from
 - **`TestFM1_Accept`** — every well-formed block is accepted and its fields
   extracted exactly as documented: quoting (double, single, escaped),
   whitespace around keys/values/delimiters, CRLF, blank lines inside the
-  block, a list header, an empty scalar, a value containing `:` or `#`, and
-  the body-only (no frontmatter at all) case.
+  block, a list header at zero/one/tab/two-space item indentation, an
+  empty scalar, a value containing `:` or `#`, a key containing characters
+  outside `[A-Za-z0-9_]` (there is no key charset restriction), the
+  `null`/`~` sentinel collapse, a double-quoted backslash escape actually
+  being interpreted (not just quote-stripped), and the body-only (no
+  frontmatter at all) case. The last three pin RESULT values, not merely
+  that the block parses — a standalone parser that skips escape
+  interpretation or sentinel collapse provably fails this vector.
 - **`TestFM2_Reject`** — every malformed block is rejected as a WHOLE (no
   partial field extraction survives): an indented continuation line, a
   duplicate key, any non-key:value line (including a `#` comment — this
-  grammar has no comment syntax), an empty key, and a missing closing `---`.
+  grammar has no comment syntax), an empty key, a missing closing `---`,
+  and a near-miss list item (`-nospace`, missing the required `- ` dash-space
+  prefix) — it is not silently swallowed; it falls out of the list and is
+  rejected as an ordinary invalid line.
 
 ## B1 is the §5 decision, as code
 

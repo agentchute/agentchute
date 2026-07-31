@@ -265,6 +265,54 @@
             "from": "codex",
             "reply_required": "true"
           }
+        },
+        {
+          "name": "unusual-key-chars",
+          "input": "---\nweird key-name!: value\nfrom: codex\n---\n\nbody\n",
+          "fields": {
+            "weird key-name!": "value",
+            "from": "codex"
+          }
+        },
+        {
+          "name": "list-zero-indent",
+          "input": "---\nfrom: codex\nworking_repos:\n- /a\n- /b\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "working_repos": ""
+          }
+        },
+        {
+          "name": "list-tab-indent",
+          "input": "---\nfrom: codex\nworking_repos:\n\t- /a\n\t- /b\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "working_repos": ""
+          }
+        },
+        {
+          "name": "quoted-value-escaped",
+          "input": "---\nfrom: codex\ntask: \"a\\tb\"\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": "a\tb"
+          }
+        },
+        {
+          "name": "null-value",
+          "input": "---\nfrom: codex\ntask: null\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": ""
+          }
+        },
+        {
+          "name": "tilde-value",
+          "input": "---\nfrom: codex\ntask: ~\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": ""
+          }
         }
       ]
     },
@@ -296,6 +344,10 @@
         {
           "name": "empty-key",
           "input": "---\n: value\n---\n\nbody\n"
+        },
+        {
+          "name": "list-item-missing-gap",
+          "input": "---\nfrom: codex\nworking_repos:\n-nospace\n---\n\nbody\n"
         }
       ]
     }

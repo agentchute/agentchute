@@ -63,6 +63,19 @@ func frontmatterFixtures() map[string]string {
 		"empty-key":            "---\n: value\n---\n\nbody\n",
 		"body-only":            "no frontmatter, just body\n",
 		"reply-required-true":  "---\nmessage_id: m1\nfrom: codex\nreply_required: true\n---\n\nbody\n",
+
+		// Added after codex's second-round finding on PR #100: the §6.4
+		// grammar block claimed a key charset (ALPHA/DIGIT/_) and a fixed
+		// 2-space list indent that NEITHER implementation actually enforces,
+		// and FM1 never pinned the escaped-quote / null-sentinel RESULT
+		// values (only that the block parsed). These fixtures close both gaps.
+		"unusual-key-chars":     "---\nweird key-name!: value\nfrom: codex\n---\n\nbody\n",
+		"list-zero-indent":      "---\nfrom: codex\nworking_repos:\n- /a\n- /b\n---\n\nbody\n",
+		"list-tab-indent":       "---\nfrom: codex\nworking_repos:\n\t- /a\n\t- /b\n---\n\nbody\n",
+		"quoted-value-escaped":  "---\nfrom: codex\ntask: \"a\\tb\"\n---\n\nbody\n",
+		"null-value":            "---\nfrom: codex\ntask: null\n---\n\nbody\n",
+		"tilde-value":           "---\nfrom: codex\ntask: ~\n---\n\nbody\n",
+		"list-item-missing-gap": "---\nfrom: codex\nworking_repos:\n-nospace\n---\n\nbody\n",
 	}
 }
 
@@ -86,6 +99,13 @@ func frontmatterAcceptCases() map[string]map[string]string {
 		"ws-around-delim":      {"from": "codex"},
 		"body-only":            {},
 		"reply-required-true":  {"message_id": "m1", "from": "codex", "reply_required": "true"},
+
+		"unusual-key-chars":    {"weird key-name!": "value", "from": "codex"},
+		"list-zero-indent":     {"from": "codex", "working_repos": ""},
+		"list-tab-indent":      {"from": "codex", "working_repos": ""},
+		"quoted-value-escaped": {"from": "codex", "task": "a\tb"},
+		"null-value":           {"from": "codex", "task": ""},
+		"tilde-value":          {"from": "codex", "task": ""},
 	}
 }
 
@@ -100,6 +120,7 @@ func frontmatterRejectCases() []string {
 		"dup-key",
 		"non-keyvalue-line",
 		"empty-key",
+		"list-item-missing-gap",
 	}
 }
 

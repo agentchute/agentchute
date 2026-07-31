@@ -193,27 +193,20 @@ Encoded as optional YAML frontmatter. The **normative** envelope is small:
 
 **Compatibility fields:** `message_id` is no longer emitted (removed in v0.9.0); the identity is `(to,from,seq)` and reply threading rides `in_reply_to` (the canonical `(to,from,seq)` ref). A `message_id` on an older in-flight message is still tolerated on read (ignored — never the identity). `to`, `task`, and `status` are no longer part of the envelope or the reference CLI at all (`to` is encoded by location; a message's subject, if any, is a body convention — the first Markdown line — not a typed field). They carry no special-case compat handling anymore; a stray `task:`/`status:`/`to:` line on an old in-flight message is simply an unrecognized field, ignored per §6.5 like any other.
 
-**Frontmatter grammar (v2.5 plan B8).** One parser (`parseFrontmatter`, the reference CLI's `internal/loop/registration.go`) implements this grammar for both message envelopes here and registration rows (§5.2) — one engine, not a per-context dialect, closing a historical validator/recorder skew where a message's envelope was gated by one parser and its fields read by another. It is a flat key:value format, not general YAML:
+**Frontmatter grammar (v2.5 plan B8).** One parser (`parseFrontmatter`, the reference CLI's `internal/loop/registration.go`) implements this for both message envelopes here and registration rows (§5.2) — one engine, not a per-context dialect, closing a historical validator/recorder skew where a message's envelope was gated by one parser and its fields read by another. It is a flat key:value format, not general YAML. The steps below are exact — verified line-for-line against `parseFrontmatter` and against the independent conformance reimplementation (`conformance/fm.go`); the two agree with each other on every point:
 
-```
-block       := "---" LF *line "---" LF
-line        := blank-line | kv-line
-kv-line     := key ":" [ SP value ] LF
-key         := 1*(ALPHA / DIGIT / "_")            ; non-empty, no leading space/tab
-value       := scalar | list-header
-list-header := LF *( SP SP "-" SP item LF )        ; only when the scalar is empty
-scalar      := 1*OCTET                            ; everything after the first ":"
-```
+1. The opening line and the next line whose TRIMMED content is exactly `---` delimit the block; whitespace around the delimiter itself is tolerated. A block with no closing `---` is a hard parse error for the whole message.
+2. Scan the lines strictly between the delimiters, top to bottom:
+   - A blank line (after trimming) is skipped.
+   - A line starting with a literal space or tab is a hard parse error for the **whole block** — UNLESS it is a list item continuation (see below); a list is the only place indentation is expected or tolerated.
+   - Every other line MUST contain a `:`. The KEY is everything before the *first* `:`, trimmed; it may be **any non-empty text** — there is no charset restriction (hyphens, spaces, Unicode all pass) beyond "not empty after trimming." In practice every field name in this protocol is a bare identifier (`agent_id`/`from`/`reply_required`/…), but the parser itself does not enforce that shape. A line with no `:` at all — including a `#`-prefixed comment, since this grammar has no comment syntax — is a hard parse error for the whole block.
+   - A key may appear at most once; a repeated key is a hard parse error for the whole block (no last-write-wins).
+   - The VALUE is everything after that first `:`, trimmed (further `:` or `#` characters inside it are literal value content, not new fields or comments).
+   - A non-empty value makes the field a SCALAR: its text runs through the cleanup in step 3.
+   - An empty value (`key:` with nothing after it, or only whitespace) OPENS A LIST: each following line is inspected — a blank line is skipped and does **not** end the list; a line whose content, after trimming **any** amount of leading whitespace (zero, one, a tab, or more — there is no fixed indent width), starts with `- ` (dash, single space) is consumed as a list item, its text being everything after that `- ` prefix, run through the same cleanup as a scalar; the first line that is neither blank nor `- `-prefixed ends the list — that line is **not** consumed, and is re-scanned as an ordinary top-level line (subject to every rule above, including the indentation check) — and leaves the key with an empty scalar.
+3. Scalar/item cleanup: `strconv.Unquote` is tried first (interprets backslash escapes inside a double-quoted value, e.g. `"a\tb"` → `a`+TAB+`b`); failing that, one layer of surrounding matched `"` or `'` is stripped verbatim (no escape interpretation); the literal values `null` and `~` collapse to the empty string.
 
-Rules, precisely:
-- The opening and closing lines are the first line and the next line whose TRIMMED content is exactly `---`; whitespace around the delimiter itself is tolerated. A block with no closing `---` is a hard parse error for the whole message.
-- Blank lines between the delimiters are skipped.
-- Every other line MUST be a `key: value` pair with the key un-indented. An indented line, or any line without a `:` — including a `#`-prefixed comment, since this grammar has no comment syntax — is a hard parse error for the **whole block**, not a line skipped in isolation.
-- A key may appear at most once; a repeated key is a hard parse error for the whole block (no last-write-wins).
-- A `key:` with nothing after the colon on that line opens a LIST: each immediately following `  - <item>` line (after trimming) is consumed as an item; the first non-item, non-blank line ends the list and resumes normal key:value scanning. A key with no following items is an empty scalar.
-- Scalars are trimmed, then unwrapped: `strconv.Unquote` is tried first (interprets backslash escapes inside a double-quoted value); failing that, one layer of surrounding matched `"` or `'` is stripped; `null` and `~` collapse to the empty string.
-
-Unknown keys are always tolerated (§6.5) — the grammar's strictness is about **shape** (one key per line, no stray text, no indentation, no duplicates), never about which key names appear.
+Unknown keys are always tolerated (§6.5) — the grammar's strictness is about **shape** (a `:`-bearing key per line, no stray text, no indentation outside a list, no duplicate keys), never about which key names or how many list-item spaces appear.
 
 ### 6.5 Forward compatibility
 Receivers MUST ignore unrecognized frontmatter fields. `from` is required information (§6.4). Conforming registrations emit the protocol major version in the `v:` field (emitted as `v: 2`; absent `v:` implies a silent legacy/unknown state with no warnings generated, as mixed fleets are normal). A genuine protocol-major version mismatch (where `v:` is present and does not equal 2) surfaces as a diagnostic warning (doctor/status) but is never a delivery blocker. Messages MUST be valid UTF-8. The reference CLI accepts up to 4 MiB per message.
