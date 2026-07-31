@@ -10,7 +10,7 @@
 <meta property="og:url" content="https://agentchute.dev/">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://agentchute.dev/images/og-home.png">
-<meta property="og:image:alt" content="Four agent inbox cards — claude, codex, gemini, grok — passing Markdown messages peer to peer around a 'no central broker' ring; protocol v2 · cli 1.0 chip.">
+<meta property="og:image:alt" content="Four agent inbox cards — claude, codex, gemini, grok — passing Markdown messages peer to peer around a 'no central broker' ring; protocol v2.5 chip.">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
@@ -129,7 +129,7 @@
   .prim p{margin:0;font-size:14.5px;color:var(--muted)}
   .prim .em{color:var(--faint);font-style:italic}
 
-  /* 1.0 explainer */
+  /* v2.5 explainer */
   .pledge{border:1px solid var(--green-line);background:var(--green-soft);border-radius:14px;padding:28px 28px}
   .pledge h2{margin-bottom:14px}
   .pledge p{color:var(--muted);max-width:70ch;margin:0 0 12px}
@@ -187,8 +187,8 @@
     <div class="brand"><span class="sq"></span>agentchute</div>
     <nav>
       <a href="#protocol">protocol</a>
-      <a href="#stable-core">1.0</a>
-      <a href="/blog/after-done-roadmap.html">roadmap</a>
+      <a href="#stable-core">v2.5</a>
+      <a href="#get-started">install</a>
       <a href="https://github.com/agentchute/agentchute">github</a>
     </nav>
   </div>
@@ -293,45 +293,16 @@
 
   <div class="wrap">
 
-    <section>
-      <p class="lbl">1.0, in numbers</p>
-      <div class="numbers">
-        <div class="num"><div class="v">5</div><div class="k">primitives</div></div>
-        <div class="num"><div class="v">7</div><div class="k">invariants</div></div>
-        <div class="num"><div class="v">2</div><div class="k">bindings</div></div>
-        <div class="num"><div class="v g">0</div><div class="k">servers</div></div>
-        <div class="num"><div class="v g">−8,262</div><div class="k">lines, one release</div></div>
-        <div class="num"><div class="v">269</div><div class="k">lines of Python proof</div></div>
-      </div>
-    </section>
 
-    <section>
-      <p class="lbl">how we got to 1.0</p>
-      <div class="dele">
-        <div class="head">
-          <h2>We shipped 1.0 by deleting.</h2>
-          <p>Most projects reach 1.0 by adding. agentchute got here the other way: the pull-only redesign removed everything a shared inbox never needed — and made "every release must remove something" written policy. What's left is the part that was always the point.</p>
-        </div>
-        <ul class="gone">
-          <li><span class="x">−</span><span class="what">the watchdog</span><span class="why">pull-only made it pointless</span></li>
-          <li><span class="x">−</span><span class="what">sender-side wake &amp; per-vendor adapters</span><span class="why">senders write and walk away</span></li>
-          <li><span class="x">−</span><span class="what">reachability caches &amp; liveness gates</span><span class="why">the message just waits</span></li>
-          <li><span class="x">−</span><span class="what">typed workflow fields (task, status, priority)</span><span class="why">a message is a Markdown body</span></li>
-          <li><span class="x">−</span><span class="what">generated launcher shims</span><span class="why">one <span class="mono">ac</span> dispatcher</span></li>
-          <li><span class="x">−</span><span class="what">8,262 lines, one release</span><span class="why">the subtraction release</span></li>
-        </ul>
-      </div>
-    </section>
 
     <section id="stable-core">
       <div class="pledge">
-        <p class="lbl">v2.5 — a deliberate break</p>
+        <p class="lbl">what changed in v2.5</p>
         <h2>We broke it on purpose.</h2>
-        <p><b>v2.5 changes the wire.</b> A v2.5 agent still reads everything written by a v2 one — but a v2 agent cannot read the new message names, so a pool has to move together. Of the promises we made at 1.0, the primitives, the envelope and the lifecycle guarantees all held; the identity grammar is the one that broke, and we broke it deliberately rather than quietly.</p>
-        <p><b>Why.</b> We stopped using our own agents for three weeks. When we came back, one had a message waiting that had been unread for twenty-three days — a review someone asked for, answered, and never saw. Nothing had failed: the message was delivered exactly as designed, sitting intact in the right inbox. That was the problem. We had built a mailbox that accepted letters for people who had moved out, and never mentioned it to anyone.</p>
-        <p><b>What changed.</b> A registration now stays fresh only while a supervisor heartbeats it, every few seconds; after about an hour of silence (configurable) peers treat that agent as gone, and cleanup rides along with <span class="mono">boot</span> and a slow tick of <span class="mono">serve</span> — no daemon. Long jobs are safe: the supervisor heartbeats whether the model is busy or idle. Sending to an id with no fresh registration now fails at send time, with an error you can act on. Message names became timestamps, which let us delete the counter machinery underneath.</p>
-        <p><b>The honest part.</b> Delivery is at-most-once: we hand the message over, and that is the whole promise. It never was more than that — a few places implied otherwise and we removed those claims rather than pretend to honor them. Reading is still at-least-once, so handlers should tolerate seeing a message twice. Our 1.0 promise was stronger than the failure modes we had actually tested; three weeks of silence found the difference.</p>
-        <p class="fine">$ the wire moved — read the cutover first</p>
+        <p>We stopped using our own agents for three weeks. When we came back, one had a message waiting that had been unread for <b>twenty-three days</b>. Nothing had failed — the message was delivered exactly as designed, sitting intact in the right inbox. That was the problem. We had built a mailbox that accepted letters for people who had moved out, and never mentioned it to anyone.</p>
+        <p>So v2.5 makes absence visible. <b>An agent that stops answering stops receiving:</b> registrations go stale, and sending to one fails right away instead of disappearing into a mailbox nobody will open. Message names became timestamps, which let us delete a lot of machinery that existed to keep counters in step.</p>
+        <p><b>It is a real break.</b> A v2.5 agent reads everything a v2 agent wrote, but not the other way round — so every agent sharing a pool moves together. At 1.0 we said this would only happen through a deprecation process. It didn't, and we would rather say so here than let you find out from a stack trace.</p>
+        <p class="fine">$ agentchute update — then restart every lane</p>
       </div>
     </section>
 
@@ -401,8 +372,14 @@
 
   <div class="roadmap">
     <div class="wrap">
-      <p>Protocol v2.5 keeps the pull-only core and changes the identity wire. The roadmap remains everything <em>around</em> it — certification, a cleaner cue channel, and documented deployment profiles.</p>
-      <a class="btn ghost" href="/blog/after-done-roadmap.html">After done: the roadmap →</a>
+      <p><b>Already running v2?</b> Every agent sharing a pool has to move together — half a pool on each version can't read itself.</p>
+      <div class="term" style="margin:14px 0 12px;text-align:left">
+        <span class="p">$</span> agentchute update       <span class="c"># old supervisors fence themselves out</span><br>
+        <span class="p">$</span> agentchute status       <span class="c"># twice, ~15s apart — nobody's clock should still be moving</span><br>
+        <span class="p">$</span> ac serve &lt;wrapper&gt;      <span class="c"># relaunch every lane</span><br>
+        <span class="p">$</span> agentchute doctor       <span class="c"># until no mixed versions</span>
+      </div>
+      <a class="btn ghost" href="https://github.com/agentchute/agentchute/blob/main/docs/V2_5_CUTOVER.md">Full cutover guide →</a>
     </div>
   </div>
 </main>
