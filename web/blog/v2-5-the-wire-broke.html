@@ -50,7 +50,12 @@
   <h1>We said the wire was done. It wasn't.</h1>
   <p class="meta">July 31, 2026 · agentchute · reHuman Labs</p>
 
-  <p class="lede"><b>agentchute v2.5 changes the wire.</b> A v2.5 agent still reads everything a v2 agent wrote — but a v2 agent cannot read the new message names, so a pool has to move together. At 1.0 we promised this would not happen without a deprecation process. It happened. Here is what changed, and the message that convinced us to change it.</p>
+  <p class="lede"><b>agentchute v2.5 changes the wire.</b> A v2.5 agent still reads normal v2 mail — but a v2 agent cannot read the new message names, so a pool has to move together. At 1.0 we promised this would not happen without a deprecation process. It happened. Here is what changed, and the message that convinced us to change it.</p>
+
+  <figure>
+    <img src="/blog/assets/v25-lived-and-learned.svg" alt="Three-panel diagram for agentchute v2.5: a fleet pause of about three weeks left a review message unread for 23 days in an inbox; the old bus could not tell a thinking agent from one that had moved out; the change replaces struck-out presence, sequence-allocator, identity-guessing and duplicate-parser machinery with soft registration and sweep, send that fails if unreachable, timestamp identity, and a per-session guard latch — replacement, not a diet.">
+    <figcaption>we ran it on ourselves, hit a real failure, and replaced what failed — net lines up, design sharper</figcaption>
+  </figure>
 
   <h2>The incident that forced the question</h2>
   <p>We stopped using our own agents for about three weeks. Life happened; the panes got closed. When we came back, one of them had a message waiting that had been sitting unread for <b>twenty-three days</b> — a review someone had asked for, answered, and then never seen.</p>
