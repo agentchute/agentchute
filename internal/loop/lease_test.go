@@ -204,6 +204,95 @@ func TestVerifyFence(t *testing.T) {
 	}
 }
 
+func TestInvalidateAllServeLeasesFencesAllAndAllowsFreshAcquire(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	alice, err := AcquireServeLease(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := AcquireServeLease(cfg, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.LoopDir, "state", "setup"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := InvalidateAllServeLeases(cfg)
+	if err != nil {
+		t.Fatalf("invalidate leases: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("invalidated = %d, want 2", got)
+	}
+	for _, lease := range []*ServeLease{alice, bob} {
+		if err := RenewLease(lease); err != ErrFenced {
+			t.Fatalf("RenewLease(%s) after invalidation = %v, want ErrFenced", lease.ID, err)
+		}
+		if _, err := os.Stat(claimPath(cfg, lease.ID)); !os.IsNotExist(err) {
+			t.Fatalf("%s claim still exists after invalidation: %v", lease.ID, err)
+		}
+		if _, err := AcquireServeLease(cfg, lease.ID); err != nil {
+			t.Fatalf("fresh acquire(%s) after invalidation: %v", lease.ID, err)
+		}
+	}
+}
+
+func TestInvalidateAllServeLeasesEmptyPool(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	got, err := InvalidateAllServeLeases(cfg)
+	if err != nil {
+		t.Fatalf("invalidate empty pool: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("invalidated = %d, want 0", got)
+	}
+}
+
+func TestInvalidateAllServeLeasesTakesAgentLock(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	if _, err := AcquireServeLease(cfg, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	lockHeld := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- withAgentLock(cfg, "alice", func() error {
+			close(lockHeld)
+			<-releaseLock
+			return nil
+		})
+	}()
+	<-lockHeld
+
+	invalidationDone := make(chan error, 1)
+	go func() {
+		_, err := InvalidateAllServeLeases(cfg)
+		invalidationDone <- err
+	}()
+	select {
+	case err := <-invalidationDone:
+		t.Fatalf("invalidation completed while agent lock was held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if _, err := os.Stat(claimPath(cfg, "alice")); err != nil {
+		t.Fatalf("claim changed while agent lock was held: %v", err)
+	}
+
+	close(releaseLock)
+	if err := <-lockDone; err != nil {
+		t.Fatalf("lock holder: %v", err)
+	}
+	if err := <-invalidationDone; err != nil {
+		t.Fatalf("invalidation after lock release: %v", err)
+	}
+	if _, err := os.Stat(claimPath(cfg, "alice")); !os.IsNotExist(err) {
+		t.Fatalf("claim should be removed after lock release: %v", err)
+	}
+}
+
 func TestDistinctIDsNeverCollide(t *testing.T) {
 	cfg := newLeaseTestConfig(t)
 	a, err := AcquireServeLease(cfg, "alice")

@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -270,10 +271,9 @@ func TestUpdate_NoResyncAllowsBinaryOnlyWhenNoSetupState(t *testing.T) {
 	})
 }
 
-// With --no-resync the apply path swaps the binary but must NEVER invoke the
-// destructive setup re-sync seam (no bus reset, registrations preserved). We
-// assert via the updateRunResync seam: a stub that records invocation must stay
-// untouched, while the binary is replaced by the served archive.
+// With --no-resync the apply path swaps the binary and invalidates leases, but
+// must NEVER invoke the setup re-sync seam. We assert via updateRunResync: a
+// stub that records invocation must stay untouched, while the old lease fences.
 func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions used by the writable probe")
@@ -323,15 +323,24 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 		updateRunResync = oldResync
 	})
 
+	var lease *loop.ServeLease
 	withCwd(t, root, func() {
 		mustExampleRepo(t, root) // deliberately NO saved setup state
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease, err = loop.AcquireServeLease(cfg, "codex-agentchute")
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := cmdUpdate([]string{"--version", "v0.5.0", "--no-resync"}); err != nil {
 			t.Fatalf("--no-resync binary-only update failed: %v", err)
 		}
 	})
 
 	if resyncCalled {
-		t.Fatal("--no-resync must NOT invoke the destructive setup re-sync")
+		t.Fatal("--no-resync must NOT invoke the setup re-sync")
 	}
 	got, err := os.ReadFile(bin)
 	if err != nil {
@@ -339,6 +348,78 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 	}
 	if string(got) != "NEW-BINARY-BYTES" {
 		t.Fatalf("binary should be swapped to the served archive; got %q", got)
+	}
+	if err := loop.RenewLease(lease); !errors.Is(err, loop.ErrFenced) {
+		t.Fatalf("old lease after --no-resync update = %v, want ErrFenced", err)
+	}
+}
+
+func TestUpdateInvalidatesLeaseBeforeSetupResync(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions used by the writable probe")
+	}
+	root := t.TempDir()
+	installDir := t.TempDir()
+	bin := filepath.Join(installDir, "agentchute")
+	if err := os.WriteFile(bin, []byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0}, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	asset := fmt.Sprintf("agentchute_0.5.0_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	archive := makeTarGz(t, map[string][]byte{"agentchute": []byte("NEW-BINARY-BYTES")})
+	sum := sha256.Sum256(archive)
+	checksum := hex.EncodeToString(sum[:])
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "checksums.txt"):
+			fmt.Fprintf(w, "%s  %s\n", checksum, asset)
+		case strings.HasSuffix(r.URL.Path, asset):
+			w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	oldBase := updateGitHubBase
+	oldTarget := resolveUpdateTargetForTest
+	oldResync := updateRunResync
+	updateGitHubBase = srv.URL
+	resolveUpdateTargetForTest = bin
+	t.Cleanup(func() {
+		updateGitHubBase = oldBase
+		resolveUpdateTargetForTest = oldTarget
+		updateRunResync = oldResync
+	})
+
+	var lease *loop.ServeLease
+	resyncCalled := false
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeSetupPoolState(cfg, "runner", nil); err != nil {
+			t.Fatal(err)
+		}
+		lease, err = loop.AcquireServeLease(cfg, "codex-agentchute")
+		if err != nil {
+			t.Fatal(err)
+		}
+		updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
+			resyncCalled = true
+			if err := loop.RenewLease(lease); !errors.Is(err, loop.ErrFenced) {
+				t.Fatalf("lease at setup re-sync = %v, want ErrFenced", err)
+			}
+			return nil
+		}
+		if err := cmdUpdate([]string{"--version", "v0.5.0"}); err != nil {
+			t.Fatalf("update with re-sync failed: %v", err)
+		}
+	})
+	if !resyncCalled {
+		t.Fatal("normal update did not invoke setup re-sync")
 	}
 }
 

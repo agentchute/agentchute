@@ -306,7 +306,7 @@ func TestSetupHelpAndInvalidWakeRunnerOnly(t *testing.T) {
 	})
 }
 
-func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
+func TestSetupInvalidatesServeLeasesAndPreservesRegistrations(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))
 	home := t.TempDir()
@@ -319,9 +319,16 @@ func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
 
 	agentsDir := filepath.Join(root, ".agentchute", "loop", "agents")
 	mustMkdir(t, agentsDir)
-	mustWrite(t, filepath.Join(agentsDir, "codex-agentchute.md"), []byte("---\nagent_id: codex-agentchute\nvendor: openai\ncontrol_repo: "+root+"\nhost: test\nlast_seen: 2026-01-01T00:00:00Z\nstatus: active\n---\n"))
+	registrationPath := filepath.Join(agentsDir, "codex-agentchute.md")
+	registration := []byte("---\nagent_id: codex-agentchute\nvendor: openai\ncontrol_repo: " + root + "\nhost: test\nlast_seen: 2026-01-01T00:00:00Z\nstatus: active\n---\n")
+	mustWrite(t, registrationPath, registration)
 	mustWrite(t, filepath.Join(agentsDir, "codex.example.md"), []byte("tracked example\n"))
 	mustWrite(t, filepath.Join(agentsDir, "README.md"), []byte("format reference\n"))
+	cfg := &loop.Config{ControlRepo: root, LoopDir: filepath.Join(root, ".agentchute", "loop")}
+	lease, err := loop.AcquireServeLease(cfg, "codex-agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	withCwd(t, root, func() {
 		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"}); err != nil {
@@ -329,8 +336,15 @@ func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
 		}
 	})
 
-	if _, err := os.Stat(filepath.Join(agentsDir, "codex-agentchute.md")); !os.IsNotExist(err) {
-		t.Fatalf("live registration should be cleared by setup: %v", err)
+	gotRegistration, err := os.ReadFile(registrationPath)
+	if err != nil {
+		t.Fatalf("registration should be preserved by setup: %v", err)
+	}
+	if string(gotRegistration) != string(registration) {
+		t.Fatalf("registration changed during setup:\ngot:  %s\nwant: %s", gotRegistration, registration)
+	}
+	if err := loop.RenewLease(lease); !errors.Is(err, loop.ErrFenced) {
+		t.Fatalf("old lease after setup = %v, want ErrFenced", err)
 	}
 	for _, keep := range []string{"codex.example.md", "README.md"} {
 		if _, err := os.Stat(filepath.Join(agentsDir, keep)); err != nil {
@@ -585,7 +599,7 @@ func TestSetupWrapperNarrowingRemovesDroppedHooksAndShims(t *testing.T) {
 // hooks, shims, PATH block, saved setup state) must all land BEFORE the
 // destructive runtime reset. We inject a failure into the reset seam and assert
 // every wake-infrastructure artifact already exists — so a mid-setup failure can
-// never leave the bus with cleared registrations AND no wake infrastructure. A
+// never leave the bus with invalidated leases AND no wake infrastructure. A
 // pre-reorder build (reset first) leaves these unwritten when the reset fails and
 // this test goes red.
 func TestSetup_TemplatesWrittenBeforeRuntimeReset(t *testing.T) {

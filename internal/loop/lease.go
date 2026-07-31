@@ -359,3 +359,59 @@ func ReleaseLease(l *ServeLease) error {
 		return syncDir(filepath.Dir(path))
 	})
 }
+
+// InvalidateAllServeLeases fences every currently-running supervisor in this
+// pool by removing its serve.claim under that agent's lock. The next
+// RenewLease or VerifyFence by an old holder returns ErrFenced. Registration
+// rows are deliberately preserved; setup/update use lease invalidation, not
+// row deletion, as the wire-break forcing function.
+func InvalidateAllServeLeases(cfg *Config) (int, error) {
+	if cfg == nil {
+		return 0, fmt.Errorf("InvalidateAllServeLeases: nil config")
+	}
+	stateDir := filepath.Join(cfg.LoopDir, "state")
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("list serve leases in %s: %w", stateDir, err)
+	}
+
+	invalidated := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		id := entry.Name()
+		path := claimPath(cfg, id)
+		if _, err := os.Lstat(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return invalidated, fmt.Errorf("inspect serve lease %s: %w", path, err)
+		}
+		if err := ValidateAgentID(id); err != nil {
+			return invalidated, fmt.Errorf("serve lease directory %q has invalid agent id: %w", id, err)
+		}
+
+		removed := false
+		err := withAgentLock(cfg, id, func() error {
+			if err := os.Remove(path); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return nil
+				}
+				return fmt.Errorf("remove serve lease %s: %w", path, err)
+			}
+			removed = true
+			return syncDir(filepath.Dir(path))
+		})
+		if err != nil {
+			return invalidated, err
+		}
+		if removed {
+			invalidated++
+		}
+	}
+	return invalidated, nil
+}
