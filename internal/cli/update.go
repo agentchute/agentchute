@@ -141,6 +141,9 @@ func cmdUpdate(args []string) error {
 		} else if p := strings.TrimSpace(global.Profile); p != "" {
 			setupArgs = append(setupArgs, "--profile", p)
 		}
+		if w := hookRefreshSkipWarning(cfg.ControlRepo, wrappersArg); w != "" {
+			fmt.Fprintln(os.Stderr, w)
+		}
 	}
 
 	// 2. Resolve the real binary we will replace — refuse a shim BEFORE any
@@ -254,6 +257,31 @@ var updateRunResync = func(target string, setupArgs []string, controlRepo string
 	setup.Stdin = os.Stdin
 	setup.Dir = controlRepo
 	return setup.Run()
+}
+
+// hookRefreshSkipWarning reports the warning to print when a resync will
+// replay `setup --wrappers none` while wrapper hook templates exist on disk:
+// the replay will NOT refresh those templates — the exact state that
+// stranded pre-1.5 hooks against the 1.5.0 binary
+// (docs/decisions/agentchute-v150-cutover-incident-and-fix.md). Empty means
+// nothing to warn about. The replay itself is deliberately untouched: an
+// empty recorded wrapper list is the valid `--wrappers none` mode and update
+// cannot distinguish "chose none" from "state predates wrapper recording".
+func hookRefreshSkipWarning(controlRepo, wrappersArg string) string {
+	if wrappersArg != "none" {
+		return ""
+	}
+	var present []string
+	for _, h := range hookWrappers {
+		if _, err := os.Stat(filepath.Join(controlRepo, filepath.FromSlash(h.Dest))); err == nil {
+			present = append(present, h.Name)
+		}
+	}
+	if len(present) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("WARNING: saved setup state records no wrappers; this update will NOT refresh the installed hook templates for: %s\n  after the update, run `agentchute hooks install --wrapper all --scope repo --force`, then re-record the pool with `agentchute setup --wrappers <list>`.",
+		strings.Join(present, ", "))
 }
 
 // resolveUpdateTargetForTest, when non-empty, overrides the running-binary

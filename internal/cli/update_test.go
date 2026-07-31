@@ -527,3 +527,30 @@ func TestFetchChecksumRejectsNonHex(t *testing.T) {
 		t.Fatalf("non-hex checksum must be rejected; got %v", err)
 	}
 }
+
+// The v1.5.0 cutover gap (docs/decisions/
+// agentchute-v150-cutover-incident-and-fix.md): a pool whose saved state
+// records no wrappers replays `setup --wrappers none`, which skips the hook
+// template refresh while hook files sit on disk — stranding stale templates
+// against the new binary. The replay stays untouched (decision B rejects a
+// hard-fail); update just has to say it loudly.
+func TestHookRefreshSkipWarning(t *testing.T) {
+	repo := t.TempDir()
+	if got := hookRefreshSkipWarning(repo, "none"); got != "" {
+		t.Fatalf("no hook files installed: want empty warning, got %q", got)
+	}
+	mustWriteCanonicalHook(t, repo, "claude-code")
+	mustWriteCanonicalHook(t, repo, "codex")
+	got := hookRefreshSkipWarning(repo, "none")
+	for _, want := range []string{"claude-code", "codex", "hooks install --wrapper all --scope repo --force", "setup --wrappers"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("warning %q missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "gemini-cli") {
+		t.Fatalf("warning names a wrapper with no installed hook file: %q", got)
+	}
+	if got := hookRefreshSkipWarning(repo, "claude-code,codex"); got != "" {
+		t.Fatalf("recorded wrappers: want empty warning, got %q", got)
+	}
+}
