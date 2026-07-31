@@ -357,6 +357,74 @@ func TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd(t *testing.T) {
 	})
 }
 
+// TestGuardLatchLivelockFixEndToEndServeLane is the guard-latch-livelock
+// fix's end-to-end lock (brief test case 11): the exact serve-lane sequence
+// that used to livelock — check arms the latch, the implementer's own
+// git push/gh pr create/reply are all now allowed mid-turn, and the Stop
+// hook's turn-end still archives, clears the latch, and gates cleanly — zero
+// human intervention, no continuation turn required.
+func TestGuardLatchLivelockFixEndToEndServeLane(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "review PR 110"}); err != nil {
+			t.Fatalf("cmdSend: %v", err)
+		}
+		// A real lease (not an arbitrary token): bob's own mid-turn `send`
+		// below is fenced against it exactly as it would be under `ac serve`
+		// — unrelated to the guard (see guard_test.go's package doc note on
+		// MintSendStamp fencing sends against the FROM agent's own lease).
+		lease, err := loop.AcquireServeLease(cfg, "bob")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", lease.Token)
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+
+		// check arms the latch.
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err != nil {
+			t.Fatalf("cmdCheck(bob): %v", err)
+		}
+		if _, err := loop.ReadGuardLatch(cfg, "bob"); err != nil {
+			t.Fatalf("latch should be armed after check: %v", err)
+		}
+
+		// The turn's own scope-expanding work — previously denied, now the
+		// entire point of the fix — is allowed while armed.
+		t.Setenv("AGENTCHUTE_AGENT_ID", "bob")
+		for _, cmd := range []string{"git push origin HEAD", "gh pr create", "git tag -a v1.5.1 -m x"} {
+			if d := evaluateGuardInvocation("", "", "", cmd); !d.Allowed {
+				t.Fatalf("cmd=%q denied while armed; the livelock fix must allow it", cmd)
+			}
+		}
+		if err := cmdSend([]string{"--from", "bob", "--to", "alice", "--body", "reviewed", "--reply-to", "to-bob_from-alice_review"}); err != nil {
+			t.Fatalf("agentchute send --reply-to must be allowed mid-turn: %v", err)
+		}
+
+		// The Stop hook's turn-end: archives, clears, gates — zero human
+		// intervention, no continuation turn.
+		out, err := captureStdout(t, func() error {
+			return cmdTurnEnd([]string{"--as", "bob", "--vendor", "openai", "--json"})
+		})
+		if err != nil {
+			t.Fatalf("turn-end: %v\n%s", err, out)
+		}
+		if _, err := loop.ReadGuardLatch(cfg, "bob"); !os.IsNotExist(err) {
+			t.Fatalf("latch should be cleared after turn-end; err=%v", err)
+		}
+		if n := countMessageFiles(t, cfg.ArchiveDir()); n != 1 {
+			t.Errorf("archive = %d after turn-end; want 1 (the claimed mail committed)", n)
+		}
+		var status gateStatus
+		if jerr := json.Unmarshal([]byte(out), &status); jerr != nil {
+			t.Fatalf("unmarshal: %v\n%s", jerr, out)
+		}
+		if status.Blocked {
+			t.Errorf("gate falsely blocked after a clean end-to-end turn; status=%+v", status)
+		}
+	})
+}
+
 // TestTurnEndSurvivesUnresolvableVendorForNonCanonicalID is claude-code
 // review PR #89 BLOCKER 2: the shipped hook entries invoke bare `turn-end`
 // (no --vendor, by design — C26 ships it env-identity-only), so step 0's
