@@ -23,7 +23,7 @@ The repo follows a release-squash convention: each release lands on `main` as a 
 - The guard latch is best-effort defense-in-depth, never a security boundary. Coverage is stated per vendor and launch mode, including Codex hosted-tool gaps, Gemini's start-of-next-turn handler, Grok's lack of hooks, and unsupervised sessions.
 
 **Measured release delta**
-- Canonical tag-range measurement: `git diff --numstat v1.0.0..v1.5.0` = `+14,524 / -8,617` lines, net `+5,907`, across the complete unreleased range. The deletion count is measured from Git rather than copied from the implementation plan.
+- Canonical tag-range measurement: `git diff --numstat v1.0.0..v1.5.0` = `+14,643 / -8,618` lines, net `+6,025`, across the complete unreleased range. The deletion count is measured from Git rather than copied from the implementation plan.
 
 **Migration and live-pool cutover**
 
