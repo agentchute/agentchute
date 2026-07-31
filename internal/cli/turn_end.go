@@ -38,30 +38,26 @@ import (
 //     `agentchute gate --before finish` (gate.go): default text, --json, and
 //     --codex-hook Stop (silent on clear, block-JSON exit-0 on block).
 //
-// Recovery properties: turn-end has NO self-denial of its own (unlike
-// check/ack) — its only possible denial is the PreToolUse guard hook itself.
+// Recovery property (and its known limit): turn-end has NO self-denial of
+// its own (unlike check/ack) — its only possible denial is the PreToolUse
+// guard hook itself. When NEITHER that hook NOR the Stop hook is firing at
+// all (e.g. a hook-trust rollout window on a vendor that gates project-local
+// hook changes per-command), a lane armed by `check` is still recoverable:
+// the guard that would deny a direct `turn-end` invocation also isn't
+// running, so nothing stops it (check/ack's own self-denial error text names
+// it as the fix for exactly this reason — TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd).
 //
-//  1. When NEITHER that hook NOR the Stop hook is firing at all (e.g. a
-//     hook-trust rollout window on a vendor that gates project-local hook
-//     changes per-command), a lane armed by `check` is still recoverable:
-//     the guard that would deny a direct `turn-end` invocation also isn't
-//     running, so nothing stops it (check/ack's own self-denial error text
-//     names it as the fix — TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd).
-//  2. A MIXED state — PreToolUse active, Stop independently disabled/
-//     failing — is NOT recoverable via a direct `turn-end` call: the active
-//     guard denies it (deliberately deny-listed, so a same-turn instruction
-//     can't clear its own latch and disarm the rest of the deny list for the
-//     remainder of the turn). The recovery path here is instead
-//     `agentchute guard --recover` (guard.go): it restores ONLY mailbox
-//     access (ack/check/turn-end), setting a session-sticky mark that keeps
-//     scope-expanding tools denied for the rest of THIS session regardless
-//     of latch state — cleared only by an actual relaunch (a new serve
-//     token), never by anything a model can invoke, including turn-end
-//     itself once recovered (codex review PR #89 round 3 finding #1; grok's
-//     A1 attack on an earlier age-based draft; claude-code review round 4
-//     ruling; TestMixedHookTrustStateRecoversViaGuardRecover). turn-end
-//     itself does not need to know about the recovered mark — it archives
-//     and gates exactly as always regardless — but see step 3 below.
+// KNOWN GAP (codex review, PR #89 round 3, finding #1 — NOT fixed): a MIXED
+// state where the PreToolUse guard is active but Stop is independently
+// disabled/failing is not recoverable this way — the active guard denies a
+// model's own attempt to run `turn-end` (it is deliberately deny-listed, so a
+// same-turn instruction can't clear its own latch and disarm the rest of the
+// deny list for the remainder of the turn). Removing turn-end from the deny
+// list would close this gap but reopen that exact bypass, which several
+// review rounds have independently protected; kept deny-listed on the
+// judgment that a same-turn security bypass is worse than a narrow, human-
+// recoverable (delete state/<id>/guard.latch) hook-rollout edge. Flagged for
+// Alex/reviewers as an open design question, not silently accepted.
 func cmdTurnEnd(args []string) error {
 	fs := flag.NewFlagSet("turn-end", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -177,16 +173,6 @@ func cmdTurnEnd(args []string) error {
 	status, err := evaluateGate(cfg, agentID, gatePhaseFinish, false, false, now)
 	if err != nil {
 		return err
-	}
-
-	// This session may be running in degraded guard state (it ran
-	// `guard --recover` earlier this same session): mailbox commands work
-	// normally, but scope-expanding tools stay denied until relaunch. turn-end
-	// still archives and gates exactly as always regardless — this is purely
-	// an informational warning (claude-code review round 4 item 3), never a
-	// reason to alter turn-end's own behavior.
-	if session != "" && guardRecoveredForSession(cfg, agentID, session) {
-		fmt.Fprintln(os.Stderr, "warning: this session is in degraded guard state (ran `guard --recover` earlier); scope-expanding tools remain denied until relaunch")
 	}
 
 	if codexHook == "Stop" {

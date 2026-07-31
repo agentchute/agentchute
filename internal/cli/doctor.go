@@ -198,7 +198,6 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 			checkSelfRegistration(cfg, agentID),
 			checkRegistrationFreshness(cfg, agentID, opts.Now),
 			checkInboxState(cfg, agentID),
-			checkGuardRecoveredState(cfg, agentID),
 		)
 	} else {
 		checks = append(checks, doctorCheck{
@@ -971,37 +970,6 @@ func checkInboxState(cfg *loop.Config, agentID string) doctorCheck {
 		}
 	}
 	return doctorCheck{Name: "inbox_state", Severity: severityOK, Message: "inbox clear"}
-}
-
-// checkGuardRecoveredState reports whether agentID has an on-disk
-// guard-recovered mark (mixed hook-trust recovery, `agentchute guard
-// --recover`; claude-code review PR #89 round 4 item 6). A present mark
-// means SOME serve session ran --recover: informational only (read-only,
-// never a blocker — the mark's own security property lives entirely in the
-// guard's deny predicate, not in doctor), but worth surfacing since it means
-// that lane's scope-expanding tools stay denied until its owner relaunches.
-// A corrupt mark file is reported distinctly (matches evaluateGuardDecision's
-// own fail-closed treatment of it) rather than silently ignored.
-func checkGuardRecoveredState(cfg *loop.Config, agentID string) doctorCheck {
-	mark, err := loop.ReadGuardRecoveredMark(cfg, agentID)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return doctorCheck{Name: "guard_recovered_state", Severity: severityOK, Message: "no guard-recovered mark"}
-		}
-		return doctorCheck{
-			Name:     "guard_recovered_state",
-			Severity: severityWarn,
-			Message:  fmt.Sprintf("guard-recovered mark for %s is unreadable/corrupt (%v) — the guard treats this as still-recovered (scope-expanding tools stay denied) until relaunch", agentID, err),
-		}
-	}
-	return doctorCheck{
-		Name:     "guard_recovered_state",
-		Severity: severityWarn,
-		Message: fmt.Sprintf(
-			"%s ran `guard --recover` this serve session (set_at %s) — scope-expanding tools (pushes, releases, network fetches, deletions, update/setup/clean) stay denied until the underlying hook-trust issue is fixed and the lane is relaunched (a fresh `ac serve`)",
-			agentID, mark.SetAt.UTC().Format(time.RFC3339),
-		),
-	}
 }
 
 // Simple-again Gate 6a (pull-only): checkWakeTargetValidity and
