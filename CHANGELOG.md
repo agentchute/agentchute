@@ -4,6 +4,13 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.5.1 (2026-07-31) — updates verify their hooks
+
+**Update safety**
+- `agentchute update` now refreshes every installed hook template from the new binary, even when recorded wrapper membership is empty or stale, so an update no longer leaves old hook commands behind ([#110](https://github.com/agentchute/agentchute/pull/110)).
+- Before reporting success, the resync verifies installed hook commands against the new binary. A broken hook now makes the update fail loudly with a non-zero exit and an actionable repair command instead of silently completing; `doctor` also blocks on unknown hook subcommands ([#109](https://github.com/agentchute/agentchute/pull/109), [#110](https://github.com/agentchute/agentchute/pull/110)).
+- Design and incident rationale: [`docs/decisions/agentchute-update-fix-v2.md`](docs/decisions/agentchute-update-fix-v2.md).
+
 ## v1.5.0 (2026-07-31) — the wire moved
 
 **Protocol v2.5 is a deliberate wire break.** Protocol v2's pull-only primitives, small envelope, and two-phase recipient lifecycle remain. The filename/identity grammar changes, so registration rows now carry integer `v: 3`, rendered by the CLI as `v2.5`; `doctor` and `status` warn on explicit mixed-version rows and direct operators to update and restart every lane.
