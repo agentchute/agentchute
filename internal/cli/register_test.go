@@ -373,6 +373,38 @@ func TestRegisterRefusesLiveDuplicateID(t *testing.T) {
 	})
 }
 
+func TestRegisterRefusesFreshForeignLeaseWithStaleRow(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "claude-code"
+		now := time.Now().UTC()
+		stale := now.Add(-2 * loop.DefaultStaleAfter)
+		if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, stale); err != nil {
+			t.Fatalf("seed stale registration: %v", err)
+		}
+		lease, err := loop.AcquireServeLease(cfg, agentID)
+		if err != nil {
+			t.Fatalf("acquire fresh foreign lease: %v", err)
+		}
+		defer loop.ReleaseLease(lease)
+
+		_, err = performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, now)
+		if err == nil {
+			t.Fatal("registration with stale row and fresh foreign lease returned nil error")
+		}
+		want := `agent id "claude-code" is live elsewhere; pick a distinct name (--as claude-code-2?)`
+		if err.Error() != want {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+	})
+}
+
 func TestRegisterMergesOverStaleSameID(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
@@ -388,11 +420,6 @@ func TestRegisterMergesOverStaleSameID(t *testing.T) {
 		if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic", Bio: "old", BioProvided: true}, stale); err != nil {
 			t.Fatalf("seed stale registration: %v", err)
 		}
-		lease, err := loop.AcquireServeLease(cfg, agentID)
-		if err != nil {
-			t.Fatalf("acquire fresh lease: %v", err)
-		}
-		defer loop.ReleaseLease(lease)
 
 		result, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, now)
 		if err != nil {

@@ -238,13 +238,6 @@ func registrationLiveElsewhere(cfg *loop.Config, reg *loop.Registration, serveTo
 	if reg == nil {
 		return false
 	}
-	age := now.Sub(reg.LastSeen.UTC())
-	if age < 0 {
-		age = 0
-	}
-	if age > loop.StaleAfter(cfg) {
-		return false
-	}
 	claim, err := loop.ReadServeClaim(cfg, reg.AgentID)
 	if err != nil || loop.ClaimIsStale(claim, now) {
 		return false
