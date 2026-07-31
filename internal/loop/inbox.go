@@ -51,23 +51,6 @@ func InferSenderFromFilename(filename string) (string, bool) {
 	return "", false
 }
 
-// firstFrontmatterBlock returns the content between the file's leading `---`
-// line and the next `---` line, exclusive of the delimiters. Returns ok=false
-// if the file does not start with `---` or no closing delimiter is found.
-func firstFrontmatterBlock(content []byte) (string, bool) {
-	text := strings.ReplaceAll(string(content), "\r\n", "\n")
-	lines := strings.Split(text, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return "", false
-	}
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "---" {
-			return strings.Join(lines[1:i], "\n"), true
-		}
-	}
-	return "", false
-}
-
 // QuarantineInboxFile moves srcPath into malformedDir per AGENTCHUTE.md §11.1,
 // with a collision-resistant name `<quarantine-ts>_to-<recipient>_<original>`.
 // The destination is created atomically; an existing quarantined file with

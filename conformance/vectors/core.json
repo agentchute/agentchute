@@ -13,7 +13,10 @@
       "kind": "atomic_visibility",
       "name": "staged delivery is invisible until committed",
       "recipient": "bob",
-      "message": {"from": "alice", "body": "hello"}
+      "message": {
+        "from": "alice",
+        "body": "hello"
+      }
     },
     {
       "id": "D2",
@@ -31,22 +34,44 @@
       "name": "one sender's order is preserved",
       "recipient": "bob",
       "sender": "alice",
-      "bodies": ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"]
+      "bodies": [
+        "a0",
+        "a1",
+        "a2",
+        "a3",
+        "a4",
+        "a5",
+        "a6",
+        "a7",
+        "a8",
+        "a9"
+      ]
     },
     {
       "id": "C1",
       "kind": "consume_redelivery",
       "name": "crash after act redelivers (consume is at-least-once)",
       "recipient": "bob",
-      "message": {"from": "alice", "body": "do-it"}
+      "message": {
+        "from": "alice",
+        "body": "do-it"
+      }
     },
     {
       "id": "E1",
       "kind": "envelope",
       "name": "unknown fields are ignored and from is required",
       "recipient": "bob",
-      "message": {"from": "alice", "body": "hi", "extra": {"future_field": "v"}},
-      "invalid_message": {"body": "no from"}
+      "message": {
+        "from": "alice",
+        "body": "hi",
+        "extra": {
+          "future_field": "v"
+        }
+      },
+      "invalid_message": {
+        "body": "no from"
+      }
     },
     {
       "id": "B1",
@@ -54,17 +79,28 @@
       "name": "binding declares whether peer reads are possible",
       "recipient": "bob",
       "reader": "carol",
-      "message": {"from": "alice", "body": "secret for bob"}
+      "message": {
+        "from": "alice",
+        "body": "secret for bob"
+      }
     },
     {
       "id": "Q1",
       "kind": "malformed_quarantine",
       "name": "malformed items are quarantined without blocking valid inbox mail",
-      "applies_to": ["inbox"],
+      "applies_to": [
+        "inbox"
+      ],
       "recipient": "bob",
       "sender": "alice",
-      "bodies": ["first", "second"],
-      "malformed_items": ["not-a-valid-message-name.md", "also-bad.md"]
+      "bodies": [
+        "first",
+        "second"
+      ],
+      "malformed_items": [
+        "not-a-valid-message-name.md",
+        "also-bad.md"
+      ]
     },
     {
       "id": "TS1",
@@ -95,16 +131,225 @@
       "name": "a delivery collision is refused, never a silent dedup no-op, and a fresh-id retry lands (C4)",
       "recipient": "bob",
       "sender": "alice",
-      "message": {"from": "alice", "body": "m1"}
+      "message": {
+        "from": "alice",
+        "body": "m1"
+      }
     },
     {
       "id": "DR1",
       "kind": "dual_read_listing",
       "name": "old-grammar, new-grammar, and garbage names all classify correctly during the migration window",
-      "applies_to": ["inbox"],
-      "old_names": ["from-codex-agentchute_seq-00000000000000000001.md"],
-      "new_names": ["20260730T182415123456Z_from-codex-agentchute_r9f2c04aa71de4b02b6d1c33f08e95a17.md"],
-      "garbage_names": ["not-a-message.md", "README.md", "2026-05-09T16-32-00-123456Z_from-alice_msg-ab12.md"]
+      "applies_to": [
+        "inbox"
+      ],
+      "old_names": [
+        "from-codex-agentchute_seq-00000000000000000001.md"
+      ],
+      "new_names": [
+        "20260730T182415123456Z_from-codex-agentchute_r9f2c04aa71de4b02b6d1c33f08e95a17.md"
+      ],
+      "garbage_names": [
+        "not-a-message.md",
+        "README.md",
+        "2026-05-09T16-32-00-123456Z_from-alice_msg-ab12.md"
+      ]
+    },
+    {
+      "id": "FM1",
+      "kind": "frontmatter_accept",
+      "name": "the flat key:value frontmatter grammar accepts every well-formed block and extracts exactly the documented fields",
+      "accept_cases": [
+        {
+          "name": "quoted-value",
+          "input": "---\nfrom: \"codex\"\ntask: \"do the thing\"\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": "do the thing"
+          }
+        },
+        {
+          "name": "single-quoted-value",
+          "input": "---\nfrom: 'codex'\n---\n\nbody\n",
+          "fields": {
+            "from": "codex"
+          }
+        },
+        {
+          "name": "unquoted-value",
+          "input": "---\nfrom: codex\ntask: do-thing\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": "do-thing"
+          }
+        },
+        {
+          "name": "leading-ws-in-value",
+          "input": "---\nfrom:    codex\n---\n\nbody\n",
+          "fields": {
+            "from": "codex"
+          }
+        },
+        {
+          "name": "trailing-ws-in-value",
+          "input": "---\nfrom: codex   \n---\n\nbody\n",
+          "fields": {
+            "from": "codex"
+          }
+        },
+        {
+          "name": "blank-line-in-block",
+          "input": "---\nfrom: codex\n\ntask: after-blank\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": "after-blank"
+          }
+        },
+        {
+          "name": "crlf",
+          "input": "---\r\nfrom: codex\r\ntask: t\r\n---\r\n\r\nbody\r\n",
+          "fields": {
+            "from": "codex",
+            "task": "t"
+          }
+        },
+        {
+          "name": "list-value",
+          "input": "---\nfrom: codex\nworking_repos:\n  - /a\n  - /b\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "working_repos": ""
+          }
+        },
+        {
+          "name": "empty-value",
+          "input": "---\nfrom: codex\ntask:\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": ""
+          }
+        },
+        {
+          "name": "value-with-colon",
+          "input": "---\nfrom: codex\ntask: a: b: c\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": "a: b: c"
+          }
+        },
+        {
+          "name": "value-with-hash",
+          "input": "---\nfrom: codex\ntask: trailing # not-a-comment\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": "trailing # not-a-comment"
+          }
+        },
+        {
+          "name": "ws-around-delim",
+          "input": "---\nfrom: codex\n  ---  \n\nbody\n",
+          "fields": {
+            "from": "codex"
+          }
+        },
+        {
+          "name": "body-only",
+          "input": "no frontmatter, just body\n",
+          "fields": {}
+        },
+        {
+          "name": "reply-required-true",
+          "input": "---\nmessage_id: m1\nfrom: codex\nreply_required: true\n---\n\nbody\n",
+          "fields": {
+            "message_id": "m1",
+            "from": "codex",
+            "reply_required": "true"
+          }
+        },
+        {
+          "name": "unusual-key-chars",
+          "input": "---\nweird key-name!: value\nfrom: codex\n---\n\nbody\n",
+          "fields": {
+            "weird key-name!": "value",
+            "from": "codex"
+          }
+        },
+        {
+          "name": "list-zero-indent",
+          "input": "---\nfrom: codex\nworking_repos:\n- /a\n- /b\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "working_repos": ""
+          }
+        },
+        {
+          "name": "list-tab-indent",
+          "input": "---\nfrom: codex\nworking_repos:\n\t- /a\n\t- /b\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "working_repos": ""
+          }
+        },
+        {
+          "name": "quoted-value-escaped",
+          "input": "---\nfrom: codex\ntask: \"a\\tb\"\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": "a\tb"
+          }
+        },
+        {
+          "name": "null-value",
+          "input": "---\nfrom: codex\ntask: null\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": ""
+          }
+        },
+        {
+          "name": "tilde-value",
+          "input": "---\nfrom: codex\ntask: ~\n---\n\nbody\n",
+          "fields": {
+            "from": "codex",
+            "task": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "FM2",
+      "kind": "frontmatter_reject",
+      "name": "the same grammar hard-rejects every malformed block: indentation, duplicate keys, non-key:value lines (including comments), an empty key, and a missing close",
+      "reject_cases": [
+        {
+          "name": "indented-line",
+          "input": "---\nfrom: codex\n  task: indented\n---\n\nbody\n"
+        },
+        {
+          "name": "comment-line",
+          "input": "---\n# a comment\nfrom: codex\n---\n\nbody\n"
+        },
+        {
+          "name": "missing-close",
+          "input": "---\nfrom: codex\ntask: t\n\nbody without close\n"
+        },
+        {
+          "name": "dup-key",
+          "input": "---\nfrom: codex\nfrom: gemini-cli\n---\n\nbody\n"
+        },
+        {
+          "name": "non-keyvalue-line",
+          "input": "---\nfrom: codex\nthis is just prose\n---\n\nbody\n"
+        },
+        {
+          "name": "empty-key",
+          "input": "---\n: value\n---\n\nbody\n"
+        },
+        {
+          "name": "list-item-missing-gap",
+          "input": "---\nfrom: codex\nworking_repos:\n-nospace\n---\n\nbody\n"
+        }
+      ]
     }
   ]
 }
