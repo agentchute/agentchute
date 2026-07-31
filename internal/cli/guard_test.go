@@ -346,6 +346,48 @@ func TestGuardCodexDenyJSONShapeMatchesCanonical(t *testing.T) {
 	}
 }
 
+// TestGuardGeminiDenyJSONShapeIsTopLevelNotNested is codex review PR #89
+// round 3 finding #3: gemini's BeforeTool contract is a top-level
+// {"decision":"block","reason":...}, NOT the nested
+// hookSpecificOutput/permissionDecision shape Claude/codex's PreToolUse event
+// uses — round 1 incorrectly generalized codex's own answer to gemini too,
+// making the gemini emitter send a shape gemini's BeforeTool would not
+// recognize (an inert guard).
+func TestGuardGeminiDenyJSONShapeIsTopLevelNotNested(t *testing.T) {
+	out, err := captureStdout(t, func() error {
+		return emitGeminiGuardDecision(guardDecision{Allowed: false, Reason: guardDenyReason})
+	})
+	if err != nil {
+		t.Fatalf("emitGeminiGuardDecision: %v", err)
+	}
+	var wrap struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	if jerr := json.Unmarshal([]byte(out), &wrap); jerr != nil {
+		t.Fatalf("unmarshal: %v\n%s", jerr, out)
+	}
+	if wrap.Decision != "block" {
+		t.Errorf("decision = %q, want block", wrap.Decision)
+	}
+	if wrap.Reason != guardDenyReason {
+		t.Errorf("reason = %q, want %q", wrap.Reason, guardDenyReason)
+	}
+	if strings.Contains(out, "hookSpecificOutput") {
+		t.Errorf("gemini deny output must be top-level, not nested under hookSpecificOutput: %s", out)
+	}
+
+	outAllow, err := captureStdout(t, func() error {
+		return emitGeminiGuardDecision(guardDecision{Allowed: true})
+	})
+	if err != nil {
+		t.Fatalf("emitGeminiGuardDecision(allow): %v", err)
+	}
+	if outAllow != "" {
+		t.Errorf("allow decision emitted output: %q, want empty", outAllow)
+	}
+}
+
 // TestGuardLatchSurvivesClaimedDrainedOutsideTurnEnd is the claim-then-abandon
 // property named throughout the plan: the latch is NEVER derived from
 // .claimed emptiness, so anything OTHER than turn-end draining .claimed

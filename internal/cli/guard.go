@@ -314,15 +314,30 @@ func emitCodexGuardDecision(d guardDecision) error {
 	return emitPreToolUseDenyJSON(d.Reason)
 }
 
-// emitGeminiGuardDecision uses the same canonical shape as Claude/codex,
-// absent any established gemini-specific deny convention in this codebase
-// (pending.go's gemini emitter only covers additionalContext injection, not a
-// permission decision). Flagged as a best-effort judgment call for review.
+// emitGeminiGuardDecision uses gemini's OWN BeforeTool contract — a
+// top-level `{"decision":"block","reason":"..."}` — NOT the nested
+// hookSpecificOutput/permissionDecision shape Claude/codex's PreToolUse event
+// uses. codex-agentchute confirmed on a second review pass (citing gemini's
+// own hooks reference) that gemini's BeforeTool blocks with a top-level
+// decision field, either "deny" or "block"; this codebase's only existing
+// precedent for a top-level decision/reason shape is gate.go's codex Stop
+// convention, which uses "block" — used here too, absent independent
+// confirmation of which of the two gemini itself prefers. Round 1 of this
+// PR incorrectly generalized codex's PreToolUse-specific shape answer to
+// gemini as well (an different event, on an unrelated vendor) and made this
+// emitter send Claude/codex's nested shape, which gemini's BeforeTool would
+// not recognize — making the gemini guard inert. Reverted to a
+// gemini-specific top-level shape.
 func emitGeminiGuardDecision(d guardDecision) error {
 	if d.Allowed {
 		return nil
 	}
-	return emitPreToolUseDenyJSON(d.Reason)
+	out := map[string]any{
+		"decision": "block",
+		"reason":   d.Reason,
+	}
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(out)
 }
 
 func guardUsage(err error) error {

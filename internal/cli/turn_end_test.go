@@ -429,3 +429,67 @@ func TestTurnEndSurvivesUnresolvableVendorForNonCanonicalID(t *testing.T) {
 		}
 	})
 }
+
+// TestTurnEndNoTokenArchivesDespiteStaleLatch is codex review PR #89 round 3
+// finding #2: a STALE latch left behind by a crashed/prior guarded session
+// must not permanently block archiving for every LATER unguarded/hand-run
+// turn-end call. Comparing the stale latch's session against session=="" (an
+// unguarded invocation can never equal a real token) made every such call
+// treat it as foreign, withholding the commit forever — and step 2 never
+// clears it either, since it also no-ops when session=="". Guard-disabled
+// invocations must archive unconditionally regardless of what a past guarded
+// session left on disk.
+func TestTurnEndNoTokenArchivesDespiteStaleLatch(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "hi"}); err != nil {
+			t.Fatalf("cmdSend: %v", err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err != nil {
+			t.Fatalf("cmdCheck(bob): %v", err)
+		}
+		if n := countMessageFiles(t, cfg.AgentClaimedDir("bob")); n != 1 {
+			t.Fatalf(".claimed = %d after claim; want 1", n)
+		}
+		// A stale latch from some earlier (now-dead) guarded session,
+		// simulated directly rather than via check (which never sets one
+		// without AGENTCHUTE_GUARD armed).
+		if err := loop.SetGuardLatch(cfg, "bob", "tok-dead"); err != nil {
+			t.Fatal(err)
+		}
+
+		// This invocation runs with NO serve token at all (a hand-run
+		// session, or the guard bit simply never set).
+		out, err := captureStdout(t, func() error {
+			return cmdTurnEnd([]string{"--as", "bob", "--vendor", "openai", "--json"})
+		})
+		if err != nil {
+			t.Fatalf("turn-end: %v\n%s", err, out)
+		}
+		if n := countMessageFiles(t, cfg.AgentClaimedDir("bob")); n != 0 {
+			t.Errorf(".claimed = %d after no-token turn-end; want 0 (a stale latch must not block the commit)", n)
+		}
+		if n := countMessageFiles(t, cfg.ArchiveDir()); n != 1 {
+			t.Errorf("archive = %d after no-token turn-end; want 1 (committed)", n)
+		}
+
+		// A second no-token turn-end call must ALSO still commit correctly
+		// (proving this isn't a one-shot fluke and the loop truly never
+		// recurs for later mail either).
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "again"}); err != nil {
+			t.Fatalf("cmdSend: %v", err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err != nil {
+			t.Fatalf("cmdCheck(bob) second: %v", err)
+		}
+		if _, err := captureStdout(t, func() error {
+			return cmdTurnEnd([]string{"--as", "bob", "--vendor", "openai", "--json"})
+		}); err != nil {
+			t.Fatalf("second turn-end: %v", err)
+		}
+		if n := countMessageFiles(t, cfg.ArchiveDir()); n != 2 {
+			t.Errorf("archive = %d after second no-token turn-end; want 2", n)
+		}
+	})
+}

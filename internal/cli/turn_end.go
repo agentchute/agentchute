@@ -38,13 +38,26 @@ import (
 //     `agentchute gate --before finish` (gate.go): default text, --json, and
 //     --codex-hook Stop (silent on clear, block-JSON exit-0 on block).
 //
-// Recovery property: turn-end has NO self-denial of its own (unlike check/ack)
-// and is only ever denied by the PreToolUse guard hook, which — if it isn't
-// firing at all (e.g. a hook-trust rollout window on a vendor that gates
-// project-local hook changes) — also can't be denying anything. So a lane
-// armed by `check` but never reached by either hook is always recoverable by
-// invoking `turn-end` directly; check/ack's own self-denial error text names
-// it as the fix for exactly this reason.
+// Recovery property (and its known limit): turn-end has NO self-denial of
+// its own (unlike check/ack) — its only possible denial is the PreToolUse
+// guard hook itself. When NEITHER that hook NOR the Stop hook is firing at
+// all (e.g. a hook-trust rollout window on a vendor that gates project-local
+// hook changes per-command), a lane armed by `check` is still recoverable:
+// the guard that would deny a direct `turn-end` invocation also isn't
+// running, so nothing stops it (check/ack's own self-denial error text names
+// it as the fix for exactly this reason — TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd).
+//
+// KNOWN GAP (codex review, PR #89 round 3, finding #1 — NOT fixed): a MIXED
+// state where the PreToolUse guard is active but Stop is independently
+// disabled/failing is not recoverable this way — the active guard denies a
+// model's own attempt to run `turn-end` (it is deliberately deny-listed, so a
+// same-turn instruction can't clear its own latch and disarm the rest of the
+// deny list for the remainder of the turn). Removing turn-end from the deny
+// list would close this gap but reopen that exact bypass, which several
+// review rounds have independently protected; kept deny-listed on the
+// judgment that a same-turn security bypass is worse than a narrow, human-
+// recoverable (delete state/<id>/guard.latch) hook-rollout edge. Flagged for
+// Alex/reviewers as an open design question, not silently accepted.
 func cmdTurnEnd(args []string) error {
 	fs := flag.NewFlagSet("turn-end", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -117,19 +130,27 @@ func cmdTurnEnd(args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: registration self-repair failed (continuing so this session's own claimed mail still commits): %v\n", repairErr)
 	}
 
-	// STEP 1: archive .claimed UNLESS a latch exists AND belongs to a
-	// DIFFERENT session (the gemini crash / dead-latch case: preserve that
-	// residue for check's own redelivery banner). No latch at all — guard
+	// STEP 1: archive .claimed UNLESS THIS invocation is itself guard-armed
+	// (session != "") AND a latch exists, reads back successfully, AND
+	// belongs to a DIFFERENT session (the gemini crash / dead-latch case:
+	// preserve that residue for check's own redelivery banner). Guard
 	// disabled for this process (no serve token, or a hand-run session the
-	// hooks never armed), or nothing has been claimed under any guard yet —
-	// always archives, matching `ack`'s pre-A7 unconditional-commit contract.
-	// A latch that fails to read at all (absent OR corrupt) is treated
-	// exactly like "no latch": never a reason to withhold the commit, and
-	// never a reason to wedge (codex review, PR #89 findings #1 and #4).
+	// hooks never armed) always archives UNCONDITIONALLY, regardless of any
+	// latch a PAST guarded session may have left behind — codex review, PR
+	// #89 round 3: comparing a stale latch's session against session=="" made
+	// EVERY unguarded/no-token turn-end call after a crashed guarded run
+	// treat that stale latch as "foreign", withholding the commit forever
+	// (step 2 also never clears it when session==""), reintroducing exactly
+	// the same-vs-hand-run divergence A7 promised never to have. A latch
+	// that fails to read at all (absent OR corrupt) is likewise never a
+	// reason to withhold the commit within the armed branch (findings #1 and
+	// #4 from round 2).
 	session := resolveGuardSession()
 	archive := true
-	if latch, lerr := loop.ReadGuardLatch(cfg, agentID); lerr == nil && latch.Session != session {
-		archive = false
+	if session != "" {
+		if latch, lerr := loop.ReadGuardLatch(cfg, agentID); lerr == nil && latch.Session != session {
+			archive = false
+		}
 	}
 
 	var acked []ackItem

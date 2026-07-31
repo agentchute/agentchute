@@ -344,6 +344,18 @@ func TestDoctorCanonicalInstalledTemplatesPassHookContentSanity(t *testing.T) {
 			t.Fatalf("hooks install --wrapper all: %v", err)
 		}
 	})
+	// hook_content_sanity ALSO checks that every templated
+	// `${AGENTCHUTE_BIN:-agentchute}` reference actually resolves (dev
+	// machines have `agentchute`/`ac` on PATH from local builds, but a clean
+	// CI runner does not — codex review, PR #89: this test passed locally by
+	// accident and failed both CI jobs deterministically). Point
+	// AGENTCHUTE_BIN at a stub, mirroring
+	// TestDoctorTemplatedBinaryReferenceIsOKWhenAGENTCHUTE_BINSet.
+	stub := filepath.Join(cfg.ControlRepo, "stub-agentchute")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTCHUTE_BIN", stub)
 
 	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "hook_content_sanity")
