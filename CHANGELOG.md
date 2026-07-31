@@ -4,7 +4,7 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
-## v2.5.0 (2026-07-31) — the wire moved
+## v1.5.0 (2026-07-31) — the wire moved
 
 **Protocol v2.5 is a deliberate wire break.** Protocol v2's pull-only primitives, small envelope, and two-phase recipient lifecycle remain. The filename/identity grammar changes, so registration rows now carry integer `v: 3`, rendered by the CLI as `v2.5`; `doctor` and `status` warn on explicit mixed-version rows and direct operators to update and restart every lane.
 
@@ -23,7 +23,7 @@ The repo follows a release-squash convention: each release lands on `main` as a 
 - The guard latch is best-effort defense-in-depth, never a security boundary. Coverage is stated per vendor and launch mode, including Codex hosted-tool gaps, Gemini's start-of-next-turn handler, Grok's lack of hooks, and unsupervised sessions.
 
 **Measured release delta**
-- Canonical tag-range measurement: `git diff --numstat v1.0.0..v2.5.0` = `+14,524 / -8,617` lines, net `+5,907`, across the complete unreleased range. The deletion count is measured from Git rather than copied from the implementation plan.
+- Canonical tag-range measurement: `git diff --numstat v1.0.0..v1.5.0` = `+14,524 / -8,617` lines, net `+5,907`, across the complete unreleased range. The deletion count is measured from Git rather than copied from the implementation plan.
 
 **Migration and live-pool cutover**
 

@@ -403,7 +403,7 @@ Owner key: `sonnet` = well-specified Go slices + deep-review-sensitive code; `co
 - Announcement page (web/): the "v2 is final" walk-back, §7 reasoning, upgrade instructions.
 - Conformance module: final `cd conformance && go test ./...` + vector list sanity.
 **Tests.** Full matrix green (ubuntu+macos, race), conformance module green, `agentchute doctor` clean on a fresh fixture pool, install smoke from the built asset (release ritual per repo memory: PR-then-tag, `vcs.modified=false`).
-**Done when.** Tag `v2.5.0`-series binary (repo CLI versioning per its scheme) built from a green main; §3 checklist executed; Alex authorizes tag/push (standing rule).
+**Done when.** Tag `v1.5.0`-series binary (repo CLI versioning per its scheme) built from a green main; §3 checklist executed; Alex authorizes tag/push (standing rule).
 **Owner.** codex.
 
 ---
@@ -509,6 +509,5 @@ Two independent verification passes ran against the draft; all findings folded a
 8. MED — A5's spool boundary ("before SendSeqMessage returns") contradicted the decided commit line: a post-link inbox-sync failure would have spooled a delivered message and coached a duplicate resend. Folded: commit point = successful link, in A5 and B7, with a pinning test.
 9. LOW — C27's rationale was wrong (old binaries degrade a non-integer version to -1; the row still parses). Corrected; mechanism unchanged.
 10. LOW — C22's no-serve-token unguarded class was missing from B9's spec honesty list. Folded into B9 + A8 template comment.
-
 
 

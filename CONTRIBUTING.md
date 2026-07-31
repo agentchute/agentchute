@@ -89,7 +89,7 @@ To guarantee pool stability and coordinate independent implementations, we maint
 - Protocol v2 was declared final at CLI v1.0.0. Protocol v2.5 deliberately breaks its identity grammar while retaining the primitives, envelope, and lifecycle guarantees; registration rows carry integer `v: 3`, rendered to humans as v2.5. The break and its naming are recorded in the spec and CHANGELOG rather than hidden behind the old stability claim. Future covenant changes still require the versioned deprecation process below.
 
 ### 2. Reference CLI Version (SemVer)
-- The CLI implements the corresponding protocol version (CLI v2.5.0 implements Protocol v2.5).
+- CLI and protocol versions are independent and may drift. Each CLI release declares its protocol compatibility; CLI v1.5.x implements Protocol v2.5.
 - **Patch releases (X.Y.Z patch)**: Fixes, documentation, and test-hardening only. No command or flag removals.
 - **Minor releases (X.Y.0 minor)**: May deprecate or rename CLI surface. Any command/flag removal requires a deprecation window of at least one minor release (e.g., deprecate in minor N, remove in minor N+1).
 - **Owner exception clause**: Deprecation timelines are binding unless the owner (Alex) logs an explicit, one-time exception in the `CHANGELOG.md` (e.g., the early removal of the `run` verb alias in v0.9.1, or the `gemini-hook` removal in v0.11.8).
