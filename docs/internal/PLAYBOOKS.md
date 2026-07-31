@@ -21,14 +21,16 @@ Companion to the **Working efficiently on this bus** rules in [`AGENTS.md`](../.
 1. Freeze first (E3): the ask must pin base SHA, head SHA, changed files, allowed delta. Unpinned ask → `NEEDS-INFO`, no work.
 2. `git fetch` + diff base..head; confirm the file scope matches the stated scope exactly — surplus files are a finding on their own.
 3. Pick the verification tier (E5) by surface; run it. Substantive claims — numbers, protocol semantics, file scope, rendered assets — get re-derived from the tree/binary, not trusted from the PR text. Render any touched image/binary.
-4. Verdict: `SHIP` or `FIX` with file:line evidence, delivered on the bus — the bus reply IS the gate signal. Mirror to `gh pr comment` ONLY if the gate ask's `AUTHORIZATION:` line names that PR comment (E9/R4: an external message is irreversible work; no authorization = bus-only). When mirroring is authorized, use `gh pr comment` — the shared token self-blocks `gh pr review`.
+4. **Own the checkout, own the cleanup — same turn, before the verdict, every lane.** If the review needed a separate pinned-SHA checkout (not a diff read from your current tree), remove it before delivering the verdict: `git worktree remove <path>` (plus `git branch -D <local-branch>` if the checkout used one). This binds regardless of wrapper — 27 stale `review-pr*` checkouts accumulated from BOTH Claude and Codex review paths before this line existed anywhere every lane actually reads. Skip only when the review used no separate checkout.
+5. Verdict: `SHIP` or `FIX` with file:line evidence, delivered on the bus — the bus reply IS the gate signal. Mirror to `gh pr comment` ONLY if the gate ask's `AUTHORIZATION:` line names that PR comment (E9/R4: an external message is irreversible work; no authorization = bus-only). When mirroring is authorized, use `gh pr comment` — the shared token self-blocks `gh pr review`.
 
 ## delta-regate (re-gate after a fix — E4)
 
 1. Require the new pinned head + the prior reviewed head.
 2. `git diff --name-status <prior-head>..<new-head>` — confirm the delta is exactly the claimed files; anything extra → `FIX`.
 3. Re-verify only the changed claims at the tier the change warrants: a substantive fix gets re-derivation; a one-line mechanical fix gets a spot-check (E5). Do not re-review unchanged files.
-4. Verdict with the delta range cited.
+4. Same checkout-cleanup obligation as gate-review step 4: if this re-gate needed its own pinned-SHA checkout, remove it before the verdict too.
+5. Verdict with the delta range cited.
 
 ## owed-audit (when `pending` grows stale — E7)
 
