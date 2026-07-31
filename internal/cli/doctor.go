@@ -542,26 +542,20 @@ func shimNamesForAgent(agentID string) []string {
 	return names
 }
 
-// hookFile maps a wrapper to the conventional template location relative
-// to the control repo. checkHookFilePresence walks this list to surface
-// which wrappers are wired up vs. relying on plain-text fallback.
-var hookFiles = []struct {
-	wrapper string
-	path    []string // relative to control repo
-}{
-	{"claude-code", []string{".claude", "settings.json"}},
-	{"codex", []string{".codex", "hooks.json"}},
-	{"gemini-cli", []string{".gemini", "settings.json"}},
-}
+// Wrapper hook locations come from hookWrappers (hooks.go) — the same
+// table `hooks install` writes from — so doctor can never check a
+// different path than install wrote (two hand-maintained copies of the
+// three paths drifted into being during v2; deleted with the v1.5.0
+// cutover fix).
 
 func checkHookFilePresence(cfg *loop.Config, agentID string) doctorCheck {
 	present := []string{}
 	presentSet := map[string]bool{}
-	for _, h := range hookFiles {
-		full := filepath.Join(append([]string{cfg.ControlRepo}, h.path...)...)
+	for _, h := range hookWrappers {
+		full := filepath.Join(cfg.ControlRepo, filepath.FromSlash(h.Dest))
 		if _, err := os.Stat(full); err == nil {
-			present = append(present, h.wrapper)
-			presentSet[h.wrapper] = true
+			present = append(present, h.Name)
+			presentSet[h.Name] = true
 		}
 	}
 	if wrapper, ok := hookWrapperForAgent(agentID); ok {
@@ -692,8 +686,8 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 	var invalidJSONFiles []string
 	seenUnknown := map[string]bool{}
 
-	for _, h := range hookFiles {
-		full := filepath.Join(append([]string{cfg.ControlRepo}, h.path...)...)
+	for _, h := range hookWrappers {
+		full := filepath.Join(cfg.ControlRepo, filepath.FromSlash(h.Dest))
 		data, err := os.ReadFile(full)
 		if err != nil {
 			continue // absence is handled by checkHookFilePresence
@@ -706,12 +700,12 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 			// subcommand would read as a hook invoking it). Surface the
 			// parse failure as its own signal instead; a malformed hook
 			// file won't fire correctly anyway, which is worth flagging.
-			invalidJSONFiles = append(invalidJSONFiles, h.wrapper)
+			invalidJSONFiles = append(invalidJSONFiles, h.Name)
 			continue
 		}
 
 		if hookCheckSubcmdRE.MatchString(body) {
-			checkOffenders = append(checkOffenders, h.wrapper)
+			checkOffenders = append(checkOffenders, h.Name)
 		}
 
 		// A subcommand the running binary doesn't know is a stale template
@@ -721,7 +715,7 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 		// UserPromptSubmit hook blocks the prompt entirely.
 		for _, m := range hookSubcmdTokenRE.FindAllStringSubmatch(body, -1) {
 			if _, known := commandHandlers[m[1]]; !known {
-				offender := h.wrapper + " (`" + m[1] + "`)"
+				offender := h.Name + " (`" + m[1] + "`)"
 				if !seenUnknown[offender] {
 					seenUnknown[offender] = true
 					unknownOffenders = append(unknownOffenders, offender)
@@ -738,11 +732,11 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 		// either form can't resolve in this environment.
 		switch {
 		case hasBare && !binOnPath:
-			resolutionOffenders = append(resolutionOffenders, h.wrapper+" (bare `agentchute` needs PATH)")
+			resolutionOffenders = append(resolutionOffenders, h.Name+" (bare `agentchute` needs PATH)")
 		case hasTemplated && !envBinValid && !binOnPath:
-			resolutionOffenders = append(resolutionOffenders, h.wrapper+" (templated `${AGENTCHUTE_BIN:-agentchute}` needs AGENTCHUTE_BIN or PATH)")
+			resolutionOffenders = append(resolutionOffenders, h.Name+" (templated `${AGENTCHUTE_BIN:-agentchute}` needs AGENTCHUTE_BIN or PATH)")
 		case hasEnvOnly && !envBinValid:
-			resolutionOffenders = append(resolutionOffenders, h.wrapper+" (`$AGENTCHUTE_BIN` reference needs AGENTCHUTE_BIN set)")
+			resolutionOffenders = append(resolutionOffenders, h.Name+" (`$AGENTCHUTE_BIN` reference needs AGENTCHUTE_BIN set)")
 		}
 	}
 	if len(checkOffenders) > 0 {
