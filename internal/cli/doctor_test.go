@@ -321,6 +321,40 @@ func TestDoctorMalformedHookJSONWithPermissionsSubstringDoesNotBlock(t *testing.
 	}
 }
 
+// TestDoctorCanonicalInstalledTemplatesPassHookContentSanity is codex review
+// PR #89 finding #5 (the A8 plan's explicit acceptance criterion): install
+// the REAL, embedded hook templates for all three hook-capable wrappers —
+// the exact bytes `hooks install` ships, now carrying the new
+// PreToolUse/BeforeTool guard entries and the collapsed turn-end Stop/
+// BeforeAgent entries — and prove `doctor`'s hook_content_sanity check stays
+// green against them. This is the regression class PR #74 shipped (an
+// embedded hook edit that silently tripped doctor's own sanity check);
+// synthetic hand-built fixtures in the tests above cannot catch a mistake in
+// the actual shipped templates.
+func TestDoctorCanonicalInstalledTemplatesPassHookContentSanity(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	// `hooks install` discovers its own control repo from cwd (it does not
+	// accept a *loop.Config directly), which requires the AGENTCHUTE.md
+	// marker newDoctorCfg's bare scaffold doesn't write.
+	mustWrite(t, filepath.Join(cfg.ControlRepo, "AGENTCHUTE.md"), []byte("# Spec"))
+	withCwd(t, cfg.ControlRepo, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdHooks([]string{"install", "--wrapper", "all"})
+		}); err != nil {
+			t.Fatalf("hooks install --wrapper all: %v", err)
+		}
+	})
+
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
+	got := findCheck(t, r, "hook_content_sanity")
+	if got.Severity != severityOK {
+		t.Fatalf("hook_content_sanity severity = %q, want OK against the canonical installed templates; msg=%q", got.Severity, got.Message)
+	}
+	if r.Blockers != 0 {
+		t.Errorf("Blockers = %d, want 0 against the canonical installed templates", r.Blockers)
+	}
+}
+
 // Codex review on bff226c: --json discovery failure must still exit
 // errBlocked. Previously emitDoctorJSON returned nil before the
 // errBlocked guard ran.

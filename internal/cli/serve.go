@@ -452,7 +452,14 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 }
 
 func runnerChildEnv(cfg *loop.Config, opts runnerOptions, serveToken string) []string {
-	env := os.Environ()
+	// Strip any inherited AGENTCHUTE_GUARD before conditionally re-adding it
+	// below: os.Environ() carries THIS process's own env, which is nonempty
+	// whenever a guarded session itself launches `ac serve <other-wrapper>`
+	// (e.g. `ac serve grok` run from inside a guarded claude-code session).
+	// Without stripping, an unguarded wrapper's child would inherit the bit
+	// from its guarded parent and appear armed with no hook able to ever
+	// clear the latch (codex review, PR #89 finding #2).
+	env := withoutEnv(os.Environ(), "AGENTCHUTE_GUARD")
 	env = append(env,
 		"AGENTCHUTE_AGENT_ID="+opts.AgentID,
 		"AGENTCHUTE_CONTROL_REPO="+cfg.ControlRepo,

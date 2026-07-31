@@ -226,3 +226,138 @@ func TestTurnEndCodexHookStopClearShapeMatchesGate(t *testing.T) {
 		}
 	})
 }
+
+// TestTurnEndArchivesUnconditionallyWithoutGuardSession is codex review PR
+// #89 finding #1: a hand-run hook-capable session (no serve token at all)
+// must still have its claimed mail committed by turn-end, matching the
+// pre-A7 unconditional `ack` behavior the removed standalone Stop-hook entry
+// used to provide. turn-end's archive step must default to "commit" and
+// withhold ONLY when a latch actively names a different session — not
+// whenever THIS session has no guard concept at all.
+func TestTurnEndArchivesUnconditionallyWithoutGuardSession(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "hi"}); err != nil {
+			t.Fatalf("cmdSend: %v", err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err != nil {
+			t.Fatalf("cmdCheck(bob): %v", err)
+		}
+		if n := countMessageFiles(t, cfg.AgentClaimedDir("bob")); n != 1 {
+			t.Fatalf(".claimed = %d after claim; want 1", n)
+		}
+
+		out, err := captureStdout(t, func() error {
+			return cmdTurnEnd([]string{"--as", "bob", "--vendor", "openai", "--json"})
+		})
+		if err != nil {
+			t.Fatalf("turn-end: %v\n%s", err, out)
+		}
+		if n := countMessageFiles(t, cfg.AgentClaimedDir("bob")); n != 0 {
+			t.Errorf(".claimed = %d after turn-end with no guard session; want 0 (committed)", n)
+		}
+		if n := countMessageFiles(t, cfg.ArchiveDir()); n != 1 {
+			t.Errorf("archive = %d after turn-end with no guard session; want 1 (committed)", n)
+		}
+	})
+}
+
+// TestTurnEndMalformedLatchDoesNotWedge is codex review PR #89 finding #4: a
+// corrupt/unparseable guard.latch file must fail open at every step, not
+// become a permanent hard error that blocks the finish gate from ever
+// running again. Mirrors evaluateGuardDecision's own fail-open posture on a
+// read it cannot make sense of.
+func TestTurnEndMalformedLatchDoesNotWedge(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "hi"}); err != nil {
+			t.Fatalf("cmdSend: %v", err)
+		}
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-1")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err != nil {
+			t.Fatalf("cmdCheck(bob): %v", err)
+		}
+
+		// Corrupt the latch file in place (truncated/invalid JSON).
+		mustWrite(t, cfg.GuardLatchPath("bob"), []byte("{not valid json"))
+
+		out, err := captureStdout(t, func() error {
+			return cmdTurnEnd([]string{"--as", "bob", "--vendor", "openai", "--json"})
+		})
+		if err != nil {
+			t.Fatalf("turn-end must fail open on a corrupt latch, not hard-error: %v\n%s", err, out)
+		}
+		if n := countMessageFiles(t, cfg.AgentClaimedDir("bob")); n != 0 {
+			t.Errorf(".claimed = %d after turn-end with a corrupt latch; want 0 (fail-open commits)", n)
+		}
+
+		// A second turn-end call must ALSO succeed (the corrupt file, if left
+		// in place by a non-overwriting clear, would otherwise wedge every
+		// future call identically).
+		if _, err := captureStdout(t, func() error {
+			return cmdTurnEnd([]string{"--as", "bob", "--vendor", "openai", "--json"})
+		}); err != nil {
+			t.Fatalf("second turn-end after a corrupt latch must also succeed: %v", err)
+		}
+	})
+}
+
+// TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd is codex review
+// PR #89 finding #3: during a codex hook-trust rollout window (a
+// newly-changed project-local hook definition isn't re-trusted/loaded yet),
+// a lane can be armed (check sets the latch) while NEITHER the PreToolUse
+// guard NOR the Stop-hook turn-end call ever actually runs. This binary
+// cannot detect codex's own hook-trust state, so it cannot avoid arming in
+// that window — but it must never be an unrecoverable wedge. This test
+// proves the escape hatch: `check`/`ack` correctly self-deny (their error
+// text names `turn-end` as the fix), and a DIRECT `turn-end` invocation —
+// exactly what a stuck model/human would run next — always succeeds and
+// clears the latch, with no dependency on any hook actually having fired.
+func TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "hi"}); err != nil {
+			t.Fatalf("cmdSend: %v", err)
+		}
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-1")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+
+		// check arms the latch exactly as it would under any guarded serve
+		// session — independent of whether codex has actually loaded/trusted
+		// the new PreToolUse/Stop hook definitions this PR ships.
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err != nil {
+			t.Fatalf("cmdCheck(bob): %v", err)
+		}
+
+		// Neither hook ever fires in this simulated rollout window: no guard
+		// PreToolUse call, no Stop-hook turn-end call. The model tries the
+		// commands it would normally reach for and must be redirected, not
+		// silently stuck.
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err == nil || !strings.Contains(err.Error(), "turn-end") {
+			t.Fatalf("second check err = %v, want a denial naming turn-end as the fix", err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "bob"}) }); err == nil || !strings.Contains(err.Error(), "turn-end") {
+			t.Fatalf("ack err = %v, want a denial naming turn-end as the fix", err)
+		}
+
+		// The named recovery command always works: turn-end has no
+		// self-denial of its own, and the PreToolUse guard that would (if
+		// active) deny running it is exactly the hook that isn't firing in
+		// this window — so it is never itself the thing blocking recovery.
+		if _, err := captureStdout(t, func() error {
+			return cmdTurnEnd([]string{"--as", "bob", "--vendor", "openai", "--json"})
+		}); err != nil {
+			t.Fatalf("turn-end must always recover a stuck lane: %v", err)
+		}
+		if _, err := loop.ReadGuardLatch(cfg, "bob"); !os.IsNotExist(err) {
+			t.Fatalf("latch should be cleared after the recovery turn-end call; err=%v", err)
+		}
+		if n := countMessageFiles(t, cfg.ArchiveDir()); n != 1 {
+			t.Errorf("archive = %d after recovery turn-end; want 1 (committed)", n)
+		}
+	})
+}

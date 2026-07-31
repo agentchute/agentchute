@@ -25,15 +25,26 @@ import (
 //  0. registration self-repair — identical logic to `self-check`
 //     (selfRepairRegistration), so the row exists and last_seen/.live are
 //     fresh before the gate evaluates.
-//  1. archive `.claimed` ONLY when the CURRENT session holds this agent's own
-//     guard latch (C23). A dead/foreign latch, or no latch at all (guard
-//     disabled, or nothing claimed under this session yet), leaves the
-//     residue untouched — it survives for `check`'s own redelivery banner.
-//     `ack` remains the archiving path for humans and unguarded lanes.
+//  1. archive `.claimed` UNLESS a DIFFERENT session's latch says otherwise
+//     (C23). Only a latch that both (a) reads back successfully and (b)
+//     names a foreign/dead session withholds the commit — that residue is
+//     left for `check`'s own redelivery banner. No latch at all (guard
+//     disabled, hand-run/unguarded session, or nothing claimed yet) always
+//     archives, matching `ack`'s pre-A7 unconditional-commit contract; a
+//     latch that fails to read (absent OR corrupt) is treated the same way,
+//     never as a reason to withhold the commit.
 //  2. clear the own-session guard latch (no-op if none/foreign).
 //  3. evaluate + emit the finish gate via the EXACT SAME contracts as
 //     `agentchute gate --before finish` (gate.go): default text, --json, and
 //     --codex-hook Stop (silent on clear, block-JSON exit-0 on block).
+//
+// Recovery property: turn-end has NO self-denial of its own (unlike check/ack)
+// and is only ever denied by the PreToolUse guard hook, which — if it isn't
+// firing at all (e.g. a hook-trust rollout window on a vendor that gates
+// project-local hook changes) — also can't be denying anything. So a lane
+// armed by `check` but never reached by either hook is always recoverable by
+// invoking `turn-end` directly; check/ack's own self-denial error text names
+// it as the fix for exactly this reason.
 func cmdTurnEnd(args []string) error {
 	fs := flag.NewFlagSet("turn-end", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -93,27 +104,31 @@ func cmdTurnEnd(args []string) error {
 		return err
 	}
 
-	// STEP 1 + 2: resolve whether THIS session currently holds agentID's own
-	// guard latch. Resolved once and reused for both steps so a latch that
-	// disappears mid-function (it can't — we hold no lock across steps, but
-	// the read is authoritative at the moment we act) can't desync archive
-	// from clear.
+	// STEP 1: archive .claimed UNLESS a latch exists AND belongs to a
+	// DIFFERENT session (the gemini crash / dead-latch case: preserve that
+	// residue for check's own redelivery banner). No latch at all — guard
+	// disabled for this process (no serve token, or a hand-run session the
+	// hooks never armed), or nothing has been claimed under any guard yet —
+	// always archives, matching `ack`'s pre-A7 unconditional-commit contract.
+	// A latch that fails to read at all (absent OR corrupt) is treated
+	// exactly like "no latch": never a reason to withhold the commit, and
+	// never a reason to wedge (codex review, PR #89 findings #1 and #4).
 	session := resolveGuardSession()
-	ownLatch := false
-	if session != "" {
-		if latch, lerr := loop.ReadGuardLatch(cfg, agentID); lerr == nil && latch.Session == session {
-			ownLatch = true
-		}
+	archive := true
+	if latch, lerr := loop.ReadGuardLatch(cfg, agentID); lerr == nil && latch.Session != session {
+		archive = false
 	}
 
 	var acked []ackItem
-	if ownLatch {
+	if archive {
 		acked, err = archiveAllClaimed(cfg, agentID, now)
 		if err != nil {
 			return err
 		}
 	}
 
+	// STEP 2: clear own-session latch. No-op if none/foreign/corrupt
+	// (ClearGuardLatch fails open on a read it cannot make sense of).
 	if session != "" {
 		if err := loop.ClearGuardLatch(cfg, agentID, session); err != nil {
 			return fmt.Errorf("clear guard latch: %w", err)

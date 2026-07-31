@@ -285,6 +285,51 @@ func TestGuardClaudeDenyJSONShape(t *testing.T) {
 	}
 }
 
+// TestGuardCodexDenyJSONShapeMatchesCanonical pins codex-agentchute's own
+// answer on review of PR #89: codex's PreToolUse deny shape is the SAME
+// hookSpecificOutput/permissionDecision form as Claude's, not gate.go's
+// older `{"decision":"block",...}` Stop convention (accepted but legacy).
+func TestGuardCodexDenyJSONShapeMatchesCanonical(t *testing.T) {
+	out, err := captureStdout(t, func() error {
+		return emitCodexGuardDecision(guardDecision{Allowed: false, Reason: guardDenyReason})
+	})
+	if err != nil {
+		t.Fatalf("emitCodexGuardDecision: %v", err)
+	}
+	var wrap struct {
+		HookSpecificOutput struct {
+			HookEventName            string `json:"hookEventName"`
+			PermissionDecision       string `json:"permissionDecision"`
+			PermissionDecisionReason string `json:"permissionDecisionReason"`
+		} `json:"hookSpecificOutput"`
+	}
+	if jerr := json.Unmarshal([]byte(out), &wrap); jerr != nil {
+		t.Fatalf("unmarshal: %v\n%s", jerr, out)
+	}
+	if wrap.HookSpecificOutput.HookEventName != "PreToolUse" {
+		t.Errorf("hookEventName = %q, want PreToolUse", wrap.HookSpecificOutput.HookEventName)
+	}
+	if wrap.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Errorf("permissionDecision = %q, want deny", wrap.HookSpecificOutput.PermissionDecision)
+	}
+	if wrap.HookSpecificOutput.PermissionDecisionReason != guardDenyReason {
+		t.Errorf("permissionDecisionReason = %q, want %q", wrap.HookSpecificOutput.PermissionDecisionReason, guardDenyReason)
+	}
+	if strings.Contains(out, `"decision"`) {
+		t.Errorf("codex deny output still uses the legacy {\"decision\":...} shape: %s", out)
+	}
+
+	outAllow, err := captureStdout(t, func() error {
+		return emitCodexGuardDecision(guardDecision{Allowed: true})
+	})
+	if err != nil {
+		t.Fatalf("emitCodexGuardDecision(allow): %v", err)
+	}
+	if outAllow != "" {
+		t.Errorf("allow decision emitted output: %q, want empty", outAllow)
+	}
+}
+
 // TestGuardLatchSurvivesClaimedDrainedOutsideTurnEnd is the claim-then-abandon
 // property named throughout the plan: the latch is NEVER derived from
 // .claimed emptiness, so anything OTHER than turn-end draining .claimed

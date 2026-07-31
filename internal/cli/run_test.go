@@ -309,6 +309,50 @@ func TestRunnerChildEnvCarriesServeToken(t *testing.T) {
 	}
 }
 
+// TestRunnerChildEnvStripsInheritedGuardBit is the v2.5 A7/C22 guard-enablement
+// contract (codex review, PR #89 finding #2): an unguarded wrapper (Guarded:
+// false, e.g. grok) must never appear armed just because the PROCESS running
+// serve itself inherited AGENTCHUTE_GUARD=1 from a guarded parent session
+// (e.g. `ac serve grok` launched from inside a guarded claude-code session).
+// runnerChildEnv must strip any inherited value before conditionally
+// re-adding it, not merely rely on always overriding it (which only works
+// when Guarded is true).
+func TestRunnerChildEnvStripsInheritedGuardBit(t *testing.T) {
+	t.Setenv("AGENTCHUTE_GUARD", "1") // simulates a guarded parent process's env
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := runnerChildEnv(cfg, runnerOptions{AgentID: "grok", Vendor: "xai", Guarded: false}, "tok-grok")
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "AGENTCHUTE_GUARD=") {
+			t.Fatalf("unguarded child (Guarded:false) carries AGENTCHUTE_GUARD from the parent's inherited env: %q\nfull env: %v", kv, env)
+		}
+	}
+}
+
+// A guarded wrapper still gets the bit even when the parent process happens
+// to have it unset — the positive counterpart to the strip test above.
+func TestRunnerChildEnvSetsGuardBitWhenGuarded(t *testing.T) {
+	t.Setenv("AGENTCHUTE_GUARD", "")
+	root := setupShortRunFixture(t)
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := runnerChildEnv(cfg, runnerOptions{AgentID: "claude-code", Vendor: "anthropic", Guarded: true}, "tok-claude")
+	found := false
+	for _, kv := range env {
+		if kv == "AGENTCHUTE_GUARD=1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("guarded child (Guarded:true) missing AGENTCHUTE_GUARD=1: %v", env)
+	}
+}
+
 func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 	root := setupShortRunFixture(t)
 	envPath := filepath.Join(root, "runner-env.txt")

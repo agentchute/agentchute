@@ -234,61 +234,60 @@ func parseGuardToolCommand(body []byte) string {
 	return strings.Join(parts, " ")
 }
 
-// emitClaudeGuardDecision emits Claude Code's PreToolUse permission-decision
-// hookSpecificOutput shape (C25's exact wording). Exit 0 either way — Claude
-// reads `permissionDecision` from the JSON for PreToolUse, unlike Stop's
-// exit-2 convention. On allow: no stdout, matching emitGateCodexStop /
-// emitHookContextJSON's "silence means proceed" convention elsewhere in this
-// codebase. This is also the DEFAULT shape (cmdGuard's fallback case) since
-// it is the only vendor shape this plan gives verbatim.
-func emitClaudeGuardDecision(d guardDecision) error {
-	if d.Allowed {
-		return nil
-	}
+// emitPreToolUseDenyJSON writes the canonical hookSpecificOutput
+// permission-decision shape (C25's exact wording for Claude; confirmed by
+// codex-agentchute on review of PR #89 as ITS current canonical shape too —
+// `{"decision":"block","reason":...}` is codex's older compatibility form).
+// Shared by every vendor emitter below, mirroring buildPendingContext /
+// emitHookContextJSON's shared-body-plus-per-vendor-wrapper pattern
+// (pending.go), so a future wrapper-specific field can diverge one emitter at
+// a time without duplicating the JSON shape itself.
+func emitPreToolUseDenyJSON(reason string) error {
 	out := map[string]any{
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":            "PreToolUse",
 			"permissionDecision":       "deny",
-			"permissionDecisionReason": d.Reason,
+			"permissionDecisionReason": reason,
 		},
 	}
 	enc := json.NewEncoder(os.Stdout)
 	return enc.Encode(out)
 }
 
-// emitCodexGuardDecision mirrors gate.go's emitGateCodexStop shape (codex's
-// established block/allow decision convention in this codebase): on deny,
-// `{"decision":"block","reason":"..."}` to stdout, exit 0; on allow, no
-// stdout. codex-cli's actual PreToolUse-equivalent hook surface has not been
-// independently verified against codex's own hook docs from this session —
-// flagged for codex-agentchute's review (see PR body).
+// emitClaudeGuardDecision emits Claude Code's PreToolUse permission-decision
+// shape. Exit 0 either way — Claude reads `permissionDecision` from the JSON
+// for PreToolUse, unlike Stop's exit-2 convention. On allow: no stdout,
+// matching emitGateCodexStop / emitHookContextJSON's "silence means proceed"
+// convention elsewhere in this codebase. This is also the DEFAULT shape
+// (cmdGuard's fallback case).
+func emitClaudeGuardDecision(d guardDecision) error {
+	if d.Allowed {
+		return nil
+	}
+	return emitPreToolUseDenyJSON(d.Reason)
+}
+
+// emitCodexGuardDecision: codex-agentchute confirmed on review of PR #89 that
+// "PreToolUse" is the correct event name and that the canonical shape here is
+// the SAME hookSpecificOutput/permissionDecision form as Claude's, not
+// gate.go's older `{"decision":"block",...}` Stop convention (which codex
+// documents as accepted-but-legacy).
 func emitCodexGuardDecision(d guardDecision) error {
 	if d.Allowed {
 		return nil
 	}
-	out := map[string]any{
-		"decision": "block",
-		"reason":   d.Reason,
-	}
-	enc := json.NewEncoder(os.Stdout)
-	return enc.Encode(out)
+	return emitPreToolUseDenyJSON(d.Reason)
 }
 
-// emitGeminiGuardDecision uses the same block/reason shape as
-// emitCodexGuardDecision, absent any established gemini-specific deny
-// convention in this codebase (pending.go's gemini emitter only covers
-// additionalContext injection, not a permission decision). Flagged as a
-// best-effort judgment call for review.
+// emitGeminiGuardDecision uses the same canonical shape as Claude/codex,
+// absent any established gemini-specific deny convention in this codebase
+// (pending.go's gemini emitter only covers additionalContext injection, not a
+// permission decision). Flagged as a best-effort judgment call for review.
 func emitGeminiGuardDecision(d guardDecision) error {
 	if d.Allowed {
 		return nil
 	}
-	out := map[string]any{
-		"decision": "block",
-		"reason":   d.Reason,
-	}
-	enc := json.NewEncoder(os.Stdout)
-	return enc.Encode(out)
+	return emitPreToolUseDenyJSON(d.Reason)
 }
 
 func guardUsage(err error) error {

@@ -46,9 +46,14 @@ func SetGuardLatch(cfg *Config, id, session string) error {
 		return fmt.Errorf("SetGuardLatch: session must not be empty")
 	}
 	return withAgentLock(cfg, id, func() error {
+		// Any read failure — absent OR corrupt/unparseable — is treated as
+		// "no existing claim to respect": a hand-corrupted or truncated latch
+		// file is not a valid hold by any session, so it must never refuse a
+		// fresh set (codex review, PR #89 finding #4 — a corrupt latch must
+		// never itself become the reason a lane wedges shut).
 		existing, err := readGuardLatch(cfg, id)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+		if err != nil {
+			existing = nil
 		}
 		if existing != nil && existing.Session == session {
 			return nil // already set for this session; SetAt stays as first-set.
@@ -85,9 +90,13 @@ func ReadGuardLatch(cfg *Config, id string) (*GuardLatch, error) {
 
 // ClearGuardLatch clears id's guard latch ONLY if its stored session matches
 // `session` exactly. A latch belonging to a different (foreign or dead)
-// session, or no latch at all, is left completely untouched — clearing is
-// not a "reset to unset for anyone", it is "release MY hold". Idempotent:
-// clearing an absent or already-foreign latch is a no-op success.
+// session, one that fails to read at all (absent OR corrupt/unparseable), or
+// no latch at all, is left completely untouched — clearing is not a "reset
+// to unset for anyone", it is "release MY hold". Idempotent: clearing an
+// absent, corrupt, or already-foreign latch is a no-op success — a read
+// failure here must never become a hard error, or turn-end's caller would
+// wedge on every future call once the file is corrupt (codex review, PR #89
+// finding #4).
 func ClearGuardLatch(cfg *Config, id, session string) error {
 	if err := ValidateAgentID(id); err != nil {
 		return err
@@ -95,10 +104,7 @@ func ClearGuardLatch(cfg *Config, id, session string) error {
 	return withAgentLock(cfg, id, func() error {
 		existing, err := readGuardLatch(cfg, id)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil
-			}
-			return err
+			return nil // absent OR corrupt: nothing (identifiably ours) to clear.
 		}
 		if existing.Session != session {
 			return nil // foreign/dead latch: not ours to clear.
