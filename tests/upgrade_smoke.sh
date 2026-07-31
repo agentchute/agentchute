@@ -229,14 +229,14 @@ git -C "$repo" archive "$base" | tar -x -C "$old_source"
 
 (
 	cd "$repo"
-	go build -ldflags '-X main.version=2.5.0' -o "$new_build/agentchute" .
+	go build -ldflags '-X main.version=1.5.0' -o "$new_build/agentchute" .
 )
 new_version=$("$new_build/agentchute" --version)
 
 goos=$(go env GOOS)
 goarch=$(go env GOARCH)
-asset="agentchute_2.5.0_${goos}_${goarch}.tar.gz"
-release_dir="$http_root/releases/download/v2.5.0"
+asset="agentchute_1.5.0_${goos}_${goarch}.tar.gz"
+release_dir="$http_root/releases/download/v1.5.0"
 mkdir -p "$release_dir"
 tar -C "$new_build" -czf "$release_dir/$asset" agentchute
 if command -v sha256sum >/dev/null 2>&1; then
@@ -335,7 +335,7 @@ env \
 	PATH="$shim_dir:/usr/bin:/bin" \
 	"$installed" update \
 		--control-repo "$fixture" \
-		--version v2.5.0 >"$tmp/update.log" 2>&1
+		--version v1.5.0 >"$tmp/update.log" 2>&1
 
 [ ! -e "$claim" ] || fail "new setup left the old serve claim in place"
 [ -f "$registration" ] || fail "new setup deleted the registration row"
