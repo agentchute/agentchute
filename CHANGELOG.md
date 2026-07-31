@@ -4,6 +4,13 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.5.2 (2026-07-31) — guard the mail pipeline, not the turn
+
+**Guard-latch livelock fix**
+- While a lane holds claimed mail, the guard now blocks only the commands that can disrupt the claim-to-commit path: `agentchute ack`/`check`/`turn-end`/`update`/`setup`/`clean` under every supported spelling, `rm -rf`, `curl`/`wget`, and writes to hook configuration files.
+- Publishing a branch, opening or merging a PR, creating a tag, and remote-shell/file-copy commands are no longer mechanically blocked during that turn. This removes the livelock where checking mail at turn start prevented the implementer from completing the assigned work; inbox bodies remain untrusted and still require explicit human authorization for scope-expanding actions ([#112](https://github.com/agentchute/agentchute/pull/112)).
+- Enrollment prose moved to marker v29. Re-run `agentchute setup --wake runner --wrappers all --yes` in each control repo to re-stamp the tracked wrapper instructions.
+
 ## v1.5.1 (2026-07-31) — updates verify their hooks
 
 **Update safety**
