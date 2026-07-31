@@ -38,26 +38,28 @@ import (
 //     `agentchute gate --before finish` (gate.go): default text, --json, and
 //     --codex-hook Stop (silent on clear, block-JSON exit-0 on block).
 //
-// Recovery property (and its known limit): turn-end has NO self-denial of
-// its own (unlike check/ack) — its only possible denial is the PreToolUse
-// guard hook itself. When NEITHER that hook NOR the Stop hook is firing at
-// all (e.g. a hook-trust rollout window on a vendor that gates project-local
-// hook changes per-command), a lane armed by `check` is still recoverable:
-// the guard that would deny a direct `turn-end` invocation also isn't
-// running, so nothing stops it (check/ack's own self-denial error text names
-// it as the fix for exactly this reason — TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd).
+// Recovery properties: turn-end has NO self-denial of its own (unlike
+// check/ack) — its only possible denial is the PreToolUse guard hook itself.
 //
-// KNOWN GAP (codex review, PR #89 round 3, finding #1 — NOT fixed): a MIXED
-// state where the PreToolUse guard is active but Stop is independently
-// disabled/failing is not recoverable this way — the active guard denies a
-// model's own attempt to run `turn-end` (it is deliberately deny-listed, so a
-// same-turn instruction can't clear its own latch and disarm the rest of the
-// deny list for the remainder of the turn). Removing turn-end from the deny
-// list would close this gap but reopen that exact bypass, which several
-// review rounds have independently protected; kept deny-listed on the
-// judgment that a same-turn security bypass is worse than a narrow, human-
-// recoverable (delete state/<id>/guard.latch) hook-rollout edge. Flagged for
-// Alex/reviewers as an open design question, not silently accepted.
+//  1. When NEITHER that hook NOR the Stop hook is firing at all (e.g. a
+//     hook-trust rollout window on a vendor that gates project-local hook
+//     changes per-command), a lane armed by `check` is still recoverable:
+//     the guard that would deny a direct `turn-end` invocation also isn't
+//     running, so nothing stops it (check/ack's own self-denial error text
+//     names it as the fix — TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd).
+//  2. A MIXED state — PreToolUse active, Stop independently disabled/
+//     failing — is NOT recoverable via a direct `turn-end` call: the active
+//     guard denies it (deliberately deny-listed, so a same-turn instruction
+//     can't clear its own latch and disarm the rest of the deny list for the
+//     remainder of the turn). The recovery path here is instead
+//     `agentchute guard --clear-stale` (guard.go): it force-clears a latch
+//     by AGE rather than session identity or the deny list, so it stays
+//     usable precisely when neither hook can help, while its age gate (a
+//     latch must be older than --older-than, default 30m) means it can never
+//     be used to instantly clear a session's own fresh latch mid-turn —
+//     preserving the same-turn-bypass protection turn-end's own deny-listing
+//     exists for (codex review PR #89 round 3 finding #1; claude-code review
+//     round 4; TestMixedHookTrustStateRecoversViaClearStale).
 func cmdTurnEnd(args []string) error {
 	fs := flag.NewFlagSet("turn-end", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)

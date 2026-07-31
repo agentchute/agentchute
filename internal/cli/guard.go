@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
@@ -114,22 +115,32 @@ func cmdGuard(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	var agentID, controlRepo, loopDir, codexHook, geminiHook string
-	var preToolUse bool
+	var preToolUse, clearStale bool
+	var olderThan time.Duration
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&preToolUse, "pre-tool-use", false, "evaluate a PreToolUse-family hook decision from stdin JSON")
 	fs.StringVar(&codexHook, "codex-hook", "", "emit codex's PreToolUse-equivalent decision JSON")
 	fs.StringVar(&geminiHook, "gemini-hook", "", "emit Gemini's BeforeTool-family decision JSON")
+	fs.BoolVar(&clearStale, "clear-stale", false, "recovery: force-clear this agent's guard latch if it is at least --older-than old, regardless of session")
+	fs.DurationVar(&olderThan, "older-than", defaultGuardStaleThreshold, "age threshold for --clear-stale")
 
 	if err := fs.Parse(args); err != nil {
 		return guardUsage(err)
 	}
-	if !preToolUse {
-		return guardUsage(fmt.Errorf("--pre-tool-use is required"))
-	}
 	if fs.NArg() != 0 {
 		return guardUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
+	}
+
+	if clearStale {
+		if preToolUse {
+			return guardUsage(fmt.Errorf("--clear-stale and --pre-tool-use are mutually exclusive"))
+		}
+		return cmdGuardClearStale(agentID, controlRepo, loopDir, olderThan)
+	}
+	if !preToolUse {
+		return guardUsage(fmt.Errorf("--pre-tool-use is required"))
 	}
 
 	stdinBody, _ := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
@@ -145,6 +156,62 @@ func cmdGuard(args []string) error {
 	default:
 		return emitClaudeGuardDecision(decision)
 	}
+}
+
+// defaultGuardStaleThreshold is how old a guard latch must be before
+// --clear-stale will touch it. Long enough that no legitimate single turn
+// is plausibly still holding it (matches StaleRegThreshold's own "this is
+// clearly abandoned" reasoning in gate.go), short enough that a genuinely
+// wedged lane (the mixed hook-trust state — PreToolUse active, Stop
+// independently disabled — that leaves NEITHER the automatic nor the manual
+// turn-end recovery path usable) doesn't stay stuck indefinitely.
+const defaultGuardStaleThreshold = 30 * time.Minute
+
+// cmdGuardClearStale resolves identity the same minimal way cmdGuard's
+// --pre-tool-use path does (env/--as only, no contextual-default guessing —
+// this is a recovery tool, not a registration path) and force-clears a
+// stale latch via loop.ClearStaleGuardLatch. See that function's doc
+// comment for the full safety reasoning (age, not session identity, is the
+// authorization here).
+func cmdGuardClearStale(agentIDFlag, controlRepo, loopDir string, olderThan time.Duration) error {
+	id := strings.TrimSpace(agentIDFlag)
+	if id == "" {
+		id = strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID"))
+	}
+	if id == "" {
+		return fmt.Errorf("agentchute guard --clear-stale: no agent id (pass --as or set $AGENTCHUTE_AGENT_ID)")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	cfg, err := loop.Discover(loop.DiscoverOpts{
+		ControlRepoFlag: controlRepo,
+		LoopDirFlag:     loopDir,
+		Cwd:             cwd,
+		EnvControlRepo:  os.Getenv("AGENTCHUTE_CONTROL_REPO"),
+		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
+	})
+	if err != nil {
+		return err
+	}
+	if err := loop.ValidateAgentID(id); err != nil {
+		return err
+	}
+
+	cleared, found, age, err := loop.ClearStaleGuardLatch(cfg, id, olderThan, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !found {
+		fmt.Println("(no guard latch to clear)")
+		return nil
+	}
+	if !cleared {
+		return fmt.Errorf("guard latch is only %s old (< --older-than %s); refusing — this may be an active turn, not an abandoned one", age.Round(time.Second), olderThan)
+	}
+	fmt.Printf("cleared stale guard latch for %s (age %s)\n", id, age.Round(time.Second))
+	return nil
 }
 
 // evaluateGuardInvocation is cmdGuard's testable core: resolves the session,
@@ -354,6 +421,7 @@ func guardHelpErr() error {
 func guardHelp() string {
 	return strings.TrimSpace(`
 Usage: agentchute guard --pre-tool-use [flags]
+       agentchute guard --clear-stale [--older-than <dur>] [flags]
 
 PreToolUse-family hook entry (v2.5 plan A7/C25): denies a documented list of
 high-blast-radius tool invocations while this session holds claimed-but-unacked
@@ -361,8 +429,21 @@ mail. Defense-in-depth only (best-effort substring matching, not a hard
 security boundary) — allows everything when the guard is not armed for this
 process (no serve session, or the wrapper's hooks cannot clear the latch).
 
+--clear-stale is the recovery path for a lane wedged by a mixed hook-trust
+state (a vendor's PreToolUse guard hook active while its Stop hook — which
+would normally run turn-end — is independently disabled or failing): in that
+state the active guard also denies a direct turn-end invocation, since
+turn-end is deliberately deny-listed to prevent a same-turn self-unlock
+bypass. --clear-stale force-clears the latch by AGE instead of session
+identity — a latch at least --older-than old (default 30m) is presumed
+abandoned regardless of which session set it. A latch younger than the
+threshold is left untouched and the command refuses (exit 1), since it might
+be an active turn.
+
 Flags:
-  --pre-tool-use        required marker for this mode
+  --pre-tool-use        evaluate a PreToolUse decision from stdin JSON (default mode)
+  --clear-stale         recovery: force-clear a stale guard latch by age
+  --older-than <dur>    age threshold for --clear-stale (default 30m)
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)

@@ -424,3 +424,126 @@ func TestGuardLatchSurvivesClaimedDrainedOutsideTurnEnd(t *testing.T) {
 		}
 	})
 }
+
+// TestCmdGuardClearStale covers the CLI surface of the mixed-hook-trust
+// recovery path (claude-code review round 4, on codex's finding #1): no
+// latch is a no-op success; a young latch is refused; an old latch clears
+// REGARDLESS of a session mismatch, since age (not session identity) is the
+// authorization here.
+func TestCmdGuardClearStale(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		out, err := captureStdout(t, func() error {
+			return cmdGuard([]string{"--clear-stale", "--as", "bob"})
+		})
+		if err != nil {
+			t.Fatalf("--clear-stale with no latch: %v", err)
+		}
+		if !strings.Contains(out, "no guard latch") {
+			t.Errorf("expected a no-op message, got %q", out)
+		}
+
+		if err := loop.SetGuardLatch(cfg, "bob", "tok-fresh"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := captureStdout(t, func() error {
+			return cmdGuard([]string{"--clear-stale", "--as", "bob", "--older-than", "1h"})
+		}); err == nil {
+			t.Fatal("--clear-stale on a fresh latch should refuse (exit non-nil)")
+		}
+		if _, err := loop.ReadGuardLatch(cfg, "bob"); err != nil {
+			t.Fatalf("fresh latch should survive a refused clear: %v", err)
+		}
+
+		// A latch belonging to a completely different, unresolvable session
+		// still clears once it's old enough — the whole point of this path.
+		out, err = captureStdout(t, func() error {
+			return cmdGuard([]string{"--clear-stale", "--as", "bob", "--older-than", "0s"})
+		})
+		if err != nil {
+			t.Fatalf("--clear-stale with a 0s threshold: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "cleared stale guard latch") {
+			t.Errorf("expected a cleared confirmation, got %q", out)
+		}
+		if _, err := loop.ReadGuardLatch(cfg, "bob"); !os.IsNotExist(err) {
+			t.Fatalf("latch should be gone; err=%v", err)
+		}
+	})
+}
+
+// TestGuardClearStaleCommandItselfNotDenied confirms `guard --clear-stale`
+// is not itself on the C25 deny list: it must be reachable even while a
+// (fresh, currently-armed) latch is set, since it is the escape hatch for
+// exactly that state. Its own age gate — not the deny list — is what keeps
+// it from being usable to instantly clear a FRESH latch mid-turn.
+func TestGuardClearStaleCommandItselfNotDenied(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-1")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+		t.Setenv("AGENTCHUTE_AGENT_ID", "bob")
+		if err := loop.SetGuardLatch(cfg, "bob", "tok-1"); err != nil {
+			t.Fatal(err)
+		}
+		d := evaluateGuardInvocation("", "", "", "agentchute guard --clear-stale --as bob")
+		if !d.Allowed {
+			t.Errorf("guard --clear-stale must not be on the deny list; decision=%+v", d)
+		}
+	})
+}
+
+// TestMixedHookTrustStateRecoversViaClearStale is the full scenario
+// claude-code/codex review round 4 (finding #1) describes: a lane where the
+// PreToolUse guard is active but Stop never runs (independently disabled).
+// A direct `turn-end` attempt stays correctly denied throughout (security
+// preserved — no same-turn self-unlock), but once the latch is old enough,
+// --clear-stale recovers the lane without ever needing session identity.
+func TestMixedHookTrustStateRecoversViaClearStale(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "hi"}); err != nil {
+			t.Fatalf("cmdSend: %v", err)
+		}
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-1")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+		t.Setenv("AGENTCHUTE_AGENT_ID", "bob")
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err != nil {
+			t.Fatalf("cmdCheck(bob): %v", err)
+		}
+
+		// PreToolUse is active (this IS the mixed state): a direct turn-end
+		// attempt is denied, same as always.
+		d := evaluateGuardInvocation("", "", "", "agentchute turn-end --json")
+		if d.Allowed {
+			t.Fatal("turn-end must stay denied — the mixed state must not reopen the same-turn bypass")
+		}
+
+		// Stop never runs (simulated by simply never calling cmdTurnEnd).
+		// Time passes; the latch ages past the threshold, backdating it
+		// directly rather than waiting in real time.
+		latch, err := loop.ReadGuardLatch(cfg, "bob")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = latch
+		if _, err := captureStdout(t, func() error {
+			return cmdGuard([]string{"--clear-stale", "--as", "bob", "--older-than", "0s"})
+		}); err != nil {
+			t.Fatalf("--clear-stale must recover the wedged lane: %v", err)
+		}
+
+		// turn-end is still denied as a DIRECT model tool call (deny list is
+		// unaffected by --clear-stale) — but the underlying mail is no
+		// longer permanently stuck: check/ack now proceed normally since the
+		// latch is gone.
+		if _, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "bob"}) }); err != nil {
+			t.Fatalf("ack after --clear-stale must not be denied: %v", err)
+		}
+		if n := countMessageFiles(t, cfg.ArchiveDir()); n != 1 {
+			t.Errorf("archive = %d, want 1 (ack committed normally after recovery)", n)
+		}
+	})
+}

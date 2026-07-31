@@ -116,6 +116,67 @@ func ClearGuardLatch(cfg *Config, id, session string) error {
 	})
 }
 
+// ClearStaleGuardLatch is the recovery path for a lane wedged by a mixed
+// hook-trust state — e.g. a vendor whose PreToolUse guard hook is active
+// while its Stop hook (which would normally run turn-end) is independently
+// disabled or failing (codex review, PR #89 round 3 finding #1; claude-code
+// review round 4). In that state the active guard denies a model's own
+// direct `turn-end` invocation too (turn-end is deliberately deny-listed to
+// prevent a same-turn self-unlock bypass), so neither the automatic nor the
+// manual recovery path works. This is the third path: age, not session
+// identity, is the authorization. A latch old enough that no legitimate
+// single turn could still be holding it is presumed abandoned and force-
+// cleared regardless of which session (if any) set it — deliberately NOT
+// gated on a session match, since the whole point is recovering when we
+// cannot prove which session (if any) is still alive.
+//
+// Returns cleared=true only if a latch existed, read back successfully, AND
+// was at least olderThan old. A latch younger than olderThan is left
+// UNTOUCHED and returns cleared=false, found=true, err=nil — refusing is the
+// safe default (it might be an active turn), not an error. No latch at all,
+// or one that fails to read (corrupt), returns cleared=false, found=false,
+// err=nil: there is nothing this call needs to do in either case.
+//
+// This is intentionally NOT reachable through cmdGuard's --pre-tool-use deny
+// list (guard.go's guardAgentchuteSubcmdRE does not list "guard" as a
+// sensitive subcommand): age-gating, not the deny list, is what keeps this
+// safe from being used to instantly clear a session's own FRESH latch mid-
+// turn — the same latch a model would want to bypass is, by construction,
+// too young to qualify.
+//
+// found reports whether a latch existed and read back successfully at all
+// (decoupled from cleared/age, which would otherwise be ambiguous between
+// "no latch" and "a latch so fresh its age rounds to zero").
+func ClearStaleGuardLatch(cfg *Config, id string, olderThan time.Duration, now time.Time) (cleared, found bool, age time.Duration, err error) {
+	if err := ValidateAgentID(id); err != nil {
+		return false, false, 0, err
+	}
+	err = withAgentLock(cfg, id, func() error {
+		existing, rerr := readGuardLatch(cfg, id)
+		if rerr != nil {
+			return nil // absent or corrupt: nothing to clear here.
+		}
+		found = true
+		a := now.Sub(existing.SetAt)
+		if a < 0 {
+			a = 0 // future-dated (clock skew) reads as fresh, never stale.
+		}
+		age = a
+		if age < olderThan {
+			return nil // too young to presume abandoned; refuse (cleared stays false).
+		}
+		if rmErr := os.Remove(cfg.GuardLatchPath(id)); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return fmt.Errorf("clear stale guard latch %s: %w", id, rmErr)
+		}
+		if serr := syncDir(cfg.AgentStateDir(id)); serr != nil {
+			return serr
+		}
+		cleared = true
+		return nil
+	})
+	return cleared, found, age, err
+}
+
 // readGuardLatch is the lock-free body shared by the exported, lock-taking
 // entry points above. Callers MUST already hold withAgentLock(id).
 func readGuardLatch(cfg *Config, id string) (*GuardLatch, error) {
