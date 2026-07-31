@@ -275,7 +275,7 @@ func checkProtocolVersions(cfg *loop.Config) doctorCheck {
 		}
 	}
 	if len(warnings) == 0 {
-		return doctorCheck{Name: "protocol_version", Severity: severityOK, Message: fmt.Sprintf("no explicit protocol-version mismatches; expected v%d", loop.CurrentProtocolVersion)}
+		return doctorCheck{Name: "protocol_version", Severity: severityOK, Message: fmt.Sprintf("no explicit protocol-version mismatches; expected %s", protocolVersionLabel(loop.CurrentProtocolVersion))}
 	}
 	return doctorCheck{
 		Name:     "protocol_version",

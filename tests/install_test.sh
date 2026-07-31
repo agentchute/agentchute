@@ -59,6 +59,16 @@ assert_false "invalid: space"       "is_valid_version 'v 0.1.0'"
 assert_false "invalid: shell meta"  "is_valid_version 'v0.1.0\$x'"
 
 # -----------------------------------------------------------------------
+# release base URL
+# -----------------------------------------------------------------------
+
+assert_eq "release base: default GitHub" \
+	"https://github.com/agentchute/agentchute" "$GITHUB"
+override_base=$(AGENTCHUTE_BASE_URL="file:///tmp/agentchute-release" AGENTCHUTE_INSTALL_LIB=1 sh -c '. ./install.sh; printf "%s" "$GITHUB"')
+assert_eq "release base: test override" \
+	"file:///tmp/agentchute-release" "$override_base"
+
+# -----------------------------------------------------------------------
 # is_valid_install_dir
 # -----------------------------------------------------------------------
 
