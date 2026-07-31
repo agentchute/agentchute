@@ -580,6 +580,9 @@ var setupRunRuntimeReset = func(root string, cfg *loop.Config, wrappers []string
 	if len(reset.Runners) > 0 {
 		fmt.Printf("stopped %d local runner(s): %s\n", len(reset.Runners), strings.Join(reset.Runners, ", "))
 	}
+	if len(reset.LegacyPollers) > 0 {
+		fmt.Printf("stopped %d legacy poller(s): %s\n", len(reset.LegacyPollers), strings.Join(reset.LegacyPollers, ", "))
+	}
 	if len(reset.RuntimeFiles) > 0 {
 		fmt.Printf("cleared %d runtime state file(s)\n", len(reset.RuntimeFiles))
 	}

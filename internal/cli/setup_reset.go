@@ -16,10 +16,11 @@ import (
 )
 
 type setupRuntimeResetResult struct {
-	Agents       []string
-	Runners      []string
-	RuntimeFiles []string
-	Warnings     []string
+	Agents        []string
+	Runners       []string
+	LegacyPollers []string
+	RuntimeFiles  []string
+	Warnings      []string
 }
 
 var setupProcessCommandLine = processCommandLine
@@ -35,6 +36,17 @@ func resetSetupRuntimeState(root string, cfg *loop.Config, wrappers []string) se
 		} else if stopped {
 			result.Runners = append(result.Runners, agentID)
 		}
+		// Legacy (pre-B5) detached poller: ordinary `setup --reset` and
+		// `update`'s re-sync call this same path — the NORMAL upgrade cutover
+		// every lane takes — so a still-running pre-B5 poller must be
+		// recognized and stopped here too, not only in the rare destructive
+		// `wipe-state` path (codex PR #98 review, round 3: wipe stopped it,
+		// ordinary reset left it running).
+		if stopped, warning := stopSetupLegacyPoller(cfg, agentID); warning != "" {
+			result.Warnings = append(result.Warnings, warning)
+		} else if stopped {
+			result.LegacyPollers = append(result.LegacyPollers, agentID)
+		}
 		for _, path := range setupRuntimeStatePaths(cfg, agentID) {
 			if err := os.Remove(path); err == nil {
 				result.RuntimeFiles = append(result.RuntimeFiles, filepath.Base(filepath.Dir(path))+"/"+filepath.Base(path))
@@ -44,6 +56,7 @@ func resetSetupRuntimeState(root string, cfg *loop.Config, wrappers []string) se
 		}
 	}
 	sort.Strings(result.Runners)
+	sort.Strings(result.LegacyPollers)
 	sort.Strings(result.RuntimeFiles)
 	sort.Strings(result.Warnings)
 	return result

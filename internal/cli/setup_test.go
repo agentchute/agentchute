@@ -486,6 +486,66 @@ func TestSetupResetsRunnerStateButPreservesPendingReplies(t *testing.T) {
 	}
 }
 
+// codex PR #98 review, round 3: the legacy-poller stop was wired into the
+// destructive `wipe-state` path only. resetSetupRuntimeState — what ordinary
+// `setup --reset` and, critically, `update`'s re-sync call — still left a
+// live pre-B5 detached poller running untouched. This is the NORMAL upgrade
+// cutover every lane takes, so it matters more than wipe (the rare
+// deliberate destructive command). Asserts the ordinary reset path signals
+// and reaps a live legacy poller exactly like it does the runner.
+func TestSetupResetsSignalsLiveLegacyPoller(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	loopDir := filepath.Join(root, ".agentchute", "loop")
+	agentsDir := filepath.Join(loopDir, "agents")
+	mustMkdir(t, agentsDir)
+	mustWrite(t, filepath.Join(agentsDir, "codex-agentchute.md"), []byte("---\nagent_id: codex-agentchute\nvendor: openai\ncontrol_repo: "+root+"\nhost: test\nlast_seen: 2026-01-01T00:00:00Z\n---\n"))
+	stateDir := filepath.Join(loopDir, "state", "codex-agentchute")
+	mustWrite(t, filepath.Join(stateDir, "poller.json"), []byte(`{"agent_id":"codex-agentchute","host":"`+localHostname()+`","pid":333}`+"\n"))
+
+	oldAlive, oldCommandLine, oldSignal := setupProcessAlive, setupProcessCommandLine, setupSignalProcess
+	signaled := map[int]bool{}
+	setupProcessAlive = func(pid int) bool {
+		if signaled[pid] {
+			return false
+		}
+		return pid == 333
+	}
+	setupProcessCommandLine = func(pid int) string {
+		if pid == 333 {
+			return filepath.Join(home, "agentchute") + " poller run --as codex-agentchute --control-repo " + root + " --loop-dir " + loopDir
+		}
+		return ""
+	}
+	setupSignalProcess = func(pid int, sig os.Signal) error {
+		signaled[pid] = true
+		return nil
+	}
+	t.Cleanup(func() {
+		setupProcessAlive = oldAlive
+		setupProcessCommandLine = oldCommandLine
+		setupSignalProcess = oldSignal
+	})
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if !signaled[333] {
+		t.Fatalf("ordinary setup reset did not signal the legacy poller pid: %#v", signaled)
+	}
+}
+
 func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))
