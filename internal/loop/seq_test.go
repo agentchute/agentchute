@@ -9,11 +9,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSendSeqMessageWithCommitReportsPostLinkSyncFailure(t *testing.T) {
 	cfg := newSeqTestConfig(t)
-	mkInbox(t, cfg, "bob")
+	mkFreshRecipient(t, cfg, "bob")
 	originalSync := syncSeqInboxDir
 	syncSeqInboxDir = func(string) error {
 		return errors.New("forced post-link sync failure")
@@ -55,6 +56,27 @@ func mkInbox(t *testing.T, cfg *Config, to string) {
 	t.Helper()
 	if err := ensurePrivateDir(cfg.AgentInboxDir(to)); err != nil {
 		t.Fatalf("mkInbox %s: %v", to, err)
+	}
+}
+
+// mkFreshRecipient creates to's inbox dir AND a fresh registration row. B3's
+// DeliverUnderRecipientLock requires the registration to consider `to`
+// reachable; tests that exercise SendSeqMessage(WithCommit) — the full
+// mint-then-deliver path — need this. Tests that call writeSeqMessage or
+// AllocateSeq directly (bypassing delivery's enforcement by design) keep
+// using the plain mkInbox.
+func mkFreshRecipient(t *testing.T, cfg *Config, to string) {
+	t.Helper()
+	mkInbox(t, cfg, to)
+	reg := &Registration{
+		AgentID:     to,
+		Vendor:      "agentchute",
+		ControlRepo: cfg.ControlRepo,
+		LastSeen:    time.Now().UTC(),
+		Status:      StatusActive,
+	}
+	if err := WriteRegistration(cfg.AgentRegistrationPath(to), reg); err != nil {
+		t.Fatalf("mkFreshRecipient %s: %v", to, err)
 	}
 }
 
@@ -213,7 +235,7 @@ func TestAllocateSeqReissuesOnSameKey(t *testing.T) {
 // TestC1_SenderCrashResume against a REAL filesystem.
 func TestSeqSenderCrashResume(t *testing.T) {
 	cfg := newSeqTestConfig(t)
-	mkInbox(t, cfg, "bob")
+	mkFreshRecipient(t, cfg, "bob")
 
 	// normal send: seq=1 lands.
 	id1, err := SendSeqMessage(cfg, "alice", "bob", []byte("m1"), "k1", "")

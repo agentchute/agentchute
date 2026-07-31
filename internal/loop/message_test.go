@@ -169,6 +169,51 @@ func TestAnnounceEnrollmentSendsToPeersSkipsSelfAndExamples(t *testing.T) {
 	}
 }
 
+// TestAnnounceEnrollmentStalePeerIsWarningNotFatal: v2.5 plan B3 ports
+// AnnounceEnrollment onto the same locked delivery send.go uses, so a stale
+// peer (past StaleAfter) is now a per-peer freshness failure — collected as a
+// Warning like any other, never fatal to the whole enrollment.
+func TestAnnounceEnrollmentStalePeerIsWarningNotFatal(t *testing.T) {
+	cfg := setupAnnounceFixture(t)
+	self := newReg(t, cfg, "claude-code", "anthropic", "synthesis")
+	stale := newReg(t, cfg, "codex", "openai", "review")
+	fresh := newReg(t, cfg, "gemini-cli", "google", "external review")
+
+	staleReg, err := ReadRegistration(cfg.AgentRegistrationPath(stale.AgentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleReg.LastSeen = time.Now().UTC().Add(-2 * time.Hour)
+	if err := WriteRegistration(cfg.AgentRegistrationPath(stale.AgentID), staleReg); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := AnnounceEnrollment(cfg, self)
+	if err != nil {
+		t.Fatalf("a stale peer should not be fatal: %v", err)
+	}
+	if result.Total != 2 {
+		t.Fatalf("Total=%d, want 2 (codex + gemini-cli both counted as candidates)", result.Total)
+	}
+	if result.Sent != 1 {
+		t.Fatalf("Sent=%d, want 1 (only gemini-cli, the fresh peer)", result.Sent)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("Warnings=%v, want exactly 1 (the stale peer)", result.Warnings)
+	}
+	if !strings.Contains(result.Warnings[0], "codex") {
+		t.Fatalf("warning should name the stale peer codex: %v", result.Warnings)
+	}
+
+	// The stale peer's inbox must be empty; the fresh peer's must have landed.
+	if entries, err := os.ReadDir(cfg.AgentInboxDir(stale.AgentID)); err != nil || len(entries) != 0 {
+		t.Errorf("stale peer inbox should be empty, got entries=%v err=%v", entries, err)
+	}
+	if entries, err := os.ReadDir(cfg.AgentInboxDir(fresh.AgentID)); err != nil || len(entries) != 1 {
+		t.Errorf("fresh peer inbox should have 1 message, got entries=%v err=%v", entries, err)
+	}
+}
+
 func TestAnnounceEnrollmentMissingInboxIsWarningNotFatal(t *testing.T) {
 	cfg := setupAnnounceFixture(t)
 	self := newReg(t, cfg, "claude-code", "anthropic", "synthesis")

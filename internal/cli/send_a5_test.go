@@ -63,8 +63,12 @@ func TestSendSpoolsBodyOnPostStdinFailure(t *testing.T) {
 		!strings.Contains(sendErr.Error(), wantRetry) {
 		t.Fatalf("error missing spool path/retry:\n%v", sendErr)
 	}
-	if strings.Contains(sendErr.Error(), "register") {
-		t.Fatalf("error coaches recipient registration:\n%v", sendErr)
+	// C29(a)'s literal text (v2.5 plan B3) deliberately contains "register" as
+	// part of an explicit anti-coaching clause ("do NOT register on their
+	// behalf") — check for actual coaching (a suggested command), not the
+	// bare word.
+	if strings.Contains(sendErr.Error(), "agentchute register") {
+		t.Fatalf("error coaches running `agentchute register` for the recipient:\n%v", sendErr)
 	}
 
 	if err := os.MkdirAll(cfg.AgentInboxDir("codex"), 0o700); err != nil {

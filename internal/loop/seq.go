@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"time"
 )
 
 // seq.go — the protocol-v2 identity tuple + the durable, monotonic,
@@ -405,28 +406,146 @@ func SendSeqMessage(cfg *Config, from, to string, content []byte, idempotencyKey
 // committed is true once the canonical inbox link exists, including when a
 // later directory-sync barrier fails. Callers must not recommend resending a
 // committed delivery.
+//
+// B3 (v2.5 plan): mint (AllocateSeq, under WithAgentLock(from)) and deliver
+// (DeliverUnderRecipientLock, under WithAgentLock(to)) are two SEPARATE,
+// SEQUENTIAL lock acquisitions — the first fully releases before the second
+// begins. NO LOCK NESTING: self-send (from==to) would deadlock the
+// non-reentrant flock instantly if these were ever held together; a
+// dedicated sentinel test (TestSendSelfSendNoDeadlock) pins this.
 func SendSeqMessageWithCommit(cfg *Config, from, to string, content []byte, idempotencyKey, serveToken string) (MsgID, bool, error) {
 	seq, err := AllocateSeq(cfg, from, to, idempotencyKey, serveToken)
 	if err != nil {
 		return MsgID{}, false, err
 	}
 	id := MsgID{To: to, From: from, Seq: seq}
-	// Defense-in-depth (post-reclaim no-WRITE): re-verify the fence AFTER the
-	// counter is allocated but BEFORE the message links into the recipient inbox,
-	// so a reclaim landing in the AllocateSeq→link gap also fails closed. VerifyFence
-	// is lock-free, so this holds no lock and cannot deadlock. It NARROWS but cannot
-	// fully eliminate the link race (a reclaim can always slip between this read and
-	// the link); the durable+monotonic seq guarantees no REUSE regardless, so any
-	// residual late write lands at a seq the new owner will never re-issue. Only
-	// enforced when fenced (serveToken != ""); empty = intentionally unfenced.
-	if serveToken != "" {
-		if err := VerifyFence(cfg, from, serveToken); err != nil {
-			return MsgID{}, false, err
+	committed, err := DeliverUnderRecipientLock(cfg, to, id, content, serveToken)
+	return id, committed, err
+}
+
+// ErrRecipientUnknown classifies a recipient with no registration row at all.
+// It wraps os.ErrNotExist so errors.Is(err, os.ErrNotExist) callers keep
+// working unchanged. NOTE: the legacy os.IsNotExist does NOT see through
+// this wrap — it only unwraps *PathError/*LinkError/*SyscallError, not an
+// arbitrary fmt.Errorf %w chain; callers checking this specific error must
+// use errors.Is, not os.IsNotExist.
+var ErrRecipientUnknown = fmt.Errorf("loop: recipient has no registration row: %w", os.ErrNotExist)
+
+// RecipientReachability is the outcome of checking whether a recipient is
+// currently reachable enough to accept a send (B3, C29): registered, and if
+// so, how old its last heartbeat is relative to the pool's stale_after.
+type RecipientReachability struct {
+	LastSeen  time.Time     // parsed registration LastSeen, or the file's mtime for an unparseable row (C12 precedent — a row we can't parse is not a row we can prove reachable, but it is also not "no row at all").
+	Age       time.Duration // now - LastSeen, NOT clamped (a future-dated LastSeen reads as extra-fresh here — the safe direction for a delivery decision, unlike sweep's cleanup decision, C12/B1).
+	Threshold time.Duration // loop.StaleAfter(cfg) at the moment of the check.
+	Fresh     bool          // Age <= Threshold.
+}
+
+// CheckRecipientReachability reads to's registration WITHOUT taking any lock
+// — this is send's fast, lock-free preflight (B3 §4 risk: WithAgentLock's
+// ensurePrivateDir side effect must never manufacture state/<to>/ for an
+// arbitrary --to typo). Returns ErrRecipientUnknown when no row exists at
+// all (parsed or via a bare file stat); otherwise the reachability snapshot,
+// with Fresh telling the caller whether to proceed.
+func CheckRecipientReachability(cfg *Config, to string, now time.Time) (RecipientReachability, error) {
+	if err := ValidateAgentID(to); err != nil {
+		return RecipientReachability{}, err
+	}
+	path := cfg.AgentRegistrationPath(to)
+	lastSeen, ok := recipientLastSeen(path)
+	if !ok {
+		return RecipientReachability{}, ErrRecipientUnknown
+	}
+	threshold := StaleAfter(cfg)
+	age := now.UTC().Sub(lastSeen.UTC())
+	return RecipientReachability{LastSeen: lastSeen, Age: age, Threshold: threshold, Fresh: age <= threshold}, nil
+}
+
+// recipientLastSeen returns path's best-effort last_seen: the parsed
+// Registration.LastSeen when the file parses, or the file's mtime otherwise
+// (a corrupt/unparseable row still physically exists — C12's mtime-fallback
+// precedent, mirrored from sweep.go's registrationAge). ok is false only when
+// the file itself is genuinely absent.
+func recipientLastSeen(path string) (time.Time, bool) {
+	if reg, err := ReadRegistration(path); err == nil {
+		return reg.LastSeen, true
+	}
+	if info, err := os.Stat(path); err == nil {
+		return info.ModTime(), true
+	}
+	return time.Time{}, false
+}
+
+// ErrRecipientStale reports that DeliverUnderRecipientLock's re-check found
+// to's row present but past stale_after. The caller (cmdSend) knows whether
+// its OWN earlier lock-free preflight had already passed — if so, this is
+// the fresh-but-racing case (C29c: the row went stale in the gap between
+// preflight and this lock, e.g. a fleet-wake storm mid-restart); if the
+// caller never preflighted at all (AnnounceEnrollment), this is a plain
+// stale classification. Loop stays silent on which C29 wording applies —
+// that choice, and the literal text, lives entirely in send.go (AGENTCHUTE.md
+// §9: no text may coach registering the recipient, and that ban is easiest to
+// audit from a single source).
+type ErrRecipientStale struct {
+	To        string
+	LastSeen  time.Time
+	Age       time.Duration
+	Threshold time.Duration
+}
+
+func (e *ErrRecipientStale) Error() string {
+	return fmt.Sprintf("recipient %q registration is stale (last_seen=%s age=%s > stale_after=%s)",
+		e.To, e.LastSeen.UTC().Format(time.RFC3339), e.Age.Round(time.Second), e.Threshold)
+}
+
+// afterRecipientLockHook, when non-nil, fires inside DeliverUnderRecipientLock
+// immediately after WithAgentLock(to) is acquired but BEFORE the freshness
+// re-check reads to's registration. Test-only seam: lets a test simulate the
+// EXACT race this lock exists to close — to's row going stale or vanishing in
+// the gap between cmdSend's lock-free preflight and this lock (e.g. a sweep
+// or a peer's send racing in). nil in production.
+var afterRecipientLockHook func()
+
+// DeliverUnderRecipientLock is send's single point of TRUTH for whether a
+// delivery may proceed (B3): the lock-free preflight in cmdSend (or
+// AnnounceEnrollment's per-peer loop, which has none) is a fast-fail
+// optimization ONLY, never the enforcement itself — a sweep, a heartbeat, or
+// another sender can all land in the window between any earlier check and
+// here. Re-derives to's reachability under WithAgentLock(to) and, only if
+// still fresh, re-verifies id.From's fence (when serveToken != "") and links
+// id/content into to's inbox. On any failure (ErrRecipientUnknown,
+// *ErrRecipientStale, ErrFenced) nothing is linked — the seq in id was
+// already durably allocated by the caller's AllocateSeq and is consumed as a
+// legal gap (O1 tolerates gaps; a resend needs a fresh preflight+mint).
+//
+// NO LOCK NESTING: id.From's OWN WithAgentLock(id.From) (taken by the
+// caller's AllocateSeq) MUST have already released before this is called —
+// never call this from inside that lock's closure. Self-send (id.From==to)
+// would deadlock the non-reentrant flock instantly if the two were ever held
+// together.
+func DeliverUnderRecipientLock(cfg *Config, to string, id MsgID, content []byte, serveToken string) (committed bool, err error) {
+	if err := ValidateAgentID(to); err != nil {
+		return false, fmt.Errorf("to: %w", err)
+	}
+	lockErr := withAgentLock(cfg, to, func() error {
+		if afterRecipientLockHook != nil {
+			afterRecipientLockHook()
 		}
-	}
-	_, committed, err := writeSeqMessageWithCommit(cfg.AgentInboxDir(to), id, content)
-	if err != nil {
-		return id, committed, err
-	}
-	return id, committed, nil
+		rr, rerr := CheckRecipientReachability(cfg, to, time.Now().UTC())
+		if rerr != nil {
+			return rerr
+		}
+		if !rr.Fresh {
+			return &ErrRecipientStale{To: to, LastSeen: rr.LastSeen, Age: rr.Age, Threshold: rr.Threshold}
+		}
+		if serveToken != "" {
+			if err := VerifyFence(cfg, id.From, serveToken); err != nil {
+				return err
+			}
+		}
+		_, c, werr := writeSeqMessageWithCommit(cfg.AgentInboxDir(to), id, content)
+		committed = c
+		return werr
+	})
+	return committed, lockErr
 }
