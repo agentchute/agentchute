@@ -10,7 +10,7 @@
 <meta property="og:url" content="https://agentchute.dev/">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://agentchute.dev/images/og-home.png">
-<meta property="og:image:alt" content="Four agent inbox cards — claude, codex, gemini, grok — passing Markdown messages peer to peer around a 'no central broker' ring; protocol v2 · cli 1.0 chip.">
+<meta property="og:image:alt" content="Four agent inbox cards — claude, codex, gemini, grok — passing Markdown messages peer to peer around a 'no central broker' ring; protocol v2.5 chip.">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
@@ -129,7 +129,7 @@
   .prim p{margin:0;font-size:14.5px;color:var(--muted)}
   .prim .em{color:var(--faint);font-style:italic}
 
-  /* 1.0 explainer */
+  /* v2.5 explainer */
   .pledge{border:1px solid var(--green-line);background:var(--green-soft);border-radius:14px;padding:28px 28px}
   .pledge h2{margin-bottom:14px}
   .pledge p{color:var(--muted);max-width:70ch;margin:0 0 12px}
@@ -177,7 +177,7 @@
 <div class="announce">
   <div class="wrap">
     <span class="tag">v2.5</span>
-    <span>Deliberate wire break · pool-at-once migration</span>
+    <span>v2.5 is out — and it changes the wire</span>
     <a href="/blog/v2-5-the-wire-broke.html">read the announcement →</a>
   </div>
 </div>
@@ -187,8 +187,8 @@
     <div class="brand"><span class="sq"></span>agentchute</div>
     <nav>
       <a href="#protocol">protocol</a>
-      <a href="#stable-core">1.0</a>
-      <a href="/blog/after-done-roadmap.html">roadmap</a>
+      <a href="#stable-core">v2.5</a>
+      <a href="#get-started">install</a>
       <a href="https://github.com/agentchute/agentchute">github</a>
     </nav>
   </div>
@@ -200,7 +200,7 @@
       <div class="copy">
         <p class="eyebrow">protocol v2.5 · reference cli 2.5</p>
         <h1><span class="b">Stop being the message bus</span><span class="b">for your agents.</span></h1>
-        <p class="sub">Running agents is easy — coordinating them isn't. agentchute gives every AI agent an <b>inbox</b>. They hand off work, request review, and message each other — <b>no human relaying every step</b>, no broker, just plain files. v2.5 keeps that core and openly migrates the identity wire.</p>
+        <p class="sub">Running agents is easy — coordinating them isn't. agentchute gives every AI agent an <b>inbox</b>. They hand off work, request review, and message each other — <b>no human relaying every step</b>, no broker, just plain files.</p>
 
         <div class="term" role="group" aria-label="install command">
           <span class="p">$</span> <span id="install-cmd">curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</span>
@@ -210,7 +210,6 @@
 
         <div class="cta">
           <a class="btn primary" href="#get-started">Get started</a>
-          <a class="btn ghost" href="/blog/v1-0-done-not-big.html">Why 1.0 means done →</a>
         </div>
       </div>
 
@@ -293,44 +292,15 @@
 
   <div class="wrap">
 
-    <section>
-      <p class="lbl">1.0, in numbers</p>
-      <div class="numbers">
-        <div class="num"><div class="v">5</div><div class="k">primitives</div></div>
-        <div class="num"><div class="v">7</div><div class="k">invariants</div></div>
-        <div class="num"><div class="v">2</div><div class="k">bindings</div></div>
-        <div class="num"><div class="v g">0</div><div class="k">servers</div></div>
-        <div class="num"><div class="v g">−8,262</div><div class="k">lines, one release</div></div>
-        <div class="num"><div class="v">269</div><div class="k">lines of Python proof</div></div>
-      </div>
-    </section>
 
-    <section>
-      <p class="lbl">how we got to 1.0</p>
-      <div class="dele">
-        <div class="head">
-          <h2>We shipped 1.0 by deleting.</h2>
-          <p>Most projects reach 1.0 by adding. agentchute got here the other way: the pull-only redesign removed everything a shared inbox never needed — and made "every release must remove something" written policy. What's left is the part that was always the point.</p>
-        </div>
-        <ul class="gone">
-          <li><span class="x">−</span><span class="what">the watchdog</span><span class="why">pull-only made it pointless</span></li>
-          <li><span class="x">−</span><span class="what">sender-side wake &amp; per-vendor adapters</span><span class="why">senders write and walk away</span></li>
-          <li><span class="x">−</span><span class="what">reachability caches &amp; liveness gates</span><span class="why">the message just waits</span></li>
-          <li><span class="x">−</span><span class="what">typed workflow fields (task, status, priority)</span><span class="why">a message is a Markdown body</span></li>
-          <li><span class="x">−</span><span class="what">generated launcher shims</span><span class="why">one <span class="mono">ac</span> dispatcher</span></li>
-          <li><span class="x">−</span><span class="what">8,262 lines, one release</span><span class="why">the subtraction release</span></li>
-        </ul>
-      </div>
-    </section>
 
     <section id="stable-core">
       <div class="pledge">
-        <p class="lbl">what 1.0 means</p>
-        <h2>Done, not big.</h2>
-        <p><b>Protocol v2 was declared final.</b> Its primitives, envelope, and lifecycle guarantees held. Its identity grammar did not: v2.5 replaces the shared sequence counter with a timestamp and random suffix, a real wire break recorded rather than hidden.</p>
-        <p><b>The reference CLI is v2.5.0.</b> Registrations carry integer <span class="mono">v: 3</span>, rendered as Protocol v2.5 so mixed pools remain diagnosable during the cutover.</p>
-        <p><b>The honesty clause:</b> the 1.0 promise was stronger than the failure modes we had tested. v2.5 walks that claim back in the open and ships a pool-at-once migration instead of pretending this is a compatible patch.</p>
-        <p class="fine">$ the wire moved — read the cutover first</p>
+        <p class="lbl">what changed in v2.5</p>
+        <h2>We broke it on purpose.</h2>
+        <p>We stopped using our own agents for three weeks. When we came back, one had a message waiting that had been unread for <b>twenty-three days</b>. Nothing had failed — the message was delivered exactly as designed, sitting intact in the right inbox. That was the problem. We had built a mailbox that accepted letters for people who had moved out, and never mentioned it to anyone.</p>
+        <p>So v2.5 makes absence visible. When an agent's supervisor stops heartbeating, its registration goes stale — about an hour by default — and <b>sending to it fails right away</b> instead of disappearing into a mailbox nobody will open. Long jobs are fine: the supervisor keeps heartbeating whether the model is busy or idle. Message names changed with the break too — timestamps instead of per-pair counters.</p>
+        <p><b>It is a real break.</b> A v2.5 agent still reads normal v2 mail; a v2 agent cannot read v2.5 names — so every agent sharing a pool moves together. At 1.0 we said this would only happen through a deprecation process. It didn't, and we would rather say so here than let you find out from a stack trace.</p>
       </div>
     </section>
 
@@ -339,11 +309,11 @@
       <h2>Five primitives. The rest is your choice.</h2>
       <div class="prims">
         <div class="prim"><h3>per-recipient inbox</h3><p>Each agent owns an ordered message stream. Senders deliver into it; the recipient owns consumption.</p></div>
-        <div class="prim"><h3>identified messages</h3><p>Every message has a durable committed identity. A sender's messages stay in order — with no clock.</p></div>
+        <div class="prim"><h3>identified messages</h3><p>Every message has a durable identity — a timestamp and a random suffix. A sender's messages stay in order through a durable timestamp floor; replies carry the thread.</p></div>
         <div class="prim"><h3>no-overwrite delivery</h3><p>A sender never clobbers an existing message. A collision is refused and retried under a fresh identity — delivery is at-most-once, not deduped.</p></div>
         <div class="prim"><h3>recipient reads its own inbox</h3><p>Pull, not push. Senders write and walk away; the message waits until the recipient reads it.</p></div>
         <div class="prim"><h3>self-registration + presence</h3><p>Each agent publishes a small record and a liveness heartbeat, read on demand.</p></div>
-        <div class="prim"><h3 style="color:var(--faint)">…pinned by vectors</h3><p class="em">14 vectors as language-neutral JSON, run against both bindings — plus a 251-line stdlib-Python proof. Pass the vectors in any language and you're conformant.</p></div>
+        <div class="prim"><h3 style="color:var(--faint)">…pinned by vectors</h3><p class="em">Conformance is a set of language-neutral vectors. Pass them in any language and you're on the wire.</p></div>
       </div>
     </section>
 
@@ -363,7 +333,7 @@
           <p>agentchute is not a multi-agent framework. No task graphs, no role election, no central broker, no SDK, no SaaS tier. If you wanted those, this is the wrong tool — and that's fine.</p>
         </div>
         <ul class="clean">
-          <li><b>Not a delivery broker.</b> <span>Delivery is best-effort and idempotent; the recipient reads on its own cadence. Need retries and exactly-once? Use a queue.</span></li>
+          <li><b>Not a delivery broker.</b> <span>Delivery is best-effort and at-most-once; the recipient reads on its own cadence. Need retries and exactly-once? Use a queue.</span></li>
           <li><b>Not an auth system.</b> <span>Messages are unsigned plain text. If you don't trust your peers, don't run them on your machine.</span></li>
           <li><b>Not a router.</b> <span>Agents are peers; senders pick recipients explicitly. No wildcard, no broadcast, no role election.</span></li>
           <li><b>Not a product.</b> <span>A protocol and a faithful reference implementation, maintained for spec fidelity. Alternates welcome — the vectors prove them.</span></li>
@@ -381,8 +351,8 @@
           <div class="term">
 <span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh<br>
 <span class="p">$</span> agentchute setup<br>
-<span class="p">$</span> ac serve claude <span class="c"># per-agent runner</span><br>
-<span class="p">$</span> agentchute doctor <span class="c"># health check</span>
+<span class="p">$</span> ac serve claude <span class="c"># per-agent runner (new shell; blocks)</span><br>
+<span class="p">$</span> agentchute doctor --as claude-code <span class="c"># from another shell</span>
           </div>
         </div>
         <div class="panel">
@@ -400,8 +370,14 @@
 
   <div class="roadmap">
     <div class="wrap">
-      <p>Protocol v2.5 keeps the pull-only core and changes the identity wire. The roadmap remains everything <em>around</em> it — certification, a cleaner cue channel, and documented deployment profiles.</p>
-      <a class="btn ghost" href="/blog/after-done-roadmap.html">After done: the roadmap →</a>
+      <p><b>Already running v2?</b> v2.5 reads v2 mail, but v2 cannot read v2.5 messages — so every agent sharing a pool moves together. Freeze sends first, and never use <span class="mono">--no-resync</span> for this upgrade.</p>
+      <div class="term" style="margin:14px 0 12px;text-align:left">
+        <span class="p">$</span> agentchute update<br>
+        <span class="p">$</span> agentchute status --as &lt;agent-id&gt;   <span class="c"># twice, 15s apart — old last_seen must not advance</span><br>
+        <span class="p">$</span> ac --as &lt;agent-id&gt; serve &lt;wrapper&gt;  <span class="c"># relaunch each lane under its EXISTING id</span><br>
+        <span class="p">$</span> agentchute doctor --as &lt;agent-id&gt;   <span class="c"># from another shell, until clean</span>
+      </div>
+      <a class="btn ghost" href="https://github.com/agentchute/agentchute/blob/main/docs/V2_5_CUTOVER.md">Full cutover guide →</a>
     </div>
   </div>
 </main>
