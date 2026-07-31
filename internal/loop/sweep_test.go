@@ -3,6 +3,7 @@ package loop
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -378,6 +379,42 @@ func TestSweepStaleRegistrationsFutureLastSeenIsNotImmortal(t *testing.T) {
 	}
 	if len(removed) != 1 || removed[0] != "future" {
 		t.Fatalf("removed = %v, want [future] (a future last_seen must not grant immortality)", removed)
+	}
+}
+
+// TestSweepStaleRegistrationsPoisonedLockDoesNotAbortPass: a candidate whose
+// state/<id>/.lock path is itself a DIRECTORY (withAgentLock's OpenFile fails
+// with EISDIR, before the closure ever runs) must not abort the whole pass —
+// codex found the identical shape in InvalidateAllServeLeases the same day
+// (PR #92) and it is now the house pattern for fleet-wide maintenance: never
+// disableable by the contents of the pool it maintains (PR #91 round 3,
+// BLOCKER). "locked" sorts before "still-dead", so before the fix the pass
+// aborted at "locked" and "still-dead" was never reached.
+func TestSweepStaleRegistrationsPoisonedLockDoesNotAbortPass(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	now := time.Now().UTC()
+	old := now.Add(-2 * time.Hour)
+	seedSweepRegistration(t, cfg, "locked", old)
+	seedSweepRegistration(t, cfg, "still-dead", old)
+	if err := os.MkdirAll(filepath.Join(cfg.AgentStateDir("locked"), ".lock"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := SweepStaleRegistrations(cfg, "self", now)
+	if err == nil {
+		t.Fatal("want a non-nil aggregate error naming the poisoned candidate")
+	}
+	if !strings.Contains(err.Error(), "locked") {
+		t.Fatalf("aggregate error = %v, want it to name %q", err, "locked")
+	}
+	if len(removed) != 1 || removed[0] != "still-dead" {
+		t.Fatalf("removed = %v, want [still-dead] (poisoned candidate must not block later ones)", removed)
+	}
+	if _, err := os.Stat(cfg.AgentRegistrationPath("locked")); err != nil {
+		t.Fatalf("locked row should survive (its lock could never be taken): %v", err)
+	}
+	if _, err := os.Stat(cfg.AgentRegistrationPath("still-dead")); !os.IsNotExist(err) {
+		t.Fatalf("still-dead should have been swept: stat err = %v", err)
 	}
 }
 

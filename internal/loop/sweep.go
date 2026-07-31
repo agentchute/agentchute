@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -41,6 +43,17 @@ var afterSweepScanHook func()
 // WithAgentLock(id) immediately before os.Remove — a concurrent heartbeat
 // that revives the row between the initial scan and the delete wins; the
 // sweep backs off rather than deleting a row that just got fresh again.
+//
+// A per-candidate failure (e.g. a poisoned state/<id>/.lock that is itself a
+// directory, so withAgentLock cannot even open it) NEVER aborts the pass:
+// the failure is accumulated and the loop continues to the next candidate,
+// so one wedged id can never permanently block every other row from being
+// swept (claude-code/codex review, PR #91 round 3 — the same shape codex
+// independently fixed the same day in InvalidateAllServeLeases, PR #92: a
+// fleet-wide maintenance operation must never be disableable by the contents
+// of the pool it maintains). The returned error, when non-nil, is an
+// errors.Join of every per-candidate failure; removed still reports every id
+// that WAS successfully swept even when other candidates failed.
 //
 // Sweeping never touches inboxes, mail, or any other agent state — only the
 // agents/*.md registration file itself.
@@ -120,20 +133,24 @@ func SweepStaleRegistrations(cfg *Config, selfID string, now time.Time) ([]strin
 		afterSweepScanHook()
 	}
 
-	var removed []string
+	var (
+		removed  []string
+		failures []error
+	)
 	for _, c := range candidates {
 		if len(removed) >= MaxSweepPerPass {
 			break
 		}
 		swept, err := sweepOneCandidate(cfg, c.id, c.path, threshold, now)
 		if err != nil {
-			return removed, err
+			failures = append(failures, fmt.Errorf("%s: %w", c.id, err))
+			continue
 		}
 		if swept {
 			removed = append(removed, c.id)
 		}
 	}
-	return removed, nil
+	return removed, errors.Join(failures...)
 }
 
 // sweepOneCandidate re-checks id's staleness (age AND lease) under
