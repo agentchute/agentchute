@@ -85,7 +85,7 @@ func TestSendRefusesMissingRegistration(t *testing.T) {
 	})
 }
 
-// Gate 6b fence end-to-end: a send carries AGENTCHUTE_SERVE_TOKEN; AllocateSeq
+// Gate 6b fence end-to-end: a send carries AGENTCHUTE_SERVE_TOKEN; MintSendStamp
 // VerifyFences it against the sender's live serve lease. A matching token sends
 // normally; a mismatched token (the agent was reclaimed/fenced) fails CLOSED.
 func TestSendFencedByServeTokenMismatch(t *testing.T) {

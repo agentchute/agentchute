@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -29,6 +31,19 @@ var (
 		`^to-(` + agentIDPattern + `)_from-(` + agentIDPattern + `)_(\d{8}T\d{12}Z)_r([0-9a-f]{32})$`,
 	)
 )
+
+// rand128hex returns a 32-lowercase-hex-char (128-bit) crypto/rand suffix
+// (C4). 128 bits makes a real collision unreachable; the caller still retries
+// on link EEXIST (a same-microsecond sender racing itself, or, astronomically,
+// a suffix collision) rather than relying on uniqueness alone. Package var
+// (mirrors lease.go's mintServeToken) so tests can force a collision.
+var rand128hex = func() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
 
 // FormatStamp returns the fixed-width, microsecond-precision UTC wire form.
 func FormatStamp(t time.Time) string {

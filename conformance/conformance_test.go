@@ -167,11 +167,16 @@ func TestO1_PerSenderFIFO(t *testing.T) {
 	})
 }
 
-// C1 — at-least-once + idempotent. A crash AFTER the handler acts but BEFORE the
-// consume commits must RE-DELIVER on retry (never drop). Then msg_key collapses
-// the duplicate on the receiver side.
+// C1 — consume is at-least-once. A crash AFTER the handler acts but BEFORE the
+// consume commits must RE-DELIVER on retry (never drop). v2.5 plan B7: the
+// msg_key/Deduper receiver-side dedup demo is deleted along with the sender-
+// asserted idempotency key it modeled — collapsing a re-delivered effect is
+// entirely the HANDLER's job now (the idempotency covenant), with no protocol
+// or binding-level aid. This test (renamed from TestC1_AtLeastOnceIdempotent)
+// proves only the half that remains TRUE: consume-side at-least-once via
+// crash-then-redeliver.
 // Catches: at-most-once consume losing a coordination message on a crash.
-func TestC1_AtLeastOnceIdempotent(t *testing.T) {
+func TestC1_ConsumeAtLeastOnce(t *testing.T) {
 	v := vectorByID(t, "C1", "consume_redelivery")
 	eachApplicableBinding(t, v, func(t *testing.T, b Binding) {
 		must(t, b.Register(v.Recipient))
@@ -194,16 +199,6 @@ func TestC1_AtLeastOnceIdempotent(t *testing.T) {
 		n, _ := b.Consume(v.Recipient, handler)
 		if n != 1 || len(acts) != 2 {
 			t.Fatalf("at-least-once: message must re-deliver after crash; acts=%d n=%d", len(acts), n)
-		}
-
-		// receiver-side idempotency aid: msg_key collapses the duplicate effect
-		d := NewDeduper()
-		effects := 0
-		for range acts { // both carry the same Key
-			_ = d.Once(Msg{Key: v.Message.Key}, func(Msg) error { effects++; return nil })
-		}
-		if effects != 1 {
-			t.Fatalf("msg_key dedup must collapse re-delivery to one effect; got %d", effects)
 		}
 	})
 }

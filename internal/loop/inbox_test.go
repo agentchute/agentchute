@@ -9,18 +9,23 @@ import (
 	"time"
 )
 
-// writeSeqInbox drops a canonical (from,seq) message into inbox via the
-// production seq writer and returns the resulting Message the way the removed
-// WriteInboxMessage did. Test-only fixture replacing the deleted legacy nonce
-// writer; seq must be unique per (from) within inbox to avoid a link collision.
+// writeSeqInbox drops a canonical LEGACY (from,seq) message directly into
+// inbox and returns the resulting Message the way the removed
+// WriteInboxMessage did. Test-only fixture (v2.5 plan B7: the production
+// seq writer this used to go through, writeSeqMessage, is deleted along with
+// the allocator — this format is dual-read-only now, so the fixture writes
+// the file directly); seq must be unique per (from) within inbox to avoid a
+// same-name collision.
 func writeSeqInbox(t *testing.T, inbox, from string, seq uint64, content []byte) Message {
 	t.Helper()
 	id := MsgID{From: from, Seq: seq}
-	if _, err := writeSeqMessage(inbox, id, content); err != nil {
+	path := filepath.Join(inbox, id.Filename())
+	mustWrite(t, path, content)
+	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return Message{
-		Path:     filepath.Join(inbox, id.Filename()),
+		Path:     path,
 		Filename: id.Filename(),
 		Sender:   from,
 	}

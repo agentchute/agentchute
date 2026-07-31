@@ -200,8 +200,8 @@ func TestOwedFlip_RecordClearExpireGateWarn(t *testing.T) {
 		t.Fatalf("alice .owed has %d entries after --ask; want 1", len(out))
 	}
 	key := out[0].Key()
-	if key.To != "bob" || key.From != "alice" || key.Seq != 1 {
-		t.Fatalf("owed key = %+v; want {To:bob From:alice Seq:1}", key)
+	if key.To != "bob" || key.From != "alice" || key.Stamp == "" || key.Suffix == "" {
+		t.Fatalf("owed key = %+v; want {To:bob From:alice Stamp:<non-empty> Suffix:<non-empty>} (v2.5 plan B7: send now mints a timestamp identity)", key)
 	}
 	ref := key.RefString()
 
@@ -299,8 +299,8 @@ func TestOwedFlip_ThirdPartyReplyDoesNotClear(t *testing.T) {
 		t.Fatalf("alice .owed has %d entries after --ask; want 1", len(out))
 	}
 	key := out[0].Key()
-	if key.To != "bob" || key.From != "alice" || key.Seq != 1 {
-		t.Fatalf("owed key = %+v; want {To:bob From:alice Seq:1}", key)
+	if key.To != "bob" || key.From != "alice" || key.Stamp == "" || key.Suffix == "" {
+		t.Fatalf("owed key = %+v; want {To:bob From:alice Stamp:<non-empty> Suffix:<non-empty>} (v2.5 plan B7: send now mints a timestamp identity)", key)
 	}
 	ref := key.RefString()
 

@@ -15,7 +15,7 @@ import (
 // token; token but no guard bit — the grok-under-serve case) that must leave
 // everything byte-identical to pre-A7 behavior.
 //
-// NOTE: AGENTCHUTE_SERVE_TOKEN also fences `send`'s AllocateSeq against the
+// NOTE: AGENTCHUTE_SERVE_TOKEN also fences `send`'s MintSendStamp against the
 // FROM agent's own serve lease (unrelated to guard). Every test below sends
 // its fixture message BEFORE arming the guard env, so alice's (lease-free)
 // send is never itself fenced.

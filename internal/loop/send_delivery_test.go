@@ -3,15 +3,27 @@ package loop
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
-// send_delivery_test.go — v2.5 plan B3: DeliverUnderRecipientLock is send's
-// single point of TRUTH for reachability. These tests prove the under-lock
-// re-check genuinely closes the race a lock-free preflight leaves open — not
-// just that the error TYPES exist, but that a real mutation racing the lock
-// (via afterRecipientLockHook) is actually caught.
+// send_delivery_test.go — v2.5 plan B3/B7: DeliverUnderRecipientLock is
+// send's single point of TRUTH for reachability. These tests prove the
+// under-lock re-check genuinely closes the race a lock-free preflight leaves
+// open — not just that the error TYPES exist, but that a real mutation
+// racing the lock (via afterRecipientLockHook) is actually caught.
+
+// testTsID builds a valid timestamp identity for delivery tests (v2.5 plan
+// B7). now is fixed rather than time.Now() so tests stay deterministic.
+func testTsID(t *testing.T, to, from string) TsID {
+	t.Helper()
+	suffix, err := rand128hex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return TsID{To: to, From: from, Stamp: FormatStamp(time.Date(2026, 5, 9, 16, 8, 36, 0, time.UTC)), Suffix: suffix}
+}
 
 func TestCheckRecipientReachabilityUnknown(t *testing.T) {
 	cfg := newSeqTestConfig(t)
@@ -76,8 +88,8 @@ func TestDeliverUnderRecipientLockBacksOffWhenRecipientGoesStaleDuringLock(t *te
 		}
 	}
 
-	id := MsgID{To: "bob", From: "alice", Seq: 1}
-	committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
+	id := testTsID(t, "bob", "alice")
+	_, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
 	if committed {
 		t.Fatal("committed = true, want false (a recipient that went stale mid-lock must not receive delivery)")
 	}
@@ -111,8 +123,8 @@ func TestDeliverUnderRecipientLockBacksOffWhenRecipientVanishesDuringLock(t *tes
 		}
 	}
 
-	id := MsgID{To: "bob", From: "alice", Seq: 1}
-	committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
+	id := testTsID(t, "bob", "alice")
+	_, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
 	if committed {
 		t.Fatal("committed = true, want false")
 	}
@@ -169,8 +181,8 @@ func TestDeliverUnderRecipientLockBacksOffWhenRecipientBecomesMalformedDuringLoc
 		}
 	}
 
-	id := MsgID{To: "bob", From: "alice", Seq: 1}
-	committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
+	id := testTsID(t, "bob", "alice")
+	_, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
 	if committed {
 		t.Fatal("committed = true, want false (a recipient that became malformed mid-lock must not receive delivery)")
 	}
@@ -193,19 +205,90 @@ func TestDeliverUnderRecipientLockSucceedsWhenStillFresh(t *testing.T) {
 	cfg := newSeqTestConfig(t)
 	mkFreshRecipient(t, cfg, "bob")
 
-	id := MsgID{To: "bob", From: "alice", Seq: 1}
-	committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
+	id := testTsID(t, "bob", "alice")
+	committedID, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("x"), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !committed {
 		t.Fatal("committed = false, want true for a fresh recipient")
 	}
-	data, rerr := os.ReadFile(cfg.AgentInboxDir("bob") + "/" + id.Filename())
+	data, rerr := os.ReadFile(cfg.AgentInboxDir("bob") + "/" + committedID.Filename())
 	if rerr != nil {
 		t.Fatalf("delivered file missing: %v", rerr)
 	}
 	if string(data) != "x" {
 		t.Fatalf("delivered body = %q, want x", data)
+	}
+}
+
+// TestDeliverUnderRecipientLockRetriesOnCollisionWithFreshSuffix proves C4:
+// on link EEXIST, DeliverUnderRecipientLock retries with a FRESH suffix
+// (id.To/From/Stamp held fixed) and the retried delivery lands under a
+// DIFFERENT filename than the collision — never treating EEXIST as success
+// (unlike the deleted seq allocator's alreadyLanded semantics).
+func TestDeliverUnderRecipientLockRetriesOnCollisionWithFreshSuffix(t *testing.T) {
+	cfg := newSeqTestConfig(t)
+	mkFreshRecipient(t, cfg, "bob")
+
+	id := testTsID(t, "bob", "alice")
+	// Pre-create a file at id's exact canonical path, simulating an existing
+	// collision (astronomically unlikely with a real 128-bit suffix; forced
+	// here via the rand128hex seam).
+	mustWrite(t, filepath.Join(cfg.AgentInboxDir("bob"), id.Filename()), []byte("already here"))
+
+	const freshSuffix = "22222222222222222222222222222222"
+	oldRand := rand128hex
+	rand128hex = func() (string, error) { return freshSuffix, nil }
+	t.Cleanup(func() { rand128hex = oldRand })
+
+	committedID, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("new content"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !committed {
+		t.Fatal("committed = false, want true after a fresh-suffix retry")
+	}
+	if committedID.Suffix != freshSuffix {
+		t.Fatalf("committed suffix = %q, want the fresh retry suffix %q", committedID.Suffix, freshSuffix)
+	}
+	if committedID.Filename() == id.Filename() {
+		t.Fatal("committed filename must differ from the collided original")
+	}
+	original, rerr := os.ReadFile(filepath.Join(cfg.AgentInboxDir("bob"), id.Filename()))
+	if rerr != nil || string(original) != "already here" {
+		t.Fatalf("original collided file was modified: %v %q", rerr, original)
+	}
+	delivered, derr := os.ReadFile(filepath.Join(cfg.AgentInboxDir("bob"), committedID.Filename()))
+	if derr != nil || string(delivered) != "new content" {
+		t.Fatalf("retried delivery missing/wrong content: %v %q", derr, delivered)
+	}
+}
+
+// TestDeliverUnderRecipientLockExhaustsCollisionRetries proves the other half
+// of C4: if EVERY attempt collides (pathological), DeliverUnderRecipientLock
+// hard-errors after maxLinkCollisionRetries attempts and commits NOTHING.
+func TestDeliverUnderRecipientLockExhaustsCollisionRetries(t *testing.T) {
+	cfg := newSeqTestConfig(t)
+	mkFreshRecipient(t, cfg, "bob")
+
+	id := testTsID(t, "bob", "alice")
+	mustWrite(t, filepath.Join(cfg.AgentInboxDir("bob"), id.Filename()), []byte("collision"))
+
+	// Every retry ALSO collides — same suffix as the original, every time.
+	oldRand := rand128hex
+	rand128hex = func() (string, error) { return id.Suffix, nil }
+	t.Cleanup(func() { rand128hex = oldRand })
+
+	_, committed, err := DeliverUnderRecipientLock(cfg, "bob", id, []byte("never lands"), "")
+	if committed {
+		t.Fatal("committed = true, want false after exhausting collision retries")
+	}
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("err = %v, want wrapping os.ErrExist", err)
+	}
+	data, rerr := os.ReadFile(filepath.Join(cfg.AgentInboxDir("bob"), id.Filename()))
+	if rerr != nil || string(data) != "collision" {
+		t.Fatalf("pre-existing collision file was modified: %v %q", rerr, data)
 	}
 }

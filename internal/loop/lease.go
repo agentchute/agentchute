@@ -17,7 +17,7 @@ import (
 // sound if a single writer owns an id; the lease produces that guarantee.
 //
 // GATE 2: PURELY ADDITIVE. Not wired into launch/heartbeat/seq-write yet (that
-// is Gate 6). The fence verifier IS already callable by AllocateSeq via a
+// is Gate 6). The fence verifier IS already callable by MintSendStamp via a
 // non-empty serveToken so the two halves can be tested together.
 //
 // THE FENCE (the load-bearing addition): a stale holder that resumes AFTER its
@@ -47,7 +47,7 @@ var ErrLeaseHeld = errors.New("agentchute: serve lease already held")
 
 // ErrFenced is returned when a token check fails: the holder was reclaimed (or
 // the claim is gone), so this process no longer owns the id. RenewLease,
-// ReleaseLease, and AllocateSeq all surface it — a fenced holder must stop.
+// ReleaseLease, and MintSendStamp all surface it — a fenced holder must stop.
 var ErrFenced = errors.New("agentchute: serve lease fenced (token mismatch)")
 
 // ServeClaim is the on-disk lease at <loop>/state/<id>/serve.claim. Acquired via
@@ -268,7 +268,7 @@ func AcquireServeLease(cfg *Config, id string) (*ServeLease, error) {
 //
 // LOCK-FREE: it takes NO lock (just readClaim of the claim file), so it is safe
 // to call from INSIDE withAgentLock(id) without violating non-reentrancy — which
-// is exactly what AllocateSeq's in-lock fence re-check relies on to close its
+// is exactly what MintSendStamp's in-lock fence re-check relies on to close its
 // reclaim TOCTOU.
 func VerifyFence(cfg *Config, id, token string) error {
 	if token == "" {

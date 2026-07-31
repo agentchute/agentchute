@@ -160,10 +160,8 @@ The canonical `from-<from>_seq-<020d>.md` is the only inbox filename format. A n
 ### 6.2 Sender flow
 1. Compose body (UTF-8).
 2. Allocate the next durable `seq` for `(from, to)` (write-ahead). The active serve token, if any, is fence-verified first.
-3. **Deliver into the inbox with the no-overwrite guarantee** under the canonical `(to, from, seq)` name (unique-temp + atomic `link()`; `EEXIST` = this exact message already landed = success). A sender crash between seq allocation and the link loses that message as a legal gap (at-most-once); callers needing at-least-once delivery supply a stable idempotency key via the library API or the send command's opt-in `--idempotency-key <key>` flag (re-sending with the same key re-issues the same sequence number within the sender's 256-entry re-issue window — a later resend allocates a fresh number and may duplicate, which still satisfies at-least-once; a key reused for *different* content is silently dropped as a duplicate of the original; default send usage remains at-most-once).
+3. **Deliver into the inbox with the no-overwrite guarantee** under the canonical `(to, from, seq)` name (unique-temp + atomic `link()`; `EEXIST` = this exact message already landed = success). A sender crash between seq allocation and the link loses that message as a legal gap — delivery is **at-most-once** (v2.5 plan B7 removed the `--idempotency-key` opt-in escape hatch and the per-`(from,to)` allocator it rode; the full identity/grammar rewrite for this section lands in a later slice).
 4. **No wake.** The sender does not poke or signal the recipient — it only writes the message into the recipient's inbox. The recipient discovers it on its own poll.
-
-**Choosing an idempotency key.** The key must be *caller-durable*: the same value across every retry of one logical send, and a different value for every distinct logical send. Good sources are already at hand — a task/work-item id the caller is already tracking, or the canonical `(to,from,seq)` reference of the message being answered. A fresh key generated per attempt (e.g. `--idempotency-key $(uuidgen)`) gives **zero** resume protection, because it can't distinguish "retry of the same send" from "a new message that happens to also want at-least-once": if the original write already landed and the caller retries with a new key anyway, the message is delivered twice under two different sequence numbers — a double-delivery, not the at-least-once the caller thought they were getting; if the caller instead assumes the mere presence of *some* key value grants dedup, they get an unverified, accidental form of at-least-once that nothing is actually enforcing. `--idempotency-key` only does its job when the same key is presented across every retry of the same attempt.
 
 ### 6.3 Recipient flow — two-phase consume (act-then-archive)
 Consumption is at-least-once and split across two verbs:
@@ -191,7 +189,6 @@ Encoded as optional YAML frontmatter. The **normative** envelope is small:
 - `from` (required **information**): the sender `agent_id`. In the filesystem binding this is satisfied by the canonical filename (`from-<from>_seq-<020d>`, strictly parsed); a frontmatter `from` field, when present, is display/inference-grade metadata, and a body-only message with a canonical filename is well-formed.
 - `reply_required` (boolean, optional): an **advisory hint** that the sender wants a reply. The binding reply obligation is the asker's own `.owed` ledger (§6.6); `reply_required` stays on the wire as the one cross-agent coordination hint.
 - `in_reply_to` (optional): the canonical reference `to-<to>_from-<from>_seq-<020d>` of the message being answered. Consuming a reply whose `in_reply_to` matches one of the asker's outstanding `.owed` entries discharges that obligation.
-- `idempotency_key` (optional): logical dedup hint only (never an identity).
 
 **Compatibility fields:** `message_id` is no longer emitted (removed in v0.9.0); the identity is `(to,from,seq)` and reply threading rides `in_reply_to` (the canonical `(to,from,seq)` ref). A `message_id` on an older in-flight message is still tolerated on read (ignored — never the identity). `to`, `task`, and `status` are no longer part of the envelope or the reference CLI at all (`to` is encoded by location; a message's subject, if any, is a body convention — the first Markdown line — not a typed field). They carry no special-case compat handling anymore; a stray `task:`/`status:`/`to:` line on an old in-flight message is simply an unrecognized field, ignored per §6.5 like any other.
 
@@ -331,9 +328,6 @@ status: active
 4. **Act** on the claimed content. Make handlers idempotent (a crash before commit re-delivers).
 5. **Commit**: `mv inbox/<id>/.claimed/<file> ../archive/<consumed-ts>_to-<id>_<file>`.
 6. If the message replied to one of your `--ask` obligations, clear the matching entry in `state/<id>/owed.json`.
-
-### C.4 Sequence counter recovery
-If a sender's durable counter (`state/<from>/seq/<to>.json`) is corrupted or lost, rebuild it rather than guessing: set `last_issued = max(seq present in the recipient's inbox + archive from this sender) + slack`, where the slack MUST exceed the 256-entry `Recent` re-issue window so fresh sequence numbers can never collide with lost dedup state. No special command is required — rewriting the JSON state file is sufficient.
 
 ## Appendix D. Compatibility history
 

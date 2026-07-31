@@ -48,9 +48,11 @@ to mean to be more than a claim.
 
 `go test -v` shows R1–E1 simply passing on both models. **C1** is the
 load-bearing one: it injects a crash at the worst moment (after the handler
-acts, before the consume commits) and asserts re-delivery. Any collapse of a
-duplicate effect is the handler's job (idempotency covenant); the suite may demo
-an opt-in key helper, but that is not a protocol receiver-side dedup backstop.
+acts, before the consume commits) and asserts re-delivery. Delivery itself is
+**at-most-once** (v2.5 plan B7 — there is no sender-asserted idempotency key
+and no delivery-side dedup backstop); collapsing a duplicate EFFECT from a
+re-delivered message is entirely the handler's job (the idempotency
+covenant).
 
 ## Vector format
 
@@ -62,9 +64,33 @@ exercise that case. `applies_to`, when present, limits a vector to named binding
 profiles such as `inbox`; when omitted, the vector is universal.
 
 Additional tests close the review gaps:
-- **`TestC2_SenderCrashResume`** — the *sender* half of C1. A sender links `seq=N`, crashes before its counter is durable, resumes and re-issues `seq=N`; `EEXIST` makes that a no-op (one copy) and the next message gets `N+1`. It also asserts the **§7 hazard**: reusing a seq for *different* content is silently dropped — making "seq counter must be durable+monotonic, ids unique per process" executable. Most likely to catch a real bug when the per-`(from,to)` allocator is built.
 - **`TestQ1_MalformedQuarantineNeverDeliveredOrConsumedOrDropped`** — an inbox-profile vector for §11.1 quarantine: malformed items are observable, never delivered/consumed, and never block valid mail.
 - **`TestD1_FsyncOrdering`** — pins `write(tmp) → fsync(tmp) → link → fsync(dir)` and proves a crash at every step leaves the record absent-or-whole, never torn. Catches linking before fsync (a record that survives a power cut without its body).
+
+### v2.5 plan B7 — the wire break (timestamp identity, at-most-once delivery)
+
+The per-`(from,to)` sequence allocator (`SeqSender`, `Msg.Key`/`Msg.Seq`, the
+`Deduper` receiver-side aid) is deleted. The committed delivery identity is
+now a timestamp + 128-bit random suffix (`Msg.ID`, opaque here so the model
+stays substrate-neutral); a collision is refused, never silently deduped —
+delivery is **at-most-once**, and there is no sender-asserted idempotency key
+or delivery-side dedup backstop. Consume remains at-least-once (C1, above)
+unchanged; only the delivery-side guarantee changed.
+
+- **`TestTS1_FilenameGrammar`** — the C3 filename grammar parses in
+  chronological order (fixed-width timestamps make lexicographic sort exact)
+  and rejects malformed names: uppercase hex, a short suffix, colon
+  timestamps, non-canonical widths, the wrong extension, an invalid `agent_id`.
+- **`TestTS2_MonotonicFloor`** — the durable per-sender floor (C7): a mint
+  after a simulated restart never reissues at or before the last stamp
+  actually handed out, even when the clock regresses — proving write-ahead
+  persist-before-deliver is sufficient on its own.
+- **`TestTS3_CollisionRetry`** — a delivery collision is refused, not
+  deduped; the sender retries with a fresh id and the retry lands as a
+  genuinely separate message (C4).
+- **`TestDR1_DualReadListing`** — during the migration window a lister
+  recognizes BOTH the old `(to,from,seq)` grammar and the new timestamp
+  grammar, and classifies anything else as garbage.
 
 ## B1 is the §5 decision, as code
 
