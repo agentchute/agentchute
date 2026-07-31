@@ -175,10 +175,9 @@ func needsBootMessage(agentID string) string {
 	return fmt.Sprintf("agentchute: agent %q is not registered yet. Run agentchute boot --as %s --vendor <vendor> before processing mail (AGENTCHUTE.md §5.3).", agentID, agentID)
 }
 
-// pendingEntry is the structured record for a single unread message. The
-// canonical (to,from,seq) identity is surfaced via Filename (`from-<from>_seq-<seq>`)
-// plus From and the inbox owner (= the agent listing) — there is no sender-asserted
-// message_id (v0.9.0).
+// pendingEntry is the structured record for a single unread message. Its
+// canonical old or timestamp identity is surfaced via Filename plus From and
+// the inbox owner; there is no sender-asserted message_id.
 type pendingEntry struct {
 	From          string `json:"from"`
 	Filename      string `json:"filename"`

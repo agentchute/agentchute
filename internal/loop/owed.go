@@ -27,9 +27,9 @@ import (
 // (here) AND the recipient's stale `.live` (live.go) — so the asker never waits
 // on a corpse.
 //
-// KEY: the primary key is the trusted committed identity MsgID{To,From,Seq}.
-// From == the asker (== the ledger owner); To == the recipient the asker is owed
-// a reply by.
+// KEY: the primary key is the trusted committed old or new message identity.
+// From == the asker (== the ledger owner); To == the recipient the asker is
+// owed a reply by.
 
 // MaxOwedLedgerBytes caps the on-disk `.owed` file (refuses runaway/hand-corrupted state).
 const MaxOwedLedgerBytes = 4 << 20
@@ -42,18 +42,93 @@ const MaxOwedLedgerBytes = 4 << 20
 // by --reply-by.
 const ReplyOwedDeadline = 30 * time.Minute
 
+// OwedIdentity is either supported committed message identity.
+type OwedIdentity interface {
+	OwedKey() OwedKey
+}
+
+// OwedKey is the comparable dual-format obligation key.
+type OwedKey struct {
+	To     string
+	From   string
+	Seq    uint64
+	Stamp  string
+	Suffix string
+}
+
+// OwedKey converts a legacy message identity into an obligation key.
+func (m MsgID) OwedKey() OwedKey {
+	return OwedKey{To: m.To, From: m.From, Seq: m.Seq}
+}
+
+// OwedKey converts a timestamp message identity into an obligation key.
+func (t TsID) OwedKey() OwedKey {
+	return OwedKey{To: t.To, From: t.From, Stamp: t.Stamp, Suffix: t.Suffix}
+}
+
+// OwedKey satisfies OwedIdentity.
+func (k OwedKey) OwedKey() OwedKey { return k }
+
+// Equal reports whether two obligation identities have the same exact form and
+// components.
+func (k OwedKey) Equal(other OwedIdentity) bool {
+	return k == other.OwedKey()
+}
+
+// RefString renders the reference matching this key's identity form.
+func (k OwedKey) RefString() string {
+	if k.Seq > 0 {
+		return (MsgID{To: k.To, From: k.From, Seq: k.Seq}).RefString()
+	}
+	return (TsID{To: k.To, From: k.From, Stamp: k.Stamp, Suffix: k.Suffix}).RefString()
+}
+
+func validateOwedKey(key OwedKey) error {
+	if err := ValidateAgentID(key.To); err != nil {
+		return fmt.Errorf("to: %w", err)
+	}
+	if err := ValidateAgentID(key.From); err != nil {
+		return fmt.Errorf("from: %w", err)
+	}
+
+	hasSeq := key.Seq > 0
+	hasTsFields := key.Stamp != "" || key.Suffix != ""
+	if hasSeq && hasTsFields {
+		return fmt.Errorf("both seq and timestamp identities are set")
+	}
+	if hasSeq {
+		return nil
+	}
+	if !hasTsFields {
+		return fmt.Errorf("neither seq nor timestamp identity is set")
+	}
+	if _, ok := ParseStamp(key.Stamp); !ok || !tsSuffixRE.MatchString(key.Suffix) {
+		return fmt.Errorf("invalid timestamp identity")
+	}
+	return nil
+}
+
 // OwedEntry is one outstanding obligation. From=asker (ledger owner),
-// To=recipient owing the reply; key = MsgID{To,From,Seq}.
+// To=recipient owing the reply; exactly one identity form must be present.
 type OwedEntry struct {
 	To         string    `json:"to"`
 	From       string    `json:"from"`
-	Seq        uint64    `json:"seq"`
+	Seq        uint64    `json:"seq,omitempty"`
+	Stamp      string    `json:"stamp,omitempty"`
+	Suffix     string    `json:"suffix,omitempty"`
 	By         time.Time `json:"by"` // deadline; By < now => expired (dead-recipient signal).
 	RecordedAt time.Time `json:"recorded_at"`
 }
 
 // Key returns the committed delivery identity this obligation is keyed on.
-func (e OwedEntry) Key() MsgID { return MsgID{To: e.To, From: e.From, Seq: e.Seq} }
+func (e OwedEntry) Key() OwedKey {
+	return OwedKey{To: e.To, From: e.From, Seq: e.Seq, Stamp: e.Stamp, Suffix: e.Suffix}
+}
+
+// MatchesRef reports whether this entry is keyed by the supplied identity.
+func (e OwedEntry) MatchesRef(key OwedIdentity) bool {
+	return e.Key().Equal(key)
+}
 
 // OwedLedger is the JSON shape of <loop>/state/<asker>/owed.json.
 type OwedLedger struct {
@@ -68,9 +143,8 @@ func owedPath(cfg *Config, asker string) string {
 
 // LoadOwedLedger reads the asker's ledger. A missing file is not an error
 // (returns an empty ledger). Parse errors, oversized files, and NON-CANONICAL
-// entries (invalid agent_ids, seq==0) are surfaced — defense-in-depth so a
-// hand-edited/peer-corrupted state file can't reach the gate with a
-// path-escaping value.
+// entries are surfaced — defense-in-depth so a hand-edited/peer-corrupted state
+// file cannot reach the gate with a path-escaping or unclearable value.
 func LoadOwedLedger(cfg *Config, asker string) (*OwedLedger, error) {
 	if err := ValidateAgentID(asker); err != nil {
 		return nil, err
@@ -94,14 +168,8 @@ func LoadOwedLedger(cfg *Config, asker string) (*OwedLedger, error) {
 		ledger.Owed = []OwedEntry{}
 	}
 	for i, e := range ledger.Owed {
-		if err := ValidateAgentID(e.To); err != nil {
-			return nil, fmt.Errorf("parse owed ledger %s: entry %d has invalid to: %w", path, i, err)
-		}
-		if err := ValidateAgentID(e.From); err != nil {
-			return nil, fmt.Errorf("parse owed ledger %s: entry %d has invalid from: %w", path, i, err)
-		}
-		if e.Seq == 0 {
-			return nil, fmt.Errorf("parse owed ledger %s: entry %d has zero seq", path, i)
+		if err := validateOwedKey(e.Key()); err != nil {
+			return nil, fmt.Errorf("parse owed ledger %s: entry %d: %w", path, i, err)
 		}
 	}
 	return &ledger, nil
@@ -127,24 +195,22 @@ func SaveOwedLedger(cfg *Config, asker string, ledger *OwedLedger) error {
 }
 
 // RecordOwed records an obligation when asker sends a reply_required message
-// keyed (To=recipient, From=asker, Seq). Idempotent on the MsgID key (re-record
-// is a no-op). Runs under withAgentLock(asker). `now` is injectable for
-// deterministic recorded_at.
-func RecordOwed(cfg *Config, asker string, key MsgID, by, now time.Time) error {
+// keyed by either committed identity form. Re-recording the same key is a no-op.
+// Runs under withAgentLock(asker). `now` is injectable for deterministic
+// recorded_at.
+func RecordOwed(cfg *Config, asker string, identity OwedIdentity, by, now time.Time) error {
 	if err := ValidateAgentID(asker); err != nil {
 		return err
 	}
-	if err := ValidateAgentID(key.From); err != nil {
-		return fmt.Errorf("RecordOwed: from: %w", err)
+	if identity == nil {
+		return fmt.Errorf("RecordOwed: identity is nil")
 	}
-	if err := ValidateAgentID(key.To); err != nil {
-		return fmt.Errorf("RecordOwed: to: %w", err)
+	key := identity.OwedKey()
+	if err := validateOwedKey(key); err != nil {
+		return fmt.Errorf("RecordOwed: %w", err)
 	}
 	if key.From != asker {
 		return fmt.Errorf("RecordOwed: key.From %q must equal asker %q (the ledger owner)", key.From, asker)
-	}
-	if key.Seq == 0 {
-		return fmt.Errorf("RecordOwed: seq must be >= 1")
 	}
 	return withAgentLock(cfg, asker, func() error {
 		ledger, err := LoadOwedLedger(cfg, asker)
@@ -152,7 +218,7 @@ func RecordOwed(cfg *Config, asker string, key MsgID, by, now time.Time) error {
 			return err
 		}
 		for _, e := range ledger.Owed {
-			if e.Key().Equal(key) {
+			if e.MatchesRef(key) {
 				return nil // idempotent: obligation already recorded.
 			}
 		}
@@ -160,6 +226,8 @@ func RecordOwed(cfg *Config, asker string, key MsgID, by, now time.Time) error {
 			To:         key.To,
 			From:       key.From,
 			Seq:        key.Seq,
+			Stamp:      key.Stamp,
+			Suffix:     key.Suffix,
 			By:         by.UTC(),
 			RecordedAt: now.UTC(),
 		})
@@ -167,13 +235,18 @@ func RecordOwed(cfg *Config, asker string, key MsgID, by, now time.Time) error {
 	})
 }
 
-// ClearOwed discharges the obligation keyed by `key` — called when asker
-// consumes a reply whose in_reply_to references (key.To, key.From, key.Seq). A
-// non-matching key removes nothing (the obligation stays). Idempotent: clearing
-// an absent key is a no-op success. Runs under withAgentLock(asker).
-func ClearOwed(cfg *Config, asker string, key MsgID) error {
+// ClearOwed discharges the obligation keyed by either supported identity form.
+// A non-matching key removes nothing. Clearing an absent key is idempotent.
+func ClearOwed(cfg *Config, asker string, identity OwedIdentity) error {
 	if err := ValidateAgentID(asker); err != nil {
 		return err
+	}
+	if identity == nil {
+		return fmt.Errorf("ClearOwed: identity is nil")
+	}
+	key := identity.OwedKey()
+	if err := validateOwedKey(key); err != nil {
+		return fmt.Errorf("ClearOwed: %w", err)
 	}
 	return withAgentLock(cfg, asker, func() error {
 		ledger, err := LoadOwedLedger(cfg, asker)
@@ -183,7 +256,7 @@ func ClearOwed(cfg *Config, asker string, key MsgID) error {
 		kept := make([]OwedEntry, 0, len(ledger.Owed))
 		removed := false
 		for _, e := range ledger.Owed {
-			if e.Key().Equal(key) {
+			if e.MatchesRef(key) {
 				removed = true
 				continue
 			}

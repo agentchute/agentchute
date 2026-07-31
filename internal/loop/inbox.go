@@ -13,10 +13,9 @@ import (
 
 // Message is a parsed inbox or archive message file.
 //
-// The filename is the canonical seq format `from-<from>_seq-<020d>.md` (§6.1).
-// There is NO timestamp embedded in the name, so Timestamp is populated from the
-// file mtime as an ADVISORY display/staleness value ONLY — it is NEVER an
-// ordering key (ordering stays filename-lexicographic; identity is (to,from,seq)).
+// Timestamp is populated from the timestamp-format filename when present, or
+// from file mtime for legacy seq messages. It is advisory display/staleness
+// data only; ordering stays filename-lexicographic.
 type Message struct {
 	Path      string    // absolute path to the file
 	Filename  string    // basename (just the file name, no directory)
@@ -40,16 +39,14 @@ var (
 // Mirrors AGENTCHUTE.md §5: "Lowercase, hyphen-separated, no spaces."
 var agentIDPattern = `[a-z0-9][a-z0-9-]*`
 
-// InferSenderFromFilename returns the sender slug captured from a canonical seq
-// filename (`from-<from>_seq-<020d>.md`). Retained caller-less for B6
-// dual-read (v2.5 plan A6): its production caller — the §11.1 corrective
-// notify path — was deleted along with the rest of that send, but B6 extends
-// this helper to recognize both the seq and timestamp filename grammars. A
-// name that is not a valid seq filename yields ok=false. The captured slug is
-// validated by ParseSeqFilename.
+// InferSenderFromFilename returns the sender slug captured from either canonical
+// inbox filename grammar.
 func InferSenderFromFilename(filename string) (string, bool) {
 	if from, _, ok := ParseSeqFilename(filename); ok {
 		return from, true
+	}
+	if id, ok := ParseTsFilename(filename); ok {
+		return id.From, true
 	}
 	return "", false
 }
@@ -207,16 +204,16 @@ func isRegularDirEntry(entry os.DirEntry) (bool, time.Time, error) {
 	return mode&os.ModeSymlink == 0 && mode.IsRegular(), info.ModTime(), nil
 }
 
-// parseAnyInboxName parses the canonical seq inbox filename and returns a partly
-// populated Message (Sender + advisory Timestamp; Path/Filename left for the
-// caller). A seq name has NO embedded timestamp, so modTime (the file mtime) is
-// used as the ADVISORY Timestamp — load-bearing for staleness (pending) and
-// display (boot); never an ordering key. A zero/forgotten Timestamp would render
-// every message ancient and print 0001-01-01. An unrecognized name returns
-// ok=false.
+// parseAnyInboxName is the shared dual-read gate for inbox and claimed listers.
+// Legacy seq names use mtime as the advisory timestamp; timestamp-format names
+// use their embedded timestamp.
 func parseAnyInboxName(name string, modTime time.Time) (Message, bool) {
 	if from, _, ok := ParseSeqFilename(name); ok {
 		return Message{Sender: from, Timestamp: modTime}, true
+	}
+	if id, ok := ParseTsFilename(name); ok {
+		stamp, _ := ParseStamp(id.Stamp)
+		return Message{Sender: id.From, Timestamp: stamp}, true
 	}
 	return Message{}, false
 }

@@ -309,6 +309,10 @@ func displayConsumed(cfg *loop.Config, agentID string, msg loop.Message, content
 			if err := loop.ClearOwed(cfg, agentID, key); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: failed to clear owed obligation %s: %v\n", ref, err)
 			}
+		} else if key, ok := loop.ParseTsRef(ref); ok && key.From == agentID && msg.Sender == key.To {
+			if err := loop.ClearOwed(cfg, agentID, key); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to clear owed obligation %s: %v\n", ref, err)
+			}
 		}
 	}
 
@@ -369,22 +373,22 @@ func sanitizeControlBytes(s string) string {
 }
 
 // printReplyRefIfRequired prints the copyable in_reply_to ref a reply to msg must
-// carry, when msg is reply_required. The ref is the ORIGINAL message's identity
-// MsgID{To: agentID (us, the recipient), From: msg.Sender, Seq}: the asker
-// recorded their `.owed` obligation under this exact tuple, so echoing it back as
-// the reply's in_reply_to is what lets the asker's `check` discharge it. A name
-// that does not parse as a canonical seq filename yields Seq=0 (a degenerate
-// ref); the listers surface only seq messages, so this does not occur on the
-// live path.
+// carry, when msg is reply_required. The emitted reference matches the message's
+// filename identity form so it clears the asker's matching obligation.
 func printReplyRefIfRequired(agentID string, msg loop.Message, fm map[string]string) {
 	if !isFrontmatterReplyRequired(fm) {
 		return
 	}
-	var seq uint64
-	if _, s, ok := loop.ParseSeqFilename(msg.Filename); ok {
-		seq = s
+
+	var ref string
+	if from, seq, ok := loop.ParseSeqFilename(msg.Filename); ok {
+		ref = (loop.MsgID{To: agentID, From: from, Seq: seq}).RefString()
+	} else if id, ok := loop.ParseTsFilename(msg.Filename); ok {
+		id.To = agentID
+		ref = id.RefString()
+	} else {
+		return
 	}
-	ref := loop.MsgID{To: agentID, From: msg.Sender, Seq: seq}.RefString()
 	fmt.Printf("reply-required: reply with `agentchute send --from %s --to %s --reply-to %s ...`\n\n", agentID, msg.Sender, ref)
 }
 

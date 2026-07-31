@@ -252,6 +252,39 @@ func TestListInboxMessagesWithSkippedReportsMalformedNames(t *testing.T) {
 	}
 }
 
+func TestListInboxMessagesWithSkippedAcceptsOldAndTimestampFormats(t *testing.T) {
+	inbox := t.TempDir()
+	writeSeqInbox(t, inbox, "codex", 1, []byte("old\n"))
+	tsID := TsID{
+		From:   "gemini-cli",
+		Stamp:  "20260730T182415123456Z",
+		Suffix: testTsSuffix,
+	}
+	mustWrite(t, filepath.Join(inbox, tsID.Filename()), []byte("new\n"))
+	mustWrite(t, filepath.Join(inbox, "garbage.md"), []byte("bad\n"))
+
+	msgs, skipped, err := ListInboxMessagesWithSkipped(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("msgs = %#v, want old and timestamp messages", msgs)
+	}
+	got := map[string]string{}
+	for _, msg := range msgs {
+		got[msg.Filename] = msg.Sender
+	}
+	if got[(MsgID{From: "codex", Seq: 1}).Filename()] != "codex" {
+		t.Fatalf("old message missing or wrong sender: %#v", got)
+	}
+	if got[tsID.Filename()] != "gemini-cli" {
+		t.Fatalf("timestamp message missing or wrong sender: %#v", got)
+	}
+	if len(skipped) != 1 || skipped[0] != "garbage.md" {
+		t.Fatalf("skipped = %v, want [garbage.md]", skipped)
+	}
+}
+
 func TestListInboxMessagesWithSkippedIgnoresVanishedEntries(t *testing.T) {
 	oldReadInboxDir := readInboxDir
 	t.Cleanup(func() { readInboxDir = oldReadInboxDir })
@@ -322,7 +355,7 @@ func (i fakeFileInfo) ModTime() time.Time { return time.Time{} }
 func (i fakeFileInfo) IsDir() bool        { return i.mode.IsDir() }
 func (i fakeFileInfo) Sys() any           { return nil }
 
-// InferSenderFromFilename recovers the sender from a canonical seq filename.
+// InferSenderFromFilename recovers the sender from either canonical filename.
 // The legacy nonce-name inference path was removed in v0.9.0, so a legacy
 // `_msg-`-shaped name (tombstone case) is no longer attributed. Its sole
 // production caller (the §11.1 corrective-notify path) was deleted in v2.5
@@ -337,6 +370,7 @@ func TestInferSenderFromFilenameRecoversSeqSender(t *testing.T) {
 	}{
 		{"valid seq", MsgID{From: "codex", Seq: 7}.Filename(), "codex", true},
 		{"valid seq, hyphenated sender", MsgID{From: "gemini-cli", Seq: 1}.Filename(), "gemini-cli", true},
+		{"valid timestamp", (TsID{From: "sonnet", Stamp: "20260730T182415123456Z", Suffix: testTsSuffix}).Filename(), "sonnet", true},
 		// Tombstone: the removed legacy nonce format is no longer inferred.
 		{"legacy nonce name not inferred", "2026-05-09T16-32-00-123456Z_from-codex_msg-abcd.md", "", false},
 		{"seq not zero-padded to 20", "from-codex_seq-7.md", "", false},
@@ -441,5 +475,32 @@ func TestListInboxMessagesSeqTimestampFromMtime(t *testing.T) {
 	}
 	if !msgs[0].Timestamp.UTC().Truncate(time.Second).Equal(mtime.UTC().Truncate(time.Second)) {
 		t.Fatalf("seq Timestamp = %s, want ~mtime %s", msgs[0].Timestamp.UTC(), mtime.UTC())
+	}
+}
+
+func TestListInboxMessagesTimestampFromFilename(t *testing.T) {
+	inbox := t.TempDir()
+	id := TsID{
+		From:   "alice",
+		Stamp:  "20260730T182415123456Z",
+		Suffix: testTsSuffix,
+	}
+	path := filepath.Join(inbox, id.Filename())
+	mustWrite(t, path, []byte("timestamp"))
+	mtime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := ListInboxMessages(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("msgs = %d, want 1", len(msgs))
+	}
+	want, _ := ParseStamp(id.Stamp)
+	if !msgs[0].Timestamp.Equal(want) {
+		t.Fatalf("timestamp message Timestamp = %s, want filename stamp %s (mtime was %s)", msgs[0].Timestamp, want, mtime)
 	}
 }

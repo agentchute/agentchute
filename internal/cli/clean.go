@@ -144,13 +144,13 @@ func cmdCleanOwed(cfg *loop.Config, agentID string, apply, jsonOut bool, now tim
 			return fmt.Errorf("load owed ledger: %w", err)
 		}
 		expired := ledger.ExpiredOwed(now)
-		// Keyed by MsgID, not counted: RecordOwed's own API is idempotent per
-		// key and can never create two entries with the same (to,from,seq),
+		// Keyed by OwedKey, not counted: RecordOwed's own API is idempotent per
+		// key and can never create two entries with the same identity,
 		// so this can't observe a real duplicate through normal use. A
 		// hand-edited ledger with a duplicate key would have BOTH instances
 		// pruned together if either is expired — not reachable via the API,
 		// so left as a documented limitation rather than a count-based fix.
-		expiredKeys := make(map[loop.MsgID]bool, len(expired))
+		expiredKeys := make(map[loop.OwedKey]bool, len(expired))
 		for _, e := range expired {
 			result.Pruned = append(result.Pruned, e.Key().RefString())
 			expiredKeys[e.Key()] = true
