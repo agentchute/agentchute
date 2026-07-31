@@ -106,21 +106,69 @@ fail() {
 	exit 1
 }
 
+dump_failure_context() {
+	pid=$1
+	log=$2
+	label=$3
+	if kill -0 "$pid" 2>/dev/null; then
+		child_state=alive
+	else
+		child_state=exited
+	fi
+	printf '%s\n' "---- $label process state ----" >&2
+	printf '  pid=%s state=%s\n' "$pid" "$child_state" >&2
+	printf '%s\n' "---- $label captured output ----" >&2
+	if [ -s "$log" ]; then
+		sed 's/^/  /' "$log" >&2
+	else
+		printf '%s\n' "  (no output captured)" >&2
+	fi
+	printf '%s\n' "---- binary versions ----" >&2
+	printf '  old source base: %s\n' "${base:-unavailable}" >&2
+	printf '  old build: %s\n' "${old_version:-unavailable}" >&2
+	printf '  new build: %s\n' "${new_version:-unavailable}" >&2
+	if [ -x "${installed:-}" ]; then
+		printf '%s' "  installed now: " >&2
+		"$installed" --version >&2 || true
+	else
+		printf '%s\n' "  installed now: unavailable" >&2
+	fi
+	printf '%s\n' "---- fixture directory listing ----" >&2
+	if [ -d "${fixture:-}" ]; then
+		(
+			cd "$fixture"
+			find . -print | sort
+		) | sed 's/^/  /' >&2
+	else
+		printf '%s\n' "  (fixture unavailable)" >&2
+	fi
+}
+
 wait_for_file() {
 	path=$1
 	label=$2
+	pid=${3:-}
+	log=${4:-}
 	i=0
 	while [ "$i" -lt 100 ]; do
 		[ -f "$path" ] && return 0
+		if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+			status=0
+			wait "$pid" 2>/dev/null || status=$?
+			[ -n "$log" ] && dump_failure_context "$pid" "$log" "$label"
+			fail "$label child exited with status $status before creating $path"
+		fi
 		i=$((i + 1))
 		sleep 0.1
 	done
+	[ -n "$log" ] && dump_failure_context "$pid" "$log" "$label"
 	fail "timed out waiting for $label: $path"
 }
 
 wait_for_exit() {
 	pid=$1
 	label=$2
+	log=${3:-}
 	i=0
 	while [ "$i" -lt 100 ]; do
 		if ! kill -0 "$pid" 2>/dev/null; then
@@ -130,30 +178,36 @@ wait_for_exit() {
 		i=$((i + 1))
 		sleep 0.1
 	done
+	[ -n "$log" ] && dump_failure_context "$pid" "$log" "$label"
 	fail "timed out waiting for $label pid=$pid to exit"
 }
 
-last_seen() {
-	python3 - "$1" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    print(json.load(handle)["last_seen"])
-PY
+registration_last_seen() {
+	seen=$(awk -F ': ' '$1 == "last_seen" { print $2; exit }' "$1")
+	[ -n "$seen" ] || fail "registration has no last_seen: $1"
+	printf '%s\n' "$seen"
 }
 
 wait_for_heartbeat_change() {
 	path=$1
 	before=$2
 	label=$3
+	pid=${4:-}
+	log=${5:-}
 	i=0
 	while [ "$i" -lt 50 ]; do
-		after=$(last_seen "$path")
+		after=$(registration_last_seen "$path")
 		[ "$after" != "$before" ] && return 0
+		if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+			status=0
+			wait "$pid" 2>/dev/null || status=$?
+			[ -n "$log" ] && dump_failure_context "$pid" "$log" "$label"
+			fail "$label child exited with status $status before its heartbeat advanced"
+		fi
 		i=$((i + 1))
 		sleep 0.2
 	done
+	[ -n "$log" ] && dump_failure_context "$pid" "$log" "$label"
 	fail "$label heartbeat did not advance from $before"
 }
 
@@ -164,6 +218,10 @@ fixture="$tmp/fixture"
 home="$tmp/home"
 shim_dir="$tmp/shims"
 installed="$tmp/bin/agentchute"
+# The historical merge-base and current binary both reject intervals below 5s.
+supervisor_interval=5
+# Two equal samples must span at least three possible heartbeat ticks.
+stability_ticks=3
 mkdir -p "$old_source" "$new_build" "$http_root" "$fixture" "$home" "$shim_dir" "$(dirname "$installed")"
 
 base=$(git -C "$repo" merge-base HEAD origin/main)
@@ -173,6 +231,7 @@ git -C "$repo" archive "$base" | tar -x -C "$old_source"
 	cd "$repo"
 	go build -ldflags '-X main.version=2.5.0' -o "$new_build/agentchute" .
 )
+new_version=$("$new_build/agentchute" --version)
 
 goos=$(go env GOOS)
 goarch=$(go env GOARCH)
@@ -209,6 +268,7 @@ port=$(cat "$port_file")
 		-ldflags "-X main.version=1.0.0 -X github.com/agentchute/agentchute/internal/cli.updateGitHubBase=http://127.0.0.1:$port" \
 		-o "$installed" .
 )
+old_version=$("$installed" --version)
 
 env \
 	HOME="$home" \
@@ -233,7 +293,7 @@ env \
 		--as upgrade-smoke \
 		--vendor openai \
 		--control-repo "$fixture" \
-		--interval 1 \
+		--interval "$supervisor_interval" \
 		-- /bin/sh -c 'trap "exit 0" TERM INT; while :; do sleep 1; done' \
 		>"$tmp/serve-old.log" 2>&1 &
 old_pid=$!
@@ -242,13 +302,12 @@ loop_dir="$fixture/.agentchute/loop"
 claim="$loop_dir/state/upgrade-smoke/serve.claim"
 runner_state="$loop_dir/state/upgrade-smoke/runner.json"
 registration="$loop_dir/agents/upgrade-smoke.md"
-live="$loop_dir/live/upgrade-smoke.live"
-wait_for_file "$claim" "old serve claim"
-wait_for_file "$runner_state" "old runner state"
-wait_for_file "$registration" "old registration"
-wait_for_file "$live" "old live heartbeat"
-old_seen=$(last_seen "$live")
-wait_for_heartbeat_change "$live" "$old_seen" "old supervisor"
+old_log="$tmp/serve-old.log"
+wait_for_file "$claim" "old serve claim" "$old_pid" "$old_log"
+wait_for_file "$runner_state" "old runner state" "$old_pid" "$old_log"
+wait_for_file "$registration" "old registration" "$old_pid" "$old_log"
+old_seen=$(registration_last_seen "$registration")
+wait_for_heartbeat_change "$registration" "$old_seen" "old supervisor" "$old_pid" "$old_log"
 
 # Freeze the old supervisor and mark its diagnostic state foreign-host so the
 # new setup cannot politely stop it. Lease invalidation must be what fences it.
@@ -282,12 +341,12 @@ env \
 [ -f "$registration" ] || fail "new setup deleted the registration row"
 
 kill -CONT "$old_pid"
-wait_for_exit "$old_pid" "old fenced supervisor"
+wait_for_exit "$old_pid" "old fenced supervisor" "$old_log"
 old_pid=
 
-stopped_one=$(last_seen "$live")
-sleep 2
-stopped_two=$(last_seen "$live")
+stopped_one=$(registration_last_seen "$registration")
+sleep $((supervisor_interval * stability_ticks + 1))
+stopped_two=$(registration_last_seen "$registration")
 [ "$stopped_one" = "$stopped_two" ] || fail "old last_seen continued after supervisor exit: $stopped_one -> $stopped_two"
 
 env \
@@ -299,18 +358,19 @@ env \
 		--as upgrade-smoke \
 		--vendor openai \
 		--control-repo "$fixture" \
-		--interval 1 \
+		--interval "$supervisor_interval" \
 		-- /bin/sh -c 'trap "exit 0" TERM INT; while :; do sleep 1; done' \
 		>"$tmp/serve-new.log" 2>&1 &
 new_pid=$!
 
-wait_for_file "$claim" "new serve claim"
-new_seen=$(last_seen "$live")
-wait_for_heartbeat_change "$live" "$new_seen" "new supervisor"
+new_log="$tmp/serve-new.log"
+wait_for_file "$claim" "new serve claim" "$new_pid" "$new_log"
+new_seen=$(registration_last_seen "$registration")
+wait_for_heartbeat_change "$registration" "$new_seen" "new supervisor" "$new_pid" "$new_log"
 expected_protocol=$(awk '/CurrentProtocolVersion =/ {print $3; exit}' "$repo/internal/loop/registration.go")
 grep -Eq "^v: ${expected_protocol}$" "$registration" ||
 	fail "new registration does not report protocol $expected_protocol"
 
 printf 'PASS  old updater swapped in v2.5 and new setup invalidated the old serve lease\n'
-printf 'PASS  old supervisor exited and last_seen stopped across two samples\n'
+printf 'PASS  old supervisor exited and registration last_seen stopped across two samples spanning %s ticks\n' "$stability_ticks"
 printf 'PASS  explicit new-binary relaunch published protocol %s and resumed heartbeats\n' "$expected_protocol"
