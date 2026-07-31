@@ -49,6 +49,11 @@ func mustWriteSeqInbox(t *testing.T, inboxDir, from string, seq uint64, content 
 	mustWrite(t, filepath.Join(inboxDir, name), content)
 }
 
+func mustWriteTsInbox(t *testing.T, inboxDir string, id loop.TsID, content []byte) {
+	t.Helper()
+	mustWrite(t, filepath.Join(inboxDir, id.Filename()), content)
+}
+
 // mustWriteAgedInbox is mustWriteSeqInbox plus a back-dated mtime, for tests
 // exercising the check age banner (v2.5 plan A3, C18): age is sourced from
 // file mtime today (Message.Timestamp), so back-dating mtime is how a test

@@ -252,6 +252,71 @@ func TestListInboxMessagesWithSkippedReportsMalformedNames(t *testing.T) {
 	}
 }
 
+func TestListInboxMessagesWithSkippedAcceptsOldAndTimestampFormats(t *testing.T) {
+	inbox := t.TempDir()
+	old1 := MsgID{From: "codex", Seq: 1}
+	old2 := MsgID{From: "codex", Seq: 2}
+	writeSeqInbox(t, inbox, old2.From, old2.Seq, []byte("old-2\n"))
+	writeSeqInbox(t, inbox, old1.From, old1.Seq, []byte("old-1\n"))
+	new1 := TsID{
+		From:   "codex",
+		Stamp:  "20260730T182415123455Z",
+		Suffix: testTsSuffix,
+	}
+	new2 := TsID{
+		From:   "codex",
+		Stamp:  "20260730T182415123456Z",
+		Suffix: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	mustWrite(t, filepath.Join(inbox, new2.Filename()), []byte("new-2\n"))
+	mustWrite(t, filepath.Join(inbox, new1.Filename()), []byte("new-1\n"))
+	mustWrite(t, filepath.Join(inbox, "garbage.md"), []byte("bad\n"))
+
+	msgs, skipped, err := ListInboxMessagesWithSkipped(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("msgs = %#v, want two old and two timestamp messages", msgs)
+	}
+	wantOrder := []string{old1.Filename(), old2.Filename(), new1.Filename(), new2.Filename()}
+	for i, want := range wantOrder {
+		if msgs[i].Filename != want || msgs[i].Sender != "codex" {
+			t.Fatalf("msgs[%d] = %+v, want codex message %s; full order=%#v", i, msgs[i], want, msgs)
+		}
+	}
+	if len(skipped) != 1 || skipped[0] != "garbage.md" {
+		t.Fatalf("skipped = %v, want [garbage.md]", skipped)
+	}
+}
+
+func TestListClaimedMessagesUsesMixedFormatPerSenderOrder(t *testing.T) {
+	claimed := t.TempDir()
+	old1 := MsgID{From: "codex", Seq: 1}
+	old2 := MsgID{From: "codex", Seq: 2}
+	new1 := TsID{From: "codex", Stamp: "20260730T182415123455Z", Suffix: testTsSuffix}
+	new2 := TsID{From: "codex", Stamp: "20260730T182415123456Z", Suffix: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+
+	writeSeqInbox(t, claimed, old2.From, old2.Seq, []byte("old-2\n"))
+	writeSeqInbox(t, claimed, old1.From, old1.Seq, []byte("old-1\n"))
+	mustWrite(t, filepath.Join(claimed, new2.Filename()), []byte("new-2\n"))
+	mustWrite(t, filepath.Join(claimed, new1.Filename()), []byte("new-1\n"))
+
+	msgs, err := ListClaimedMessages(claimed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOrder := []string{old1.Filename(), old2.Filename(), new1.Filename(), new2.Filename()}
+	if len(msgs) != len(wantOrder) {
+		t.Fatalf("msgs = %#v, want %d mixed-format messages", msgs, len(wantOrder))
+	}
+	for i, want := range wantOrder {
+		if msgs[i].Filename != want {
+			t.Fatalf("msgs[%d] = %s, want %s; full order=%#v", i, msgs[i].Filename, want, msgs)
+		}
+	}
+}
+
 func TestListInboxMessagesWithSkippedIgnoresVanishedEntries(t *testing.T) {
 	oldReadInboxDir := readInboxDir
 	t.Cleanup(func() { readInboxDir = oldReadInboxDir })
@@ -322,7 +387,7 @@ func (i fakeFileInfo) ModTime() time.Time { return time.Time{} }
 func (i fakeFileInfo) IsDir() bool        { return i.mode.IsDir() }
 func (i fakeFileInfo) Sys() any           { return nil }
 
-// InferSenderFromFilename recovers the sender from a canonical seq filename.
+// InferSenderFromFilename recovers the sender from either canonical filename.
 // The legacy nonce-name inference path was removed in v0.9.0, so a legacy
 // `_msg-`-shaped name (tombstone case) is no longer attributed. Its sole
 // production caller (the §11.1 corrective-notify path) was deleted in v2.5
@@ -337,6 +402,7 @@ func TestInferSenderFromFilenameRecoversSeqSender(t *testing.T) {
 	}{
 		{"valid seq", MsgID{From: "codex", Seq: 7}.Filename(), "codex", true},
 		{"valid seq, hyphenated sender", MsgID{From: "gemini-cli", Seq: 1}.Filename(), "gemini-cli", true},
+		{"valid timestamp", (TsID{From: "sonnet", Stamp: "20260730T182415123456Z", Suffix: testTsSuffix}).Filename(), "sonnet", true},
 		// Tombstone: the removed legacy nonce format is no longer inferred.
 		{"legacy nonce name not inferred", "2026-05-09T16-32-00-123456Z_from-codex_msg-abcd.md", "", false},
 		{"seq not zero-padded to 20", "from-codex_seq-7.md", "", false},
@@ -441,5 +507,32 @@ func TestListInboxMessagesSeqTimestampFromMtime(t *testing.T) {
 	}
 	if !msgs[0].Timestamp.UTC().Truncate(time.Second).Equal(mtime.UTC().Truncate(time.Second)) {
 		t.Fatalf("seq Timestamp = %s, want ~mtime %s", msgs[0].Timestamp.UTC(), mtime.UTC())
+	}
+}
+
+func TestListInboxMessagesTimestampFromFilename(t *testing.T) {
+	inbox := t.TempDir()
+	id := TsID{
+		From:   "alice",
+		Stamp:  "20260730T182415123456Z",
+		Suffix: testTsSuffix,
+	}
+	path := filepath.Join(inbox, id.Filename())
+	mustWrite(t, path, []byte("timestamp"))
+	mtime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := ListInboxMessages(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("msgs = %d, want 1", len(msgs))
+	}
+	want, _ := ParseStamp(id.Stamp)
+	if !msgs[0].Timestamp.Equal(want) {
+		t.Fatalf("timestamp message Timestamp = %s, want filename stamp %s (mtime was %s)", msgs[0].Timestamp, want, mtime)
 	}
 }
