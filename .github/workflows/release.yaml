@@ -139,6 +139,13 @@ jobs:
           printf '%s\n' "$metadata"
           grep -F 'vcs.modified=false' <<<"$metadata"
 
+          # setup installs hooks only for wrappers it detects on PATH; the
+          # runner has no real vendor CLIs, so stub codex the way an operator
+          # machine would have it. This also makes the smoke exercise the
+          # hook-install path that doctor then verifies.
+          printf '#!/bin/sh\nexit 0\n' >"$install_dir/codex"
+          chmod +x "$install_dir/codex"
+
           git init -q "$fixture"
           fixture_path="$install_dir:$smoke_home/.agentchute/bin:$PATH"
           (
