@@ -367,6 +367,100 @@ func TestDoctorCanonicalInstalledTemplatesPassHookContentSanity(t *testing.T) {
 	}
 }
 
+// The v1.5.0 cutover outage class (docs/decisions/
+// agentchute-v150-cutover-incident-and-fix.md): a hook template written by an
+// older binary invokes a subcommand the current binary removed (`poller
+// ensure`), every hook invocation dies with `unknown command`, and
+// UserPromptSubmit failures block prompts fleet-wide. doctor must name the
+// stale token instead of reporting the hooks clean.
+func TestDoctorUnknownHookSubcmdBlocks(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	claudeDir := filepath.Join(cfg.ControlRepo, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// AGENTCHUTE_BIN stub so the resolution check can't be the blocker that
+	// trips — this test must prove the unknown-subcommand branch fires.
+	stub := filepath.Join(cfg.ControlRepo, "stub-agentchute")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTCHUTE_BIN", stub)
+	hookContent := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor anthropic --quiet"}]}]}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
+	got := findCheck(t, r, "hook_content_sanity")
+	if got.Severity != severityBlocker {
+		t.Fatalf("hook_content_sanity severity = %q, want BLOCKER (hook invokes removed subcommand `poller`); msg=%q", got.Severity, got.Message)
+	}
+	for _, want := range []string{"poller", "hooks install --wrapper all --scope repo --force"} {
+		if !strings.Contains(got.Message, want) {
+			t.Errorf("message %q missing %q", got.Message, want)
+		}
+	}
+	if r.Blockers == 0 {
+		t.Errorf("Blockers = 0; want >0 (unknown hook subcommand)")
+	}
+}
+
+// Hyphenated registered subcommands (`turn-end`, `self-check`) must pass the
+// token extraction — a token regex that stops at `-` would misread
+// `turn-end` as unknown token `turn`.
+func TestDoctorHyphenatedKnownSubcmdsPass(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	claudeDir := filepath.Join(cfg.ControlRepo, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(cfg.ControlRepo, "stub-agentchute")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTCHUTE_BIN", stub)
+	hookContent := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"${AGENTCHUTE_BIN:-agentchute} turn-end --json"},{"type":"command","command":"${AGENTCHUTE_BIN:-agentchute} self-check --quiet"}]}]}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
+	got := findCheck(t, r, "hook_content_sanity")
+	if got.Severity != severityOK {
+		t.Fatalf("hook_content_sanity severity = %q, want OK for hyphenated registered subcommands; msg=%q", got.Severity, got.Message)
+	}
+}
+
+// Same guard the `check` rule needed on #74: a permissions.allow entry that
+// merely names an unknown subcommand is not a hook invoking it. The
+// unknown-subcommand scan must consume hookCommandBody output only.
+func TestDoctorUnknownSubcmdInPermissionsOnlyPasses(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	claudeDir := filepath.Join(cfg.ControlRepo, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(cfg.ControlRepo, "stub-agentchute")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTCHUTE_BIN", stub)
+	hookContent := `{
+		"permissions": {"allow": ["Bash(agentchute poller:*)"]},
+		"hooks": {"SessionStart":[{"hooks":[{"type":"command","command":"${AGENTCHUTE_BIN:-agentchute} boot --context-only"}]}]}
+	}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
+	got := findCheck(t, r, "hook_content_sanity")
+	if got.Severity != severityOK {
+		t.Fatalf("hook_content_sanity severity = %q, want OK (permissions-only mention of an unknown subcommand); msg=%q", got.Severity, got.Message)
+	}
+	if r.Blockers != 0 {
+		t.Errorf("Blockers = %d, want 0", r.Blockers)
+	}
+}
+
 // Codex review on bff226c: --json discovery failure must still exit
 // errBlocked. Previously emitDoctorJSON returned nil before the
 // errBlocked guard ran.

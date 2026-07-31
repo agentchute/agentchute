@@ -12,28 +12,37 @@ import (
 // commandHandlers is the single source of truth for agentchute's subcommands.
 // main()'s top-level switch and the `ac` dispatcher both resolve commands here,
 // so "is this a known command?" can never drift from "what runs it".
-var commandHandlers = map[string]func([]string) error{
-	"init":         cmdInit,
-	"prepare-pool": cmdPreparePool,
-	"register":     cmdRegister,
-	"boot":         cmdBoot,
-	"gate":         cmdGate,
-	"send":         cmdSend,
-	"check":        cmdCheck,
-	"ack":          cmdAck,
-	"pending":      cmdPending,
-	"serve":        cmdServe,
-	"setup":        cmdSetup,
-	"update":       cmdUpdate,
-	"self-check":   cmdSelfCheck,
-	"identity":     cmdIdentity,
-	"shims":        cmdShims,
-	"status":       cmdStatus,
-	"doctor":       cmdDoctor,
-	"hooks":        cmdHooks,
-	"clean":        cmdClean,
-	"guard":        cmdGuard,
-	"turn-end":     cmdTurnEnd,
+//
+// Populated in init() rather than a var initializer: doctor's
+// hook_content_sanity validates hook subcommand tokens against this map, so a
+// static initializer would form an initialization cycle (commandHandlers →
+// cmdDoctor → checkHookContentSanity → commandHandlers).
+var commandHandlers map[string]func([]string) error
+
+func init() {
+	commandHandlers = map[string]func([]string) error{
+		"init":         cmdInit,
+		"prepare-pool": cmdPreparePool,
+		"register":     cmdRegister,
+		"boot":         cmdBoot,
+		"gate":         cmdGate,
+		"send":         cmdSend,
+		"check":        cmdCheck,
+		"ack":          cmdAck,
+		"pending":      cmdPending,
+		"serve":        cmdServe,
+		"setup":        cmdSetup,
+		"update":       cmdUpdate,
+		"self-check":   cmdSelfCheck,
+		"identity":     cmdIdentity,
+		"shims":        cmdShims,
+		"status":       cmdStatus,
+		"doctor":       cmdDoctor,
+		"hooks":        cmdHooks,
+		"clean":        cmdClean,
+		"guard":        cmdGuard,
+		"turn-end":     cmdTurnEnd,
+	}
 }
 
 // globalValueFlags are the leading flags the `ac` dispatcher accepts BEFORE the

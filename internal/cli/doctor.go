@@ -47,6 +47,12 @@ var (
 	// Env-only form. Distinct from templated because absent
 	// AGENTCHUTE_BIN there is no fallback.
 	hookEnvOnlyRE = regexp.MustCompile(`\$AGENTCHUTE_BIN[ \t]+[a-z]`)
+
+	// Any invocation form followed by its subcommand token (capture 1).
+	// Flags (leading `-`) never match the token class; (?m) so a bare
+	// invocation at the start of a joined-body line still anchors. The
+	// bare-form guard mirrors hookBareAgentchuteRE.
+	hookSubcmdTokenRE = regexp.MustCompile(`(?m)(?:\$\{AGENTCHUTE_BIN:-agentchute\}|\$AGENTCHUTE_BIN|(?:^|[^A-Za-z0-9_/\-{])agentchute)[ \t]+([a-z][a-z0-9-]*)`)
 )
 
 const (
@@ -681,8 +687,10 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 	envBinValid := isAgentchuteBinValid()
 
 	var checkOffenders []string
+	var unknownOffenders []string
 	var resolutionOffenders []string
 	var invalidJSONFiles []string
+	seenUnknown := map[string]bool{}
 
 	for _, h := range hookFiles {
 		full := filepath.Join(append([]string{cfg.ControlRepo}, h.path...)...)
@@ -706,6 +714,21 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 			checkOffenders = append(checkOffenders, h.wrapper)
 		}
 
+		// A subcommand the running binary doesn't know is a stale template
+		// from another binary version — the v1.5.0 cutover outage class
+		// (docs/decisions/agentchute-v150-cutover-incident-and-fix.md):
+		// every such hook dies with `unknown command`, and a failing
+		// UserPromptSubmit hook blocks the prompt entirely.
+		for _, m := range hookSubcmdTokenRE.FindAllStringSubmatch(body, -1) {
+			if _, known := commandHandlers[m[1]]; !known {
+				offender := h.wrapper + " (`" + m[1] + "`)"
+				if !seenUnknown[offender] {
+					seenUnknown[offender] = true
+					unknownOffenders = append(unknownOffenders, offender)
+				}
+			}
+		}
+
 		hasBare := hookBareAgentchuteRE.MatchString(body)
 		hasTemplated := hookTemplatedRE.MatchString(body)
 		hasEnvOnly := hookEnvOnlyRE.MatchString(body)
@@ -727,6 +750,13 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 			Name:     "hook_content_sanity",
 			Severity: severityBlocker,
 			Message:  fmt.Sprintf("hook file(s) invoke `agentchute check` (silent-drain risk; check archives and quarantines): %s — replace with `pending` or `boot --context-only`", strings.Join(checkOffenders, ", ")),
+		}
+	}
+	if len(unknownOffenders) > 0 {
+		return doctorCheck{
+			Name:     "hook_content_sanity",
+			Severity: severityBlocker,
+			Message:  fmt.Sprintf("hook file(s) invoke unknown agentchute subcommand(s) — stale templates from another binary version: %s — run `agentchute hooks install --wrapper all --scope repo --force`", strings.Join(unknownOffenders, ", ")),
 		}
 	}
 	if len(resolutionOffenders) > 0 {
