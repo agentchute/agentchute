@@ -24,7 +24,7 @@ The protocol is a small set of implementation-agnostic primitives. Conforming im
 
 - **Per-recipient inbox.** Each agent has its own ordered message stream. Senders deliver into the recipient's inbox; the recipient owns consumption. **The inbox medium is implementation-specific** (filesystem, queue, HTTP, git branch, etc.).
 - **Identity = the committed delivery key `(to, from, seq)`.** `seq` is a durable, monotonic, per-`(sender, recipient)` sequence number (§6.1). It is the sort key and the identity; there is no sender-asserted `message_id` and no random nonce in the identity. A plain per-sender sort yields exact FIFO with no clock.
-- **No-overwrite delivery.** Delivery never silently clobbers an existing entry. Committing the same `(to, from, seq)` twice is a benign no-op ("this exact message already landed"), which makes a crash-uncertain resend safe. **Transport is implementation-specific** (atomic link, HTTP POST, git push, etc.).
+- **No-overwrite delivery.** Delivery never silently clobbers an existing entry: a collision at the committed identity is refused, never a silent dedup no-op — the sender retries under a fresh identity. Delivery is **at-most-once**; there is no sender-asserted idempotency key or delivery-side dedup backstop (the covenant is handler idempotency at consume, §6.3). **Transport is implementation-specific** (atomic link, HTTP POST, git push, etc.).
 - **Recipient-owned, two-phase consumption.** Only the recipient reads its own message bodies. Consumption is **act-then-archive** (at-least-once): claim → act → commit. A crash mid-consume re-delivers; handlers MUST be idempotent.
 - **Presence is a published fact with freshness**, not a wake target and not a read cursor. Each agent writes a `.live` file on each heartbeat; fresh ⇒ alive, stale/absent ⇒ not-alive (§9).
 - **Asker-owned reply obligations.** "I am owed a reply to `(to,from,seq)` by `<T>`" is held in the asker's own ledger and cleared when the matching reply is consumed (§6.6).
@@ -34,7 +34,7 @@ The protocol is a small set of implementation-agnostic primitives. Conforming im
 
 The reference CLI maps these primitives onto local filesystem choices on a shared filesystem:
 - **Inbox medium**: `.md` files under a fixed loop directory (`.agentchute/loop/inbox/<id>/`).
-- **Transport**: unique-temp + atomic `link()`-no-clobber (NFS-safe; `EEXIST` = already-delivered).
+- **Transport**: unique-temp + atomic `link()`-no-clobber (NFS-safe; `EEXIST` = a collision — the sender retries under a fresh identity; delivery is at-most-once).
 - **Wake**: none on the wire. A loopless wrapper is supervised by `agentchute serve`, which injects `[agentchute] check inbox` into the child's PTY when its OWN inbox poll sees new mail. The runner is local to the agent it supervises; it is not a sender-reachable endpoint.
 
 These are reference choices, not protocol requirements. Conforming implementations can swap the inbox medium and transport (see [`EXTENSIONS.md`](EXTENSIONS.md) and the alternate `log` binding in [`conformance/`](conformance/)) as long as no-overwrite per-recipient delivery and the seven invariants hold.
@@ -160,7 +160,7 @@ The canonical `from-<from>_seq-<020d>.md` is the only inbox filename format. A n
 ### 6.2 Sender flow
 1. Compose body (UTF-8).
 2. Allocate the next durable `seq` for `(from, to)` (write-ahead). The active serve token, if any, is fence-verified first.
-3. **Deliver into the inbox with the no-overwrite guarantee** under the canonical `(to, from, seq)` name (unique-temp + atomic `link()`; `EEXIST` = this exact message already landed = success). A sender crash between seq allocation and the link loses that message as a legal gap — delivery is **at-most-once** (v2.5 plan B7 removed the `--idempotency-key` opt-in escape hatch and the per-`(from,to)` allocator it rode; the full identity/grammar rewrite for this section lands in a later slice).
+3. **Deliver into the inbox with the no-overwrite guarantee** (unique-temp + atomic `link()`); a collision at the committed identity is refused, not a silent success — the sender retries under a fresh identity (bounded attempts). A sender crash before the link completes loses that message as a legal gap — delivery is **at-most-once** (v2.5 plan B7 removed the `--idempotency-key` opt-in escape hatch and the per-`(from,to)` allocator it rode; the full identity/grammar rewrite for this section lands in a later slice).
 4. **No wake.** The sender does not poke or signal the recipient — it only writes the message into the recipient's inbox. The recipient discovers it on its own poll.
 
 ### 6.3 Recipient flow — two-phase consume (act-then-archive)
@@ -182,7 +182,7 @@ Operators may clean with this documented one-liner (verify paths against §3 lay
 
 **Backpressure.** Coordination is pull-only, so a dead or inactive recipient's inbox grows without bound by design — senders apply no backpressure. Operators should watch inbox depths (`status`); the remedy for a permanently-retired agent is removing its inbox directory by hand after confirming the registration is gone (the cleanup one-liner above deliberately never touches inboxes).
 
-The reference CLI's Stop hook runs `ack` (commit the prior turn's work) and then the read-only finish gate. A same-`(to,from,seq)` resend that re-lands while the original is already claimed is dropped as a benign duplicate.
+The reference CLI's Stop hook runs `ack` (commit the prior turn's work) and then the read-only finish gate. If a resend under the identical committed identity as an already-claimed message ever lands in the inbox (a narrow race), `check`'s claim step treats it as a benign duplicate and drops it — this is a claim-time safeguard, not a general delivery-side dedup guarantee (delivery itself is at-most-once).
 
 ### 6.4 Message envelope
 Encoded as optional YAML frontmatter. The **normative** envelope is small:
@@ -298,7 +298,9 @@ See `README.md` or `examples/hooks/` for current Claude Code, Codex, and Gemini 
 
 ## Appendix C. Hand-protocol walkthrough
 
-The hand-protocol is exclusively for environments without the reference CLI binary; an agent with the reference CLI available MUST use the CLI rather than driving files by hand. (The CLI enforces a durable `seq` counter and a serve lease; a hand-protocol agent SHOULD coordinate to keep a single writer per id and a monotonic per-`(from,to)` counter.) The hand-protocol carries no multi-writer protection or fencing mechanism; preventing write collisions is a best-effort coordination task for the operator.
+The hand-protocol is exclusively for environments without the reference CLI binary; an agent with the reference CLI available MUST use the CLI rather than driving files by hand. A hand-protocol agent SHOULD coordinate to keep a single writer per id and a monotonic per-`(from,to)` counter, exactly as walked through below. The hand-protocol carries no multi-writer protection or fencing mechanism; preventing write collisions is a best-effort coordination task for the operator.
+
+**Divergence from the reference CLI (v2.5 plan B7):** this walkthrough's own counter-based grammar remains internally valid as a hand-driven mechanism — a hand operator who genuinely controls their own monotonic counter gets a real EEXIST-only-on-true-resend guarantee. But it is no longer what the reference CLI's own `send` does: `send` mints a timestamp+random-suffix identity per attempt (no counter, no idempotency key) and, on a collision, retries under a FRESH identity rather than treating `EEXIST` as "already landed." Reading this appendix as a description of the CLI's current wire behavior would be wrong; it describes a still-valid, but now CLI-divergent, alternative mechanism (see `EXTENSIONS.md`).
 
 ### C.1 Registration
 Write `.agentchute/loop/agents/<id>.md`:

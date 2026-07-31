@@ -85,6 +85,31 @@ func (t TsID) Equal(other TsID) bool {
 		t.Suffix == other.Suffix
 }
 
+// Validate checks that t's full identity conforms to the C3 grammar (To/From
+// as valid agent ids; Stamp as a well-formed C2 timestamp; Suffix as 32
+// lowercase hex chars) — the shape a delivery path may safely turn into a
+// filename. A caller-supplied identity that fails this MUST be rejected
+// before any filepath.Join or filesystem write (codex PR #99 review: an
+// unvalidated Stamp/Suffix embedding a path separator or ".." could
+// otherwise escape the inbox directory once joined into a path — the same
+// class of hazard B3 already closed for a typo'd --to before it could
+// manufacture a state dir one layer down).
+func (t TsID) Validate() error {
+	if err := ValidateAgentID(t.To); err != nil {
+		return fmt.Errorf("to: %w", err)
+	}
+	if err := ValidateAgentID(t.From); err != nil {
+		return fmt.Errorf("from: %w", err)
+	}
+	if _, ok := ParseStamp(t.Stamp); !ok {
+		return fmt.Errorf("stamp %q does not match the C2 wire form", t.Stamp)
+	}
+	if !tsSuffixRE.MatchString(t.Suffix) {
+		return fmt.Errorf("suffix %q does not match the C4 128-bit-hex form", t.Suffix)
+	}
+	return nil
+}
+
 // ParseTsFilename parses a timestamp-format inbox filename. To is not encoded
 // in the filename and is therefore left empty in the returned identity.
 func ParseTsFilename(name string) (TsID, bool) {

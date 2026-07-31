@@ -292,3 +292,66 @@ func TestDeliverUnderRecipientLockExhaustsCollisionRetries(t *testing.T) {
 		t.Fatalf("pre-existing collision file was modified: %v %q", rerr, data)
 	}
 }
+
+// TestDeliverUnderRecipientLockRejectsMalformedIdentity is codex PR #99
+// round 2, finding 2: a caller-supplied TsID whose Stamp/Suffix don't
+// conform to the C3 grammar must be rejected BEFORE any filepath.Join or
+// filesystem write — an unvalidated Stamp/Suffix could otherwise escape the
+// inbox directory once joined into a path. Covers both a merely malformed
+// identity and a deliberately path-escaping one.
+//
+// The path-escaping case is constructed to land at a PREDICTABLE, EXISTING
+// directory (cfg.LoopDir, created by mkFreshRecipient's mkInbox call) rather
+// than a nonexistent one — landing on a nonexistent parent would make
+// os.Link fail regardless of validation (ENOENT), silently passing even
+// without the fix. Suffix "../../../../escaped" contains four raw ".."
+// tokens; the first is absorbed canceling its own glued-on push (there is no
+// "/" between "_r" and the first ".." in the rendered filename), so only the
+// remaining three actually pop path components: the first re-cancels that
+// same glued push (net zero), and the next two pop "bob" and "inbox" off
+// cfg.AgentInboxDir("bob") (= LoopDir/inbox/bob), landing the write at
+// exactly LoopDir/escaped.md — verified to NOT exist after the call.
+func TestDeliverUnderRecipientLockRejectsMalformedIdentity(t *testing.T) {
+	cfg := newSeqTestConfig(t)
+	mkFreshRecipient(t, cfg, "bob")
+	escapedPath := filepath.Join(cfg.LoopDir, "escaped.md")
+
+	cases := []struct {
+		name string
+		id   TsID
+	}{
+		{
+			name: "malformed stamp and suffix",
+			id:   TsID{To: "bob", From: "alice", Stamp: "not-a-stamp", Suffix: "not-hex"},
+		},
+		{
+			name: "path-escaping suffix reaches an existing directory",
+			id:   TsID{To: "bob", From: "alice", Stamp: FormatStamp(time.Now()), Suffix: "../../../../escaped"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			before, err := os.ReadDir(cfg.AgentInboxDir("bob"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, committed, err := DeliverUnderRecipientLock(cfg, "bob", c.id, []byte("must not land"), "")
+			if err == nil {
+				t.Fatal("expected a validation error for a malformed identity")
+			}
+			if committed {
+				t.Fatal("committed = true, want false for a rejected identity")
+			}
+			if _, statErr := os.Stat(escapedPath); !os.IsNotExist(statErr) {
+				t.Fatalf("identity escaped the inbox directory: %s exists (stat err = %v)", escapedPath, statErr)
+			}
+			after, err := os.ReadDir(cfg.AgentInboxDir("bob"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after) != len(before) {
+				t.Fatalf("inbox entry count changed (%d -> %d); a malformed identity must create NOTHING", len(before), len(after))
+			}
+		})
+	}
+}

@@ -152,8 +152,8 @@ const maxLinkCollisionRetries = 3
 // NEVER treated as success (C4) — it is returned as-is (wrapping
 // os.ErrExist) so the caller can retry with a fresh suffix.
 func writeTsMessage(inboxDir string, id TsID, content []byte) (committed bool, err error) {
-	if err := ValidateAgentID(id.From); err != nil {
-		return false, fmt.Errorf("from: %w", err)
+	if err := id.Validate(); err != nil {
+		return false, fmt.Errorf("invalid identity: %w", err)
 	}
 	if !dirExists(inboxDir) {
 		return false, os.ErrNotExist
@@ -297,6 +297,14 @@ var afterRecipientLockHook func()
 func DeliverUnderRecipientLock(cfg *Config, to string, id TsID, content []byte, serveToken string) (committedID TsID, committed bool, err error) {
 	if err := ValidateAgentID(to); err != nil {
 		return TsID{}, false, fmt.Errorf("to: %w", err)
+	}
+	// Reject a malformed/hostile identity BEFORE taking any lock (codex PR #99
+	// review: a bad Stamp/Suffix embedding a path separator or ".." must never
+	// reach filepath.Join — mirrors B3's "a typo'd --to must not even
+	// manufacture a state dir" precedent, one layer down). writeTsMessage
+	// re-validates independently below; this is the fail-fast, no-lock copy.
+	if err := id.Validate(); err != nil {
+		return TsID{}, false, fmt.Errorf("invalid identity: %w", err)
 	}
 	lockErr := withAgentLock(cfg, to, func() error {
 		if afterRecipientLockHook != nil {
