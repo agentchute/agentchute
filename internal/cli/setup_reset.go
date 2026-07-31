@@ -56,16 +56,13 @@ func resetSetupRuntimeState(root string, cfg *loop.Config, wrappers []string) se
 	return result
 }
 
-func setupResetAgentIDs(root string, cfg *loop.Config, wrappers []string) ([]string, []string) {
+func setupResetAgentIDs(root string, cfg *loop.Config, _ []string) ([]string, []string) {
 	ids := map[string]bool{}
 	var warnings []string
 	for _, id := range setupRegistrationAgentIDs(cfg) {
 		ids[id] = true
 	}
 	for _, id := range setupStateAgentIDs(cfg) {
-		ids[id] = true
-	}
-	for _, id := range setupExpectedContextualAgentIDs(root, wrappers) {
 		ids[id] = true
 	}
 	for _, id := range setupHerdrAgentIDsForRepo(root) {
@@ -115,27 +112,6 @@ func setupStateAgentIDs(cfg *loop.Config) []string {
 		id := entry.Name()
 		if err := loop.ValidateAgentID(id); err == nil {
 			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
-func setupExpectedContextualAgentIDs(root string, wrappers []string) []string {
-	if len(wrappers) == 0 {
-		wrappers = setupWrapperNames()
-	}
-	slug := getFolderSlug(root)
-	ids := make([]string, 0, len(wrappers))
-	seen := map[string]bool{}
-	for _, wrapper := range wrappers {
-		canon := canonicalAgentIDForVendor(wrapper)
-		if canon == "" {
-			continue
-		}
-		id := canon + "-" + slug
-		if !seen[id] {
-			ids = append(ids, id)
-			seen[id] = true
 		}
 	}
 	return ids
@@ -246,10 +222,10 @@ func stopSetupRunner(cfg *loop.Config, agentID string) (bool, string) {
 	cmdline := setupProcessCommandLine(st.RunnerPID)
 	// Runner attribution = the runner.json pid->id binding (loaded above) +
 	// setupProcessAlive (checked above) + this being an `agentchute serve` for THIS
-	// pool. A runner is launched WITHOUT --as (contextual id), so its cmdline never
-	// carries the agent id; requiring it here was a false-negative that left every
-	// live runner un-stopped. The state file binds pid->id; the cmdline only proves
-	// the pool. Simple-again Gate 6b (pull-only): the runner owns no receive socket,
+	// pool. A runner may receive its explicit id through AGENTCHUTE_AGENT_ID rather
+	// than --as, so its cmdline need not carry the agent id. The state file binds
+	// pid->id; the cmdline only proves the pool. Simple-again Gate 6b (pull-only):
+	// the runner owns no receive socket,
 	// so SIGTERM is the stop — its signal handler marks the registration offline and
 	// releases its serve lease on exit.
 	if !setupCommandMatchesRunnerPool(cmdline, cfg) {
@@ -281,10 +257,10 @@ func setupCommandMatches(cmdline, agentID, subcommand string, cfg *loop.Config) 
 
 // setupCommandMatchesRunnerPool attributes a live RUNNER to THIS pool. Unlike a
 // poller (which is launched with --as <id> and so carries its agent id in the
-// cmdline), a runner is launched with the CONTEXTUAL id — it has NO --as — so its
-// cmdline never contains the agent id. The pid->id binding therefore comes from
-// the runner.json state file (state/<id>/runner.json recorded this pid for <id>),
-// and the cmdline only needs to prove the process is an `agentchute serve` for THIS
+// cmdline), a runner may receive its explicit id through AGENTCHUTE_AGENT_ID, so
+// its cmdline need not contain the agent id. The pid->id binding therefore comes
+// from the runner.json state file (state/<id>/runner.json recorded this pid for
+// <id>), and the cmdline only needs to prove the process is an `agentchute serve` for THIS
 // pool (its --control-repo/--loop-dir resolves to this pool). Requiring the agent
 // id in a runner cmdline is the false-negative this fixes: every live runner was
 // reported "ambiguous ... cmdline did not match this pool; refusing (fail closed)".

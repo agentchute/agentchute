@@ -98,9 +98,9 @@ func cmdSend(args []string) error {
 	if err != nil {
 		return err
 	}
-	fromID, err = resolveAgentID(fromID, "", cfg)
+	fromID, err = resolveAgentID(fromID)
 	if err != nil {
-		return fmt.Errorf("missing --from; pass --from explicitly or set AGENTCHUTE_AGENT_ID")
+		return err
 	}
 	if err := loop.ValidateAgentID(fromID); err != nil {
 		return fmt.Errorf("--from: %w", err)

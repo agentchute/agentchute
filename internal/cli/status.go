@@ -31,17 +31,10 @@ func cmdStatus(args []string) error {
 		return statusUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	// --as / $AGENTCHUTE_AGENT_ID is now optional. When omitted, status
-	// behaves as a pool-overview operator command: it prints the registry
-	// without claiming an agent identity and without ticking anyone's
-	// last_seen. The acting-agent mode (caller IS one of the pool agents,
-	// wants their last_seen refreshed as a side effect) is preserved when
-	// --as / env is set. v0.1.2 UX nit per codex review.
-	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID != "" {
-		if err := loop.ValidateAgentID(agentID); err != nil {
-			return err
-		}
+	var err error
+	agentID, err = resolveAgentID(agentID)
+	if err != nil {
+		return err
 	}
 
 	cwd, err := os.Getwd()
@@ -60,22 +53,16 @@ func cmdStatus(args []string) error {
 	}
 
 	now := time.Now().UTC()
-	if agentID != "" {
-		// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): status --as
-		// acts AS the agent (refreshes its last_seen). Refuse for an
-		// unregistered id. Pool-overview status (no --as) stays
-		// unaffected and remains a side-effect-free read.
-		// B1: CLI touches no longer refresh liveness — only serve's
-		// lease-gated heartbeat does (HeartbeatRegistration). This preflight
-		// only confirms the agent is enrolled at all.
-		selfPath := cfg.AgentRegistrationPath(agentID)
-		if _, err := os.Stat(selfPath); err == nil {
-			// registered; proceed.
-		} else if os.IsNotExist(err) {
-			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first, or omit --as to view the pool overview (AGENTCHUTE.md §5.3)", agentID, agentID)
-		} else {
-			return fmt.Errorf("stat own registration: %w", err)
-		}
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): status acts AS
+	// the explicitly identified agent. B1: this preflight confirms enrollment
+	// but does not refresh liveness.
+	selfPath := cfg.AgentRegistrationPath(agentID)
+	if _, err := os.Stat(selfPath); err == nil {
+		// registered; proceed.
+	} else if os.IsNotExist(err) {
+		return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
+	} else {
+		return fmt.Errorf("stat own registration: %w", err)
 	}
 
 	regs, err := readRegistrations(cfg)
@@ -107,7 +94,7 @@ func printUnenrolledSection(w io.Writer, cfg *loop.Config) {
 }
 
 func statusUsage(err error) error {
-	return fmt.Errorf("%w\nusage: agentchute status [--as <agent-id>] [--control-repo <path>] [--loop-dir <path>]\n\n  --as is optional. With it set, the caller's last_seen is refreshed as a side effect\n  (the historical \"acting-agent\" mode). Without it, status prints a pool overview only.", err)
+	return fmt.Errorf("%w\nusage: agentchute status --as <agent-id> [--control-repo <path>] [--loop-dir <path>]", err)
 }
 
 func readRegistrations(cfg *loop.Config) (map[string]*loop.Registration, error) {

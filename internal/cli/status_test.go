@@ -240,68 +240,22 @@ func TestStatus_PresentButNotEnrolledSectionQuietWhenClean(t *testing.T) {
 	}
 }
 
-// v0.1.2 UX nit: status without --as / $AGENTCHUTE_AGENT_ID prints the
-// pool overview without claiming an agent identity and without touching
-// anyone's last_seen. Codex review aligned: diagnostic command, not a
-// lifecycle event.
-func TestCmdStatusWithoutAgentIDPrintsPoolWithoutSideEffects(t *testing.T) {
+func TestCmdStatusWithoutAgentIDFailsWithHint(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
-
-	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "%1")
-		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Backdate codex's last_seen so we can detect a side-effecting update.
-	regPath := cfg.AgentRegistrationPath("codex")
-	reg, err := loop.ReadRegistration(regPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Registration stores last_seen at second precision; use a wall-second
-	// timestamp so the post-write read compares equal.
-	backdated := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Second)
-	reg.LastSeen = backdated
-	if err := loop.WriteRegistration(regPath, reg); err != nil {
-		t.Fatal(err)
-	}
-
-	// Make sure no env var is set; otherwise --as would be implicit.
-	// Use t.Setenv with empty value so test cleanup restores any prior
-	// shell state (codex review on 37d87e1).
 	t.Setenv("AGENTCHUTE_AGENT_ID", "")
-
 	withCwd(t, root, func() {
-		out, err := captureStdout(t, func() error { return cmdStatus(nil) })
-		if err != nil {
-			t.Fatalf("cmdStatus with no --as returned err: %v", err)
+		_, err := captureStdout(t, func() error { return cmdStatus(nil) })
+		if err == nil {
+			t.Fatal("cmdStatus with no identity returned nil error")
 		}
-		if !strings.Contains(out, "codex") {
-			t.Errorf("pool overview missing codex agent: %q", out)
+		if err.Error() != missingAgentIdentityHint {
+			t.Fatalf("error = %q, want %q", err, missingAgentIdentityHint)
 		}
 	})
-
-	// last_seen must not have been touched by the no-flag invocation.
-	after, err := loop.ReadRegistration(regPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !after.LastSeen.Equal(backdated) {
-		t.Errorf("status without --as updated last_seen: %v -> %v", backdated, after.LastSeen)
-	}
 }
 
-// With --as set, status still ticks the caller's last_seen (preserves the
-// historical acting-agent mode).
 // B1: CLI touches no longer refresh liveness — only serve's lease-gated
 // HeartbeatRegistration does. `status --as` still requires the agent to be
 // enrolled (the registration-exists preflight stays), but no longer bumps

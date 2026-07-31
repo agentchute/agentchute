@@ -80,7 +80,7 @@ func cmdTurnEnd(args []string) error {
 		return turnEndUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	opts := registerOpts{Host: host, Bio: bio}
+	opts := registerOpts{Host: host, Bio: bio, ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
 	// WI-E3 provenance: turn-end is a lifecycle hook enroll, same as
 	// self-check. Under the runner (AGENTCHUTE_RUNNER=1) it records `runner`
 	// so the runner lane is not demoted.

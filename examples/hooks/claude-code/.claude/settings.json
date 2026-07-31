@@ -40,11 +40,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor anthropic --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --quiet"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} boot --vendor anthropic --context-only"
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --context-only"
           }
         ]
       }
@@ -54,15 +54,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor anthropic --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --quiet"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor anthropic --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --quiet"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} pending --vendor anthropic --claude-hook UserPromptSubmit"
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --claude-hook UserPromptSubmit"
           }
         ]
       }

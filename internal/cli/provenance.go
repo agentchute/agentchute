@@ -20,8 +20,8 @@ func hookLaunchProvenance(event string) (launchedBy, hookEvent string) {
 }
 
 // wrapperCandidatesForAgent returns the real wrapper-binary names for the given
-// agent id (matched by canonical base, so contextual ids like
-// gemini-cli-agentchute resolve), used by the launch-bypass shadowing probe.
+// agent id (matched by canonical base, so explicitly named ids like
+// gemini-cli-review resolve), used by the launch-bypass shadowing probe.
 // With no/unknown agent id it returns every known candidate.
 func wrapperCandidatesForAgent(agentID string) []string {
 	if agentID != "" {

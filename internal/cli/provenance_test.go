@@ -85,7 +85,7 @@ func TestRunnerSetsRunnerProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := runnerOptions{AgentID: "claude-code", Vendor: "anthropic", ShimName: "ac-claude"}
-	if err := registerRunner(cfg, opts, time.Now().UTC()); err != nil {
+	if err := registerRunner(cfg, opts, "", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(opts.AgentID))

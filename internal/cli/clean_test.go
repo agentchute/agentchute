@@ -497,7 +497,7 @@ func TestCleanMailboxApplyTakesTargetLock(t *testing.T) {
 }
 
 // TestCleanOwedRequiresExplicitIdentity is the review's nit: --owed must not
-// fall through to the contextual-guess identity fallback — a destructive
+// fall through to any guessed identity fallback — a destructive
 // command should error rather than guess whose obligations to prune.
 func TestCleanOwedRequiresExplicitIdentity(t *testing.T) {
 	root := setupBootFixture(t)

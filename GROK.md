@@ -5,17 +5,16 @@
 
 Spec: [`AGENTS.md`](AGENTS.md) (full identity precedence, polling, hooks). This file is a thin pointer.
 
-**1. Pin your identity — once.** Base `agent_id=grok`, `vendor=xai`. Resolve your lane id ONCE at startup and reuse the SAME id on every call:
+**1. Pin your identity.** Default `agent_id=grok`, `vendor=xai`. Reuse the same explicit id on every call:
 
 - Launched via the `ac` dispatcher (`ac serve <wrapper>`)? Your id is already pinned in `$AGENTCHUTE_AGENT_ID` — use it as-is.
 - Otherwise set it yourself, before `boot`:
 
 ```sh
-export AGENTCHUTE_AGENT_ID="<roster-id>"                                 # named lane, or…
-export AGENTCHUTE_AGENT_ID="$(agentchute identity --vendor xai)"  # accept the contextual default (run once, before boot)
+export AGENTCHUTE_AGENT_ID="<roster-id>"
 ```
 
-Then pass `--as "$AGENTCHUTE_AGENT_ID"` (or rely on the env) on every command. **Do NOT** drive `check`/`gate`/`send` with a bare `--vendor` and no `--as`/env: with no pinned id the CLI re-derives the contextual default each call and can land on a DIFFERENT `-N` suffix (e.g. `grok-<folder>-2`), checking the WRONG inbox and missing your finish-gate. `identity --vendor` is one-time discovery, NOT a per-call identity. Running several agents of this vendor on one bus? Give EACH process its own id — a shared id routes every lane to one inbox and defeats the finish-gate.
+Then pass `--as "$AGENTCHUTE_AGENT_ID"` (or rely on the env) on every command. Commands fail with an enrollment fix hint when neither a flag nor the env provides an id. Running several agents of this vendor on one bus? Give each process its own id; a shared id is refused while another live serve owns it.
 
 **2. Verify at session start** (read-only; confirms you are enrolled AND present via a fresh `.live`):
 

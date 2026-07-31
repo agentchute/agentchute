@@ -5,17 +5,16 @@
 
 Spec: [`AGENTS.md`](AGENTS.md) (full identity precedence, polling, hooks). This file is a thin pointer.
 
-**1. Pin your identity — once.** Base `agent_id=gemini-cli`, `vendor=google`. Resolve your lane id ONCE at startup and reuse the SAME id on every call:
+**1. Pin your identity.** Default `agent_id=gemini-cli`, `vendor=google`. Reuse the same explicit id on every call:
 
 - Launched via the `ac` dispatcher (`ac serve <wrapper>`)? Your id is already pinned in `$AGENTCHUTE_AGENT_ID` — use it as-is.
 - Otherwise set it yourself, before `boot`:
 
 ```sh
-export AGENTCHUTE_AGENT_ID="<roster-id>"                                 # named lane, or…
-export AGENTCHUTE_AGENT_ID="$(agentchute identity --vendor google)"  # accept the contextual default (run once, before boot)
+export AGENTCHUTE_AGENT_ID="<roster-id>"
 ```
 
-Then pass `--as "$AGENTCHUTE_AGENT_ID"` (or rely on the env) on every command. **Do NOT** drive `check`/`gate`/`send` with a bare `--vendor` and no `--as`/env: with no pinned id the CLI re-derives the contextual default each call and can land on a DIFFERENT `-N` suffix (e.g. `gemini-cli-<folder>-2`), checking the WRONG inbox and missing your finish-gate. `identity --vendor` is one-time discovery, NOT a per-call identity. Running several agents of this vendor on one bus? Give EACH process its own id — a shared id routes every lane to one inbox and defeats the finish-gate.
+Then pass `--as "$AGENTCHUTE_AGENT_ID"` (or rely on the env) on every command. Commands fail with an enrollment fix hint when neither a flag nor the env provides an id. Running several agents of this vendor on one bus? Give each process its own id; a shared id is refused while another live serve owns it.
 
 **2. Verify at session start** (read-only; confirms you are enrolled AND present via a fresh `.live`):
 
@@ -71,7 +70,7 @@ Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGEN
 
 ## Coordination & Identity
 
-- **Identity Resolution**: Identity resolves in this exact order, first match wins: explicit `--as`, then `AGENTCHUTE_AGENT_ID`, then a contextual `<wrapper>-<folder>` default (suffixed `-2`, `-3`, … past live conflicts in different lanes). Pull-only registrations carry no wake target, so there is no pane to map back to — id comes from `--as` / `$AGENTCHUTE_AGENT_ID` or the contextual default. Use `AGENTCHUTE_AGENT_ID` only for custom stable lane names.
+- **Identity Resolution**: Identity resolves from explicit `--as` first, then `AGENTCHUTE_AGENT_ID`; without either, the command fails with an enrollment fix hint.
 - **4-Way Verification**: High-consequence changes (e.g. protocol fixes, namespace migrations) require a "4-way verify" loop across the primary fleet lanes: `claude-code` (implementation), `codex` (shell/wire safety), `gemini-cli` (UX/Docs), and `grok` (manual/no-hooks flow). Do not merge until all four lanes are green.
 
 > Self-description (interests, working style, etc.) belongs in this agent's

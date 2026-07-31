@@ -82,7 +82,7 @@ func resolvePollerCommon(p *pollerCommon) (*loop.Config, error) {
 		return nil, err
 	}
 
-	p.AgentID, err = resolveAgentID(p.AgentID, p.Vendor, cfg)
+	p.AgentID, err = resolveAgentID(p.AgentID)
 	if err != nil {
 		return nil, err
 	}

@@ -277,7 +277,7 @@ func TestScanWipeLiveSignalsRefusesLiveRunner(t *testing.T) {
 	oldAlive := setupProcessAlive
 	oldCmd := setupProcessCommandLine
 	setupProcessAlive = func(pid int) bool { return pid == 4242 }
-	// Realistic runner cmdline: NO --as (runners use the contextual id), so the
+	// Realistic runner cmdline: NO --as (the id may come from env), so the
 	// pool proof is the exact --control-repo/--loop-dir value match.
 	setupProcessCommandLine = func(pid int) string {
 		return "/usr/local/bin/agentchute serve --vendor openai --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir + " --shim-name ac -- /usr/bin/codex"
@@ -368,7 +368,7 @@ func TestSetupCommandMatchesRunnerPool(t *testing.T) {
 		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
 	}
 
-	// A runner is launched WITHOUT --as (contextual id), but DOES carry the pool
+	// A runner may be launched WITHOUT --as (explicit id from env), but DOES carry the pool
 	// path. It must match — this is the false-negative the fix repairs.
 	runnerNoAs := "/usr/local/bin/agentchute serve --control-repo " + root + " --loop-dir " + cfg.LoopDir
 	if !setupCommandMatchesRunnerPool(runnerNoAs, cfg) {
@@ -419,7 +419,7 @@ func TestScanWipeLiveSignalsRunnerWithoutAsIsLiveNotAmbiguous(t *testing.T) {
 	oldCmd := setupProcessCommandLine
 	setupProcessAlive = func(pid int) bool { return pid == 4711 }
 	setupProcessCommandLine = func(pid int) string {
-		// NO --as: runners launch with the contextual id.
+		// NO --as: the runner receives its explicit id through env.
 		return "/usr/local/bin/agentchute serve --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
 	}
 	t.Cleanup(func() { setupProcessAlive = oldAlive; setupProcessCommandLine = oldCmd })

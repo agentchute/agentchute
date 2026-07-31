@@ -37,11 +37,10 @@ type registerOpts struct {
 	Host            string
 	Bio             string
 	WorkingRepos    []string
+	ServeToken      string
 
-	ContextualIdentity bool
-	ContextualBaseID   string
-	HostProvided       bool
-	BioProvided        bool
+	HostProvided bool
+	BioProvided  bool
 
 	// WI-E3 launch provenance (advisory). When non-empty these are written into
 	// the registration so verify views are truthful and the launch-bypass warning
@@ -77,7 +76,9 @@ type registerResult struct {
 // Pull-only (simple-again Gate 6c): a registration carries no wake state, so
 // there is no wake autodetect, no tmux pane lock, and no same-pane/stale-peer
 // dedup. The retained behavior is: write the registration record + the initial
-// `.live` presence (Gate 3) + the -N contextual-id-collision suffix retry.
+// `.live` presence (Gate 3). A fresh serve lease owned by another process
+// refuses the registration regardless of row age or presence; stale same-id
+// state is merged as crash recovery.
 func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*registerResult, error) {
 	if err := loop.ValidateAgentID(opts.AgentID); err != nil {
 		return nil, err
@@ -96,35 +97,21 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 	}
 
 	result, err := publishRegistrationOnce(cfg, opts, host, now)
-	if err == nil {
-		return result, nil
+	if os.IsExist(err) {
+		// WriteRegistrationExclusive closed a creation race with a writer that
+		// did not take our agent lock. Re-read once through the normal merge
+		// path; its live-owner check decides whether this caller may adopt the
+		// now-existing row.
+		return publishRegistrationOnce(cfg, opts, host, now)
 	}
-	for attempts := 0; opts.ContextualIdentity && os.IsExist(err) && attempts < 100; attempts++ {
-		// A concurrent startup command (e.g. boot + self-check fired from the
-		// same SessionStart hook) may have just created the contextual id we were
-		// about to claim exclusively. Both processes resolved the same contextual
-		// base before either write was visible. Under pull-only there is no live
-		// pane to map back to a registration, so the colliding id is always a
-		// distinct lane: suffix to the next free `<base>-N` and retry.
-		nextID, nextErr := nextContextualAgentIDByFilesystem(cfg, opts.ContextualBaseID, opts.AgentID)
-		if nextErr != nil {
-			return nil, nextErr
-		}
-		opts.AgentID = nextID
-		result, err = publishRegistrationOnce(cfg, opts, host, now)
-		if err == nil {
-			return result, nil
-		}
-	}
-	return nil, err
+	return result, err
 }
 
 // publishRegistrationOnce writes one registration under the per-agent lock and
 // publishes the initial `.live` presence. The write is: re-read the existing
 // registration (for the field merge), build the no-wake record, ensure the inbox
-// dir, then write — exclusively (create-if-not-exists) on the fresh-contextual
-// path so a concurrent same-id create surfaces as os.ErrExist for the caller's
-// suffix retry, otherwise a plain atomic write.
+// dir, then write — exclusively (create-if-not-exists) on a fresh row so a
+// concurrent same-id create is re-read before this process may merge it.
 func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, now time.Time) (*registerResult, error) {
 	regPath := cfg.AgentRegistrationPath(opts.AgentID)
 	inboxDir := cfg.AgentInboxDir(opts.AgentID)
@@ -143,6 +130,9 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 			existingFound = true
 		} else if !os.IsNotExist(rerr) {
 			return fmt.Errorf("read existing registration: %w", rerr)
+		}
+		if registrationLiveElsewhere(cfg, opts.AgentID, opts.ServeToken, now) {
+			return fmt.Errorf("agent id %q is live elsewhere; pick a distinct name (--as %s-2?)", opts.AgentID, opts.AgentID)
 		}
 
 		reg = &loop.Registration{
@@ -200,11 +190,10 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 			return fmt.Errorf("create inbox dir: %w", err)
 		}
 
-		if !existingFound && opts.ContextualIdentity {
-			// Atomic create-if-not-exists for the fresh-contextual collision path.
-			// EEXIST propagates (via os.IsExist) so performRegister's retry loop
-			// can suffix. The exclusive link guards against a different process
-			// that never took our lock.
+		if !existingFound {
+			// Atomic create-if-not-exists. EEXIST propagates so performRegister
+			// can re-read the winner and apply the same live-owner refusal before
+			// deciding whether a same-id merge is safe.
 			if werr := loop.WriteRegistrationExclusive(regPath, reg); werr != nil {
 				if os.IsExist(werr) {
 					return werr
@@ -217,9 +206,8 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 		return nil
 	})
 	if err != nil {
-		// err is returned verbatim so the contextual-collision retry loop in
-		// performRegister can detect the exclusive-create race via os.IsExist
-		// (WriteRegistrationExclusive returns the raw os.ErrExist).
+		// Preserve raw os.ErrExist so performRegister can re-read an
+		// exclusive-create race exactly once.
 		return nil, err
 	}
 
@@ -246,26 +234,12 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 	}, nil
 }
 
-func nextContextualAgentIDByFilesystem(cfg *loop.Config, baseID, current string) (string, error) {
-	if strings.TrimSpace(baseID) == "" {
-		baseID = current
+func registrationLiveElsewhere(cfg *loop.Config, agentID, serveToken string, now time.Time) bool {
+	claim, err := loop.ReadServeClaim(cfg, agentID)
+	if err != nil || loop.ClaimIsStale(claim, now) {
+		return false
 	}
-	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", baseID, i)
-		if candidate == current {
-			continue
-		}
-		// Enforce the cap BEFORE checking whether the candidate is free —
-		// otherwise a free past-cap candidate (e.g. base-101 absent while
-		// base-2..base-100 are taken) would be handed out, defeating the cap
-		// (codex WI-8 review). Mirrors availableContextualAgentID's ordering.
-		if i > 100 {
-			return "", fmt.Errorf("could not allocate a free agent id for base %q after %d attempts", baseID, 100)
-		}
-		if _, err := os.Stat(cfg.AgentRegistrationPath(candidate)); os.IsNotExist(err) {
-			return candidate, nil
-		}
-	}
+	return strings.TrimSpace(serveToken) == "" || claim.ServeToken != strings.TrimSpace(serveToken)
 }
 
 func cmdRegister(args []string) error {
@@ -295,6 +269,7 @@ func cmdRegister(args []string) error {
 		Host:         host,
 		Bio:          bio,
 		WorkingRepos: workingRepos,
+		ServeToken:   os.Getenv("AGENTCHUTE_SERVE_TOKEN"),
 		// A hand-run `agentchute register` is the manual/raw enroll path.
 		LaunchedBy: loop.LaunchedByManual,
 	}
@@ -326,18 +301,12 @@ func cmdRegister(args []string) error {
 		return err
 	}
 
-	contextualBase, contextual, err := contextualIdentityBase(agentID, vendor)
-	if err != nil {
-		return err
-	}
-	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	agentID, err = resolveAgentID(agentID)
 	if err != nil {
 		return err
 	}
 	opts.AgentID = agentID
 	opts.Vendor = resolveAgentVendor(vendor, agentID, cfg)
-	opts.ContextualIdentity = contextual
-	opts.ContextualBaseID = contextualBase
 
 	now := time.Now().UTC()
 	result, err := performRegister(cfg, opts, now)

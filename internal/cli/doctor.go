@@ -609,7 +609,7 @@ func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions)
 func acServeHintForAgent(agentID string) string {
 	agentID = strings.TrimSpace(agentID)
 	for _, spec := range wrapperSpecs {
-		// Match contextual ids (codex-agentchute) to their canonical wrapper,
+		// Match explicitly named ids (codex-review) to their canonical wrapper,
 		// not just exact base ids — mirrors shimNamesForAgent.
 		if registrationMatchesCanonical(agentID, spec.AgentID) {
 			return "ac serve " + spec.Key
@@ -622,7 +622,7 @@ func shimNamesForAgent(agentID string) []string {
 	agentID = strings.TrimSpace(agentID)
 	if agentID != "" {
 		for _, spec := range wrapperSpecs {
-			// Match contextual ids (codex-agentchute) to their canonical shim,
+			// Match explicitly named ids (codex-review) to their canonical shim,
 			// not just exact base ids.
 			if registrationMatchesCanonical(agentID, spec.AgentID) {
 				return []string{spec.Name}
@@ -710,8 +710,8 @@ func actingHookDrift(cfg *loop.Config, wrapper string) string {
 }
 
 // hookWrapperForAgent resolves an agent id to its canonical hookable wrapper.
-// Real setups enroll with contextual ids (e.g. codex-agentchute), so match by
-// canonical base — exact or "<base>-" prefix — not exact base id only.
+// Explicit lane names may retain a canonical wrapper prefix (e.g. codex-review),
+// so match by canonical base — exact or "<base>-" prefix — not exact base only.
 // Hookless wrappers (grok) are intentionally absent.
 func hookWrapperForAgent(agentID string) (string, bool) {
 	agentID = strings.TrimSpace(agentID)

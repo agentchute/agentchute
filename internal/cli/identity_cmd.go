@@ -4,9 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
-
-	"github.com/agentchute/agentchute/internal/loop"
 )
 
 func cmdIdentity(args []string) error {
@@ -24,26 +21,7 @@ func cmdIdentity(args []string) error {
 		return identityUsage(err)
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	cfg, err := loop.Discover(loop.DiscoverOpts{
-		ControlRepoFlag: controlRepo,
-		LoopDirFlag:     loopDir,
-		Cwd:             cwd,
-		EnvControlRepo:  os.Getenv("AGENTCHUTE_CONTROL_REPO"),
-		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
-	})
-	// If discovery fails, we still try to resolve the ID without cfg (no conflict check)
-	if err != nil {
-		cfg = nil
-	}
-
-	if vendor == "" {
-		vendor = wrapper
-	}
-	id, err := resolveAgentID(agentID, vendor, cfg)
+	id, err := resolveAgentID(agentID)
 	if err != nil {
 		return err
 	}

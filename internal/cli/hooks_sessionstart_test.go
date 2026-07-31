@@ -10,8 +10,8 @@ import (
 // At SessionStart, boot already registers/refreshes the agent (it runs
 // performRegister even in --context-only / --codex-hook mode). A redundant
 // self-check in the same SessionStart block doubles the registration write and
-// is the engine of the contextual-identity duplicate race: two writes resolve
-// the same base before either is visible. The fix removes self-check from
+// can race a second write for the same explicit identity. The fix removes
+// self-check from
 // SessionStart (boot owns it there) while keeping it on the per-turn hook,
 // where no boot runs and last_seen/.live presence still need active
 // reconciliation — claude/codex do this via a standalone `self-check` entry
@@ -38,6 +38,9 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 		if err != nil {
 			t.Errorf("%s: read embedded template: %v", c.wrapper, err)
 			continue
+		}
+		if strings.Contains(string(data), "--vendor") {
+			t.Errorf("%s: hook template still passes --vendor; identity must come from AGENTCHUTE_AGENT_ID", c.wrapper)
 		}
 		cmds := hookCommandsForEvent(t, data, c.sessionStart)
 		if len(cmds) == 0 {

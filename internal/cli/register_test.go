@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +15,7 @@ import (
 // tmux-pane-dedup / same-pane-prune / pane-lock / defer-to-existing register
 // tests were removed with the apparatus they exercised. A registration carries
 // no wake state; register's retained behavior is: write the record + the initial
-// `.live` presence + the -N contextual-id-collision suffix retry.
+// `.live` presence + explicit-id duplicate-owner refusal.
 
 func TestRegister_RMWUnderAgentLock(t *testing.T) {
 	root := t.TempDir()
@@ -56,7 +55,7 @@ func TestRegister_RMWUnderAgentLock(t *testing.T) {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				opts := registerOpts{AgentID: agentID, Vendor: "anthropic"}
+				opts := registerOpts{AgentID: agentID, Vendor: "anthropic", ServeToken: lease.Token}
 				if _, err := performRegister(cfg, opts, now.Add(time.Duration(i)*time.Second)); err != nil {
 					errs <- err
 				}
@@ -339,110 +338,164 @@ func TestRegisterBioFlagSetsAndOverwritesBody(t *testing.T) {
 	})
 }
 
-// Pull-only: a contextual register (no --as) whose base id is already held by a
-// fresh, active registration suffixes to the next free `<base>-N` and still
-// publishes its own initial `.live`. This is the retained -N collision behavior.
-func TestRegister_ContextualCollisionSuffixesAndWritesLive(t *testing.T) {
+func TestRegisterRefusesLiveDuplicateID(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
-		t.Setenv("AGENTCHUTE_AGENT_ID", "")
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
 		}
-		base := "claude-code-" + getFolderSlug(root)
+		const agentID = "claude-code"
+		now := time.Now().UTC()
+		if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, now); err != nil {
+			t.Fatalf("seed registration: %v", err)
+		}
+		lease, err := loop.AcquireServeLease(cfg, agentID)
+		if err != nil {
+			t.Fatalf("acquire serve lease: %v", err)
+		}
+		defer loop.ReleaseLease(lease)
 
-		// First contextual register claims the base id.
-		if err := cmdRegister([]string{"--vendor", "anthropic"}); err != nil {
-			t.Fatalf("first contextual register: %v", err)
+		_, err = performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, now.Add(time.Second))
+		if err == nil {
+			t.Fatal("live duplicate registration returned nil error")
 		}
-		if _, err := loop.ReadRegistration(cfg.AgentRegistrationPath(base)); err != nil {
-			t.Fatalf("base registration not written: %v", err)
+		want := `agent id "claude-code" is live elsewhere; pick a distinct name (--as claude-code-2?)`
+		if err.Error() != want {
+			t.Fatalf("error = %q, want %q", err, want)
 		}
 
-		// Second contextual register collides with the fresh base id and suffixes.
-		if err := cmdRegister([]string{"--vendor", "anthropic"}); err != nil {
-			t.Fatalf("second contextual register: %v", err)
-		}
-		suffixed := base + "-2"
-		if _, err := loop.ReadRegistration(cfg.AgentRegistrationPath(suffixed)); err != nil {
-			t.Fatalf("collision did not suffix to %q: %v", suffixed, err)
-		}
-		// The suffixed lane gets its own initial `.live`.
-		liveSeen, ok := loop.LiveLastSeen(cfg, suffixed)
-		if !ok || liveSeen.IsZero() {
-			t.Fatalf("suffixed lane %q missing initial .live (ok=%v seen=%v)", suffixed, ok, liveSeen)
+		if _, err := os.Stat(cfg.AgentRegistrationPath(agentID + "-2")); !os.IsNotExist(err) {
+			t.Fatalf("duplicate registration created suffixed id: stat err = %v", err)
 		}
 	})
 }
 
-// WI-8: nextContextualAgentIDByFilesystem and callers must error (not collide) past cap.
-func TestNextContextualAgentIDByFilesystem_ErrorsPastCap(t *testing.T) {
+func TestRegisterRefusesFreshForeignLeaseWithStaleRow(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
-
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
 		}
-		base := "claude-code-" + getFolderSlug(root)
-
-		agentsDir := cfg.AgentsDir()
-		_ = os.MkdirAll(agentsDir, 0700)
-
-		for i := 2; i <= 101; i++ {
-			id := fmt.Sprintf("%s-%d", base, i)
-			path := cfg.AgentRegistrationPath(id)
-			_ = os.MkdirAll(filepath.Dir(path), 0700)
-			_ = os.WriteFile(path, []byte("{}"), 0644)
+		const agentID = "claude-code"
+		now := time.Now().UTC()
+		stale := now.Add(-2 * loop.DefaultStaleAfter)
+		if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, stale); err != nil {
+			t.Fatalf("seed stale registration: %v", err)
 		}
+		lease, err := loop.AcquireServeLease(cfg, agentID)
+		if err != nil {
+			t.Fatalf("acquire fresh foreign lease: %v", err)
+		}
+		defer loop.ReleaseLease(lease)
 
-		_, err = nextContextualAgentIDByFilesystem(cfg, base, base)
+		_, err = performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, now)
 		if err == nil {
-			t.Fatal("next... past cap returned no error")
+			t.Fatal("registration with stale row and fresh foreign lease returned nil error")
 		}
-		if !strings.Contains(err.Error(), "could not allocate a free agent id") {
-			t.Errorf("err=%v, want cap error", err)
+		want := `agent id "claude-code" is live elsewhere; pick a distinct name (--as claude-code-2?)`
+		if err.Error() != want {
+			t.Fatalf("error = %q, want %q", err, want)
 		}
 	})
 }
 
-// Regression (codex WI-8 review): the cap must error even when the past-cap
-// candidate is FREE. Occupy base-2..base-100 but leave base-101 ABSENT; the
-// allocator must NOT hand out base-101 — it must return the cap error.
-func TestNextContextualAgentIDByFilesystem_ErrorsPastCapWhenCandidateFree(t *testing.T) {
+func TestRegisterRefusesFreshForeignLeaseWithoutRow(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
-
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
 		}
-		base := "claude-code-" + getFolderSlug(root)
-
-		agentsDir := cfg.AgentsDir()
-		_ = os.MkdirAll(agentsDir, 0700)
-
-		// base-2..base-100 occupied; base-101 deliberately left FREE.
-		for i := 2; i <= 100; i++ {
-			id := fmt.Sprintf("%s-%d", base, i)
-			path := cfg.AgentRegistrationPath(id)
-			_ = os.MkdirAll(filepath.Dir(path), 0700)
-			_ = os.WriteFile(path, []byte("{}"), 0644)
+		const agentID = "claude-code"
+		lease, err := loop.AcquireServeLease(cfg, agentID)
+		if err != nil {
+			t.Fatalf("acquire fresh foreign lease: %v", err)
 		}
+		defer loop.ReleaseLease(lease)
 
-		got, err := nextContextualAgentIDByFilesystem(cfg, base, base)
+		_, err = performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, time.Now().UTC())
 		if err == nil {
-			t.Fatalf("past cap with free base-101 returned id %q, want cap error", got)
+			t.Fatal("registration with no row and fresh foreign lease returned nil error")
 		}
-		if !strings.Contains(err.Error(), "could not allocate a free agent id") {
-			t.Errorf("err=%v, want cap error", err)
+		want := `agent id "claude-code" is live elsewhere; pick a distinct name (--as claude-code-2?)`
+		if err.Error() != want {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+		if _, err := os.Stat(cfg.AgentRegistrationPath(agentID)); !os.IsNotExist(err) {
+			t.Fatalf("foreign lease registration created a row: stat err = %v", err)
+		}
+	})
+}
+
+func TestRegisterCreatesMissingRowWithMatchingLeaseToken(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "claude-code"
+		lease, err := loop.AcquireServeLease(cfg, agentID)
+		if err != nil {
+			t.Fatalf("acquire own lease: %v", err)
+		}
+		defer loop.ReleaseLease(lease)
+
+		result, err := performRegister(cfg, registerOpts{
+			AgentID:    agentID,
+			Vendor:     "anthropic",
+			ServeToken: lease.Token,
+		}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("register under own lease: %v", err)
+		}
+		if result.ExistingFound {
+			t.Fatal("missing-row registration reported an existing row")
+		}
+		if result.Reg.AgentID != agentID {
+			t.Fatalf("agent id = %q, want %q", result.Reg.AgentID, agentID)
+		}
+	})
+}
+
+func TestRegisterMergesOverStaleSameID(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "claude-code"
+		now := time.Now().UTC()
+		stale := now.Add(-2 * loop.DefaultStaleAfter)
+		if _, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic", Bio: "old", BioProvided: true}, stale); err != nil {
+			t.Fatalf("seed stale registration: %v", err)
+		}
+
+		result, err := performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, now)
+		if err != nil {
+			t.Fatalf("merge stale same id: %v", err)
+		}
+		if !result.ExistingFound {
+			t.Fatal("stale same-id merge did not report existing row")
+		}
+		if !result.Reg.LastSeen.Equal(now) {
+			t.Fatalf("last_seen = %s, want %s", result.Reg.LastSeen, now)
+		}
+		if !strings.Contains(result.Reg.Body, "old") {
+			t.Fatalf("stale merge lost existing body: %q", result.Reg.Body)
 		}
 	})
 }
