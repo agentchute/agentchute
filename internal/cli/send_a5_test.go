@@ -207,7 +207,7 @@ func TestSendPartialSuccessOnOwedFailure(t *testing.T) {
 	if sendErr != nil {
 		t.Fatalf("post-link owed failure returned nonzero: %v", sendErr)
 	}
-	if !strings.Contains(stdout, "Sent from-claude-code_seq-") ||
+	if !strings.Contains(stdout, "Sent ") || !strings.Contains(stdout, "_from-claude-code_r") ||
 		!strings.Contains(stderr, "WARNING: reply-obligation bookkeeping failed:") ||
 		!strings.Contains(stderr, "Do NOT resend.") {
 		t.Fatalf("partial-success output mismatch:\nstdout=%s\nstderr=%s", stdout, stderr)
@@ -226,15 +226,15 @@ func TestSendPartialSuccessOnOwedFailure(t *testing.T) {
 
 func TestSendPostLinkSyncFailureIsPartialSuccess(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	originalSend := sendSeqMessageWithCommit
-	sendSeqMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, idempotencyKey, serveToken string) (loop.MsgID, bool, error) {
-		id, committed, err := originalSend(cfg, from, to, content, idempotencyKey, serveToken)
+	originalSend := sendTsMessageWithCommit
+	sendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, serveToken string) (loop.TsID, bool, error) {
+		id, committed, err := originalSend(cfg, from, to, content, serveToken)
 		if err != nil {
 			return id, committed, err
 		}
 		return id, true, errors.New("forced post-link sync failure")
 	}
-	defer func() { sendSeqMessageWithCommit = originalSend }()
+	defer func() { sendTsMessageWithCommit = originalSend }()
 
 	var stdout string
 	var sendErr error
@@ -252,7 +252,7 @@ func TestSendPostLinkSyncFailureIsPartialSuccess(t *testing.T) {
 	if sendErr != nil {
 		t.Fatalf("post-link sync failure returned nonzero: %v", sendErr)
 	}
-	if !strings.Contains(stdout, "Sent from-claude-code_seq-") ||
+	if !strings.Contains(stdout, "Sent ") || !strings.Contains(stdout, "_from-claude-code_r") ||
 		!strings.Contains(stderr, "WARNING: message delivered but inbox durability sync failed: forced post-link sync failure.") ||
 		!strings.Contains(stderr, "Do NOT resend.") {
 		t.Fatalf("partial-success output mismatch:\nstdout=%s\nstderr=%s", stdout, stderr)

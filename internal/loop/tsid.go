@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -29,6 +31,19 @@ var (
 		`^to-(` + agentIDPattern + `)_from-(` + agentIDPattern + `)_(\d{8}T\d{12}Z)_r([0-9a-f]{32})$`,
 	)
 )
+
+// rand128hex returns a 32-lowercase-hex-char (128-bit) crypto/rand suffix
+// (C4). 128 bits makes a real collision unreachable; the caller still retries
+// on link EEXIST (a same-microsecond sender racing itself, or, astronomically,
+// a suffix collision) rather than relying on uniqueness alone. Package var
+// (mirrors lease.go's mintServeToken) so tests can force a collision.
+var rand128hex = func() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
 
 // FormatStamp returns the fixed-width, microsecond-precision UTC wire form.
 func FormatStamp(t time.Time) string {
@@ -68,6 +83,31 @@ func (t TsID) Equal(other TsID) bool {
 		t.From == other.From &&
 		t.Stamp == other.Stamp &&
 		t.Suffix == other.Suffix
+}
+
+// Validate checks that t's full identity conforms to the C3 grammar (To/From
+// as valid agent ids; Stamp as a well-formed C2 timestamp; Suffix as 32
+// lowercase hex chars) — the shape a delivery path may safely turn into a
+// filename. A caller-supplied identity that fails this MUST be rejected
+// before any filepath.Join or filesystem write (codex PR #99 review: an
+// unvalidated Stamp/Suffix embedding a path separator or ".." could
+// otherwise escape the inbox directory once joined into a path — the same
+// class of hazard B3 already closed for a typo'd --to before it could
+// manufacture a state dir one layer down).
+func (t TsID) Validate() error {
+	if err := ValidateAgentID(t.To); err != nil {
+		return fmt.Errorf("to: %w", err)
+	}
+	if err := ValidateAgentID(t.From); err != nil {
+		return fmt.Errorf("from: %w", err)
+	}
+	if _, ok := ParseStamp(t.Stamp); !ok {
+		return fmt.Errorf("stamp %q does not match the C2 wire form", t.Stamp)
+	}
+	if !tsSuffixRE.MatchString(t.Suffix) {
+		return fmt.Errorf("suffix %q does not match the C4 128-bit-hex form", t.Suffix)
+	}
+	return nil
 }
 
 // ParseTsFilename parses a timestamp-format inbox filename. To is not encoded

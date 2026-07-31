@@ -127,23 +127,23 @@ func TestSendRefusesMalformedRecipientAtPreflight(t *testing.T) {
 
 // TestSendFreshButRacingText: C29(c). cmdSend's own preflight already found
 // `codex` fresh; the delivery stage (loop.DeliverUnderRecipientLock, reached
-// via the sendSeqMessageWithCommit seam) reports the row went stale in the
+// via the sendTsMessageWithCommit seam) reports the row went stale in the
 // gap. classifySendFailure must render this as the racing wording, not the
 // direct-stale wording — the two error TYPES already carry that distinction
 // (internal/loop/send_delivery_test.go proves DeliverUnderRecipientLock
 // itself catches the underlying race; this proves cmdSend renders it right).
 func TestSendFreshButRacingText(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	originalSend := sendSeqMessageWithCommit
-	sendSeqMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, idempotencyKey, serveToken string) (loop.MsgID, bool, error) {
-		return loop.MsgID{}, false, &loop.ErrRecipientStale{
+	originalSend := sendTsMessageWithCommit
+	sendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, serveToken string) (loop.TsID, bool, error) {
+		return loop.TsID{}, false, &loop.ErrRecipientStale{
 			To:        to,
 			LastSeen:  time.Now().UTC().Add(-90 * time.Second),
 			Age:       90 * time.Second,
 			Threshold: time.Hour,
 		}
 	}
-	defer func() { sendSeqMessageWithCommit = originalSend }()
+	defer func() { sendTsMessageWithCommit = originalSend }()
 
 	var sendErr error
 	withCwd(t, root, func() {
@@ -183,7 +183,7 @@ func TestSendTakesNoLockForUnknownRecipient(t *testing.T) {
 	}
 }
 
-// TestSendSelfSendNoDeadlock is the B3 sentinel: mint (AllocateSeq, under
+// TestSendSelfSendNoDeadlock is the B3/B7 sentinel: mint (MintSendStamp, under
 // WithAgentLock(from)) and deliver (DeliverUnderRecipientLock, under
 // WithAgentLock(to)) are two SEPARATE, SEQUENTIAL lock acquisitions. For
 // self-send (from==to) these two calls target the SAME non-reentrant flock;

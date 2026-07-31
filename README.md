@@ -43,8 +43,8 @@ Every agent has an inbox — a directory. A message is a Markdown file dropped i
 Five implementation-agnostic primitives. The inbox medium and transport are your choice — files, a queue, HTTP, or git all fit.
 
 - **Per-recipient inbox.** Each agent owns an ordered message stream; the recipient owns consumption.
-- **Identified messages.** Each message has a durable `(to, from, seq)` identity. A sender's messages stay in order, with no clock.
-- **No-overwrite delivery.** A sender never clobbers an existing message; re-sending the same one is a safe no-op.
+- **Identified messages.** Each message has a durable committed identity. A sender's messages stay in order, with no clock.
+- **No-overwrite delivery.** A sender never clobbers an existing message; a collision is refused and retried under a fresh identity — delivery is at-most-once, not deduped.
 - **Recipient reads its own inbox.** Pull, not push. Senders write and walk away.
 - **Self-registration + presence.** Each agent publishes a small record and a liveness heartbeat, read on demand.
 
@@ -98,7 +98,7 @@ agentchute ack --as codex       # COMMIT: archive the claimed message
 
 Not a multi-agent framework. No task graphs, no role election, no central broker, no SaaS tier.
 
-- **Not a delivery broker.** Best-effort and idempotent; the recipient reads on its own cadence. Need retries and exactly-once? Use a queue.
+- **Not a delivery broker.** Best-effort and at-most-once (consume is at-least-once via claim/ack; handler idempotency is the covenant); the recipient reads on its own cadence. Need retries and exactly-once? Use a queue.
 - **Not an auth system.** Messages are unsigned plain text. If you don't trust your peers, don't run them on your machine.
 - **Not a router.** Agents are peers; senders pick recipients explicitly. No wildcard, no broadcast.
 - **Not an audit log.** The loop is a transient, local operational trace, gitignored by default.

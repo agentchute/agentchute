@@ -510,7 +510,7 @@ func runnerChildEnv(cfg *loop.Config, opts runnerOptions, serveToken string) []s
 		"AGENTCHUTE_RUNNER=1",
 		"AGENTCHUTE_RUNNER_PID="+strconv.Itoa(os.Getpid()),
 		// Fence the child's sends: send.go passes this serve_token to
-		// AllocateSeq so a write from a fenced (reclaimed) agent fails closed
+		// MintSendStamp so a write from a fenced (reclaimed) agent fails closed
 		// (protocol-v2 §6b). Empty when launched without a lease => unfenced.
 		"AGENTCHUTE_SERVE_TOKEN="+serveToken,
 	)

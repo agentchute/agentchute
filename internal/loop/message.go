@@ -82,10 +82,11 @@ func AnnounceEnrollment(cfg *Config, self *Registration) (AnnounceResult, error)
 		}
 		result.Total++
 		content := ComposeMessage(self.AgentID, "", body)
-		// Deliver under the canonical (to,from,seq) identity. Empty
-		// idempotencyKey means at-most-once across a sender crash between seq
-		// allocation and link; empty serveToken means intentionally unfenced.
-		if _, err := SendSeqMessage(cfg, self.AgentID, peer.AgentID, content, "", ""); err != nil {
+		// Deliver under the new timestamp identity (v2.5 plan B7): mint a
+		// stamp under self's own lock, release, then deliver under peer's
+		// lock (C8). Empty serveToken means intentionally unfenced — an
+		// enrollment announcement is not gated on a live serve lease.
+		if _, _, err := SendTsMessageWithCommit(cfg, self.AgentID, peer.AgentID, content, ""); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("send to %s: %v", peer.AgentID, err))
 			continue
 		}

@@ -35,8 +35,8 @@ func main() {
 	}
 	fmt.Println("registered: alice, bob, carol")
 
-	// alice -> bob, reply-required, with an idempotency key
-	must(b.Deliver("bob", ac.Msg{From: "alice", Body: "PING: please review PR 42", ReplyRequired: true, Key: "rev-42"}))
+	// alice -> bob, reply-required
+	must(b.Deliver("bob", ac.Msg{From: "alice", Body: "PING: please review PR 42", ReplyRequired: true}))
 	fmt.Println("alice delivered a reply-required review request to bob")
 
 	// bob consumes and replies

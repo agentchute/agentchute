@@ -24,7 +24,7 @@ The protocol is a small set of implementation-agnostic primitives. Conforming im
 
 - **Per-recipient inbox.** Each agent has its own ordered message stream. Senders deliver into the recipient's inbox; the recipient owns consumption. **The inbox medium is implementation-specific** (filesystem, queue, HTTP, git branch, etc.).
 - **Identity = the committed delivery key `(to, from, seq)`.** `seq` is a durable, monotonic, per-`(sender, recipient)` sequence number (§6.1). It is the sort key and the identity; there is no sender-asserted `message_id` and no random nonce in the identity. A plain per-sender sort yields exact FIFO with no clock.
-- **No-overwrite delivery.** Delivery never silently clobbers an existing entry. Committing the same `(to, from, seq)` twice is a benign no-op ("this exact message already landed"), which makes a crash-uncertain resend safe. **Transport is implementation-specific** (atomic link, HTTP POST, git push, etc.).
+- **No-overwrite delivery.** Delivery never silently clobbers an existing entry: a collision at the committed identity is refused, never a silent dedup no-op — the sender retries under a fresh identity. Delivery is **at-most-once**; there is no sender-asserted idempotency key or delivery-side dedup backstop (the covenant is handler idempotency at consume, §6.3). **Transport is implementation-specific** (atomic link, HTTP POST, git push, etc.).
 - **Recipient-owned, two-phase consumption.** Only the recipient reads its own message bodies. Consumption is **act-then-archive** (at-least-once): claim → act → commit. A crash mid-consume re-delivers; handlers MUST be idempotent.
 - **Presence is a published fact with freshness**, not a wake target and not a read cursor. Each agent writes a `.live` file on each heartbeat; fresh ⇒ alive, stale/absent ⇒ not-alive (§9).
 - **Asker-owned reply obligations.** "I am owed a reply to `(to,from,seq)` by `<T>`" is held in the asker's own ledger and cleared when the matching reply is consumed (§6.6).
@@ -34,7 +34,7 @@ The protocol is a small set of implementation-agnostic primitives. Conforming im
 
 The reference CLI maps these primitives onto local filesystem choices on a shared filesystem:
 - **Inbox medium**: `.md` files under a fixed loop directory (`.agentchute/loop/inbox/<id>/`).
-- **Transport**: unique-temp + atomic `link()`-no-clobber (NFS-safe; `EEXIST` = already-delivered).
+- **Transport**: unique-temp + atomic `link()`-no-clobber (NFS-safe; `EEXIST` = a collision — the sender retries under a fresh identity; delivery is at-most-once).
 - **Wake**: none on the wire. A loopless wrapper is supervised by `agentchute serve`, which injects `[agentchute] check inbox` into the child's PTY when its OWN inbox poll sees new mail. The runner is local to the agent it supervises; it is not a sender-reachable endpoint.
 
 These are reference choices, not protocol requirements. Conforming implementations can swap the inbox medium and transport (see [`EXTENSIONS.md`](EXTENSIONS.md) and the alternate `log` binding in [`conformance/`](conformance/)) as long as no-overwrite per-recipient delivery and the seven invariants hold.
@@ -160,10 +160,8 @@ The canonical `from-<from>_seq-<020d>.md` is the only inbox filename format. A n
 ### 6.2 Sender flow
 1. Compose body (UTF-8).
 2. Allocate the next durable `seq` for `(from, to)` (write-ahead). The active serve token, if any, is fence-verified first.
-3. **Deliver into the inbox with the no-overwrite guarantee** under the canonical `(to, from, seq)` name (unique-temp + atomic `link()`; `EEXIST` = this exact message already landed = success). A sender crash between seq allocation and the link loses that message as a legal gap (at-most-once); callers needing at-least-once delivery supply a stable idempotency key via the library API or the send command's opt-in `--idempotency-key <key>` flag (re-sending with the same key re-issues the same sequence number within the sender's 256-entry re-issue window — a later resend allocates a fresh number and may duplicate, which still satisfies at-least-once; a key reused for *different* content is silently dropped as a duplicate of the original; default send usage remains at-most-once).
+3. **Deliver into the inbox with the no-overwrite guarantee** (unique-temp + atomic `link()`); a collision at the committed identity is refused, not a silent success — the sender retries under a fresh identity (bounded attempts). A sender crash before the link completes loses that message as a legal gap — delivery is **at-most-once** (v2.5 plan B7 removed the `--idempotency-key` opt-in escape hatch and the per-`(from,to)` allocator it rode; the full identity/grammar rewrite for this section lands in a later slice).
 4. **No wake.** The sender does not poke or signal the recipient — it only writes the message into the recipient's inbox. The recipient discovers it on its own poll.
-
-**Choosing an idempotency key.** The key must be *caller-durable*: the same value across every retry of one logical send, and a different value for every distinct logical send. Good sources are already at hand — a task/work-item id the caller is already tracking, or the canonical `(to,from,seq)` reference of the message being answered. A fresh key generated per attempt (e.g. `--idempotency-key $(uuidgen)`) gives **zero** resume protection, because it can't distinguish "retry of the same send" from "a new message that happens to also want at-least-once": if the original write already landed and the caller retries with a new key anyway, the message is delivered twice under two different sequence numbers — a double-delivery, not the at-least-once the caller thought they were getting; if the caller instead assumes the mere presence of *some* key value grants dedup, they get an unverified, accidental form of at-least-once that nothing is actually enforcing. `--idempotency-key` only does its job when the same key is presented across every retry of the same attempt.
 
 ### 6.3 Recipient flow — two-phase consume (act-then-archive)
 Consumption is at-least-once and split across two verbs:
@@ -184,14 +182,13 @@ Operators may clean with this documented one-liner (verify paths against §3 lay
 
 **Backpressure.** Coordination is pull-only, so a dead or inactive recipient's inbox grows without bound by design — senders apply no backpressure. Operators should watch inbox depths (`status`); the remedy for a permanently-retired agent is removing its inbox directory by hand after confirming the registration is gone (the cleanup one-liner above deliberately never touches inboxes).
 
-The reference CLI's Stop hook runs `ack` (commit the prior turn's work) and then the read-only finish gate. A same-`(to,from,seq)` resend that re-lands while the original is already claimed is dropped as a benign duplicate.
+The reference CLI's Stop hook runs `ack` (commit the prior turn's work) and then the read-only finish gate. If a resend under the identical committed identity as an already-claimed message ever lands in the inbox (a narrow race), `check`'s claim step treats it as a benign duplicate and drops it — this is a claim-time safeguard, not a general delivery-side dedup guarantee (delivery itself is at-most-once).
 
 ### 6.4 Message envelope
 Encoded as optional YAML frontmatter. The **normative** envelope is small:
 - `from` (required **information**): the sender `agent_id`. In the filesystem binding this is satisfied by the canonical filename (`from-<from>_seq-<020d>`, strictly parsed); a frontmatter `from` field, when present, is display/inference-grade metadata, and a body-only message with a canonical filename is well-formed.
 - `reply_required` (boolean, optional): an **advisory hint** that the sender wants a reply. The binding reply obligation is the asker's own `.owed` ledger (§6.6); `reply_required` stays on the wire as the one cross-agent coordination hint.
 - `in_reply_to` (optional): the canonical reference `to-<to>_from-<from>_seq-<020d>` of the message being answered. Consuming a reply whose `in_reply_to` matches one of the asker's outstanding `.owed` entries discharges that obligation.
-- `idempotency_key` (optional): logical dedup hint only (never an identity).
 
 **Compatibility fields:** `message_id` is no longer emitted (removed in v0.9.0); the identity is `(to,from,seq)` and reply threading rides `in_reply_to` (the canonical `(to,from,seq)` ref). A `message_id` on an older in-flight message is still tolerated on read (ignored — never the identity). `to`, `task`, and `status` are no longer part of the envelope or the reference CLI at all (`to` is encoded by location; a message's subject, if any, is a body convention — the first Markdown line — not a typed field). They carry no special-case compat handling anymore; a stray `task:`/`status:`/`to:` line on an old in-flight message is simply an unrecognized field, ignored per §6.5 like any other.
 
@@ -301,7 +298,9 @@ See `README.md` or `examples/hooks/` for current Claude Code, Codex, and Gemini 
 
 ## Appendix C. Hand-protocol walkthrough
 
-The hand-protocol is exclusively for environments without the reference CLI binary; an agent with the reference CLI available MUST use the CLI rather than driving files by hand. (The CLI enforces a durable `seq` counter and a serve lease; a hand-protocol agent SHOULD coordinate to keep a single writer per id and a monotonic per-`(from,to)` counter.) The hand-protocol carries no multi-writer protection or fencing mechanism; preventing write collisions is a best-effort coordination task for the operator.
+The hand-protocol is exclusively for environments without the reference CLI binary; an agent with the reference CLI available MUST use the CLI rather than driving files by hand. A hand-protocol agent SHOULD coordinate to keep a single writer per id and a monotonic per-`(from,to)` counter, exactly as walked through below. The hand-protocol carries no multi-writer protection or fencing mechanism; preventing write collisions is a best-effort coordination task for the operator.
+
+**Divergence from the reference CLI (v2.5 plan B7):** this walkthrough's own counter-based grammar remains internally valid as a hand-driven mechanism — a hand operator who genuinely controls their own monotonic counter gets a real EEXIST-only-on-true-resend guarantee. But it is no longer what the reference CLI's own `send` does: `send` mints a timestamp+random-suffix identity per attempt (no counter, no idempotency key) and, on a collision, retries under a FRESH identity rather than treating `EEXIST` as "already landed." Reading this appendix as a description of the CLI's current wire behavior would be wrong; it describes a still-valid, but now CLI-divergent, alternative mechanism (see `EXTENSIONS.md`).
 
 ### C.1 Registration
 Write `.agentchute/loop/agents/<id>.md`:
@@ -331,9 +330,6 @@ status: active
 4. **Act** on the claimed content. Make handlers idempotent (a crash before commit re-delivers).
 5. **Commit**: `mv inbox/<id>/.claimed/<file> ../archive/<consumed-ts>_to-<id>_<file>`.
 6. If the message replied to one of your `--ask` obligations, clear the matching entry in `state/<id>/owed.json`.
-
-### C.4 Sequence counter recovery
-If a sender's durable counter (`state/<from>/seq/<to>.json`) is corrupted or lost, rebuild it rather than guessing: set `last_issued = max(seq present in the recipient's inbox + archive from this sender) + slack`, where the slack MUST exceed the 256-entry `Recent` re-issue window so fresh sequence numbers can never collide with lost dedup state. No special command is required — rewriting the JSON state file is sufficient.
 
 ## Appendix D. Compatibility history
 

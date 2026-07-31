@@ -36,19 +36,9 @@
     {
       "id": "C1",
       "kind": "consume_redelivery",
-      "name": "crash after act redelivers and idempotency key dedups",
+      "name": "crash after act redelivers (consume is at-least-once)",
       "recipient": "bob",
-      "message": {"from": "alice", "body": "do-it", "key": "k1"}
-    },
-    {
-      "id": "C2",
-      "kind": "sender_crash_resume",
-      "name": "sender crash before durable counter reissues the same seq safely",
-      "recipient": "bob",
-      "sender": "alice",
-      "message": {"body": "m1", "key": "k1"},
-      "next_message": {"body": "m2", "key": "k2"},
-      "different_message": {"from": "alice", "body": "DIFFERENT", "seq": 1}
+      "message": {"from": "alice", "body": "do-it"}
     },
     {
       "id": "E1",
@@ -75,6 +65,46 @@
       "sender": "alice",
       "bodies": ["first", "second"],
       "malformed_items": ["not-a-valid-message-name.md", "also-bad.md"]
+    },
+    {
+      "id": "TS1",
+      "kind": "filename_grammar",
+      "name": "timestamp filename grammar (C3) parses in chronological order and rejects malformed names",
+      "valid_names": [
+        "20260730T182415123456Z_from-codex-agentchute_r9f2c04aa71de4b02b6d1c33f08e95a17.md",
+        "20260730T182416000000Z_from-alice_r00000000000000000000000000000000.md"
+      ],
+      "invalid_names": [
+        "20260730T182415123456Z_from-alice_rAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.md",
+        "20260730T182415123456Z_from-alice_rabc123.md",
+        "2026-07-30T18:24:15.123456Z_from-alice_r9f2c04aa71de4b02b6d1c33f08e95a17.md",
+        "20260730T182415Z_from-alice_r9f2c04aa71de4b02b6d1c33f08e95a17.md",
+        "20260730T182415123456Z_from-alice_r9f2c04aa71de4b02b6d1c33f08e95a17.txt",
+        "20260730T182415123456Z_from-ALICE_r9f2c04aa71de4b02b6d1c33f08e95a17.md"
+      ]
+    },
+    {
+      "id": "TS2",
+      "kind": "monotonic_floor",
+      "name": "mint after a restart never reissues at or before the durable floor (C7)",
+      "sender": "alice"
+    },
+    {
+      "id": "TS3",
+      "kind": "collision_retry",
+      "name": "a delivery collision is refused, never a silent dedup no-op, and a fresh-id retry lands (C4)",
+      "recipient": "bob",
+      "sender": "alice",
+      "message": {"from": "alice", "body": "m1"}
+    },
+    {
+      "id": "DR1",
+      "kind": "dual_read_listing",
+      "name": "old-grammar, new-grammar, and garbage names all classify correctly during the migration window",
+      "applies_to": ["inbox"],
+      "old_names": ["from-codex-agentchute_seq-00000000000000000001.md"],
+      "new_names": ["20260730T182415123456Z_from-codex-agentchute_r9f2c04aa71de4b02b6d1c33f08e95a17.md"],
+      "garbage_names": ["not-a-message.md", "README.md", "2026-05-09T16-32-00-123456Z_from-alice_msg-ab12.md"]
     }
   ]
 }

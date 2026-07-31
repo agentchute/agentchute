@@ -18,7 +18,7 @@ import (
 // preflight has passed and the body has been read, but delivery has not begun.
 var afterSendPreflightHook func()
 
-var sendSeqMessageWithCommit = loop.SendSeqMessageWithCommit
+var sendTsMessageWithCommit = loop.SendTsMessageWithCommit
 
 var sendStdin = os.Stdin
 
@@ -30,14 +30,15 @@ var sendStdin = os.Stdin
 //     obligation (the sole reply-obligation mechanism, v0.9.0).
 //   - --reply-to:   emits the `in_reply_to` frontmatter ref. When the asker
 //     consumes this reply, their `.owed` obligation for the referenced
-//     (to,from,seq) discharges (ClearOwed, check.go). There is NO recipient-side
-//     ledger — reply obligations are asker-owned only.
+//     identity discharges (ClearOwed, check.go — both ref grammars are
+//     accepted). There is NO recipient-side ledger — reply obligations are
+//     asker-owned only.
 //   - --json:       structured output (filename, path).
 func cmdSend(args []string) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var fromID, toID, body, replyTo, controlRepo, loopDir, idempotencyKey string
+	var fromID, toID, body, replyTo, controlRepo, loopDir string
 	var ask, jsonOut bool
 	var replyBy time.Duration
 	fs.StringVar(&fromID, "from", "", "sender agent id (or $AGENTCHUTE_AGENT_ID)")
@@ -47,7 +48,6 @@ func cmdSend(args []string) error {
 	fs.BoolVar(&ask, "ask", false, "set reply_required: true and prepend `## ASK` heading to the body")
 	fs.DurationVar(&replyBy, "reply-by", 0, "with --ask: override the owed-reply deadline (e.g. 1h; default 30m)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
-	fs.StringVar(&idempotencyKey, "idempotency-key", "", "opt-in: a resend with the same key re-issues the same seq (at-least-once, within the sender's 256-entry re-issue window); the key must be unique per logical message and STABLE across retries of that same message (a fresh value per attempt, e.g. $(uuidgen), gives zero resume protection — see AGENTCHUTE.md §6.2); reusing a key for different content silently drops the new content; default (unset) is at-most-once")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 
@@ -183,27 +183,23 @@ func cmdSend(args []string) error {
 		content = applyReplyRequiredFrontmatter(content)
 	}
 
-	// Land the message under the canonical (to,from,seq) identity (Gate 4):
-	// `to` is encoded by the inbox directory, (from,seq) by the filename. The
-	// durable per-(from,to) seq replaces the legacy crypto/rand nonce — it makes
-	// the lexicographic inbox sort exact per-sender FIFO (the live O1 fix) and
-	// folds delivery-dedup into the substrate (link-EEXIST on a resend).
+	// Land the message under a new timestamp+random-suffix identity (v2.5 plan
+	// B7, Gate 4): `to` is encoded by the inbox directory; from/stamp/suffix by
+	// the filename. Delivery is AT-MOST-ONCE: a sender crash between the
+	// write-ahead floor commit and the link loses the minted stamp as a legal
+	// gap — there is no idempotency key or resend-dedup path (deleted with the
+	// old per-(from,to) seq allocator). Consume remains AT-LEAST-ONCE via the
+	// existing claim/ack two-phase; handler idempotency is the covenant, not
+	// delivery-side dedup.
 	if afterSendPreflightHook != nil {
 		afterSendPreflightHook()
 	}
-	// idempotencyKey defaults to "": send has no stable per-message content key,
-	// so a sender crash between the durable seq commit and the link loses the
-	// allocated seq as a legal gap (at-most-once for this message) — unchanged
-	// default behavior. --idempotency-key is the opt-in escape hatch (F1): a
-	// caller that supplies a stable non-empty key gets at-least-once, because a
-	// resend with the same key re-issues the SAME seq instead of consuming a new
-	// one (AllocateSeq). No default body-hash key, no retries, no delivery
-	// guarantee beyond the write (C.6). serveToken rides AGENTCHUTE_SERVE_TOKEN: a
-	// send from a child launched under `agentchute serve` carries the runner's
-	// active serve-lease fence, so a write from a fenced (reclaimed) agent fails
-	// closed (AllocateSeq VerifyFence -> ErrFenced). Empty env (no serve lease) =>
-	// intentionally unfenced.
-	id, committed, sendErr := sendSeqMessageWithCommit(cfg, fromID, toID, content, idempotencyKey, os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
+	// serveToken rides AGENTCHUTE_SERVE_TOKEN: a send from a child launched
+	// under `agentchute serve` carries the runner's active serve-lease fence,
+	// so a write from a fenced (reclaimed) agent fails closed (MintSendStamp's
+	// VerifyFence -> ErrFenced). Empty env (no serve lease) => intentionally
+	// unfenced.
+	id, committed, sendErr := sendTsMessageWithCommit(cfg, fromID, toID, content, os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
 	retry := sendRetryOptions{
 		Ask:        ask,
 		ReplyBy:    replyBy.String(),
@@ -214,8 +210,11 @@ func cmdSend(args []string) error {
 	if sendErr != nil && !committed {
 		return preserveSendBody(cfg, fromID, toID, rawBody, now, retry, sendErr)
 	}
-	// The on-wire identity is (to,from,seq): `to` is the inbox directory, (from,seq)
-	// the filename. No sender-asserted message_id is emitted (v0.9.0).
+	// The on-wire identity is (to,from,timestamp,suffix) (v2.5 plan B7): `to`
+	// is the inbox directory, from/stamp/suffix the filename. `id` here is the
+	// identity DeliverUnderRecipientLock actually committed, whose suffix may
+	// differ from what was first proposed if a link collision forced a
+	// fresh-suffix retry (C4). No sender-asserted message_id is emitted.
 	msg := loop.Message{Filename: id.Filename(), Path: filepath.Join(inboxDir, id.Filename())}
 	result := sendResult{
 		Filename: msg.Filename,
@@ -488,7 +487,7 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 
 func sendUsage(err error) error {
 	return fmt.Errorf(`%w
-usage: agentchute send --from <sender> --to <recipient> [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--idempotency-key <key>] [--json] [--control-repo <path>] [--loop-dir <path>]
+usage: agentchute send --from <sender> --to <recipient> [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
 
   Ways to provide the body (pick one):
     --body "literal text"             short replies
