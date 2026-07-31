@@ -3,6 +3,7 @@ package loop
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -246,6 +247,68 @@ func TestInvalidateAllServeLeasesEmptyPool(t *testing.T) {
 	}
 	if got != 0 {
 		t.Fatalf("invalidated = %d, want 0", got)
+	}
+}
+
+func TestInvalidateAllServeLeasesContinuesPastPoisonedStateEntry(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	alice, err := AcquireServeLease(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := AcquireServeLease(cfg, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	poisonDir := filepath.Join(cfg.LoopDir, "state", "bad id")
+	if err := os.MkdirAll(poisonDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(poisonDir, "serve.claim"), []byte("poison"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := InvalidateAllServeLeases(cfg)
+	if got != 2 {
+		t.Fatalf("invalidated = %d, want 2", got)
+	}
+	if err == nil || !strings.Contains(err.Error(), `"bad id"`) {
+		t.Fatalf("error = %v, want named poisoned id", err)
+	}
+	for _, lease := range []*ServeLease{alice, bob} {
+		if err := RenewLease(lease); err != ErrFenced {
+			t.Fatalf("RenewLease(%s) after partial-error pass = %v, want ErrFenced", lease.ID, err)
+		}
+	}
+}
+
+func TestInvalidateAllServeLeasesPreservesPostSnapshotClaim(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	old, err := AcquireServeLease(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prev := afterInvalidateSnapshotHook
+	afterInvalidateSnapshotHook = func(id string) {
+		if id == "alice" {
+			overwriteClaimToken(t, cfg, id, "NEW-OWNER-TOKEN")
+		}
+	}
+	t.Cleanup(func() { afterInvalidateSnapshotHook = prev })
+
+	got, err := InvalidateAllServeLeases(cfg)
+	if err != nil {
+		t.Fatalf("invalidate leases: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("invalidated = %d, want 0 for post-snapshot owner", got)
+	}
+	if err := RenewLease(old); err != ErrFenced {
+		t.Fatalf("old lease = %v, want ErrFenced", err)
+	}
+	if err := VerifyFence(cfg, "alice", "NEW-OWNER-TOKEN"); err != nil {
+		t.Fatalf("post-snapshot owner was fenced: %v", err)
 	}
 }
 

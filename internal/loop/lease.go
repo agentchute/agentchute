@@ -93,6 +93,11 @@ var mintServeToken = func() (string, error) {
 // while the reclaim holds it. nil in production.
 var afterReclaimWriteHook func()
 
+// afterInvalidateSnapshotHook runs after InvalidateAllServeLeases snapshots a
+// claim and before it takes that agent's lock. Test-only: lets a test replace
+// the claim in the exact enumeration-to-lock window. nil in production.
+var afterInvalidateSnapshotHook func(string)
+
 func readClaim(path string) (*ServeClaim, error) {
 	data, err := ReadFileLimit(path, MaxClaimBytes)
 	if err != nil {
@@ -378,40 +383,94 @@ func InvalidateAllServeLeases(cfg *Config) (int, error) {
 		return 0, fmt.Errorf("list serve leases in %s: %w", stateDir, err)
 	}
 
-	invalidated := 0
+	type claimSnapshot struct {
+		id         string
+		path       string
+		token      string
+		tokenKnown bool
+		info       os.FileInfo
+	}
+
+	var (
+		snapshots []claimSnapshot
+		failures  []error
+	)
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		id := entry.Name()
 		path := claimPath(cfg, id)
-		if _, err := os.Lstat(path); err != nil {
+		info, err := os.Lstat(path)
+		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return invalidated, fmt.Errorf("inspect serve lease %s: %w", path, err)
+			failures = append(failures, fmt.Errorf("%s: inspect serve claim: %w", id, err))
+			continue
 		}
 		if err := ValidateAgentID(id); err != nil {
-			return invalidated, fmt.Errorf("serve lease directory %q has invalid agent id: %w", id, err)
+			failures = append(failures, fmt.Errorf("%q: invalid serve-lease directory: %w", id, err))
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			failures = append(failures, fmt.Errorf("%s: serve claim is not a regular file", id))
+			continue
 		}
 
+		snapshot := claimSnapshot{id: id, path: path, info: info}
+		if claim, err := readClaim(path); err == nil {
+			snapshot.token = claim.ServeToken
+			snapshot.tokenKnown = true
+		}
+		snapshots = append(snapshots, snapshot)
+		if afterInvalidateSnapshotHook != nil {
+			afterInvalidateSnapshotHook(id)
+		}
+	}
+
+	invalidated := 0
+	for _, snapshot := range snapshots {
 		removed := false
-		err := withAgentLock(cfg, id, func() error {
-			if err := os.Remove(path); err != nil {
+		err := withAgentLock(cfg, snapshot.id, func() error {
+			currentInfo, err := os.Lstat(snapshot.path)
+			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
 					return nil
 				}
-				return fmt.Errorf("remove serve lease %s: %w", path, err)
+				return fmt.Errorf("inspect current serve claim: %w", err)
+			}
+			if !currentInfo.Mode().IsRegular() {
+				return fmt.Errorf("current serve claim is not a regular file")
+			}
+
+			if snapshot.tokenKnown {
+				current, err := readClaim(snapshot.path)
+				switch {
+				case err == nil && current.ServeToken != snapshot.token:
+					return nil
+				case err != nil && !os.SameFile(snapshot.info, currentInfo):
+					return fmt.Errorf("current serve claim changed and is unreadable: %w", err)
+				}
+			} else if !os.SameFile(snapshot.info, currentInfo) {
+				return nil
+			}
+
+			if err := os.Remove(snapshot.path); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return nil
+				}
+				return fmt.Errorf("remove serve claim: %w", err)
 			}
 			removed = true
-			return syncDir(filepath.Dir(path))
+			return syncDir(filepath.Dir(snapshot.path))
 		})
-		if err != nil {
-			return invalidated, err
-		}
 		if removed {
 			invalidated++
 		}
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: invalidate serve lease: %w", snapshot.id, err))
+		}
 	}
-	return invalidated, nil
+	return invalidated, errors.Join(failures...)
 }
