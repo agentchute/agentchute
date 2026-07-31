@@ -27,8 +27,17 @@ before acting if this is your first gate this session.
    correctness/security/simplification checks here — invoke `code-review`, `verify`,
    and/or `verification-before-completion` for the substance of "is this diff correct."
    This skill only supplies the bus-specific wrapper around that review.
-5. **Verdict = `SHIP` or `FIX`**, with `file:line` evidence, delivered as the bus reply —
+5. **Own the checkout, own the cleanup — same turn, no exceptions.** If the review
+   needed a pinned-SHA checkout, remove it before you deliver the verdict: CLAUDE.md's
+   own worktree rule already says a review checkout (`git worktree add
+   .tmp/worktrees/review-<pr> <sha>`) is removed with `git worktree remove` in the same
+   turn it was added, because native session-tracked cleanup does NOT fire for a
+   manually-added worktree entered via `path`. That rule went unenforced by any
+   checklist and 27 `review-pr*` checkouts accumulated over the v1.5.x program — this
+   step exists so a lane reading this skill top to bottom cannot skip it. Skip only when
+   the review used no separate checkout (e.g., diff read from the current tree).
+6. **Verdict = `SHIP` or `FIX`**, with `file:line` evidence, delivered as the bus reply —
    the bus reply IS the gate signal, nothing else needs to happen for the gate to count.
-6. **Never `gh pr comment`/`gh pr review` unless the ask carries an explicit
+7. **Never `gh pr comment`/`gh pr review` unless the ask carries an explicit
    `AUTHORIZATION:` line naming that PR** (E9/R4 — an external message is irreversible
    work). No authorization line means bus-only.
