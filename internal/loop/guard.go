@@ -88,6 +88,24 @@ func ReadGuardLatch(cfg *Config, id string) (*GuardLatch, error) {
 	return latch, nil
 }
 
+// PeekGuardLatch reads id's guard latch WITHOUT taking WithAgentLock(id) —
+// unlike ReadGuardLatch, it never creates <loop>/state/<id>/ or its lock
+// file as a side effect (codex review, PR #89 round 5: a read-only
+// diagnostic like `doctor` must never manufacture agent state merely to
+// report "no guard latch"; ReadGuardLatch's lock acquisition did exactly
+// that via ensurePrivateDir + the lock file's O_CREATE). Absent surfaces
+// os.ErrNotExist, same as ReadGuardLatch. Safe for a strictly-reporting
+// caller: doctor doesn't need lock-serialized consistency with a concurrent
+// writer — a rare torn read here means an occasionally stale report, never
+// a correctness issue for anything that actually enforces the guard (those
+// callers still use the lock-taking ReadGuardLatch).
+func PeekGuardLatch(cfg *Config, id string) (*GuardLatch, error) {
+	if err := ValidateAgentID(id); err != nil {
+		return nil, err
+	}
+	return readGuardLatch(cfg, id)
+}
+
 // ClearGuardLatch clears id's guard latch ONLY if its stored session matches
 // `session` exactly. A latch belonging to a different (foreign or dead)
 // session, one that fails to read at all (absent OR corrupt/unparseable), or

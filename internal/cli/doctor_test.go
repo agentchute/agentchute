@@ -950,6 +950,26 @@ func TestDoctorGuardLatchAgeAbsent(t *testing.T) {
 	}
 }
 
+// TestDoctorGuardLatchAgeAbsentDoesNotCreateStateDir is codex review PR #89
+// round 5: doctor is documented strictly read-only, but ReadGuardLatch takes
+// WithAgentLock, which creates state/<id>/ and its lock file as a side
+// effect — checkGuardLatchAge must use the non-mutating loop.PeekGuardLatch
+// instead, so reporting "no guard latch" for an id with NO existing state
+// dir must not manufacture one.
+func TestDoctorGuardLatchAgeAbsentDoesNotCreateStateDir(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	stateDir := cfg.AgentStateDir("bob")
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("precondition failed: state dir already exists: %v", err)
+	}
+	if got := checkGuardLatchAge(cfg, "bob", time.Now().UTC()); got.Severity != severityOK {
+		t.Fatalf("guard_latch_age severity = %q, want OK", got.Severity)
+	}
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("read-only doctor check created state dir: %v", err)
+	}
+}
+
 func TestDoctorGuardLatchAgeFreshIsOK(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	now := time.Now().UTC()

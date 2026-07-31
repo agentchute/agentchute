@@ -990,7 +990,11 @@ const guardLatchStaleWarnThreshold = 15 * time.Minute
 // FIRST; only then does relaunching or deleting the latch become durable,
 // rather than a temporary unwedge that re-latches on the very next check.
 func checkGuardLatchAge(cfg *loop.Config, agentID string, now time.Time) doctorCheck {
-	latch, err := loop.ReadGuardLatch(cfg, agentID)
+	// PeekGuardLatch, not ReadGuardLatch: the latter takes WithAgentLock,
+	// which creates state/<id>/ and its lock file as a side effect — a
+	// write this strictly read-only diagnostic must never perform (codex
+	// review, PR #89 round 5).
+	latch, err := loop.PeekGuardLatch(cfg, agentID)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return doctorCheck{Name: "guard_latch_age", Severity: severityOK, Message: "no guard latch"}

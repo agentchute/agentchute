@@ -95,3 +95,42 @@ func TestReadGuardLatchAbsentSurfacesErrNotExist(t *testing.T) {
 		t.Fatalf("err = %v, want os.ErrNotExist", err)
 	}
 }
+
+// TestPeekGuardLatchDoesNotCreateStateDir is codex review PR #89 round 5:
+// unlike ReadGuardLatch (which takes WithAgentLock and so creates
+// state/<id>/ + its lock file as a side effect), PeekGuardLatch must never
+// manufacture state — it exists specifically for read-only callers like
+// doctor.
+func TestPeekGuardLatchDoesNotCreateStateDir(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	stateDir := cfg.AgentStateDir("bob")
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("precondition failed: state dir already exists: %v", err)
+	}
+	if _, err := PeekGuardLatch(cfg, "bob"); !os.IsNotExist(err) {
+		t.Fatalf("err = %v, want os.ErrNotExist", err)
+	}
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("PeekGuardLatch created state dir: %v", err)
+	}
+}
+
+// TestPeekGuardLatchMatchesReadGuardLatch confirms the lock-free peek path
+// returns the same data as the lock-taking read for a real latch.
+func TestPeekGuardLatchMatchesReadGuardLatch(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	if err := SetGuardLatch(cfg, "bob", "tok-1"); err != nil {
+		t.Fatal(err)
+	}
+	peeked, err := PeekGuardLatch(cfg, "bob")
+	if err != nil {
+		t.Fatalf("PeekGuardLatch: %v", err)
+	}
+	read, err := ReadGuardLatch(cfg, "bob")
+	if err != nil {
+		t.Fatalf("ReadGuardLatch: %v", err)
+	}
+	if peeked.Session != read.Session || !peeked.SetAt.Equal(read.SetAt) {
+		t.Fatalf("peeked=%+v, read=%+v, want equal", peeked, read)
+	}
+}
