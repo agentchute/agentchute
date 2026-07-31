@@ -19,8 +19,9 @@ import (
 // after stopping local pool processes and proving the bus is not live. It is the
 // v0.7.0 -> v2 transition tool. Everything here is guarded HARD: it never
 // RemoveAll's the loop dir itself, never follows a symlink, never wipes a
-// non-canonical/overridden loop, and refuses outright if a live local process or
-// a fresh foreign-host presence/serve claim is detected.
+// non-canonical/overridden loop, and refuses outright if a live local process, a
+// fresh registration row, or a fresh serve claim (any host — not just foreign)
+// is detected.
 //
 // Scaffold preservation is by an explicit ALLOWLIST/NAME (README.md,
 // *.example.md, setup.json) — NOT by git-tracking, because an install may not be
@@ -539,12 +540,16 @@ func rescanWipeLeftovers(loopDir string) []string {
 // scanWipeLiveSignals is the READ-ONLY live-bus detector. It returns refusal
 // reasons (empty == safe to wipe) for: a still-alive local pool poller/runner,
 // an ambiguous local process recorded for this pool whose cmdline can't be
-// verified (FAIL CLOSED), an active local wrapper session, and any FRESH
-// presence (.live) or serve.claim owned by ANOTHER HOST.
+// verified (FAIL CLOSED), a still-alive LEGACY (pre-B5) detached poller, a
+// fresh registration row (any host), and any FRESH serve.claim (any host —
+// codex PR #98 review: a fresh SAME-host claim with no runner.json binding
+// previously slipped through entirely, since only foreign-host claims were
+// checked).
 // scanWipeLiveSignals refuses to wipe on any sign of a live bus (v2.5 plan
 // B5: `.live`, the detached poller, and session ancestry are all deleted —
-// the refusal now rests on the surviving runner-state PID check, fresh
-// registration rows, and the foreign-host serve-claim scan).
+// the refusal now rests on the surviving runner-state PID check, the legacy-
+// poller recognition tombstone, fresh registration rows, and the serve-claim
+// scan).
 func scanWipeLiveSignals(cfg *loop.Config, agentIDs []string) []string {
 	var reasons []string
 	now := time.Now().UTC()
@@ -565,6 +570,21 @@ func scanWipeLiveSignals(cfg *loop.Config, agentIDs []string) []string {
 				}
 			}
 		}
+		// Legacy (pre-B5) detached poller: the WRITER is gone, but an upgrade
+		// only replaces the binary — it does not stop a process already
+		// running. A leftover state/<id>/poller.json naming a still-alive pid
+		// is recognized here (one-release tombstone) so it can't run
+		// invisibly against the pool forever.
+		if hb, err := loadLegacyPollerHeartbeat(cfg, id); err == nil {
+			if setupLocalHost(hb.Host) && hb.PID > 0 && setupProcessAlive(hb.PID) {
+				cmdline := setupProcessCommandLine(hb.PID)
+				if setupCommandMatchesPool(cmdline, "poller run", cfg) {
+					reasons = append(reasons, fmt.Sprintf("legacy poller for %s (pid=%d) is still running; stop it before wiping", id, hb.PID))
+				} else {
+					reasons = append(reasons, fmt.Sprintf("ambiguous live process pid=%d recorded as legacy poller for %s (cmdline did not match this pool); refusing (fail closed)", hb.PID, id))
+				}
+			}
+		}
 		// Fresh registration row, ANY host: unlike the PID check above (only
 		// provable same-host), a registration's own heartbeat age is a direct
 		// data signal that this id may still be live somewhere on a shared
@@ -581,14 +601,18 @@ func scanWipeLiveSignals(cfg *loop.Config, agentIDs []string) []string {
 		}
 	}
 
-	reasons = append(reasons, scanForeignWipeServeClaims(cfg, localHost, now)...)
+	reasons = append(reasons, scanWipeServeClaims(cfg, localHost, now)...)
 	sort.Strings(reasons)
 	return reasons
 }
 
-// scanForeignWipeServeClaims refuses on any FRESH serve.claim held by another
-// host (the lease owner of an id lives elsewhere).
-func scanForeignWipeServeClaims(cfg *loop.Config, localHost string, now time.Time) []string {
+// scanWipeServeClaims refuses on any FRESH serve.claim, regardless of host
+// (codex PR #98 review: a fresh SAME-host claim proves a serve process is —
+// or very recently was — live even with no runner.json binding; checking
+// only foreign hosts let it slip through). An UNREADABLE (corrupt) claim
+// fails CLOSED: unable to prove it is dead, so it blocks exactly like a fresh
+// one would — mirroring the ambiguous-process fail-closed discipline above.
+func scanWipeServeClaims(cfg *loop.Config, localHost string, now time.Time) []string {
 	var out []string
 	entries, _ := os.ReadDir(filepath.Join(cfg.LoopDir, "state"))
 	for _, e := range entries {
@@ -601,6 +625,10 @@ func scanForeignWipeServeClaims(cfg *loop.Config, localHost string, now time.Tim
 		}
 		claim, err := loop.ReadServeClaim(cfg, id)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			out = append(out, fmt.Sprintf("serve claim for %s is unreadable (%v); refusing (fail closed)", id, err))
 			continue
 		}
 		if loop.ClaimIsStale(claim, now) {
@@ -609,6 +637,8 @@ func scanForeignWipeServeClaims(cfg *loop.Config, localHost string, now time.Tim
 		h := strings.TrimSpace(claim.Host)
 		if h != "" && localHost != "" && h != localHost {
 			out = append(out, fmt.Sprintf("fresh serve claim for %s held by another host %q; refusing to wipe a shared live bus", id, h))
+		} else {
+			out = append(out, fmt.Sprintf("fresh serve claim for %s; refusing to wipe a live bus", id))
 		}
 	}
 	return out
@@ -625,6 +655,11 @@ func wipeStopLocalProcesses(cfg *loop.Config, agentIDs []string) (stopped, warni
 		} else if ok {
 			stopped = append(stopped, id+" (runner)")
 		}
+		if ok, warn := stopSetupLegacyPoller(cfg, id); warn != "" {
+			warnings = append(warnings, warn)
+		} else if ok {
+			stopped = append(stopped, id+" (legacy poller)")
+		}
 	}
 	deadline := time.Now().Add(wipeProcessWait)
 	for time.Now().Before(deadline) {
@@ -638,12 +673,17 @@ func wipeStopLocalProcesses(cfg *loop.Config, agentIDs []string) (stopped, warni
 	return stopped, warnings
 }
 
-// wipeRecordedPIDsDead reports whether every local runner PID recorded for
-// these ids is no longer alive.
+// wipeRecordedPIDsDead reports whether every local runner PID AND every local
+// legacy-poller PID recorded for these ids is no longer alive.
 func wipeRecordedPIDsDead(cfg *loop.Config, agentIDs []string) bool {
 	for _, id := range agentIDs {
 		if st, err := loop.LoadRunnerState(cfg, id); err == nil {
 			if setupLocalHost(st.Host) && st.RunnerPID > 0 && setupProcessAlive(st.RunnerPID) {
+				return false
+			}
+		}
+		if hb, err := loadLegacyPollerHeartbeat(cfg, id); err == nil {
+			if setupLocalHost(hb.Host) && hb.PID > 0 && setupProcessAlive(hb.PID) {
 				return false
 			}
 		}

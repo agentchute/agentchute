@@ -210,6 +210,63 @@ func stopSetupRunner(cfg *loop.Config, agentID string) (bool, string) {
 	return true, ""
 }
 
+// legacyPollerHeartbeat is a MINIMAL read-only recognition shape for the
+// retired state/<id>/poller.json file (v2.5 plan B5 deleted the writer, the
+// loop.PollerHeartbeat type, and every other reader). This one-release
+// tombstone reader exists ONLY so setup/wipe can still recognize and
+// stop-or-refuse an old poller process left running after an upgrade —
+// deleting the code that WRITES poller.json does not stop a process already
+// running against it (codex PR #98 review). Restoring the public `poller`
+// verb or the writer is explicitly out of scope; only recognition survives.
+type legacyPollerHeartbeat struct {
+	Host string `json:"host"`
+	PID  int    `json:"pid"`
+}
+
+// loadLegacyPollerHeartbeat reads agentID's legacy poller.json, if present.
+func loadLegacyPollerHeartbeat(cfg *loop.Config, agentID string) (*legacyPollerHeartbeat, error) {
+	if err := loop.ValidateAgentID(agentID); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(cfg.AgentStateDir(agentID), "poller.json"))
+	if err != nil {
+		return nil, err
+	}
+	var hb legacyPollerHeartbeat
+	if err := json.Unmarshal(data, &hb); err != nil {
+		return nil, err
+	}
+	return &hb, nil
+}
+
+// stopSetupLegacyPoller mirrors stopSetupRunner for a legacy (pre-B5)
+// detached poller: recognized via the leftover poller.json a pre-upgrade
+// binary wrote, attributed to this pool via the SAME `agentchute poller run`
+// cmdline match `setupCommandMatchesPool` already carried (dead code until
+// now — nothing called its "poller run" case once the poller subsystem was
+// deleted).
+func stopSetupLegacyPoller(cfg *loop.Config, agentID string) (bool, string) {
+	hb, err := loadLegacyPollerHeartbeat(cfg, agentID)
+	if err != nil {
+		return false, ""
+	}
+	if !setupLocalHost(hb.Host) {
+		return false, ""
+	}
+	if hb.PID <= 0 || !setupProcessAlive(hb.PID) {
+		return false, ""
+	}
+	cmdline := setupProcessCommandLine(hb.PID)
+	if !setupCommandMatchesPool(cmdline, "poller run", cfg) {
+		return false, fmt.Sprintf("not stopping legacy poller for %s pid=%d; process command did not match this agentchute pool", agentID, hb.PID)
+	}
+	if err := setupSignalProcess(hb.PID, syscall.SIGTERM); err != nil {
+		return false, fmt.Sprintf("stop legacy poller for %s pid=%d: %v", agentID, hb.PID, err)
+	}
+	waitSetupProcessExit(hb.PID, 500*time.Millisecond)
+	return true, ""
+}
+
 func waitSetupProcessExit(pid int, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

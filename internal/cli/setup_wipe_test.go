@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,6 +316,149 @@ func TestScanWipeLiveSignalsRefusesFreshRegistrationAnyHost(t *testing.T) {
 	if len(reasons) == 0 || !strings.Contains(strings.Join(reasons, "\n"), "fresh registration") {
 		t.Fatalf("expected a fresh-registration refusal, got %v", reasons)
 	}
+}
+
+// codex PR #98 review, finding 1: deleting the poller CODE does not stop a
+// poller process an upgrade finds already running — an upgrade replaces the
+// binary, not already-running processes. A leftover state/<id>/poller.json
+// naming a still-alive, pool-attributed pid must still block the wipe.
+func TestScanWipeLiveSignalsRefusesLiveLegacyPoller(t *testing.T) {
+	_, cfg := newWipeTestRepo(t)
+	const id = "claude-code"
+	mustWrite(t, filepath.Join(cfg.AgentStateDir(id), "poller.json"),
+		[]byte(`{"agent_id":"`+id+`","host":"`+localHostname()+`","pid":5150}`))
+
+	oldAlive := setupProcessAlive
+	oldCmd := setupProcessCommandLine
+	setupProcessAlive = func(pid int) bool { return pid == 5150 }
+	setupProcessCommandLine = func(pid int) string {
+		return "/usr/local/bin/agentchute poller run --as " + id + " --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
+	}
+	t.Cleanup(func() { setupProcessAlive = oldAlive; setupProcessCommandLine = oldCmd })
+
+	reasons := scanWipeLiveSignals(cfg, []string{id})
+	joined := strings.Join(reasons, "\n")
+	if !strings.Contains(joined, "legacy poller") {
+		t.Fatalf("expected a legacy-poller refusal, got: %v", reasons)
+	}
+}
+
+// Revert-verify companion: a legacy poller.json naming a DEAD pid (or absent
+// entirely) must NOT block the wipe — the recognition tombstone only fires
+// on a still-alive, pool-attributed process.
+func TestScanWipeLiveSignalsIgnoresDeadLegacyPoller(t *testing.T) {
+	_, cfg := newWipeTestRepo(t)
+	const id = "claude-code"
+	mustWrite(t, filepath.Join(cfg.AgentStateDir(id), "poller.json"),
+		[]byte(`{"agent_id":"`+id+`","host":"`+localHostname()+`","pid":5150}`))
+
+	oldAlive := setupProcessAlive
+	setupProcessAlive = func(pid int) bool { return false } // dead
+	t.Cleanup(func() { setupProcessAlive = oldAlive })
+
+	reasons := scanWipeLiveSignals(cfg, []string{id})
+	if len(reasons) != 0 {
+		t.Fatalf("a dead legacy poller must not block the wipe, got: %v", reasons)
+	}
+}
+
+// codex PR #98 review, finding 2: the serve-claim scan only considered
+// FOREIGN-host claims; a fresh SAME-host claim (no runner.json, stale
+// registration row) slipped through with an empty refusal. Any fresh claim,
+// any host, must now block.
+func TestScanWipeLiveSignalsRefusesFreshSameHostServeClaim(t *testing.T) {
+	_, cfg := newWipeTestRepo(t)
+	const id = "codex"
+	if _, err := loop.AcquireServeLease(cfg, id); err != nil {
+		t.Fatal(err)
+	}
+
+	// No runner.json, no fresh registration row — the claim is the ONLY signal.
+	reasons := scanWipeLiveSignals(cfg, []string{id})
+	joined := strings.Join(reasons, "\n")
+	if !strings.Contains(joined, "fresh serve claim") {
+		t.Fatalf("expected a fresh-serve-claim refusal for a same-host claim, got: %v", reasons)
+	}
+	if strings.Contains(joined, "another host") {
+		t.Fatalf("a same-host claim must not be reported as foreign-host: %v", reasons)
+	}
+}
+
+// Revert-verify companion: a STALE same-host claim must not block.
+func TestScanWipeLiveSignalsIgnoresStaleServeClaim(t *testing.T) {
+	_, cfg := newWipeTestRepo(t)
+	const id = "codex"
+	stale := loop.ServeClaim{
+		ID:         id,
+		Host:       localHostname(),
+		PID:        99999,
+		ServeToken: "stale-token",
+		StartedAt:  time.Now().Add(-2 * time.Hour).UTC(),
+		LastSeen:   time.Now().Add(-2 * time.Hour).UTC(),
+	}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(cfg.AgentStateDir(id), "serve.claim"), data)
+
+	reasons := scanWipeLiveSignals(cfg, []string{id})
+	if len(reasons) != 0 {
+		t.Fatalf("a stale serve claim must not block the wipe, got: %v", reasons)
+	}
+}
+
+// codex PR #98 review, finding 2 (fail-closed half): an UNREADABLE (corrupt)
+// serve claim must block like a fresh one would — unable to prove it's dead.
+func TestScanWipeLiveSignalsRefusesUnreadableServeClaim(t *testing.T) {
+	_, cfg := newWipeTestRepo(t)
+	const id = "codex"
+	mustWrite(t, filepath.Join(cfg.AgentStateDir(id), "serve.claim"), []byte("{not valid json"))
+
+	reasons := scanWipeLiveSignals(cfg, []string{id})
+	joined := strings.Join(reasons, "\n")
+	if !strings.Contains(joined, "unreadable") {
+		t.Fatalf("expected an unreadable-claim refusal (fail closed), got: %v", reasons)
+	}
+}
+
+// wipeStopLocalProcesses attempts to SIGTERM a live legacy poller (mirroring
+// the runner-stop step), but when the process cannot actually be verified
+// dead afterward (the fake here never dies), the wipe must still refuse —
+// exactly like TestSetupRunWipeStateRefusesLiveRunner below.
+func TestSetupRunWipeStateRefusesLiveLegacyPoller(t *testing.T) {
+	root, cfg := newWipeTestRepo(t)
+	populateRuntime(t, cfg)
+	const id = "claude-code"
+	mustWrite(t, filepath.Join(cfg.AgentStateDir(id), "poller.json"),
+		[]byte(`{"agent_id":"`+id+`","host":"`+localHostname()+`","pid":5150}`))
+
+	oldAlive := setupProcessAlive
+	oldCmd := setupProcessCommandLine
+	oldSig := setupSignalProcess
+	oldWait := wipeProcessWait
+	setupProcessAlive = func(pid int) bool { return pid == 5150 }
+	setupProcessCommandLine = func(pid int) string {
+		return "/usr/local/bin/agentchute poller run --as " + id + " --control-repo " + cfg.ControlRepo + " --loop-dir " + cfg.LoopDir
+	}
+	setupSignalProcess = func(pid int, sig os.Signal) error { return nil } // no-op: never signal a real pid
+	wipeProcessWait = time.Millisecond
+	t.Cleanup(func() {
+		setupProcessAlive = oldAlive
+		setupProcessCommandLine = oldCmd
+		setupSignalProcess = oldSig
+		wipeProcessWait = oldWait
+	})
+
+	err := setupRunWipeState(root, cfg, []string{id}, setupOptions{Yes: true})
+	if err == nil {
+		t.Fatal("setupRunWipeState must refuse when a live legacy poller is present")
+	}
+	if !strings.Contains(err.Error(), "legacy poller") {
+		t.Fatalf("expected the refusal to name the legacy poller, got: %v", err)
+	}
+	// nothing should have been deleted (refusal happens before execute).
+	mustExist(t, filepath.Join(cfg.LoopDir, "archive", "old.md"))
 }
 
 func TestSetupRunWipeStateRefusesLiveRunner(t *testing.T) {
