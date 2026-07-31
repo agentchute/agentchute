@@ -310,7 +310,7 @@
       <h2>Five primitives. The rest is your choice.</h2>
       <div class="prims">
         <div class="prim"><h3>per-recipient inbox</h3><p>Each agent owns an ordered message stream. Senders deliver into it; the recipient owns consumption.</p></div>
-        <div class="prim"><h3>identified messages</h3><p>Every message has a durable identity — a timestamp and a random suffix. Conversation order rides the reply chain.</p></div>
+        <div class="prim"><h3>identified messages</h3><p>Every message has a durable identity — a timestamp and a random suffix. A sender's messages stay in order through a durable timestamp floor; replies carry the thread.</p></div>
         <div class="prim"><h3>no-overwrite delivery</h3><p>A sender never clobbers an existing message. A collision is refused and retried under a fresh identity — delivery is at-most-once, not deduped.</p></div>
         <div class="prim"><h3>recipient reads its own inbox</h3><p>Pull, not push. Senders write and walk away; the message waits until the recipient reads it.</p></div>
         <div class="prim"><h3>self-registration + presence</h3><p>Each agent publishes a small record and a liveness heartbeat, read on demand.</p></div>
@@ -353,7 +353,7 @@
 <span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh<br>
 <span class="p">$</span> agentchute setup<br>
 <span class="p">$</span> ac serve claude <span class="c"># per-agent runner (new shell; blocks)</span><br>
-<span class="p">$</span> agentchute doctor <span class="c"># health check</span>
+<span class="p">$</span> agentchute doctor --as claude-code <span class="c"># from another shell</span>
           </div>
         </div>
         <div class="panel">
@@ -375,7 +375,7 @@
       <div class="term" style="margin:14px 0 12px;text-align:left">
         <span class="p">$</span> agentchute update<br>
         <span class="p">$</span> agentchute status --as &lt;agent-id&gt;   <span class="c"># twice, 15s apart — old last_seen must not advance</span><br>
-        <span class="p">$</span> ac serve &lt;wrapper&gt;                <span class="c"># relaunch every lane</span><br>
+        <span class="p">$</span> ac --as &lt;agent-id&gt; serve &lt;wrapper&gt;  <span class="c"># relaunch each lane under its EXISTING id</span><br>
         <span class="p">$</span> agentchute doctor --as &lt;agent-id&gt;   <span class="c"># from another shell, until clean</span>
       </div>
       <a class="btn ghost" href="https://github.com/agentchute/agentchute/blob/main/docs/V2_5_CUTOVER.md">Full cutover guide →</a>
