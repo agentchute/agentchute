@@ -243,6 +243,75 @@ func installOneHook(w hookWrapper, scopeRoot string, dryRun, force bool) error {
 	return nil
 }
 
+// refreshHookCompatibility keeps every ALREADY-INSTALLED hookWrappers file
+// under root working with this binary, independent of which wrappers are
+// selected for membership in the current setup/update run: the v1.5.0
+// cutover incident (docs/decisions/agentchute-v150-cutover-incident-and-
+// fix.md) was a resync that only replayed wrapper membership, leaving an
+// installed hook file invoking a subcommand this binary had removed.
+// Existence-preserving no-create mode: a hookWrappers Dest that is not
+// already installed stays uninstalled — installing one is a membership
+// decision (setup's --wrappers loop), not a compatibility one. Returns the
+// names of wrappers whose file content actually changed.
+func refreshHookCompatibility(root string) ([]string, error) {
+	var refreshed []string
+	for _, w := range hookWrappers {
+		dest := filepath.Join(root, w.Dest)
+		before, err := os.ReadFile(dest)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("stat %s: %w", dest, err)
+		}
+		if err := installOneHook(w, root, false, true); err != nil {
+			return nil, fmt.Errorf("refresh hook %s: %w", w.Name, err)
+		}
+		after, err := os.ReadFile(dest)
+		if err != nil {
+			return nil, fmt.Errorf("read refreshed %s: %w", dest, err)
+		}
+		if !bytes.Equal(before, after) {
+			refreshed = append(refreshed, w.Name)
+		}
+	}
+	return refreshed, nil
+}
+
+// verifyHookCompatibility scans every currently-installed hookWrappers file
+// under root for subcommands unknown to this binary — the same signal
+// doctor's hook_content_sanity BLOCKER reports (internal/cli/doctor.go),
+// reusing its token scan (hookBodyUnknownSubcommands) so the two checks can
+// never drift on what counts as "broken." Intended to run immediately after
+// refreshHookCompatibility so a setup/update resync never finishes green
+// with a hook file that would fail `unknown command` on its next
+// invocation.
+func verifyHookCompatibility(root string) error {
+	var offenders []string
+	for _, w := range hookWrappers {
+		dest := filepath.Join(root, w.Dest)
+		data, err := os.ReadFile(dest)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat %s: %w", dest, err)
+		}
+		body, err := hookCommandBody(data)
+		if err != nil {
+			offenders = append(offenders, fmt.Sprintf("%s (invalid JSON: %v)", w.Name, err))
+			continue
+		}
+		if unknown := hookBodyUnknownSubcommands(body); len(unknown) > 0 {
+			offenders = append(offenders, fmt.Sprintf("%s (`%s`)", w.Name, strings.Join(unknown, "`, `")))
+		}
+	}
+	if len(offenders) == 0 {
+		return nil
+	}
+	return fmt.Errorf("hook file(s) invoke unknown agentchute subcommand(s) after refresh: %s — run `agentchute hooks install --wrapper all --scope repo --force`", strings.Join(offenders, ", "))
+}
+
 func hooksUsage(err error) error {
 	return fmt.Errorf("%s\n%s", err.Error(), hooksHelp())
 }

@@ -575,6 +575,13 @@ func previousSetupShimWrappers(state setupGlobalState) []string {
 // applySetup — after every idempotent, recoverable write (init/enrollment, hooks,
 // shims, PATH block, saved setup state) has landed — so a mid-setup failure can
 // never leave the bus fenced AND without wake infrastructure.
+// applySetupVerifyHookCompatibility is a package var so tests can inject a
+// forced verification failure and prove the fail-loud/non-zero-exit
+// contract, without needing a naturally-occurring post-refresh
+// inconsistency (refreshHookCompatibility always writes the current
+// canonical template, so a real one would itself be a packaging bug).
+var applySetupVerifyHookCompatibility = verifyHookCompatibility
+
 var setupRunRuntimeReset = func(root string, cfg *loop.Config, wrappers []string) error {
 	reset := resetSetupRuntimeState(root, cfg, wrappers)
 	if len(reset.Runners) > 0 {
@@ -751,6 +758,31 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 			UpdatedAt:           time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			return err
+		}
+
+		// Phase 2.5 — hook COMPATIBILITY, not membership. Keep every
+		// ALREADY-INSTALLED hookWrappers file working with this binary
+		// regardless of which wrappers this run selected for membership
+		// above, then verify none still references an unknown subcommand.
+		// This must land before "setup complete" and before the destructive
+		// reset below: the v1.5.0 cutover incident (docs/decisions/
+		// agentchute-v150-cutover-incident-and-fix.md) was a resync that
+		// finished green while a hook file invoked a subcommand the new
+		// binary had removed, and the destructive reset then forced every
+		// supervisor to restart straight into that broken hook. On a
+		// verification failure this returns before the reset runs, so
+		// running supervisors are left un-fenced rather than forced to
+		// restart into a known-broken hook (see docs/decisions/
+		// agentchute-update-fix-v2.md).
+		refreshedHooks, err := refreshHookCompatibility(root)
+		if err != nil {
+			return fmt.Errorf("hook compatibility refresh: %w", err)
+		}
+		if len(refreshedHooks) > 0 {
+			fmt.Printf("refreshed %d hook template(s) for compatibility: %s\n", len(refreshedHooks), strings.Join(refreshedHooks, ", "))
+		}
+		if err := applySetupVerifyHookCompatibility(root); err != nil {
+			return fmt.Errorf("hook compatibility verification failed: %w", err)
 		}
 
 		// Phase 3 — destructive runtime reset, LAST. By the time we reach here

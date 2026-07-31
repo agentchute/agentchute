@@ -2,6 +2,8 @@ package cli
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -778,5 +780,154 @@ func TestSetup_TemplatesWrittenBeforeRuntimeReset(t *testing.T) {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("wake-infra artifact missing after failed setup: %s (%v)", p, err)
 		}
+	}
+}
+
+// Hook COMPATIBILITY (update-fix-v2, docs/decisions/agentchute-update-fix-v2.md):
+// applySetup must keep every ALREADY-INSTALLED hook file working with this
+// binary regardless of the run's --wrappers membership, and must never
+// finish green with one that still doesn't. These tests exercise the real
+// cmdSetup entrypoint end-to-end, not just the refreshHookCompatibility/
+// verifyHookCompatibility helpers directly (hooks_test.go covers those).
+
+// codex acceptance item 2: a real `--wrappers none` resync must (a) create
+// nothing for a wrapper with no installed file, (b) refresh a stale existing
+// file with a .bak that is byte-identical to the pre-refresh content, and
+// (c) leave an already-current file with no backup at all.
+func TestSetupResync_WrappersNoneCompatibilityInvariants(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	mustWriteStaleHook(t, root, "codex")
+	staleCodex := mustRead(t, filepath.Join(root, ".codex", "hooks.json"))
+	mustWriteCanonicalHook(t, root, "claude-code")
+	// gemini-cli: deliberately no file at all.
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"}); err != nil {
+			t.Fatalf("setup err = %v", err)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Join(root, ".gemini", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("gemini-cli hook should not be created under --wrappers none; stat err = %v", err)
+	}
+
+	canonicalCodex, err := fs.ReadFile(hooksFS, "examples/hooks/codex/.codex/hooks.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCodex := mustRead(t, filepath.Join(root, ".codex", "hooks.json"))
+	if string(gotCodex) != string(canonicalCodex) {
+		t.Errorf("stale codex hook was not refreshed to the canonical template")
+	}
+	bakCodex := mustRead(t, filepath.Join(root, ".codex", "hooks.json.bak"))
+	if string(bakCodex) != string(staleCodex) {
+		t.Errorf("codex backup = %q, want the stale original %q", bakCodex, staleCodex)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, ".claude", "settings.json.bak")); !os.IsNotExist(err) {
+		t.Errorf("claude-code was already current; no backup should exist, stat err = %v", err)
+	}
+}
+
+// codex acceptance item 1: a stale hook file for a wrapper OUTSIDE this
+// run's recorded membership (never dropped, never selected) must still be
+// refreshed — compatibility is independent of membership.
+func TestSetupResync_RefreshesStaleHookOutsideMembership(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	withCwd(t, root, func() {
+		// Establishes prior membership = codex only; gemini-cli was never a
+		// member, so a later resync's droppedWrappers computation never
+		// touches it — any file at its Dest got there some other way (e.g.
+		// a hand-run `hooks install`), same as the incident's stale files.
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "codex", "--yes"}); err != nil {
+			t.Fatalf("first setup err = %v", err)
+		}
+	})
+	mustWriteStaleHook(t, root, "gemini-cli")
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "codex", "--yes"}); err != nil {
+			t.Fatalf("second setup err = %v", err)
+		}
+	})
+
+	canonicalGemini, err := fs.ReadFile(hooksFS, "examples/hooks/gemini/.gemini/settings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := mustRead(t, filepath.Join(root, ".gemini", "settings.json"))
+	if string(got) != string(canonicalGemini) {
+		t.Errorf("gemini-cli hook, though never in membership, was not refreshed to the canonical template")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".gemini", "settings.json.bak")); err != nil {
+		t.Errorf("expected a backup of the stale gemini-cli hook: %v", err)
+	}
+}
+
+// codex acceptance item 3 / brief acceptance 4: a forced verification
+// failure must propagate through setup as a non-zero error, and must print
+// neither "setup complete" nor reach the destructive runtime reset.
+func TestSetupResync_ForcedVerificationFailureBlocksCompletion(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	resetRan := false
+	oldReset := setupRunRuntimeReset
+	setupRunRuntimeReset = func(rt string, cfg *loop.Config, wrappers []string) error {
+		resetRan = true
+		return nil
+	}
+	t.Cleanup(func() { setupRunRuntimeReset = oldReset })
+
+	oldVerify := applySetupVerifyHookCompatibility
+	applySetupVerifyHookCompatibility = func(root string) error {
+		return fmt.Errorf("injected: hook file(s) invoke unknown agentchute subcommand(s) after refresh: claude-code (`poller`) — run `agentchute hooks install --wrapper all --scope repo --force`")
+	}
+	t.Cleanup(func() { applySetupVerifyHookCompatibility = oldVerify })
+
+	var setupErr error
+	var out string
+	withCwd(t, root, func() {
+		out, setupErr = captureStdout(t, func() error {
+			return cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"})
+		})
+	})
+
+	if setupErr == nil {
+		t.Fatal("expected the injected verification failure to surface as a non-zero error")
+	}
+	if !strings.Contains(setupErr.Error(), "hooks install --wrapper all --scope repo --force") {
+		t.Errorf("error missing the fix command: %v", setupErr)
+	}
+	if strings.Contains(out, "setup complete") {
+		t.Errorf("stdout must not print \"setup complete\" after a verification failure:\n%s", out)
+	}
+	if resetRan {
+		t.Error("the destructive runtime reset must not run after a verification failure")
 	}
 }

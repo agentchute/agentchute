@@ -323,6 +323,13 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 		updateRunResync = oldResync
 	})
 
+	// codex acceptance item 5 (update-fix-v2, docs/decisions/agentchute-
+	// update-fix-v2.md): --no-resync waives the hook-compatibility
+	// postcondition entirely — a pre-existing (even stale) hook file must
+	// come out byte-identical, with no backup written.
+	mustWriteStaleHook(t, root, "claude-code")
+	staleHook := mustRead(t, filepath.Join(root, ".claude", "settings.json"))
+
 	var lease *loop.ServeLease
 	withCwd(t, root, func() {
 		mustExampleRepo(t, root) // deliberately NO saved setup state
@@ -351,6 +358,13 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 	}
 	if err := loop.RenewLease(lease); !errors.Is(err, loop.ErrFenced) {
 		t.Fatalf("old lease after --no-resync update = %v, want ErrFenced", err)
+	}
+	gotHook := mustRead(t, filepath.Join(root, ".claude", "settings.json"))
+	if string(gotHook) != string(staleHook) {
+		t.Errorf("--no-resync must leave hook bytes untouched; got %q, want stale %q", gotHook, staleHook)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".claude", "settings.json.bak")); !os.IsNotExist(err) {
+		t.Errorf("--no-resync must write no hook backup; stat err = %v", err)
 	}
 }
 
@@ -528,29 +542,36 @@ func TestFetchChecksumRejectsNonHex(t *testing.T) {
 	}
 }
 
-// The v1.5.0 cutover gap (docs/decisions/
-// agentchute-v150-cutover-incident-and-fix.md): a pool whose saved state
-// records no wrappers replays `setup --wrappers none`, which skips the hook
-// template refresh while hook files sit on disk — stranding stale templates
-// against the new binary. The replay stays untouched (decision B rejects a
-// hard-fail); update just has to say it loudly.
-func TestHookRefreshSkipWarning(t *testing.T) {
+// update-fix-v2 (docs/decisions/agentchute-update-fix-v2.md) amends the
+// v1.5.0 cutover fix (docs/decisions/agentchute-v150-cutover-incident-and-
+// fix.md): applySetup's compatibility phase now refreshes every installed
+// hook file regardless of recorded membership, so a pool whose saved state
+// records no wrappers is no longer a hook-safety problem — only a
+// membership-recording gap. wrappersUnrecordedWarning (renamed from
+// hookRefreshSkipWarning) must say so: no claim that hooks will not
+// refresh, no `hooks install` fix prescription.
+func TestWrappersUnrecordedWarning(t *testing.T) {
 	repo := t.TempDir()
-	if got := hookRefreshSkipWarning(repo, "none"); got != "" {
+	if got := wrappersUnrecordedWarning(repo, "none"); got != "" {
 		t.Fatalf("no hook files installed: want empty warning, got %q", got)
 	}
 	mustWriteCanonicalHook(t, repo, "claude-code")
 	mustWriteCanonicalHook(t, repo, "codex")
-	got := hookRefreshSkipWarning(repo, "none")
-	for _, want := range []string{"claude-code", "codex", "hooks install --wrapper all --scope repo --force", "setup --wrappers"} {
+	got := wrappersUnrecordedWarning(repo, "none")
+	for _, want := range []string{"claude-code", "codex", "setup --wrappers"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("warning %q missing %q", got, want)
+		}
+	}
+	for _, mustNotContain := range []string{"will NOT refresh", "hooks install --wrapper all --scope repo --force"} {
+		if strings.Contains(got, mustNotContain) {
+			t.Fatalf("warning %q must no longer claim hooks are unsafe or prescribe `hooks install` as the fix (that repair now happens automatically): found %q", got, mustNotContain)
 		}
 	}
 	if strings.Contains(got, "gemini-cli") {
 		t.Fatalf("warning names a wrapper with no installed hook file: %q", got)
 	}
-	if got := hookRefreshSkipWarning(repo, "claude-code,codex"); got != "" {
+	if got := wrappersUnrecordedWarning(repo, "claude-code,codex"); got != "" {
 		t.Fatalf("recorded wrappers: want empty warning, got %q", got)
 	}
 }
