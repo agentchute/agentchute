@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v2.5 — we broke it on purpose · agentchute</title>
+<meta name="description" content="agentchute v2.5 is not compatible with v2. Here is what changed, and the twenty-three-day-old message that convinced us to change it.">
+<meta property="og:title" content="v2.5 — we broke it on purpose">
+<meta property="og:description" content="agentchute v2.5 is not compatible with v2. Here is what changed, and the twenty-three-day-old message that convinced us to change it.">
+<meta property="og:url" content="https://agentchute.dev/blog/v2-5-we-broke-it-on-purpose.html">
+<meta property="og:type" content="article">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="v2.5 — we broke it on purpose">
+<meta name="twitter:description" content="agentchute v2.5 is not compatible with v2. Here is what changed, and why.">
+<link rel="canonical" href="https://agentchute.dev/blog/v2-5-we-broke-it-on-purpose.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{--paper:#FAF9F5;--ink:#17180F;--muted:#5C5E50;--faint:#8A8C7C;--hair:#E6E4DA;--line:#E2E0D6;--green:#1E6F57;--green-soft:#EAF1ED;--green-line:#CFE3D8;--amber:#C8791A;--sans:'Inter',system-ui,sans-serif;--disp:'Space Grotesk',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16.5px;line-height:1.7;-webkit-font-smoothing:antialiased}
+  a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
+  header{border-bottom:1px solid var(--hair)}
+  .bar{max-width:1080px;margin:0 auto;padding:0 28px;display:flex;align-items:center;justify-content:space-between;height:58px}
+  .brand{font-family:var(--mono);font-weight:600;font-size:14.5px}
+  .brand .sq{display:inline-block;width:9px;height:9px;background:var(--green);border-radius:2px;margin-right:9px;vertical-align:middle}
+  nav a{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-left:20px}
+  article{max-width:720px;margin:0 auto;padding:52px 24px 80px}
+  .kicker{font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.07em;margin:0 0 12px}
+  h1{font-family:var(--disp);font-weight:700;font-size:clamp(2rem,5vw,2.9rem);line-height:1.06;letter-spacing:-.02em;margin:0 0 12px}
+  .meta{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin:0 0 30px}
+  figure{margin:34px 0}
+  figure img{width:100%;height:auto;display:block;border-radius:14px}
+  figcaption{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:10px;text-align:center}
+  h2{font-family:var(--disp);font-weight:600;font-size:1.4rem;letter-spacing:-.01em;margin:42px 0 12px}
+  p{margin:0 0 18px;color:var(--ink)}
+  p.lede{font-size:1.16rem;color:var(--muted)}
+  ul{margin:0 0 18px;padding-left:22px}
+  li{margin:0 0 8px}
+  code{font-family:var(--mono);font-size:.88em;background:#F0F1EA;border-radius:4px;padding:1.5px 5px}
+  .callout{border:1px solid var(--green-line);background:var(--green-soft);border-radius:12px;padding:18px 20px;margin:26px 0}
+  .callout p{margin:0;color:var(--muted)}
+  .callout b{color:var(--ink)}
+  .gone{font-family:var(--mono);font-size:14px;color:var(--muted)}
+  .gone s{text-decoration-color:color-mix(in srgb,var(--ink) 45%,transparent)}
+  .sig{margin-top:44px;padding-top:22px;border-top:1px solid var(--hair);font-family:var(--mono);font-size:13px;color:var(--faint)}
+  .next{margin-top:34px;border:1px solid var(--line);border-radius:12px;padding:16px 20px;background:#fff}
+  .next a{font-family:var(--mono);font-size:13.5px;font-weight:600}
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <div class="brand"><span class="sq"></span>agentchute</div>
+  <nav><a href="/">home</a><a href="/blog/">blog</a><a href="https://github.com/agentchute/agentchute">github</a></nav>
+</div></header>
+
+<article>
+  <p class="kicker">RELEASE · CLI v2.5 · PROTOCOL v2.5</p>
+  <h1>We broke it on purpose.</h1>
+  <p class="meta">July 31, 2026 · reHuman Labs</p>
+
+  <p class="lede">agentchute v2.5 <b>is not compatible with v2</b>. Message filenames changed, so an old binary and a new one can't read each other's mail. Upgrade every agent in a pool at once. Here's what changed, and the message that convinced us to change it.</p>
+
+  <h2>The message</h2>
+  <p>We stopped using our own agents for about three weeks. Life happened; the panes got closed.</p>
+  <p>When we came back, one agent had a message waiting that had been sitting unread for <b>twenty-three days</b>. A code review someone had asked for, answered, and then never seen.</p>
+  <p>Nothing was broken. The message was delivered exactly as designed — written to the right inbox, on disk, intact, waiting. That was the problem. We had built a mailbox that accepted letters for people who had moved out, and never mentioned it to anyone. The sender got no error. The system had no idea. It couldn't tell the difference between an agent thinking hard and an agent that no longer existed.</p>
+  <p>You can call that best-effort delivery and be technically right. We'd rather it just say so.</p>
+
+  <h2>What changed</h2>
+  <p><b>Agents expire.</b> A registration now lasts about an hour unless the agent keeps saying it's there. Any agent doing ordinary work quietly clears out the ones that stopped. No daemon, no watchdog, no human — the cleanup rides along with work that was happening anyway.</p>
+  <p><b>Sending to someone who isn't there fails, out loud.</b> Immediately, at the moment you send, while you can still do something about it. Not silently, into a mailbox nobody will open.</p>
+  <p><b>Message names are timestamps.</b> They used to be per-conversation counters, and a counter is shared state that exactly one writer may touch — which dragged in locks, fences, crash recovery, and a page of documentation warning you about the sharp edges. All of it defended an exact ordering that nothing ever read. Timestamps need none of it. That deletion is most of the six thousand lines this release removes.</p>
+  <p><b>Old mail still reads.</b> Every message already in your inboxes stays readable. Only new ones use the new names.</p>
+
+  <h2>The promise we broke</h2>
+  <p>At 1.0 we wrote that the identity grammar would only ever change through a deprecation process, and that the wire wouldn't break under you. We changed it directly instead.</p>
+  <p>We could have called this v3 and technically kept our word. We didn't, because the honest description of what happened is: we found something wrong with the design, the fix was worth more than the promise, and the promise was ours to keep or account for. So this is us accounting for it — in the release notes, on the front page, and here.</p>
+  <p>It ships as 2.5 rather than 3.0 because the primitives, the envelope and the lifecycle guarantees are all unchanged. One thing broke. We'd rather name that precisely than round it up.</p>
+
+  <h2>One more honest thing</h2>
+  <p>Delivery is now stated as <b>at-most-once</b>: we hand the message over, and that's the whole promise. It was never actually more than that — a few places in the old code and spec implied otherwise, and we removed those claims instead of pretending to honor them. What you get is what the code does.</p>
+
+  <h2>Upgrading</h2>
+  <p>Run <code>agentchute update</code> once. It stops the old supervisors for you, then relaunch each lane. Don't run half a pool on each version — they can't read each other. The <a href="https://github.com/agentchute/agentchute/blob/main/docs/V2_5_CUTOVER.md">cutover guide</a> has the exact sequence, including how to confirm the old processes actually stopped, and how to roll back if you need to.</p>
+
+  <p class="sig">agentchute is a protocol and a faithful reference implementation, not a product. No support tier, no SLA. Build on it — and when we break something, you'll hear it from us first.</p>
+
+  <div class="next"><a href="/">← back to agentchute</a></div>
+</article>
+</body>
+</html>
