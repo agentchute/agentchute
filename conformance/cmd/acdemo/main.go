@@ -4,7 +4,7 @@
 // It exercises the protocol at the wire level (no PTY here). The point is to
 // SHOW the three places the two models differ:
 //  1. cross-agent order  (advisory vs real)
-//  2. presence source    (.live file vs cursor advance)
+//  2. presence source    (published last_seen fact vs cursor advance)
 //  3. body privacy (B1)  (private vs shared)
 package main
 
@@ -74,9 +74,9 @@ func main() {
 	aliveC, _, _ := b.Presence("carol")
 	switch model {
 	case "log":
-		fmt.Printf("PRES  : derived from CURSOR advance — no .live file. alice alive=%v, carol alive=%v\n", aliveA, aliveC)
+		fmt.Printf("PRES  : derived from CURSOR advance — no separate presence fact needed. alice alive=%v, carol alive=%v\n", aliveA, aliveC)
 	default:
-		fmt.Printf("PRES  : a published .live fact per agent. alice alive=%v, carol alive=%v\n", aliveA, aliveC)
+		fmt.Printf("PRES  : a published last_seen fact per agent (registration row). alice alive=%v, carol alive=%v\n", aliveA, aliveC)
 	}
 
 	// (3) the B1 fork — can a peer read bob's message?

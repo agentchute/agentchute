@@ -24,44 +24,43 @@ Coordination is **pull-only**. A sender's sole responsibility is durable deliver
 The protocol is a small set of implementation-agnostic primitives. Conforming implementations are free to choose any inbox medium and any transport between sender and inbox — those are outside the protocol.
 
 - **Per-recipient inbox.** Each agent has its own ordered message stream. Senders deliver into the recipient's inbox; the recipient owns consumption. **The inbox medium is implementation-specific** (filesystem, queue, HTTP, git branch, etc.).
-- **Identity = the committed delivery key `(to, from, seq)`.** `seq` is a durable, monotonic, per-`(sender, recipient)` sequence number (§6.1). It is the sort key and the identity; there is no sender-asserted `message_id` and no random nonce in the identity. A plain per-sender sort yields exact FIFO with no clock.
+- **Identity = the committed delivery key `(to, from, timestamp, random-suffix)`.** `timestamp` is a fixed-width, microsecond-precision UTC stamp minted under a durable per-**sender** monotonic floor — never reissued at or before that sender's own last-issued stamp, even across a restart or clock regression (§6.1). `random-suffix` is a 128-bit value whose only job is making a same-instant mint from the same sender collision-free; it is not itself a load-bearing identity component. There is no sender-asserted `message_id` and no per-`(sender,recipient)` counter — the floor is per-sender, not per-pair. A plain per-sender sort of the timestamp is exact FIFO with no clock reads needed at consume time.
 - **No-overwrite delivery.** Delivery never silently clobbers an existing entry: a collision at the committed identity is refused, never a silent dedup no-op — the sender retries under a fresh identity. Delivery is **at-most-once**; there is no sender-asserted idempotency key or delivery-side dedup backstop (the covenant is handler idempotency at consume, §6.3). **Transport is implementation-specific** (atomic link, HTTP POST, git push, etc.).
 - **Recipient-owned, two-phase consumption.** Only the recipient reads its own message bodies. Consumption is **act-then-archive** (at-least-once): claim → act → commit. A crash mid-consume re-delivers; handlers MUST be idempotent.
-- **Presence is a published fact with freshness**, not a wake target and not a read cursor. Each agent writes a `.live` file on each heartbeat; fresh ⇒ alive, stale/absent ⇒ not-alive (§9).
-- **Asker-owned reply obligations.** "I am owed a reply to `(to,from,seq)` by `<T>`" is held in the asker's own ledger and cleared when the matching reply is consumed (§6.6).
+- **Presence is a published fact with freshness, read directly from the registration row** — not a wake target, not a read cursor, and not a separate file. A registration row's own `last_seen` field IS the presence record: a live supervising process advances it every heartbeat tick under a fencing token; fresh ⇒ alive, stale (or the row absent) ⇒ not-alive (§9).
+- **Asker-owned reply obligations.** "I am owed a reply to `<to,from,identity>` by `<T>`" is held in the asker's own ledger and cleared when a reply whose reference matches the outstanding entry is consumed (§6.6).
 - **Self-registration.** Each agent publishes a small record naming itself plus operational metadata. No wake fields.
 
 ### Reference implementation
 
 The reference CLI maps these primitives onto local filesystem choices on a shared filesystem:
 - **Inbox medium**: `.md` files under a fixed loop directory (`.agentchute/loop/inbox/<id>/`).
-- **Transport**: unique-temp + atomic `link()`-no-clobber (NFS-safe; `EEXIST` = a collision — the sender retries under a fresh identity; delivery is at-most-once).
+- **Transport**: unique-temp + atomic `link()`-no-clobber (`EEXIST` = a collision — the sender retries under a fresh identity; delivery is at-most-once).
 - **Wake**: none on the wire. A loopless wrapper is supervised by `agentchute serve`, which injects `[agentchute] check inbox` into the child's PTY when its OWN inbox poll sees new mail. The runner is local to the agent it supervises; it is not a sender-reachable endpoint.
 
-These are reference choices, not protocol requirements. Conforming implementations can swap the inbox medium and transport (see [`EXTENSIONS.md`](EXTENSIONS.md) and the alternate `log` binding in [`conformance/`](conformance/)) as long as no-overwrite per-recipient delivery and the seven invariants hold.
+These are reference choices, not protocol requirements. Conforming implementations can swap the inbox medium and transport (see [`EXTENSIONS.md`](EXTENSIONS.md) and the alternate `log` binding in [`conformance/`](conformance/)) as long as no-overwrite per-recipient delivery and the applicable conformance vectors (see the executable-spec note above) hold.
 
 ## 2. Scope
 
 ### In scope
 - **Pull-only inbox coordination** through per-recipient inboxes (§6).
 - **Per-agent supervision.** A loopless wrapper runs under `agentchute serve` (PTY supervisor) for inbox polling and `check inbox` injection. No sender-side wake.
-- **Small shared-FS pool.** 2 to ~10 agents sharing a single-host filesystem (or multi-host network mount subject to POSIX locking assumptions). Beyond that, routing/role-election would be required (a future protocol major; a non-goal today, §12).
+- **Small shared-FS pool.** 2 to ~10 agents sharing a **single-host** filesystem. Beyond that, routing/role-election would be required (a future protocol major; a non-goal today, §12).
 - **Substrate-defined pool locator.** _Reference CLI: a repo containing `AGENTCHUTE.md` and a `.agentchute/loop` directory._
 - **Free-form messages with optional structured envelope** (§6.4).
-- **`.live` presence with freshness** (§9) and **asker-owned reply obligations** (§6.6).
+- **Registration presence with freshness** (§9) and **asker-owned reply obligations** (§6.6).
 
 ### Out of scope
-See **§12 Non-goals**. Exclusions: non-filesystem transports in the reference CLI, sender-side wake / push presence, durable audit trails, capability-based routing, and cryptographic signing.
+See **§12 Non-goals**. Exclusions: non-filesystem transports in the reference CLI, sender-side wake / push presence, durable audit trails, capability-based routing, cryptographic signing, and multi-host operation (below).
 
 ### Tested targets and assumptions
 
-The reference implementation makes specific assumptions about its runtime environment:
+The reference implementation makes specific assumptions about its runtime environment. **The substrate is single-host**, matching what CI actually exercises: every lock (`flock`), lease, and fence in this spec assumes one shared local filesystem under one kernel's advisory locking. Earlier drafts of this spec described a multi-host, network-mounted posture (mount-flag guidance, cross-host lease semantics); that text is removed, not softened — it was never CI-verified and no decision in this program's history has tested it. A network-mounted loop directory is untested and unsupported; treat it as out of scope, not as a degraded mode.
 
 | Axis | Tested Configuration | Out of Scope / Untested |
 | :--- | :--- | :--- |
 | **Operating System** | macOS, Linux (CI verified) | Native Windows (WSL required for run) |
-| **Filesystem Layout** | Single-host shared directory (tested local disk) | Multi-disk, non-POSIX layouts |
-| **Network Filesystems** | NFSv4 (advisory POSIX locking assumptions; not CI-verified) | NFSv3, SMB/CIFS (lacks flock emulation) |
+| **Filesystem Layout** | Single-host shared directory (tested local disk) | Multi-disk, non-POSIX layouts, any network-mounted loop directory |
 | **PTY / Supervision** | Unix-like PTY (SIGWINCH propagation, best-effort) | Non-PTY shell wrappers, raw Windows Cmd/PowerShell PTY emulation |
 | **Security Model** | Cooperative local trust (POSIX file permissions) | Cryptographic signing, transport encryption, host-isolation bypass |
 
@@ -79,16 +78,16 @@ Coordination state lives under a fixed dotdir at the repo root:
     agents/                        # registrations (README.md tracked, *.md gitignored)
     inbox/<agent-id>/              # per-recipient inbox (gitignored)
     inbox/<agent-id>/.claimed/     # phase-1 CLAIMED, not-yet-committed messages
-    live/<agent-id>.live           # presence fact (last_seen + advisory busy)
     archive/                       # consumed (committed) messages (gitignored; caller-managed, §6.3)
     malformed/                     # quarantined files (gitignored; caller-managed, §6.3)
-    state/<agent-id>/              # asker-owned runtime state (gitignored)
+    state/<agent-id>/              # owner-private runtime state (gitignored)
       owed.json                    # asker-owned reply obligations — sole reply mechanism (§6.6)
-      seq/<recipient>.json         # durable per-(sender,recipient) seq counter
+      send.floor                   # durable per-sender monotonic timestamp floor (§6.1)
       serve.claim                  # serve lease + fencing token (§5.4)
+      guard.latch                  # per-session guard latch, guarded vendors only (§15)
 ```
 
-The namespace is fixed at `.agentchute/loop` (no vendor-namespaced dotdir). `AGENTCHUTE.md` is the only file that MUST be tracked. The `live/` directory is the only public presence surface; `state/<id>/` is owner-private (peers never read another agent's state dir).
+The namespace is fixed at `.agentchute/loop` (no vendor-namespaced dotdir). `AGENTCHUTE.md` is the only file that MUST be tracked. There is no separate presence directory: a registration row under `agents/` (public, one per agent) IS the presence record (§9). `state/<id>/` is owner-private — peers never read another agent's state dir.
 
 ## 4. Discovery (filesystem reference implementation)
 
@@ -113,13 +112,9 @@ Every agent MUST publish a registration record so peers can discover it and so p
 - `agent_id` (string, required): `^[a-z0-9][a-z0-9-]*$`.
 - `vendor` (string, recommended): anthropic, openai, google, human, etc. (advisory).
 - `host` (string, recommended): advisory hostname for same-host correlation.
-- `last_seen` (RFC 3339 UTC, required): updated at turn start. **Presence/freshness, however, is read from `.live` (§9), not from this field.**
-- `status` (enum, optional): `active | exhausted | offline`.
-- `restart_at` (RFC 3339 UTC, optional): earliest future eligibility (advisory).
-- `last_active` (RFC 3339 UTC, optional): last successful inbox consumption.
-- `launched_by` / `shim_name` / `hook_event` (string, optional): advisory launch provenance (e.g. `runner`, `hook`, `manual`) for truthful verify views. Diagnostic only; never gate any decision. Absent = unknown/legacy; a re-register that omits them PRESERVES the prior value.
+- `last_seen` (RFC 3339 UTC, required): **this field IS the presence/freshness signal (§9)** — there is no separate presence file. A live `serve` process advances it unconditionally every heartbeat tick, gated by its fencing token; a session that registers explicitly (`boot`/`register`) sets it once at that moment, without a lease.
 
-There are **no** `wake_method` / `wake_target` / `reachable_at` / `reachability_*` / `wake_endpoints` fields. Pull-only coordination has no published wake endpoint, so the entire wake/reachability cluster is removed.
+**Retired (v2.5 plan B5; tolerate-on-read only):** `status`, `restart_at`, `last_active`, `launched_by`, `shim_name`, `hook_event` are no longer written by the reference CLI. An older in-flight row may still carry one or more of them; a reader simply parses and ignores them like any other unrecognized field (§6.5) — this tolerance is a migration courtesy, not a standing part of the schema. There are also **no** `wake_method` / `wake_target` / `reachable_at` / `reachability_*` / `wake_endpoints` fields; pull-only coordination has no published wake endpoint, so the entire wake/reachability cluster never existed as a live field.
 
 The Markdown body is optional advisory prose. Do not route on capabilities (§12).
 
@@ -134,44 +129,44 @@ See **Appendix C** for a hand-registration walkthrough.
 Implementations MUST refuse active operations (consume/send/gate) if the agent's registration is absent or unreadable. Self-registration is mandatory on every session start (§7.2).
 
 ### 5.4 Id-uniqueness — the serve lease + fencing token
-The per-`(sender, recipient)` `seq` design is only sound if **one live process owns an id at a time**; a second live writer under the same id would break per-writer sequencing. The reference CLI enforces this with a decentralized shared-FS lease, not a central allocator:
+The reference CLI's per-sender monotonic timestamp floor (§6.1) and its unconditional `last_seen` heartbeat (§9) are only sound if **one live process owns an id at a time**; a second live writer under the same id would break monotonicity for that sender and could resurrect a stale-looking row out from under a legitimate sweep. The reference CLI enforces this with a decentralized shared-FS lease, not a central allocator:
 
 - The runner acquires a **serve lease** at launch — a `state/<id>/serve.claim` carrying `{id, host, pid, serve_token, started_at, last_seen}`, committed via `link()`-no-clobber. A **fresh** valid claim makes a second launch of the same id **fail closed**.
 - A **stale** claim is reclaimable only via the liveness rule: stale past the lease timeout, **plus** a same-host pid-proof failure when the holder is same-host (a frozen-but-alive process keeps its id); cross-host reclaim uses freshness/timeout only (pid is not provable across hosts).
-- The **fencing token** (`serve_token`, a 128-bit random epoch) is the load-bearing part: every heartbeat and **every `seq` write verifies it**. A zombie/paused holder that resumes after its lease was reclaimed fails the token check and stops — so it cannot create a dup-writer even though launch was guarded. The runner passes its token to the child via `AGENTCHUTE_SERVE_TOKEN`, so a fenced (reclaimed) child's `send` fails closed too.
+- The **fencing token** (`serve_token`, a 128-bit random epoch) is the load-bearing part: every heartbeat, every mint of a new timestamp identity, and every registration write from `serve` verifies it. A zombie/paused holder that resumes after its lease was reclaimed fails the token check and stops — so it cannot create a dup-writer even though launch was guarded. The runner passes its token to the child via `AGENTCHUTE_SERVE_TOKEN`, so a fenced (reclaimed) child's `send` fails closed too.
 
-This makes "give each process its own id" an enforced, fenced invariant rather than a convention. (Operational assumptions: the lease state lives on the same shared mount as the inboxes, and clocks are NTP-loose with `lease-timeout ≫ heartbeat + max-skew`. Cross-host deployments over network mounts are not CI-verified; they assume NFSv4 for correct lock emulation and mount caching settings with `actimeo` less than the lease timeout — or `noac` / `lookupcache=none` on the loop directory — to prevent stale cache reads from passing the fence. `flock` locking is not shared across hosts on NFSv3. Severe skew degrades to premature/delayed reclaim; within these mount requirements the fence still prevents an actual dup-write.)
+This makes "give each process its own id" an enforced, fenced invariant rather than a convention. (Operational assumption: the lease state lives on the same single-host filesystem as the inboxes — see §2 — and clocks are NTP-loose with `lease-timeout ≫ heartbeat + max-skew`. Severe skew degrades to premature/delayed reclaim; within that assumption the fence still prevents an actual dup-write. Multi-host operation over a network-mounted loop directory is untested and out of scope, not a degraded-but-supported mode.)
 
 ## 6. Messaging
 
 ### 6.1 Message identity & ordering
-The committed identity is the full delivery key `(to, from, seq)`:
+The committed identity is the full delivery key `(to, from, timestamp, random-suffix)`:
 - **`to`**: the recipient — encoded by LOCATION (which inbox the message lands in), so it is not spelled in the filename.
 - **`from`**: sender `agent_id`.
-- **`seq`**: a durable, monotonic, per-`(from, to)` sequence number starting at 1.
+- **`timestamp`**: a fixed-width, microsecond-precision UTC stamp, `YYYYMMDDTHHMMSSffffffZ` (e.g. `20260730T182415123456Z`), minted under a durable floor kept PER SENDER — not per recipient, not per `(sender,recipient)` pair. Mint rule: `stamp = now; if stamp <= floor { stamp = floor + 1 microsecond }`; the new floor is persisted BEFORE the delivery attempt (write-ahead), so a crash between persisting the floor and landing the message can only ever waste a stamp, never reissue one.
+- **`random-suffix`**: 128 bits of `crypto/rand`, lowercase hex. Its only job is distinguishing two mints from the SAME sender in the same microsecond; a genuine suffix collision is astronomically unlikely and, on the rare link collision, is handled exactly like any other identity collision (below) — it is never itself the source of uniqueness.
 
-The reference encoding is the canonical filename `from-<from>_seq-<020d>.md` (`seq` zero-padded to 20 digits). A plain lexicographic sort of one sender's files is therefore **exact per-sender FIFO with no clock**. Cross-sender order is **advisory arrival order** (non-normative) — the protocol does not promise a global total order (a real total order would need a freshness CAS the mount can't cheaply give, and is unneeded).
+The reference encoding is the canonical filename `<timestamp>_from-<from>_r<32hex>.md`. Because the timestamp is fixed-width, a plain lexicographic sort of one sender's files is **exact per-sender FIFO with no clock reads at sort time**. Cross-sender order is **advisory arrival order** (non-normative) — the protocol does not promise a global total order (a real total order would need a freshness CAS the mount can't cheaply give, and is unneeded).
 
-During the v2.5 dual-read migration, the reference implementation preserves per-sender FIFO for the one-way, pool-at-once cutover by sorting legacy seq messages before timestamp-format messages, then sorting each grammar by its own monotonic key. Known migration-window limitation: if a pool writes timestamp-format messages, rolls back and writes new legacy messages, then rolls forward again, the old-first grammar rank can place those rollback writes before earlier timestamp writes. Using file mtime as a cross-grammar key is worse because copying and archiving can perturb it; no global ordering machinery is added for this two-transition edge case.
+On a filename collision at the committed identity (an already-landed file at the identical `(to,from,timestamp,suffix)` — a same-microsecond mint colliding on suffix too, astronomically rare, or a genuinely resent attempt), the sender retries under a FRESH random suffix — `to`/`from`/`timestamp` held fixed — for a small bounded number of attempts, then hard-errors. A collision is **never** treated as "already delivered, done": that would silently drop whichever attempt lost the race. This is the wire-level meaning of at-most-once (§1) — delivery either lands under a genuinely fresh identity, or it does not land at all; there is no delivery-side dedup to fall back on.
 
-`seq` is **write-ahead durable**: the counter is committed *before* the message links, so a crash can only ever produce a GAP (an allocated seq whose message never landed), never a reuse for different content. Gaps are legal — `seq` is identity + sort key, not a no-gap contract.
+**Migration note (v2.5 dual-read window).** The reference implementation reads BOTH this timestamp grammar and the earlier per-`(from,to)` sequence-counter grammar (`from-<from>_seq-<020d>.md`) everywhere a name or reference is parsed — lister, claimed-lister, reply references, `.owed` matching, archive naming — and writes ONLY the new grammar. Per-sender FIFO is preserved across the cutover by sorting a sender's legacy-grammar messages before its timestamp-grammar messages, then sorting each grammar by its own monotonic key. Known migration-window limitation: if a pool writes timestamp-format messages, rolls back to writing legacy messages, then rolls forward again, the old-first ordering rule can place those rollback writes ahead of earlier timestamp writes — a two-transition edge case with no dedicated ordering machinery added for it (file mtime would be a worse cross-grammar key; copying and archiving perturb it). The old-format read paths are removed no earlier than the first post-2.5 minor release.
 
-The canonical `from-<from>_seq-<020d>.md` is the only inbox filename format. A name that does not parse as a canonical seq filename is unrecognized: it is skipped by the lister and quarantined by `check` (§11.1).
+A name that parses as neither grammar is unrecognized: skipped by the lister, quarantined by `check` (§11.1).
 
 ### 6.2 Sender flow
 1. Compose body (UTF-8).
-2. Allocate the next durable `seq` for `(from, to)` (write-ahead). The active serve token, if any, is fence-verified first.
-3. **Deliver into the inbox with the no-overwrite guarantee** (unique-temp + atomic `link()`); a collision at the committed identity is refused, not a silent success — the sender retries under a fresh identity (bounded attempts). A sender crash before the link completes loses that message as a legal gap — delivery is **at-most-once** (v2.5 plan B7 removed the `--idempotency-key` opt-in escape hatch and the per-`(from,to)` allocator it rode; the full identity/grammar rewrite for this section lands in a later slice).
+2. Mint a timestamp under the sender's OWN monotonic floor (write-ahead persist, §6.1), then RELEASE that lock — the active serve token, if any, is fence-verified inside this same step, before the floor is persisted.
+3. **Deliver into the inbox with the no-overwrite guarantee** (unique-temp + atomic `link()`), now under the RECIPIENT's lock (taken only after the sender's own lock is released — the two are never held together, so a self-send or a pair of agents sending to each other at the same moment cannot deadlock): re-check the recipient's freshness, fence-verify again if a token is active, then link. A collision at the committed identity is refused, not a silent success — the sender retries under a fresh random suffix (bounded attempts, §6.1). A sender crash before the link completes loses that message as a legal gap — delivery is **at-most-once**; there is no idempotency key and no delivery-side dedup (v2.5 plan B7 deleted both the old per-`(from,to)` allocator and the `--idempotency-key` opt-in that rode it).
 4. **No wake.** The sender does not poke or signal the recipient — it only writes the message into the recipient's inbox. The recipient discovers it on its own poll.
 
 ### 6.3 Recipient flow — two-phase consume (act-then-archive)
 Consumption is at-least-once and split across two verbs:
 
-1. Update own `last_seen` and `.live`.
-2. Enumerate and sort inbox messages (per-sender FIFO).
-3. **`check` — phase 1 (CLAIM + display).** First re-display any uncommitted `.claimed` residue from a crashed/un-acked prior turn, each tagged with a **`REDELIVERED`** banner. Then, for each new message: validate envelope/body (quarantine if malformed, §11), CLAIM it (move `inbox/<id>/<name>` → `inbox/<id>/.claimed/<name>` under its canonical name), and display it. `check` does **not** archive.
-4. **Act on each displayed message.** Because the CLI prints and exits before the model acts, archiving during `check` would be at-most-once for the *work*; claiming instead makes the work at-least-once. **Handlers MUST be idempotent** — a crash between `check` and `ack` re-delivers.
-5. **`ack` — phase 2 (COMMIT).** Archive the `.claimed` residue. `ack` commits unconditionally (moving `.claimed` → `archive/` is a mutation of the recipient's own state only) and then reports any outstanding finish-gate blockers rather than withholding the commit. Archiving is the single commit point; an already-archived message is a benign no-op (idempotent).
+1. Enumerate and sort inbox messages (per-sender FIFO).
+2. **`check` — phase 1 (CLAIM + display).** First re-display any uncommitted `.claimed` residue from a crashed/un-acked prior turn, each tagged with a **`REDELIVERED`** banner. Then, for each new message: validate envelope/body (quarantine if malformed, §11), CLAIM it (move `inbox/<id>/<name>` → `inbox/<id>/.claimed/<name>` under its canonical name), and display it. `check` does **not** archive, and it does **not** touch presence — a registration row's freshness (§9) is refreshed independently, by a live `serve` process's own heartbeat tick (or once, at explicit `boot`/`register`), never by a read/consume CLI touch.
+3. **Act on each displayed message.** Because the CLI prints and exits before the model acts, archiving during `check` would be at-most-once for the *work*; claiming instead makes the work at-least-once. **Handlers MUST be idempotent** — a crash between `check` and `ack` re-delivers.
+4. **`ack` — phase 2 (COMMIT).** Archive the `.claimed` residue. `ack` commits unconditionally (moving `.claimed` → `archive/` is a mutation of the recipient's own state only) and then reports any outstanding finish-gate blockers rather than withholding the commit. Archiving is the single commit point; an already-archived message is a benign no-op (idempotent).
 
 **Retention model.** `archive/` and `malformed/` are **caller-managed**. They grow without bound by design and are **not** part of the delivery guarantee. The delivery contract ends at claim (`check`) / commit (`ack`); `archive/` is an audit residue only. This includes malformed/ — §11.1's never-silently-dropped guarantee binds the reader (quarantine, don't drop); subsequent disposal is the caller's retention choice.
 
@@ -179,19 +174,19 @@ Operators may clean with this documented one-liner (verify paths against §3 lay
 
     find .agentchute/loop/archive -type f -mtime +30 -delete && find .agentchute/loop/malformed -type f -mtime +30 -delete && find .agentchute/loop -name '.tmp_*' -type f -mtime +1 -delete
 
-(`.tmp_*` files are crashed in-flight writes — deliveries, registrations, `.live` updates, lease claims — that were never linked into place; `doctor` reports any older than an hour.)
+(`.tmp_*` files are crashed in-flight writes — deliveries, registrations, lease claims — that were never linked into place; `doctor` reports any older than an hour.)
 
 **Backpressure.** Coordination is pull-only, so a dead or inactive recipient's inbox grows without bound by design — senders apply no backpressure. Operators should watch inbox depths (`status`); the remedy for a permanently-retired agent is removing its inbox directory by hand after confirming the registration is gone (the cleanup one-liner above deliberately never touches inboxes).
 
-The reference CLI's Stop hook runs `ack` (commit the prior turn's work) and then the read-only finish gate. If a resend under the identical committed identity as an already-claimed message ever lands in the inbox (a narrow race), `check`'s claim step treats it as a benign duplicate and drops it — this is a claim-time safeguard, not a general delivery-side dedup guarantee (delivery itself is at-most-once).
+On guarded vendors (§15), the end-of-turn hook runs a single `agentchute turn-end`, which self-repairs the agent's own registration, archives what THIS session's `check` claimed, and evaluates the read-only finish gate, all in one ordered process (§9, §15) — it replaces what were once three separate hook entries. Unguarded or hookless sessions commit with `agentchute ack` directly. If a resend under the identical committed identity as an already-claimed message ever lands in the inbox (a narrow race), `check`'s claim step treats it as a benign duplicate and drops it — this is a claim-time safeguard, not a general delivery-side dedup guarantee (delivery itself is at-most-once).
 
 ### 6.4 Message envelope
-Encoded as optional YAML frontmatter. The **normative** envelope is small:
-- `from` (required **information**): the sender `agent_id`. In the filesystem binding this is satisfied by the canonical filename (`from-<from>_seq-<020d>`, strictly parsed); a frontmatter `from` field, when present, is display/inference-grade metadata, and a body-only message with a canonical filename is well-formed.
+Encoded as optional frontmatter — this section's own flat key:value grammar (below), not general YAML. The **normative** envelope is small:
+- `from` (required **information**): the sender `agent_id`. In the filesystem binding this is satisfied by the canonical filename (`<timestamp>_from-<from>_r<32hex>`, strictly parsed, §6.1); a frontmatter `from` field, when present, is display/inference-grade metadata, and a body-only message with a canonical filename is well-formed.
 - `reply_required` (boolean, optional): an **advisory hint** that the sender wants a reply. The binding reply obligation is the asker's own `.owed` ledger (§6.6); `reply_required` stays on the wire as the one cross-agent coordination hint.
-- `in_reply_to` (optional): the canonical reference `to-<to>_from-<from>_seq-<020d>` of the message being answered. Consuming a reply whose `in_reply_to` matches one of the asker's outstanding `.owed` entries discharges that obligation.
+- `in_reply_to` (optional): the canonical reference `to-<to>_from-<from>_<timestamp>_r<32hex>` of the message being answered. Consuming a reply whose `in_reply_to` matches one of the asker's outstanding `.owed` entries discharges that obligation.
 
-**Compatibility fields:** `message_id` is no longer emitted (removed in v0.9.0); the identity is `(to,from,seq)` and reply threading rides `in_reply_to` (the canonical `(to,from,seq)` ref). A `message_id` on an older in-flight message is still tolerated on read (ignored — never the identity). `to`, `task`, and `status` are no longer part of the envelope or the reference CLI at all (`to` is encoded by location; a message's subject, if any, is a body convention — the first Markdown line — not a typed field). They carry no special-case compat handling anymore; a stray `task:`/`status:`/`to:` line on an old in-flight message is simply an unrecognized field, ignored per §6.5 like any other.
+**Compatibility fields:** `message_id` is no longer emitted (removed in v0.9.0); the identity is `(to,from,timestamp,random-suffix)` (§6.1) and reply threading rides `in_reply_to` (the canonical reference above). A `message_id` on an older in-flight message is still tolerated on read (ignored — never the identity). `to`, `task`, and `status` are no longer part of the envelope or the reference CLI at all (`to` is encoded by location; a message's subject, if any, is a body convention — the first Markdown line — not a typed field). They carry no special-case compat handling anymore; a stray `task:`/`status:`/`to:` line on an old in-flight message is simply an unrecognized field, ignored per §6.5 like any other. A message using the earlier `to-<to>_from-<from>_seq-<020d>` reference form is still read during the dual-read window (§6.1).
 
 **Frontmatter grammar (v2.5 plan B8).** One parser (`parseFrontmatter`, the reference CLI's `internal/loop/registration.go`) implements this for both message envelopes here and registration rows (§5.2) — one engine, not a per-context dialect, closing a historical validator/recorder skew where a message's envelope was gated by one parser and its fields read by another. It is a flat key:value format, not general YAML. The steps below are exact — verified line-for-line against `parseFrontmatter` and against the independent conformance reimplementation (`conformance/fm.go`); the two agree with each other on every point:
 
@@ -216,7 +211,7 @@ Reply obligations are **asker-owned only**. The asker's `.owed` ledger is the **
 
 - When an agent sends `--ask` (reply-required), it records its own obligation in `state/<asker>/owed.json`: "I am owed a reply to `(to=recipient, from=me, seq)` by `<deadline>`" (default 30m; override with `--reply-by`). The ledger is single-writer, atomic-rename, and the gate reads only its OWN ledger — it never scans peers.
 - When the asker later consumes a reply whose `in_reply_to` references that `(to,from,seq)`, the obligation is cleared only if the consumed reply's canonical sender is the agent that owed the reply (idempotent).
-- The asker's gate surfaces **outstanding** and **expired** obligations as **non-blocking warnings**. An expired obligation is the asker-side dead-recipient signal: a dead recipient shows up twice over — the asker's expired `.owed` AND the recipient's stale `.live` — so the asker never waits on a corpse.
+- The asker's gate surfaces **outstanding** and **expired** obligations as **non-blocking warnings**. An expired obligation is the asker-side dead-recipient signal: a dead recipient shows up twice over — the asker's expired `.owed` AND the recipient's own stale registration row (§9) — so the asker never waits on a corpse.
 - On the recipient side, consuming a `reply_required` message records **nothing** and merely **prints the reply-ref command** (`reply_required` is advisory on the wire). There is no recipient-side ledger and no `defer` command; both were removed in v0.9.0 (the `.owed` redesign). A reply is a normal `send --reply-to <ref>`, which discharges the asker's `.owed` when the asker consumes it.
 
 ## 7. Coordination defaults
@@ -229,7 +224,7 @@ An agent's authority to mutate project state starts when an inbox message arrive
 
 **Protocol maintenance is pre-authorized.** Mandatory on every session start without waiting for instruction:
 - **Self-registration (§5)**: `agentchute boot` / `register` is mandatory and idempotent. It reconciles `host` and `cwd`. Existing files are not sufficient.
-- **Self-state updates**: `last_seen` and `.live` (turn start / heartbeat), `last_active` (post-consumption), `status`/`restart_at` (budget visibility).
+- **Self-state updates**: the registration's own `last_seen` (§5.1) is the sole freshness signal — set once at explicit `boot`/`register`, and, when running under `agentchute serve`, advanced continuously by its lease-gated heartbeat (§9). The retired `status`/`restart_at`/`last_active` fields (§5.1) are no longer written.
 - **Own scaffold & inbox operations**: creating `inbox/<self>/`, `archive/`, `malformed/`; claiming, acting on, and acking own mail.
 - **Protocol correction (§11).**
 
@@ -245,7 +240,7 @@ Identity is pool-scoped: `(pool_locator, agent_id)`. A physical process particip
 There is **no wake on the wire** and no sender-side poke. Discovery is recipient-side polling; the only question is what drives a given wrapper's poll.
 
 - **Native-loop wrappers** poll their own inbox on their own cadence (or at lifecycle boundaries via hooks).
-- **Loopless wrappers** run under the **runner** — `agentchute serve -- <wrapper>` — a per-agent PTY supervisor. It launches the child under a PTY, acquires the serve lease (§5.4), polls the agent's OWN inbox each tick, writes `.live`, and injects `[agentchute] check inbox` into the child's PTY when new mail appears (respecting an idle/injection window so it doesn't interrupt mid-turn). It uses per-vendor submit bytes (e.g. bracketed-paste + enhanced-enter for codex) so the cue actually submits.
+- **Loopless wrappers** run under the **runner** — `agentchute serve -- <wrapper>` — a per-agent PTY supervisor. It launches the child under a PTY, acquires the serve lease (§5.4), polls the agent's OWN inbox each tick, advances the registration's `last_seen` via its lease-gated heartbeat (§9), and injects `[agentchute] check inbox` into the child's PTY when new mail appears (respecting an idle/injection window so it doesn't interrupt mid-turn). It uses per-vendor submit bytes (e.g. bracketed-paste + enhanced-enter for codex) so the cue actually submits.
 
 The leading bracket in the injected cue is machine metadata; the model-facing instruction is `check inbox`. `setup --wake` installs the runner path only; the former tmux/herdr wake adapters and the runner receive-socket were removed in the pull-only redesign.
 
@@ -253,16 +248,32 @@ PTY injection is a best-effort cue, not a compliance guarantee. The supervisor a
 
 ## 9. Liveness & presence
 
-Presence is a **published fact with freshness**, written to `live/<id>.live` (`{id, last_seen, busy, pid, host}`) on every heartbeat via an atomic tmp+rename:
-- A `.live` newer than the freshness window ⇒ **alive**.
-- A stale or absent `.live` ⇒ **not-alive** (never an error — an unregistered or long-gone agent simply reads not-alive). This is the dead-mailbox detection: "came back days later, one agent never returned" surfaces as a stale `.live`. Freshness compares the writer's embedded `last_seen` against the reader's clock under the same NTP-loose assumption as §5.4: clock skew between reader and writer shifts perceived freshness in either direction (a fast reader clock can read a healthy agent as not-alive for up to the skew). A fresh presence record proves only that the supervisor or heartbeat mechanism is ticking; it does not prove that the underlying agent wrapper is actively processing. (The runner supervisor updates `.live` unconditionally each heartbeat tick.)
-- `busy` is **advisory only** and NEVER affects aliveness — this deliberately avoids the false-dead direction (a busy agent mid-long-turn must not read as dead).
+Presence is **soft state, read directly from the registration row** (v2.5 plan B5) — there is no separate presence file and no publish/heartbeat machinery beyond the registration itself. A row's own `last_seen` (§5.1) IS the presence record.
 
-`gate`/`doctor`/`status` read presence from `.live`, not from registration `last_seen`. There is **no watchdog and no cross-agent liveness tracking** — both were deleted as push machinery. A pull-only pool needs neither: a sender doesn't care whether the recipient is live (the message waits in the inbox), and an asker learns of a dead recipient from its own expired `.owed` plus the recipient's stale `.live`.
+**Freshness — three distinct horizons, deliberately not conflated:**
+- The **serve lease** (10s, §5.4) governs who may currently act as an id — the tightest horizon, because a wrong answer here risks a dup-writer.
+- **`gate`/`doctor`'s self-freshness check** (30 minutes, fixed) governs whether an agent's OWN registration is fresh enough to `commit`/`release`.
+- **Sweep staleness** — the age past which a row becomes a candidate for removal (below) — is the pool's configurable `stale_after` (default 1 hour; `agentchute setup --stale-after <duration>`).
+
+A row's age compares its `last_seen` against the reader's clock under the same NTP-loose assumption as §5.4: clock skew between reader and writer shifts perceived freshness in either direction. Stale or absent ⇒ **not-alive** — never an error; an unregistered or long-gone agent simply reads not-alive. This is the dead-mailbox detection: "came back days later, one agent never returned" surfaces as a stale row.
+
+**Refresh.** A live `agentchute serve` process advances its own agent's `last_seen` unconditionally on every poll tick (default interval 5s, configurable via `--interval`, floored at 5s), gated by its serve-lease fencing token (§5.4) — a fenced-out (reclaimed) holder's heartbeat writes nothing, so it cannot resurrect a row another lease now owns. Explicit `boot`/`register` sets `last_seen` once, at that moment, needing no lease (it is not the continuous heartbeat). No other command — `check`, `send`, `status`, `gate`, `doctor` — ever writes `last_seen`; they only read it.
+
+**Registration rows are pool-shared state, not exclusively self-owned.** Any agent's row may be removed by another process — in practice, whichever one is running `boot` or `serve`'s own slow tick — once it satisfies both sweep conditions below; this is the intended hygiene mechanism, not a violation of the named agent's authority over its own state.
+
+**The lazy sweep.** A row is swept when:
+1. its age exceeds the pool's `stale_after` threshold — using the row FILE's own mtime as a fallback age proxy when the row fails to parse at all, so a hand-corrupted row is not immortal merely because its `last_seen` can't be recovered — **AND**
+2. its serve claim (§5.4) is absent or itself stale. A fresh lease immunizes an old-looking row even past `stale_after`: the row belongs to a process that just hasn't re-registered explicitly in a while, not a dead one.
+
+The sweep never removes the sweeping agent's own row, caps itself at 5 removals per pass (a large backlog drains over several triggers, never all at once), and re-checks BOTH conditions under the target row's own lock immediately before deleting it — a heartbeat or fresh lease landing in the narrow window between the initial scan and the delete wins, and the sweep backs off for that row rather than deleting state that just became current again. Sweeping touches ONLY the `agents/<id>.md` registration file; it never touches an agent's inbox, mail, or any other state.
+
+**Triggers, exactly two:** `boot`, once, immediately after the caller registers itself and before it peeks its own inbox; and `serve`'s poll tick, at most once every 10 minutes. `send`, `status`, `doctor`, and `gate` never trigger a sweep — they only report what they read.
+
+There is **no watchdog and no cross-agent liveness push** — both were deleted as push machinery; pull-only coordination needs neither. A sender doesn't care whether the recipient is live (the message waits in the inbox regardless), and an asker learns of a dead recipient from its own expired `.owed` (§6.6) plus the recipient's own stale registration row.
 
 ## 10. (removed) Watchdog
 
-The liveness-only watchdog and its cooperative-waking step are **removed**. Cross-agent liveness pushing was unreliable (stale caches, watchdog races, gates on phantom liveness); pull-only coordination + `.live` presence (§9) replaces it. This section is retained as a pointer so older references resolve.
+The liveness-only watchdog and its cooperative-waking step are **removed**. Cross-agent liveness pushing was unreliable (stale caches, watchdog races, gates on phantom liveness); pull-only coordination + registration-row presence (§9) replaces it. This section is retained as a pointer so older references resolve.
 
 ## 11. Protocol correction (best effort)
 
@@ -273,9 +284,9 @@ Triggers include malformed inbox filenames, unparseable frontmatter, or unparsea
 1. **Quarantine**: atomic move to `.agentchute/loop/malformed/`.
 2. **Continue**: do NOT block the sender or the turn.
 
-A well-formed canonical seq file is never quarantined; only a genuinely-unrecognized name is enforced on.
+A well-formed canonical filename (either grammar, §6.1) is never quarantined; only a genuinely-unrecognized name is enforced on.
 
-Quarantine happens **pre-claim** (`check` validates before it claims, §6.3 step 3): a quarantined item is never claimed and never archived, so it never counts as **consumed**. It has no effect on `seq` either way — `seq` is the sender's own durable per-`(from,to)` counter (§6.1), not something a reader advances by claiming or quarantining a message, so a malformed item simply never touches it. It is never silently dropped: it persists as a file under `.agentchute/loop/malformed/` until an operator or agent inspects it. This is surfaced proactively, not just documented — `doctor`/`pending`/`boot` report the malformed count with a `check`-to-quarantine hint, and `gate` (including `--before finish`) blocks on any unquarantined malformed file until `check` runs.
+Quarantine happens **pre-claim** (`check` validates before it claims, §6.3 step 2): a quarantined item is never claimed and never archived, so it never counts as **consumed**. It has no effect on the sender's monotonic floor (§6.1) either way — the floor is the sender's OWN durable per-sender state, not something a reader advances by claiming or quarantining a message, so a malformed item simply never touches it. It is never silently dropped: it persists as a file under `.agentchute/loop/malformed/` until an operator or agent inspects it. This is surfaced proactively, not just documented — `doctor`/`pending`/`boot` report the malformed count with a `check`-to-quarantine hint, and `gate` (including `--before finish`) blocks on any unquarantined malformed file until `check` runs.
 
 ## 12. Non-goals
 - No non-filesystem transport in the reference CLI.
@@ -304,7 +315,16 @@ To enforce this boundary, the reference CLI verifies the sender's identity from 
 
 **The guard latch and its PreToolUse-family deny list (v2.5 A7) are best-effort defense-in-depth against a naively or accidentally injected instruction, not a security boundary.** The latch is a plain file under the agent's own per-agent state directory, and the deny list is command-text pattern matching — both bypassable directly by the same cooperating, same-UID process the guard is meant to slow down: deleting `state/<id>/guard.latch` (or any other state file) is not prevented by any file permission (0700 protects against *other* users, not the file's own owner), and a differently spelled, quoted, or dispatched command can evade the pattern match. Treat a guarded lane as a speed bump against mistakes and naive injection, never a barrier against a determined adversarial agent or operator.
 
+**Guard coverage is uneven across vendors and across launch modes — recorded here rather than left to be discovered:**
+- **codex's own hosted tools** (e.g. its built-in web search) run **outside hook coverage entirely** — the PreToolUse-equivalent guard never sees them, so they are effectively unguarded no matter the latch state.
+- **gemini has no Stop-equivalent event.** Its end-of-turn handler runs on `BeforeAgent` — the START of the NEXT turn, not the end of the current one. A latch this turn's `check` set stays armed into whatever begins next; §9's turn-end ordering only ever archives what the CURRENT session itself claimed, so this is safe for the redelivery guarantee, but it is a genuinely different timing from the other two guarded vendors and should not be assumed away. Separately — and this predates the timing point above — gemini's guard event/decision JSON shape is UNVERIFIED against vendor docs as of this writing; treat a gemini lane as guarded-in-name-only until independently confirmed.
+- **grok has no hook system at all** and is therefore unguarded, full stop: no latch is ever set for it, `ack` behaves exactly as it always has, and there is nothing to bypass because nothing is armed.
+- **A session not launched under `agentchute serve` carries no serve token** (`AGENTCHUTE_SERVE_TOKEN` unset) and is therefore ALSO unguarded — identically to grok, regardless of vendor — because the guard requires both a live serve lease AND the vendor's own guard-enablement bit; a hand-run or otherwise unsupervised session has neither.
+- **Sender routing rule:** never route irreversible or scope-expanding work to a lane known to be unguarded (grok, any session not under `serve`, or a codex hosted-tool call) on the theory that the guard will catch a mistake — for those lanes it structurally cannot.
+
 **Mixed hook-trust recovery.** Some vendors independently gate hook definitions per-command and per-event: after a hook definition changes, one event (e.g. the PreToolUse-equivalent guard) may become active again before another (e.g. the Stop/end-of-turn hook that runs `turn-end`) is re-trusted, or the latter may simply fail at runtime. In that state a lane latches on its next claimed mail and stays latched — the guard denies a direct `turn-end` invocation too, by design, since allowing it would let a same-turn instruction clear its own latch and disarm the rest of the deny list. Remediation STARTS with repairing the end-of-turn hook path itself (re-trust or fix its definition) and confirming it actually runs; relaunching the lane (a new serve session mints a new token, so the old latch reads as foreign/inert and `check` redelivers the claimed residue under the fresh session) or removing `state/<id>/guard.latch` directly and immediately running `agentchute turn-end` to commit and gate are only durable AFTER that repair. Doing either WITHOUT first fixing the end-of-turn hook is a temporary unwedge, not remediation: the very next `check` claims new mail, writes a fresh latch, and the lane wedges again at the same boundary. (This spec does not assert, as a normative guarantee, that a vendor's own harness-invoked end-of-turn hook execution never itself re-enters the same PreToolUse-equivalent guard path. No per-vendor smoke test proving that non-reentrancy has been run or recorded as of this writing — it stays a REQUIRED, outstanding smoke-test item for each vendor's shipped hook template before this guard's coverage claim can be trusted, not a proven protocol invariant and not something already verified.)
+
+**Shared GitHub credential (recorded, accepted risk).** Every agent in a fleet operating this protocol may authenticate to GitHub through the SAME underlying `gh` CLI login, with no per-agent GitHub identity — this is an operational choice the protocol itself has no way to prevent or detect. A visible consequence, observed in practice: `gh pr review --approve` self-blocks fleet-wide (GitHub treats repeat reviews from the same authenticated actor as one actor reviewing itself), which is why review verdicts in this program are delivered on the coordination bus and mirrored to `gh pr comment` — never `gh pr review` — when mirroring is authorized. More broadly, any agent with shell access can act on GitHub as fully as the human operator who owns that token can; nothing in the guard latch or the deny list is GitHub-specific protection. Operators who share one GitHub credential across a fleet are accepting this knowingly, not overlooking it — recorded here so it reads as a decision, not a surprise discovered later.
 
 ---
 
@@ -327,7 +347,6 @@ vendor: anthropic
 control_repo: /absolute/path/to/repo
 host: macbook.local
 last_seen: 2026-06-30T00:00:00Z
-status: active
 ---
 # free-text notes
 ```
@@ -340,7 +359,7 @@ status: active
 5. **No poke.** Delivery is the whole job.
 
 ### C.3 Consuming inbox (act-then-archive)
-1. Update `last_seen` and write `live/<id>.live`.
+1. Rewrite your own `agents/<id>.md` registration with a fresh `last_seen` (§9 — presence is read from this row directly; there is no separate presence file to maintain).
 2. List `inbox/<id>/` oldest-first by filename. Also re-handle any residue in `inbox/<id>/.claimed/` (uncommitted from a prior crash).
 3. **Claim**: `mv inbox/<id>/<file> inbox/<id>/.claimed/<file>` (same canonical name).
 4. **Act** on the claimed content. Make handlers idempotent (a crash before commit re-delivers).

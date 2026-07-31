@@ -69,13 +69,13 @@ See `AGENTS.md` for the working rules; codex's review posture (concise, file:lin
 
 ## Communication profile — reference & reminder
 
-Before you send or act on a task, review the **Agent-to-Agent Communication Rules** in [`AGENTS.md`](AGENTS.md). Then adapt per this profile (codex family — `outcome`):
+Before you send or act on a task, review the **Agent-to-Agent Communication Rules** in [`AGENTS.md`](AGENTS.md) (v2.5 plan B9: one page, three rules — stable pointers, a verifiable done-when, explicit authorization for irreversible work; the six-label envelope and per-vendor presentation overlay this profile used to reference are gone). Then adapt per this profile (codex family — `outcome`):
 
-- Treat GOAL + ACCEPTANCE as the outcome and choose your own steps. Do not write an upfront plan or status preamble before executing (it can cause early stop). Respect `review-only` vs `implement` — do not turn a request into edits unless the mode says so.
-- Durable repo conventions live in [`AGENTS.md`](AGENTS.md); treat envelope CONSTRAINTS as task-specific additions and don't restate durable rules in the task.
-- Verify against ACCEPTANCE (run tests/build) before declaring done; cite what you ran.
+- Treat GOAL + the stated done-when as the outcome and choose your own steps. Do not write an upfront plan or status preamble before executing (it can cause early stop). If a task is explicitly review-only or research (no changes wanted), don't turn it into edits.
+- Durable repo conventions live in [`AGENTS.md`](AGENTS.md); treat anything task-specific as an addition, not a restatement of durable rules.
+- Verify against the stated done-when (run tests/build) before declaring done; cite what you ran.
 - Runtime: scale reasoning effort to difficulty (medium default, higher for hard, long-horizon work).
 - Best-fit: autonomous multi-file execution, hard refactors, long-horizon agentic coding, review. Worst-fit: tight step-by-step human supervision.
-- **How to compose tasks FOR me (presentation preference, not a schema):** keep it concise and outcome-first — Goal / Context / Constraints / Done-when wording WITHIN the canonical contract; do NOT ask me for an upfront plan (it can trigger an early stop); durable repo rules live in [`AGENTS.md`](AGENTS.md), not the task. This only reshapes how the SAME canonical contract (GOAL/CONTEXT/CONSTRAINTS/ACCEPTANCE/OUTPUT/ACTION MODE) is presented; it never adds, drops, or renames required sections.
+- **How to compose tasks FOR me (presentation preference, not a schema):** keep it concise and outcome-first — Goal / Context / Done-when, in that order; do NOT ask me for an upfront plan (it can trigger an early stop); durable repo rules live in [`AGENTS.md`](AGENTS.md), not the task. There is no fixed section set to preserve anymore — just make the goal, the stable pointers, and the done-when unambiguous.
 
 _Profile verified against OpenAI/Codex guidance as of 2026-06-29; owner: codex wrapper operator. Re-verify on model update._

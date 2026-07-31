@@ -17,12 +17,13 @@ import (
 // another agent's mail.
 // What it costs (and the suite shows): cross-agent order is not real (separate
 // inboxes, separate sender clocks), and presence needs a SEPARATE published fact
-// (last_seen / the .live file), because an idle inbox looks identical whether
-// the agent is alive or long gone.
+// (last_seen, v2.5 plan B5 — read directly from the registration row, no
+// separate presence file), because an idle inbox looks identical whether the
+// agent is alive or long gone.
 type inboxBinding struct {
 	mu        sync.Mutex
 	inbox     map[string][]Msg     // id -> ordered messages
-	seen      map[string]time.Time // id -> last_seen  (the .live fact)
+	seen      map[string]time.Time // id -> last_seen (the registration row's presence fact)
 	delivered map[string]bool      // "to|id" -> already landed (v2.5 plan B7: collision detection ONLY, never a dedup no-op)
 	malformed map[string][]string  // id -> quarantined item names (§11.1)
 	window    time.Duration        // freshness window for "alive"

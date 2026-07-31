@@ -31,7 +31,7 @@ coordination **pull-only**, and pull-only has no wake surface to extend:
 - A recipient discovers its own mail by polling its own inbox. A loopless
   wrapper is polled by the reference CLI's runner, which is local to the agent it
   supervises, not a sender-reachable endpoint.
-- Presence is a published `.live` freshness fact, not a wake target: fresh ⇒
+- Presence is a registration-row freshness fact, not a wake target: fresh ⇒
   alive, stale/absent ⇒ not-alive.
 
 So "plug in a new wake mechanism" is no longer a thing. The one genuinely

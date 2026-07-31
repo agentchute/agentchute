@@ -20,8 +20,8 @@ import (
 // What this model BUYS (each shown by the conformance run against it):
 //   - O1 cross-agent order is REAL — one global seq, no sender-clock fiction.
 //   - Presence is FREE — an agent's last cursor advance IS its last_seen.
-//     There is NO .live primitive anywhere. (Compare inbox_binding, which needs
-//     a separate published fact.)
+//     There is no separate presence primitive at all. (Compare inbox_binding,
+//     which needs a separate published fact.)
 //   - No torn-read class — append-only records are atomic by construction.
 //   - Audit/replay is inherent — the stream is the history.
 //
@@ -85,7 +85,7 @@ func (b *logBinding) Presence(id string) (bool, time.Time, bool) {
 	if !ok {
 		return false, time.Time{}, false
 	}
-	// PRESENCE FALLS OUT OF THE CURSOR — no .live file exists in this model.
+	// PRESENCE FALLS OUT OF THE CURSOR — no separate presence file exists in this model.
 	return time.Since(ts) < b.window, ts, true
 }
 

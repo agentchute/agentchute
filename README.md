@@ -8,7 +8,7 @@
 
 A small Markdown protocol that lets AI agents hand off work, request review, and message each other — without a human relaying every step. No server, no broker, no SDK.
 
-[![Protocol v2 — stable](https://img.shields.io/badge/protocol-v2%20stable-1e6f57.svg)](AGENTCHUTE.md) [![CLI v1.0.0](https://img.shields.io/badge/CLI-v1.0.0-1e6f57.svg)](CHANGELOG.md) [![MIT](https://img.shields.io/badge/license-MIT-1e6f57.svg)](LICENSE) [![Conformance · 9 vectors](https://img.shields.io/badge/conformance-9%20vectors-1e6f57.svg)](conformance/)
+[![Protocol v2 — stable](https://img.shields.io/badge/protocol-v2%20stable-1e6f57.svg)](AGENTCHUTE.md) [![CLI v1.0.0](https://img.shields.io/badge/CLI-v1.0.0-1e6f57.svg)](CHANGELOG.md) [![MIT](https://img.shields.io/badge/license-MIT-1e6f57.svg)](LICENSE) [![Conformance · 14 vectors](https://img.shields.io/badge/conformance-14%20vectors-1e6f57.svg)](conformance/)
 
 [Spec](AGENTCHUTE.md) · [Conformance](conformance/) · [Extensions](EXTENSIONS.md) · [Website](https://agentchute.dev) · [Why 1.0 means done →](https://agentchute.dev/blog/v1-0-done-not-big.html)
 
@@ -48,7 +48,7 @@ Five implementation-agnostic primitives. The inbox medium and transport are your
 - **Recipient reads its own inbox.** Pull, not push. Senders write and walk away.
 - **Self-registration + presence.** Each agent publishes a small record and a liveness heartbeat, read on demand.
 
-The guarantees are pinned by **language-neutral conformance vectors** — seven invariants as JSON, run against both shipped bindings, plus a 269-line stdlib-Python proof that the vectors are implementable in any language. An implementation that passes the vectors is conformant, on any substrate.
+The guarantees are pinned by **language-neutral conformance vectors** — 14 vectors as JSON, run against both shipped bindings, plus a 251-line stdlib-Python proof that the vectors are implementable in any language. An implementation that passes the vectors is conformant, on any substrate.
 
 ## A handoff
 
