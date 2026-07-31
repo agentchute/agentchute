@@ -165,12 +165,17 @@ func cmdSend(args []string) error {
 	// present. Pure body manipulation; the reply_required frontmatter
 	// is plumbed via ComposeMessage below.
 	if ask {
-		// Warn-only done-when check (AGENTS.md Communication Rules, rule 2):
-		// an --ask with no verifiable done-when forces the recipient to guess
-		// scope. Advisory only — never blocks the send.
-		if !strings.Contains(strings.ToLower(rawBody), "done-when") {
-			fmt.Fprintf(os.Stderr, "warning: --ask body has no 'done-when' line; the recipient will have to guess when this is done\n")
-		}
+		// The done-when warning (v2.5 plan B9) was removed here (post-1.5.x
+		// friction program, item 3): it grepped for the single literal
+		// spelling "done-when", but AGENTS.md's Communication Rules rule 2
+		// requires only a stated, verifiable completion condition in
+		// free-form style ("no required label order... style is free") —
+		// no spelling is mandated, so a one-spelling substring check
+		// false-positived on every legitimate variant, including the
+		// retired six-label envelope's ACCEPTANCE:. Widening the check to
+		// a second hardcoded label would only move the same false positive
+		// to the next spelling someone reasonably chooses; the rule itself
+		// stays a prose covenant, not a mechanically checkable one.
 		body = applyAskHeading(body)
 		// Self-send + --ask is a loop hazard per AGENTCHUTE.md §6.4: the
 		// sender immediately owes itself a reply. The combination is
