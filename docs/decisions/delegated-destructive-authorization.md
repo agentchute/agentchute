@@ -63,6 +63,7 @@ The vocabulary answers which authority is required. It is policy for task routin
 |---|---|---|
 | `lane.local` | Inspect or edit the task worktree; run tests; build local artifacts; create local commits, unpushed branches, or worktrees; remove task-created local scratch after verifying that no unique work will be lost. This scope never includes a ref that has been pushed. | Assigned task |
 | `repo.ref.create` | Push a new, previously absent branch ref created and owned by the lane; never update or replace an existing remote ref. | PM task naming repository and ref |
+| `repo.ref.append` | Push a fast-forward update to an existing, unmerged, unshared branch ref created and still owned by the lane; never force-update, replace, or rewrite the ref. | PM task naming repository and ref |
 | `repo.pr.open` | Open a PR from an owned new ref to a named base in the same repository. | PM task naming repository, head, and base |
 | `repo.pr.write` | Comment on or review a named PR in the same repository. | PM task naming repository, PR, and action |
 | `repo.shared.mutate` | Merge to a shared branch; delete any remote ref or shared data, including a lane-created branch after it merges; replace a shared ref; force-update; rewrite published history; or change repository settings. | Direct operator confirmation to the acting lane |
@@ -71,7 +72,7 @@ The vocabulary answers which authority is required. It is policy for task routin
 | `account.mutate` | Read or change credentials, account state, access control, or service settings. | Direct operator confirmation to the acting lane |
 | `external.write` | Send, publish, mutate, or delete anything outside the named repository. | Direct operator confirmation to the acting lane |
 
-An action not listed above is operator-reserved until the table is deliberately amended. A mixed task uses the highest required authority. `repo.ref.create` becomes `repo.shared.mutate` if the resolved remote ref already exists; the lane checks that fact immediately before pushing.
+An action not listed above is operator-reserved until the table is deliberately amended. A mixed task uses the highest required authority. The lane checks the resolved remote ref immediately before pushing: a missing ref uses `repo.ref.create`; an existing ref uses `repo.ref.append` only when the push is a fast-forward and the branch remains lane-owned, unmerged, and unshared; every other update uses `repo.shared.mutate`.
 
 Tasks SHOULD name scopes with `SCOPE:` and must still name the concrete action and targets. `AUTHORIZATION:` remains the recommended presentation for the exact action, not a token the binary parses. For example:
 
