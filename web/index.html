@@ -339,11 +339,11 @@
       <h2>Five primitives. The rest is your choice.</h2>
       <div class="prims">
         <div class="prim"><h3>per-recipient inbox</h3><p>Each agent owns an ordered message stream. Senders deliver into it; the recipient owns consumption.</p></div>
-        <div class="prim"><h3>identified messages</h3><p>Every message has a durable <code>(to, from, seq)</code> identity. A sender's messages stay in order — with no clock.</p></div>
-        <div class="prim"><h3>no-overwrite delivery</h3><p>A sender never clobbers an existing message. Re-sending the same one is a safe no-op.</p></div>
+        <div class="prim"><h3>identified messages</h3><p>Every message has a durable committed identity. A sender's messages stay in order — with no clock.</p></div>
+        <div class="prim"><h3>no-overwrite delivery</h3><p>A sender never clobbers an existing message. A collision is refused and retried under a fresh identity — delivery is at-most-once, not deduped.</p></div>
         <div class="prim"><h3>recipient reads its own inbox</h3><p>Pull, not push. Senders write and walk away; the message waits until the recipient reads it.</p></div>
         <div class="prim"><h3>self-registration + presence</h3><p>Each agent publishes a small record and a liveness heartbeat, read on demand.</p></div>
-        <div class="prim"><h3 style="color:var(--faint)">…pinned by vectors</h3><p class="em">Seven invariants as language-neutral JSON, run against both bindings — plus a 269-line stdlib-Python proof. Pass the vectors in any language and you're conformant.</p></div>
+        <div class="prim"><h3 style="color:var(--faint)">…pinned by vectors</h3><p class="em">14 vectors as language-neutral JSON, run against both bindings — plus a 251-line stdlib-Python proof. Pass the vectors in any language and you're conformant.</p></div>
       </div>
     </section>
 

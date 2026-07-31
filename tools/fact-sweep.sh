@@ -11,9 +11,18 @@ bad() { say "FAIL: $*"; fail=1; }
 # Surfaces that carry published numbers (docs + website; CHANGELOG history is exempt below).
 SURFACES="README.md AGENTCHUTE.md web"
 
+# CURRENT_SURFACES drops web/blog/: those are dated, published posts describing a
+# point-in-time state, exactly like a CHANGELOG entry — a line/vector count is a
+# historical fact there, not a live claim, and it legitimately drifts as the
+# codebase grows after the post was written. web/index.html (the current landing
+# page) and every other surface still get the live currency check below.
+CURRENT_SURFACES=$(find $SURFACES -type f ! -path 'web/blog/*' 2>/dev/null)
+
 # 1. "NNN-line ... Python" claims must equal the actual runner.py line count.
+# CHANGELOG.md is history, like web/blog/ above (see check 3's identical treatment
+# of the superseded 8,281 figure) — not scanned here for the same reason.
 actual_lines=$(wc -l < conformance/example-python-binding/runner.py | tr -d ' ')
-claims=$(grep -rhoE '[0-9]+-line[^.]{0,30}Python|[0-9]+-line stdlib' $SURFACES CHANGELOG.md 2>/dev/null | grep -oE '^[0-9]+' | sort -u)
+claims=$(grep -hoE '[0-9]+-line[^.]{0,30}Python|[0-9]+-line stdlib' $CURRENT_SURFACES 2>/dev/null | grep -oE '^[0-9]+' | sort -u)
 for n in $claims; do
   [ "$n" = "$actual_lines" ] || bad "a '${n}-line' Python-proof claim exists but runner.py is ${actual_lines} lines"
 done
@@ -21,7 +30,7 @@ say "python proof: runner.py=${actual_lines} lines; claims found: $(printf '%s '
 
 # 2. Vector-count claims ("9 vectors", badge '9%20vectors') must equal core.json's vector count.
 actual_vectors=$(grep -c '"id"' conformance/vectors/core.json)
-vclaims=$(grep -rhoE '[0-9]+ vectors|[0-9]+%20vectors' $SURFACES CHANGELOG.md 2>/dev/null | grep -oE '^[0-9]+' | sort -u)
+vclaims=$(grep -hoE '[0-9]+ vectors|[0-9]+%20vectors' $CURRENT_SURFACES 2>/dev/null | grep -oE '^[0-9]+' | sort -u)
 for n in $vclaims; do
   [ "$n" = "$actual_vectors" ] || bad "a '${n} vectors' claim exists but core.json has ${actual_vectors}"
 done

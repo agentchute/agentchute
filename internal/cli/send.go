@@ -165,6 +165,12 @@ func cmdSend(args []string) error {
 	// present. Pure body manipulation; the reply_required frontmatter
 	// is plumbed via ComposeMessage below.
 	if ask {
+		// Warn-only done-when check (AGENTS.md Communication Rules, rule 2):
+		// an --ask with no verifiable done-when forces the recipient to guess
+		// scope. Advisory only — never blocks the send.
+		if !strings.Contains(strings.ToLower(rawBody), "done-when") {
+			fmt.Fprintf(os.Stderr, "warning: --ask body has no 'done-when' line; the recipient will have to guess when this is done\n")
+		}
 		body = applyAskHeading(body)
 		// Self-send + --ask is a loop hazard per AGENTCHUTE.md §6.4: the
 		// sender immediately owes itself a reply. The combination is

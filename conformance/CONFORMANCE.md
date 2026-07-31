@@ -104,7 +104,7 @@ just that Go code — against the same fixture set promoted from
 - **`TestFM1_Accept`** — every well-formed block is accepted and its fields
   extracted exactly as documented: quoting (double, single, escaped),
   whitespace around keys/values/delimiters, CRLF, blank lines inside the
-  block, a list header at zero/one/tab/two-space item indentation, an
+  block, a list header at zero/tab/two-space item indentation, an
   empty scalar, a value containing `:` or `#`, a key containing characters
   outside `[A-Za-z0-9_]` (there is no key charset restriction), the
   `null`/`~` sentinel collapse, a double-quoted backslash escape actually
@@ -140,13 +140,14 @@ makes it concrete — on `log`, carol literally reads bob's message.
 MODEL: log (shared append-only stream + cursors)
 ...
 ORDER : real cross-agent order — one global sequence
-PRES  : derived from CURSOR advance — no .live file. alice alive=true, carol alive=true
+PRES  : derived from CURSOR advance — no separate presence fact needed. alice alive=true, carol alive=true
 B1    : SHARED  — peer 'carol' can read bob's bodies: ["PING: please review PR 42"].
 ```
 
 The three lines are exactly the three places the models differ: ordering source,
-presence source (the log has **no `.live`** — presence falls out of the cursor),
-and body privacy.
+presence source (on `log`, presence falls out of the cursor with no separate
+published fact at all; on `inbox`, it's a separately-published `last_seen`,
+read directly from the registration row — v2.5 plan B5), and body privacy.
 
 ## Adding a binding
 

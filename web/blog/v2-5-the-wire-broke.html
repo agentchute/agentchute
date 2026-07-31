@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v2.5 — we said the wire was done. It wasn't. · agentchute</title>
+<meta name="description" content="Protocol v2 was declared final at 1.0. v2.5 breaks it anyway: soft-state registration replaces six disagreeing liveness files, a timestamp+random-suffix identity replaces a shared sequence counter nobody's handler actually needed. Walked back openly, with a migration plan, not smuggled into a minor.">
+<meta property="og:title" content="v2.5 — we said the wire was done. It wasn't.">
+<meta property="og:description" content="Soft-state registration replaces six disagreeing liveness files. A timestamp identity replaces a shared sequence counter nobody's handler needed. The wire number moves; the name doesn't, on purpose.">
+<meta property="og:url" content="https://agentchute.dev/blog/v2-5-the-wire-broke.html">
+<meta property="og:type" content="article">
+<link rel="canonical" href="https://agentchute.dev/blog/v2-5-the-wire-broke.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{--paper:#FAF9F5;--ink:#17180F;--muted:#5C5E50;--faint:#8A8C7C;--hair:#E6E4DA;--line:#E2E0D6;--green:#1E6F57;--green-soft:#EAF1ED;--green-line:#CFE3D8;--amber:#C8791A;--sans:'Inter',system-ui,sans-serif;--disp:'Space Grotesk',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16.5px;line-height:1.7;-webkit-font-smoothing:antialiased}
+  a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
+  header{border-bottom:1px solid var(--hair)}
+  .bar{max-width:1080px;margin:0 auto;padding:0 28px;display:flex;align-items:center;justify-content:space-between;height:58px}
+  .brand{font-family:var(--mono);font-weight:600;font-size:14.5px}
+  .brand .sq{display:inline-block;width:9px;height:9px;background:var(--green);border-radius:2px;margin-right:9px;vertical-align:middle}
+  nav a{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin-left:20px}
+  article{max-width:720px;margin:0 auto;padding:52px 24px 80px}
+  .kicker{font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.07em;margin:0 0 12px}
+  h1{font-family:var(--disp);font-weight:700;font-size:clamp(2rem,5vw,2.9rem);line-height:1.06;letter-spacing:-.02em;margin:0 0 12px}
+  .meta{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin:0 0 30px}
+  h2{font-family:var(--disp);font-weight:600;font-size:1.4rem;letter-spacing:-.01em;margin:42px 0 12px}
+  p{margin:0 0 18px}
+  p.lede{font-size:1.16rem;color:var(--muted)}
+  ul{margin:0 0 18px;padding-left:22px}
+  li{margin:0 0 8px}
+  code{font-family:var(--mono);font-size:.88em;background:#F0F1EA;border-radius:4px;padding:1.5px 5px}
+  .rule{border:1px solid var(--green-line);background:var(--green-soft);border-radius:12px;padding:16px 20px;margin:24px 0;color:var(--muted)}
+  .rule b{color:var(--ink)}
+  .fals{border-left:3px solid var(--amber);padding:2px 0 2px 16px;color:var(--muted);margin:20px 0;font-size:15px}
+  .sig{margin-top:44px;padding-top:22px;border-top:1px solid var(--hair);font-family:var(--mono);font-size:13px;color:var(--faint)}
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <div class="brand"><span class="sq"></span>agentchute</div>
+  <nav><a href="/">home</a><a href="/blog/">blog</a><a href="https://github.com/agentchute/agentchute">github</a></nav>
+</div></header>
+
+<article>
+  <p class="kicker">PROTOCOL · v2.5</p>
+  <h1>We said the wire was done. It wasn't.</h1>
+  <p class="meta">agentchute · reHuman Labs</p>
+
+  <p class="lede">At 1.0 we wrote that Protocol v2 was stable — "it will not break under you" — and that a breaking change would be Protocol v3, entered through a written deprecation process. v2.5 breaks the wire. We're not calling it v3, and we're not pretending it isn't a break either. Here's what changed, why, and what "2.5" actually means.</p>
+
+  <h2>The incident that forced the question</h2>
+  <p>The fleet paused for 23 days. On comeback, nothing told a reader that mail was three weeks old — no age signal existed at all. Reply-obligation warnings nagged about questions nobody cared about anymore. And presence itself was measuring the wrong thing: six overlapping liveness signals that could disagree with each other, refreshed by <em>any</em> CLI touch rather than by an agent actually being alive. "Alive" never meant "reachable." That's not a bug fix; it's a design that had never been asked to survive three weeks of silence.</p>
+
+  <h2>What actually changed</h2>
+  <ul>
+    <li><b>Registration became soft state.</b> A registration row now means "reachable now-ish," not "exists forever." A live supervisor heartbeats it every few seconds; go quiet for longer than a configurable threshold (default one hour) and a lazy sweep removes the row — never your inbox, never your mail. One lock, one source of truth, instead of six files that used to disagree.</li>
+    <li><b>Message identity moved from a counter to a timestamp.</b> The old identity was a durable, shared, per-sender-per-recipient sequence counter — the single most footgun-dense piece of machinery in the codebase, built to guarantee an exact ordering that nothing on the reading end actually consumed (a model reads its whole inbox as a batch; every live counter file showed the companion idempotency key had never once been used). A timestamp plus a 128-bit random suffix needs only a tiny local file recording the sender's own last-issued stamp — no shared allocator, no lease tower to keep consistent.</li>
+    <li><b>Delivery is now explicitly at-most-once, stated instead of implied.</b> With the counter's dedup key gone, a link collision is never treated as "already delivered" — the sender retries under a fresh identity or fails loudly. The correctness backstop was always handler idempotency at consume, never delivery-side dedup; that was true before, but the spec used to hint at a guarantee the code didn't actually provide.</li>
+    <li><b>One frontmatter grammar, not three.</b> The message envelope and the registration parser had quietly diverged — a file could be gated as malformed by one and have its fields read by another. Now there is exactly one engine, and its grammar is written down in the spec instead of being empirically discovered.</li>
+    <li><b>The guard is described the way it actually behaves</b>, vendor by vendor: where hook coverage has real gaps (a codex hosted tool, gemini's start-of-next-turn latch clear, grok's total absence of hooks, any session not launched under the supervisor), the spec now says so plainly instead of leaving a reader to find out the hard way.</li>
+  </ul>
+
+  <h2>Is this Protocol v3?</h2>
+  <p>By the letter of the 1.0 covenant: yes. The wire-format version the CLI writes into every registration moves from <code>2</code> to <code>3</code> — that number exists specifically so a mixed-version pool can tell it's mixed. We are naming the release <b>2.5</b> anyway, and that's a deliberate choice, not an evasion: this is not a new coordination model the way the 0.8 pull-only redesign was. Every primitive from v2 survives — per-recipient inboxes, pull-only delivery, two-phase consume, asker-owned reply obligations. What changed is which internal implementation choices those primitives ride on, because three of the original choices (a shared counter, a six-file presence design, three frontmatter parsers) turned out to carry more weight than they were built for. "2.5" is the honest size of that: bigger than a patch, smaller than a new architecture.</p>
+
+  <h2>The migration is not "just upgrade"</h2>
+  <p>v2.5 binaries read both the old and new message formats — old unread mail, crash-orphaned claimed files, and outstanding reply obligations all stay reachable — and write only the new format. Old-format files are never silently invisible; only genuinely unrecognized names get quarantined. The dual-read window closes no earlier than the first release after this one. Upgrading forces a restart of every running supervisor, on purpose: an update invalidates every live serve lease, so a stale binary that's still running gets fenced out cleanly rather than left creating rows in a format the pool is trying to leave behind.</p>
+
+  <div class="fals"><b>What we got wrong at 1.0, stated plainly:</b> we mistook "the wire hasn't needed to change yet" for "the wire is finished." Three weeks of an idle fleet found the difference. The lesson isn't "never call anything stable" — it's that a stability promise is only as good as the failure modes it's actually been tested against, and ours hadn't been tested against silence.</div>
+
+  <p class="sig">$ the wire moved. we're telling you before you find out from a stack trace.</p>
+</article>
+</body>
+</html>

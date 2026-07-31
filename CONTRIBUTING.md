@@ -51,7 +51,7 @@ No new third-party dependencies beyond the existing PTY runner dependency (`gith
 
 Outside the reference CLI:
 
-- Non-filesystem inbox transports. Alternate transports (queues, HTTP, object stores) are protocol-compatible per EXTENSIONS.md but don't ship in the reference CLI. Within one pool, participants must share one filesystem — cross-machine over a network mount is in scope, cross-filesystem inside one pool is not.
+- Non-filesystem inbox transports. Alternate transports (queues, HTTP, object stores) are protocol-compatible per EXTENSIONS.md but don't ship in the reference CLI. Within one pool, participants must share one filesystem — single-host is the CI-tested, supported configuration. Cross-machine over a shared network mount is real (some pools use it, including this project's own at points in its history): specific paths — the serve lease's cross-host reclaim rule, `setup --wipe-state`'s foreign-claim refusal — are fail-closed for that case, but nothing broader about cross-host operation is independently verified (see `AGENTCHUTE.md` §2 for the precise boundary; don't generalize "these two paths fail closed" into "cross-host is safe"). Cross-filesystem inside one pool is out of scope regardless.
 - Wildcard inboxes / broadcast / self-claim mechanisms (deliberately excluded — see `AGENTCHUTE.md` §7 / §12).
 - Capability-based routing (also deliberately excluded).
 - Built-in role/election machinery.
