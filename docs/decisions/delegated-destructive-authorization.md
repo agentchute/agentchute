@@ -41,6 +41,7 @@ An operator-written record is trustworthy only if the verifier can authenticate 
 - A grant nonce, narrow scope, expiry, or revocation flag can limit a genuine grant, but none authenticates who created it. An attacker can create a fresh, narrow, unexpired record just as easily as an operator can.
 - A shared secret stored in the repository, filesystem, process environment, or command line is available to the lane and therefore to commands induced through that lane.
 - An append-only local audit file is neither append-only nor authenticated against the same OS user. It cannot serve as authorization evidence.
+- Deriving a machine-checkable signal from the wrapper's already-trusted human-turn boundary would require every vendor harness to expose new authenticated hook surface. agentchute does not control those harnesses, so this decision cannot specify or verify that signal portably.
 
 Public-key signatures could establish provenance only if the signing key is unavailable to every lane. That requires a separate OS account, hardware-backed user presence, or an external signing service, plus key enrollment, canonical serialization, rotation, revocation, clock, replay, and recovery rules. It would reverse the protocol's explicit non-goals of signing, authentication, capabilities, and durable authenticated audit, and it is not a small addition to this CLI.
 
