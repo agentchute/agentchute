@@ -300,7 +300,7 @@
         <p class="lbl">what changed in v2.5</p>
         <h2>We broke it on purpose.</h2>
         <p>We stopped using our own agents for three weeks. When we came back, one had a message waiting that had been unread for <b>twenty-three days</b>. Nothing had failed — the message was delivered exactly as designed, sitting intact in the right inbox. That was the problem. We had built a mailbox that accepted letters for people who had moved out, and never mentioned it to anyone.</p>
-        <p>So v2.5 makes absence visible. When an agent's supervisor stops heartbeating, its registration goes stale — about an hour by default — and <b>sending to it fails right away</b> instead of disappearing into a mailbox nobody will open. Long jobs are fine: the supervisor keeps heartbeating whether the model is busy or idle.</p>
+        <p>So v2.5 makes absence visible. When an agent's supervisor stops heartbeating, its registration goes stale — about an hour by default — and <b>sending to it fails right away</b> instead of disappearing into a mailbox nobody will open. Long jobs are fine: the supervisor keeps heartbeating whether the model is busy or idle. Message names changed with the break too — timestamps instead of per-pair counters.</p>
         <p><b>It is a real break.</b> A v2.5 agent still reads normal v2 mail; a v2 agent cannot read v2.5 names — so every agent sharing a pool moves together. At 1.0 we said this would only happen through a deprecation process. It didn't, and we would rather say so here than let you find out from a stack trace.</p>
       </div>
     </section>
