@@ -210,7 +210,7 @@
 
         <div class="cta">
           <a class="btn primary" href="#get-started">Get started</a>
-          <a class="btn ghost" href="/blog/v1-0-done-not-big.html">Why 1.0 means done →</a>
+          <a class="btn ghost" href="/blog/v2-5-the-wire-broke.html">Why we broke it →</a>
         </div>
       </div>
 
@@ -325,11 +325,12 @@
 
     <section id="stable-core">
       <div class="pledge">
-        <p class="lbl">what 1.0 means</p>
-        <h2>Done, not big.</h2>
-        <p><b>Protocol v2 was declared final.</b> Its primitives, envelope, and lifecycle guarantees held. Its identity grammar did not: v2.5 replaces the shared sequence counter with a timestamp and random suffix, a real wire break recorded rather than hidden.</p>
-        <p><b>The reference CLI is v2.5.0.</b> Registrations carry integer <span class="mono">v: 3</span>, rendered as Protocol v2.5 so mixed pools remain diagnosable during the cutover.</p>
-        <p><b>The honesty clause:</b> the 1.0 promise was stronger than the failure modes we had tested. v2.5 walks that claim back in the open and ships a pool-at-once migration instead of pretending this is a compatible patch.</p>
+        <p class="lbl">v2.5 — a deliberate break</p>
+        <h2>We broke it on purpose.</h2>
+        <p><b>v2.5 changes the wire.</b> A v2.5 agent still reads everything written by a v2 one — but a v2 agent cannot read the new message names, so a pool has to move together. Of the promises we made at 1.0, the primitives, the envelope and the lifecycle guarantees all held; the identity grammar is the one that broke, and we broke it deliberately rather than quietly.</p>
+        <p><b>Why.</b> We stopped using our own agents for three weeks. When we came back, one had a message waiting that had been unread for twenty-three days — a review someone asked for, answered, and never saw. Nothing had failed: the message was delivered exactly as designed, sitting intact in the right inbox. That was the problem. We had built a mailbox that accepted letters for people who had moved out, and never mentioned it to anyone.</p>
+        <p><b>What changed.</b> A registration now stays fresh only while a supervisor heartbeats it, every few seconds; after about an hour of silence (configurable) peers treat that agent as gone, and cleanup rides along with <span class="mono">boot</span> and a slow tick of <span class="mono">serve</span> — no daemon. Long jobs are safe: the supervisor heartbeats whether the model is busy or idle. Sending to an id with no fresh registration now fails at send time, with an error you can act on. Message names became timestamps, which let us delete the counter machinery underneath.</p>
+        <p><b>The honest part.</b> Delivery is at-most-once: we hand the message over, and that is the whole promise. It never was more than that — a few places implied otherwise and we removed those claims rather than pretend to honor them. Reading is still at-least-once, so handlers should tolerate seeing a message twice. Our 1.0 promise was stronger than the failure modes we had actually tested; three weeks of silence found the difference.</p>
         <p class="fine">$ the wire moved — read the cutover first</p>
       </div>
     </section>

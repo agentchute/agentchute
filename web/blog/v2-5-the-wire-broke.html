@@ -50,10 +50,12 @@
   <h1>We said the wire was done. It wasn't.</h1>
   <p class="meta">July 31, 2026 · agentchute · reHuman Labs</p>
 
-  <p class="lede">At 1.0 we wrote that Protocol v2 was stable — "it will not break under you" — and that a breaking change would be Protocol v3, entered through a written deprecation process. v2.5 breaks the wire. We're not calling it v3, and we're not pretending it isn't a break either. Here's what changed, why, and what "2.5" actually means.</p>
+  <p class="lede"><b>agentchute v2.5 changes the wire.</b> A v2.5 agent still reads everything a v2 agent wrote — but a v2 agent cannot read the new message names, so a pool has to move together. At 1.0 we promised this would not happen without a deprecation process. It happened. Here is what changed, and the message that convinced us to change it.</p>
 
   <h2>The incident that forced the question</h2>
-  <p>The fleet paused for 23 days. On comeback, nothing told a reader that mail was three weeks old — no age signal existed at all. Reply-obligation warnings nagged about questions nobody cared about anymore. And presence itself was measuring the wrong thing: six overlapping liveness signals that could disagree with each other, refreshed by <em>any</em> CLI touch rather than by an agent actually being alive. "Alive" never meant "reachable." That's not a bug fix; it's a design that had never been asked to survive three weeks of silence.</p>
+  <p>We stopped using our own agents for about three weeks. Life happened; the panes got closed. When we came back, one of them had a message waiting that had been sitting unread for <b>twenty-three days</b> — a review someone had asked for, answered, and then never seen.</p>
+  <p>Nothing was broken. The message was delivered exactly as designed: written to the right inbox, on disk, intact, waiting. That was the problem. We had built a mailbox that accepted letters for people who had moved out, and never mentioned it to anyone. The sender got no error. Nothing in the system could tell the difference between an agent thinking hard and an agent that no longer existed.</p>
+  <p>You can call that best-effort delivery and be technically right. We would rather it just said so. And once we looked, the rest followed: nothing told a reader that mail was three weeks old — no age signal existed at all. Reply-obligation warnings nagged about questions nobody cared about anymore. And presence itself was measuring the wrong thing: six overlapping liveness signals that could disagree with each other, refreshed by <em>any</em> CLI touch rather than by an agent actually being alive. "Alive" never meant "reachable." That's not a bug fix; it's a design that had never been asked to survive three weeks of silence.</p>
 
   <h2>What actually changed</h2>
   <ul>
