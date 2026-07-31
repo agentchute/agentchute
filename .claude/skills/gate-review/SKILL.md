@@ -27,8 +27,16 @@ before acting if this is your first gate this session.
    correctness/security/simplification checks here — invoke `code-review`, `verify`,
    and/or `verification-before-completion` for the substance of "is this diff correct."
    This skill only supplies the bus-specific wrapper around that review.
-5. **Verdict = `SHIP` or `FIX`**, with `file:line` evidence, delivered as the bus reply —
+5. **Own the checkout, own the cleanup — same turn, no exceptions.** This obligation now
+   lives in `docs/internal/PLAYBOOKS.md`'s `gate-review`/`delta-regate` steps (binding on
+   every lane, not just this skill's own wrapper — Codex doesn't load `.claude/skills`,
+   which is exactly how half the litter this step exists to stop kept accumulating). If
+   you entered your checkout via `EnterWorktree` rather than a manual `git worktree add
+   .tmp/worktrees/review-<pr> <sha>`, its native session-tracked cleanup already covers
+   this — see CLAUDE.md's Worktrees note; you still owe the manual `git worktree remove`
+   for a `path`-entered pinned-SHA checkout, same turn, before the verdict.
+6. **Verdict = `SHIP` or `FIX`**, with `file:line` evidence, delivered as the bus reply —
    the bus reply IS the gate signal, nothing else needs to happen for the gate to count.
-6. **Never `gh pr comment`/`gh pr review` unless the ask carries an explicit
+7. **Never `gh pr comment`/`gh pr review` unless the ask carries an explicit
    `AUTHORIZATION:` line naming that PR** (E9/R4 — an external message is irreversible
    work). No authorization line means bus-only.
