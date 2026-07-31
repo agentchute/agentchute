@@ -53,7 +53,7 @@
   <p class="lede"><b>agentchute v2.5 changes the wire.</b> A v2.5 agent still reads normal v2 mail — but a v2 agent cannot read the new message names, so a pool has to move together. At 1.0 we promised this would not happen without a deprecation process. It happened. Here is what changed, and the message that convinced us to change it.</p>
 
   <figure>
-    <img src="/blog/assets/v25-lived-and-learned.svg" alt="Three-panel diagram for agentchute v2.5: a fleet pause of about three weeks left a review message unread for 23 days in an inbox; the old bus could not tell a thinking agent from one that had moved out; the change replaces struck-out the .live file, the detached poller, presence-scan, sequence-allocator, identity-guessing and duplicate-parser machinery with soft registration and sweep, send that fails if unreachable, timestamp identity, and a per-session guard latch — replacement, not a diet.">
+    <img src="/blog/assets/v25-lived-and-learned.svg" alt="Three-panel diagram for agentchute v2.5: a fleet pause of about three weeks left a review message unread for 23 days in an inbox; the old bus could not tell a thinking agent from one that had moved out; the change replaces the struck-out .live file, detached poller, presence scan, shared sequence allocator, identity guessing, and duplicate-parser machinery with soft registration and sweep, send that fails if unreachable, timestamp identity, and a per-session guard latch — replacement, not a diet.">
     <figcaption>we ran it on ourselves, hit a real failure, and replaced what failed — net lines up, design sharper</figcaption>
   </figure>
 
