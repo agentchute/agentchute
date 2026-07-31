@@ -34,6 +34,22 @@ for _var in $(env | sed -n 's/^\(AGENTCHUTE_[A-Za-z0-9_]*\)=.*/\1/p'); do
 	unset "$_var" || true
 done
 
+# pool_has_registration reports whether <loop>/agents holds at least one real
+# registration row, ignoring the repo's tracked reference files (README.md and
+# *.example.md). Those ship in a clean checkout and are not evidence of a pool.
+pool_has_registration() {
+	loop=$1
+	for f in "$loop"/agents/*.md; do
+		[ -e "$f" ] || continue
+		base=${f##*/}
+		case "$base" in
+		README.md | *.example.md) continue ;;
+		esac
+		return 0
+	done
+	return 1
+}
+
 refuse_live_pool() {
 	candidate=$1
 	label=$2
@@ -41,7 +57,14 @@ refuse_live_pool() {
 	loop=$candidate
 	[ -d "$loop/agents" ] || loop="$candidate/.agentchute/loop"
 	[ -d "$loop/agents" ] || return 0
-	if ls "$loop"/agents/*.md >/dev/null 2>&1 || ls "$loop"/state/*/serve.claim >/dev/null 2>&1; then
+	# A real pool is proven by a REGISTRATION row or a serve claim. The repo
+	# tracks reference files under agents/ (README.md and *.example.md) in a
+	# fresh checkout, so a bare *.md glob matches on every CI runner and this
+	# guard then refuses to run anywhere — which is exactly what happened: the
+	# rehearsal has never once executed on a release/v2.5 push, leaving B2's
+	# safety net unverified. Exempt them, the same way every other enumerator
+	# in this codebase does (presence_scan.go, setup_wipe.go, sweep.go).
+	if pool_has_registration "$loop" || ls "$loop"/state/*/serve.claim >/dev/null 2>&1; then
 		printf 'REFUSING TO RUN: %s points at a real agentchute pool (%s).\n' "$label" "$loop" >&2
 		printf 'This rehearsal invalidates every serve lease in the pool it resolves and would fence that fleet.\n' >&2
 		printf 'Run it from a shell with no AGENTCHUTE_* env and no live pool in scope (CI, or a scratch dir).\n' >&2
