@@ -770,9 +770,19 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		// finished green while a hook file invoked a subcommand the new
 		// binary had removed, and the destructive reset then forced every
 		// supervisor to restart straight into that broken hook. On a
-		// verification failure this returns before the reset runs, so
-		// running supervisors are left un-fenced rather than forced to
-		// restart into a known-broken hook (see docs/decisions/
+		// verification failure this returns before the reset runs, so it
+		// never gets a chance to force a restart into that known-broken
+		// hook. What this buys depends on the caller: a DIRECT `agentchute
+		// setup` invocation has not invalidated any serve lease yet at this
+		// point, so its supervisors stay genuinely un-fenced. An `agentchute
+		// update` resync is different — cmdUpdate invalidates every serve
+		// lease BEFORE it ever re-execs `setup` (internal/cli/update.go, well
+		// before the resync call), so by the time this phase could fail here
+		// supervisors are already fenced regardless; what this still buys on
+		// that path is avoiding a redundant local-runner-stop/state-clear and,
+		// more importantly, keeping this process from ever printing "setup
+		// complete" — which is what stops `cmdUpdate` from reaching its own
+		// final restart-success banner (see docs/decisions/
 		// agentchute-update-fix-v2.md).
 		refreshedHooks, err := refreshHookCompatibility(root)
 		if err != nil {

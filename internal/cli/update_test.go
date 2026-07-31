@@ -437,6 +437,87 @@ func TestUpdateInvalidatesLeaseBeforeSetupResync(t *testing.T) {
 	}
 }
 
+// codex review on PR #110 [P1]: the forced-verification-failure test in
+// setup_test.go proves cmdSetup's own contract, but acceptance item 3
+// ("forced verification failure propagates through setup/update resync")
+// also requires proving it through the UPDATE apply path specifically —
+// non-zero, actionable output, and the final done=true restart banner
+// (printRestartWarning(..., true), the "serve leases were invalidated"
+// past-tense line) never reached. updateRunResync stands in for the
+// exec'd `setup` subprocess dying non-zero the way it would if the
+// post-refresh hook compatibility verification (setup.go's Phase 2.5)
+// failed inside it — this is update.go's existing, unchanged resync-
+// failure handling, exercised against that specific failure shape.
+func TestUpdate_ResyncVerificationFailurePreventsFinalRestartBanner(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions used by the writable probe")
+	}
+	root := t.TempDir()
+	installDir := t.TempDir()
+	bin := filepath.Join(installDir, "agentchute")
+	if err := os.WriteFile(bin, []byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0}, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	asset := fmt.Sprintf("agentchute_0.5.0_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	archive := makeTarGz(t, map[string][]byte{"agentchute": []byte("NEW-BINARY-BYTES")})
+	sum := sha256.Sum256(archive)
+	checksum := hex.EncodeToString(sum[:])
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "checksums.txt"):
+			fmt.Fprintf(w, "%s  %s\n", checksum, asset)
+		case strings.HasSuffix(r.URL.Path, asset):
+			w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	oldBase := updateGitHubBase
+	oldTarget := resolveUpdateTargetForTest
+	oldResync := updateRunResync
+	updateGitHubBase = srv.URL
+	resolveUpdateTargetForTest = bin
+	updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
+		return errors.New("hook compatibility verification failed: hook file(s) invoke unknown agentchute subcommand(s) after refresh: claude-code (`poller`) — run `agentchute hooks install --wrapper all --scope repo --force`")
+	}
+	t.Cleanup(func() {
+		updateGitHubBase = oldBase
+		resolveUpdateTargetForTest = oldTarget
+		updateRunResync = oldResync
+	})
+
+	var updateErr error
+	var stderr string
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeSetupPoolState(cfg, "runner", nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		stderr = captureStderr(t, func() {
+			updateErr = cmdUpdate([]string{"--version", "v0.5.0"})
+		})
+	})
+
+	if updateErr == nil {
+		t.Fatal("expected a resync verification failure to surface as a non-zero update error")
+	}
+	for _, want := range []string{"re-sync FAILED", "Finish the re-sync manually", "hooks install --wrapper all --scope repo --force"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing actionable content %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Contains(stderr, "agentchute updated to v0.5.0; serve leases were invalidated.") {
+		t.Errorf("final done=true restart banner must NOT print after a resync verification failure:\n%s", stderr)
+	}
+}
+
 // #1 regression: path resolution must not require a writable dir (so --dry-run
 // never mutates), while the apply-only writable probe correctly fails read-only.
 func TestResolveTargetSplitFromWritableProbe(t *testing.T) {
