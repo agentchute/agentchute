@@ -61,11 +61,11 @@ The vocabulary answers which authority is required. It is policy for task routin
 
 | Scope | Included action | Minimum authority |
 |---|---|---|
-| `lane.local` | Inspect or edit the task worktree; run tests; build local artifacts; create local commits, branches, or worktrees; remove task-created scratch after verifying that no unique work will be lost. | Assigned task |
+| `lane.local` | Inspect or edit the task worktree; run tests; build local artifacts; create local commits, unpushed branches, or worktrees; remove task-created local scratch after verifying that no unique work will be lost. This scope never includes a ref that has been pushed. | Assigned task |
 | `repo.ref.create` | Push a new, previously absent branch ref created and owned by the lane; never update or replace an existing remote ref. | PM task naming repository and ref |
 | `repo.pr.open` | Open a PR from an owned new ref to a named base in the same repository. | PM task naming repository, head, and base |
 | `repo.pr.write` | Comment on or review a named PR in the same repository. | PM task naming repository, PR, and action |
-| `repo.shared.mutate` | Merge to a shared branch, delete or replace a shared ref or data, force-update, rewrite published history, or change repository settings. | Direct operator confirmation to the acting lane |
+| `repo.shared.mutate` | Merge to a shared branch; delete any remote ref or shared data, including a lane-created branch after it merges; replace a shared ref; force-update; rewrite published history; or change repository settings. | Direct operator confirmation to the acting lane |
 | `repo.tag.mutate` | Create, move, or delete a tag. | Direct operator confirmation to the acting lane |
 | `repo.release.publish` | Publish, edit, or delete a release. | Direct operator confirmation to the acting lane |
 | `account.mutate` | Read or change credentials, account state, access control, or service settings. | Direct operator confirmation to the acting lane |
