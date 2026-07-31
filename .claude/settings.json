@@ -5,6 +5,7 @@
       "Bash(agentchute send:*)",
       "Bash(agentchute ack:*)",
       "Bash(agentchute gate:*)",
+      "Bash(agentchute turn-end:*)",
       "Bash(agentchute boot:*)",
       "Bash(agentchute doctor:*)",
       "Bash(agentchute status:*)",
@@ -57,20 +58,23 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} guard --pre-tool-use"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --quiet"
-          },
-          {
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} ack --quiet"
-          },
-          {
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} gate --before finish --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --json"
           }
         ]
       }
