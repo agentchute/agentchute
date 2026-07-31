@@ -323,6 +323,13 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 		updateRunResync = oldResync
 	})
 
+	// codex acceptance item 5 (update-fix-v2, docs/decisions/agentchute-
+	// update-fix-v2.md): --no-resync waives the hook-compatibility
+	// postcondition entirely — a pre-existing (even stale) hook file must
+	// come out byte-identical, with no backup written.
+	mustWriteStaleHook(t, root, "claude-code")
+	staleHook := mustRead(t, filepath.Join(root, ".claude", "settings.json"))
+
 	var lease *loop.ServeLease
 	withCwd(t, root, func() {
 		mustExampleRepo(t, root) // deliberately NO saved setup state
@@ -351,6 +358,13 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 	}
 	if err := loop.RenewLease(lease); !errors.Is(err, loop.ErrFenced) {
 		t.Fatalf("old lease after --no-resync update = %v, want ErrFenced", err)
+	}
+	gotHook := mustRead(t, filepath.Join(root, ".claude", "settings.json"))
+	if string(gotHook) != string(staleHook) {
+		t.Errorf("--no-resync must leave hook bytes untouched; got %q, want stale %q", gotHook, staleHook)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".claude", "settings.json.bak")); !os.IsNotExist(err) {
+		t.Errorf("--no-resync must write no hook backup; stat err = %v", err)
 	}
 }
 
@@ -420,6 +434,87 @@ func TestUpdateInvalidatesLeaseBeforeSetupResync(t *testing.T) {
 	})
 	if !resyncCalled {
 		t.Fatal("normal update did not invoke setup re-sync")
+	}
+}
+
+// codex review on PR #110 [P1]: the forced-verification-failure test in
+// setup_test.go proves cmdSetup's own contract, but acceptance item 3
+// ("forced verification failure propagates through setup/update resync")
+// also requires proving it through the UPDATE apply path specifically —
+// non-zero, actionable output, and the final done=true restart banner
+// (printRestartWarning(..., true), the "serve leases were invalidated"
+// past-tense line) never reached. updateRunResync stands in for the
+// exec'd `setup` subprocess dying non-zero the way it would if the
+// post-refresh hook compatibility verification (setup.go's Phase 2.5)
+// failed inside it — this is update.go's existing, unchanged resync-
+// failure handling, exercised against that specific failure shape.
+func TestUpdate_ResyncVerificationFailurePreventsFinalRestartBanner(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions used by the writable probe")
+	}
+	root := t.TempDir()
+	installDir := t.TempDir()
+	bin := filepath.Join(installDir, "agentchute")
+	if err := os.WriteFile(bin, []byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0}, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	asset := fmt.Sprintf("agentchute_0.5.0_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	archive := makeTarGz(t, map[string][]byte{"agentchute": []byte("NEW-BINARY-BYTES")})
+	sum := sha256.Sum256(archive)
+	checksum := hex.EncodeToString(sum[:])
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "checksums.txt"):
+			fmt.Fprintf(w, "%s  %s\n", checksum, asset)
+		case strings.HasSuffix(r.URL.Path, asset):
+			w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	oldBase := updateGitHubBase
+	oldTarget := resolveUpdateTargetForTest
+	oldResync := updateRunResync
+	updateGitHubBase = srv.URL
+	resolveUpdateTargetForTest = bin
+	updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
+		return errors.New("hook compatibility verification failed: hook file(s) invoke unknown agentchute subcommand(s) after refresh: claude-code (`poller`) — run `agentchute hooks install --wrapper all --scope repo --force`")
+	}
+	t.Cleanup(func() {
+		updateGitHubBase = oldBase
+		resolveUpdateTargetForTest = oldTarget
+		updateRunResync = oldResync
+	})
+
+	var updateErr error
+	var stderr string
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeSetupPoolState(cfg, "runner", nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		stderr = captureStderr(t, func() {
+			updateErr = cmdUpdate([]string{"--version", "v0.5.0"})
+		})
+	})
+
+	if updateErr == nil {
+		t.Fatal("expected a resync verification failure to surface as a non-zero update error")
+	}
+	for _, want := range []string{"re-sync FAILED", "Finish the re-sync manually", "hooks install --wrapper all --scope repo --force"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing actionable content %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Contains(stderr, "agentchute updated to v0.5.0; serve leases were invalidated.") {
+		t.Errorf("final done=true restart banner must NOT print after a resync verification failure:\n%s", stderr)
 	}
 }
 
@@ -528,29 +623,36 @@ func TestFetchChecksumRejectsNonHex(t *testing.T) {
 	}
 }
 
-// The v1.5.0 cutover gap (docs/decisions/
-// agentchute-v150-cutover-incident-and-fix.md): a pool whose saved state
-// records no wrappers replays `setup --wrappers none`, which skips the hook
-// template refresh while hook files sit on disk — stranding stale templates
-// against the new binary. The replay stays untouched (decision B rejects a
-// hard-fail); update just has to say it loudly.
-func TestHookRefreshSkipWarning(t *testing.T) {
+// update-fix-v2 (docs/decisions/agentchute-update-fix-v2.md) amends the
+// v1.5.0 cutover fix (docs/decisions/agentchute-v150-cutover-incident-and-
+// fix.md): applySetup's compatibility phase now refreshes every installed
+// hook file regardless of recorded membership, so a pool whose saved state
+// records no wrappers is no longer a hook-safety problem — only a
+// membership-recording gap. wrappersUnrecordedWarning (renamed from
+// hookRefreshSkipWarning) must say so: no claim that hooks will not
+// refresh, no `hooks install` fix prescription.
+func TestWrappersUnrecordedWarning(t *testing.T) {
 	repo := t.TempDir()
-	if got := hookRefreshSkipWarning(repo, "none"); got != "" {
+	if got := wrappersUnrecordedWarning(repo, "none"); got != "" {
 		t.Fatalf("no hook files installed: want empty warning, got %q", got)
 	}
 	mustWriteCanonicalHook(t, repo, "claude-code")
 	mustWriteCanonicalHook(t, repo, "codex")
-	got := hookRefreshSkipWarning(repo, "none")
-	for _, want := range []string{"claude-code", "codex", "hooks install --wrapper all --scope repo --force", "setup --wrappers"} {
+	got := wrappersUnrecordedWarning(repo, "none")
+	for _, want := range []string{"claude-code", "codex", "setup --wrappers"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("warning %q missing %q", got, want)
+		}
+	}
+	for _, mustNotContain := range []string{"will NOT refresh", "hooks install --wrapper all --scope repo --force"} {
+		if strings.Contains(got, mustNotContain) {
+			t.Fatalf("warning %q must no longer claim hooks are unsafe or prescribe `hooks install` as the fix (that repair now happens automatically): found %q", got, mustNotContain)
 		}
 	}
 	if strings.Contains(got, "gemini-cli") {
 		t.Fatalf("warning names a wrapper with no installed hook file: %q", got)
 	}
-	if got := hookRefreshSkipWarning(repo, "claude-code,codex"); got != "" {
+	if got := wrappersUnrecordedWarning(repo, "claude-code,codex"); got != "" {
 		t.Fatalf("recorded wrappers: want empty warning, got %q", got)
 	}
 }

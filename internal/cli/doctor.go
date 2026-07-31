@@ -663,6 +663,30 @@ func hookCommandBody(data []byte) (string, error) {
 	return strings.Join(commands, "\n"), nil
 }
 
+// hookBodyUnknownSubcommands returns, in first-occurrence order, the
+// distinct agentchute subcommand tokens referenced in a hook file's parsed
+// command body (see hookCommandBody) that this binary does not recognize —
+// the v1.5.0 cutover outage class (docs/decisions/agentchute-v150-cutover-
+// incident-and-fix.md): a stale template invoking a removed subcommand dies
+// with `unknown command`, and a failing UserPromptSubmit hook blocks the
+// prompt entirely. Shared by doctor's hook_content_sanity BLOCKER and
+// setup's post-resync hook-compatibility verification (update-fix-v2, docs/
+// decisions/agentchute-update-fix-v2.md) so the two checks can never drift
+// on what counts as "broken."
+func hookBodyUnknownSubcommands(body string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range hookSubcmdTokenRE.FindAllStringSubmatch(body, -1) {
+		tok := m[1]
+		if _, known := commandHandlers[tok]; known || seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		out = append(out, tok)
+	}
+	return out
+}
+
 // checkHookContentSanity scans installed hook templates per-occurrence
 // instead of per-file: each agentchute invocation form is analyzed
 // independently so mixed templated + bare references in one file are
@@ -684,7 +708,6 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 	var unknownOffenders []string
 	var resolutionOffenders []string
 	var invalidJSONFiles []string
-	seenUnknown := map[string]bool{}
 
 	for _, h := range hookWrappers {
 		full := filepath.Join(cfg.ControlRepo, filepath.FromSlash(h.Dest))
@@ -713,14 +736,8 @@ func checkHookContentSanity(cfg *loop.Config) doctorCheck {
 		// (docs/decisions/agentchute-v150-cutover-incident-and-fix.md):
 		// every such hook dies with `unknown command`, and a failing
 		// UserPromptSubmit hook blocks the prompt entirely.
-		for _, m := range hookSubcmdTokenRE.FindAllStringSubmatch(body, -1) {
-			if _, known := commandHandlers[m[1]]; !known {
-				offender := h.Name + " (`" + m[1] + "`)"
-				if !seenUnknown[offender] {
-					seenUnknown[offender] = true
-					unknownOffenders = append(unknownOffenders, offender)
-				}
-			}
+		for _, tok := range hookBodyUnknownSubcommands(body) {
+			unknownOffenders = append(unknownOffenders, h.Name+" (`"+tok+"`)")
 		}
 
 		hasBare := hookBareAgentchuteRE.MatchString(body)

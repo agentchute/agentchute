@@ -97,6 +97,24 @@ func mustWriteCanonicalHook(t *testing.T, root, wrapper string) {
 	t.Fatalf("unknown hook wrapper %q", wrapper)
 }
 
+// mustWriteStaleHook writes an old-binary-shape hook file for wrapper — a
+// UserPromptSubmit hook invoking `poller ensure`, the exact subcommand the
+// v1.5.0 cutover removed (docs/decisions/agentchute-v150-cutover-incident-
+// and-fix.md) — so tests can reproduce the outage's stale-template shape
+// without depending on which subcommand a future binary happens to remove.
+func mustWriteStaleHook(t *testing.T, root, wrapper string) {
+	t.Helper()
+	for _, h := range hookWrappers {
+		if h.Name != wrapper {
+			continue
+		}
+		content := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor anthropic --quiet"}]}]}}`
+		mustWrite(t, filepath.Join(root, h.Dest), []byte(content))
+		return
+	}
+	t.Fatalf("unknown hook wrapper %q", wrapper)
+}
+
 func mustExampleRepo(t *testing.T, root string) {
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))

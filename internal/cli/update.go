@@ -141,7 +141,7 @@ func cmdUpdate(args []string) error {
 		} else if p := strings.TrimSpace(global.Profile); p != "" {
 			setupArgs = append(setupArgs, "--profile", p)
 		}
-		if w := hookRefreshSkipWarning(cfg.ControlRepo, wrappersArg); w != "" {
+		if w := wrappersUnrecordedWarning(cfg.ControlRepo, wrappersArg); w != "" {
 			fmt.Fprintln(os.Stderr, w)
 		}
 	}
@@ -259,15 +259,23 @@ var updateRunResync = func(target string, setupArgs []string, controlRepo string
 	return setup.Run()
 }
 
-// hookRefreshSkipWarning reports the warning to print when a resync will
-// replay `setup --wrappers none` while wrapper hook templates exist on disk:
-// the replay will NOT refresh those templates — the exact state that
-// stranded pre-1.5 hooks against the 1.5.0 binary
-// (docs/decisions/agentchute-v150-cutover-incident-and-fix.md). Empty means
-// nothing to warn about. The replay itself is deliberately untouched: an
-// empty recorded wrapper list is the valid `--wrappers none` mode and update
+// wrappersUnrecordedWarning reports the note to print when a resync will
+// replay `setup --wrappers none` while wrapper hook files exist on disk:
+// the saved state has no recorded wrapper membership for them. Empty means
+// nothing to note. The replay itself is deliberately untouched: an empty
+// recorded wrapper list is the valid `--wrappers none` mode and update
 // cannot distinguish "chose none" from "state predates wrapper recording".
-func hookRefreshSkipWarning(controlRepo, wrappersArg string) string {
+//
+// update-fix-v2 (docs/decisions/agentchute-update-fix-v2.md) narrowed this
+// from a hook-safety WARNING to a membership-recording NOTE: applySetup's
+// compatibility phase (internal/cli/setup.go, refreshHookCompatibility +
+// verifyHookCompatibility) now refreshes every already-installed hook file
+// on every resync regardless of recorded membership, so an unrecorded
+// wrapper list no longer strands a stale hook template — it only means the
+// pool's membership bookkeeping is out of date. (Historically named
+// hookRefreshSkipWarning; renamed off "skip" once the resync stopped
+// skipping anything.)
+func wrappersUnrecordedWarning(controlRepo, wrappersArg string) string {
 	if wrappersArg != "none" {
 		return ""
 	}
@@ -280,7 +288,7 @@ func hookRefreshSkipWarning(controlRepo, wrappersArg string) string {
 	if len(present) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("WARNING: saved setup state records no wrappers; this update will NOT refresh the installed hook templates for: %s\n  after the update, run `agentchute hooks install --wrapper all --scope repo --force`, then re-record the pool with `agentchute setup --wrappers <list>`.",
+	return fmt.Sprintf("NOTE: saved setup state records no wrapper membership, though installed hook file(s) exist for: %s (their compatibility refreshes automatically on this resync regardless). Re-record actual membership with `agentchute setup --wrappers <list>` so wrapper-scoped behavior (install/removal, shims, doctor) stays accurate.",
 		strings.Join(present, ", "))
 }
 

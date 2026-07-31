@@ -328,3 +328,104 @@ func TestHooksInstallEmbeddedTemplatesPresent(t *testing.T) {
 		}
 	}
 }
+
+// refreshHookCompatibility / verifyHookCompatibility (update-fix-v2, docs/
+// decisions/agentchute-update-fix-v2.md): the v1.5.0 cutover incident showed
+// that a resync which only replays wrapper MEMBERSHIP can leave an
+// ALREADY-INSTALLED hook file invoking a subcommand the new binary removed.
+// refreshHookCompatibility keeps every existing hookWrappers file current —
+// independent of membership, existence-preserving (never creates); verify
+// proves none still references an unknown subcommand.
+
+func TestRefreshHookCompatibilityRefreshesStaleExistingFile(t *testing.T) {
+	root := t.TempDir()
+	mustWriteStaleHook(t, root, "claude-code")
+	stale := mustRead(t, filepath.Join(root, ".claude", "settings.json"))
+
+	refreshed, err := refreshHookCompatibility(root)
+	if err != nil {
+		t.Fatalf("refresh err = %v", err)
+	}
+	if len(refreshed) != 1 || refreshed[0] != "claude-code" {
+		t.Fatalf("refreshed = %v, want [claude-code]", refreshed)
+	}
+
+	canonical, err := fs.ReadFile(hooksFS, "examples/hooks/claude-code/.claude/settings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := mustRead(t, filepath.Join(root, ".claude", "settings.json"))
+	if string(got) != string(canonical) {
+		t.Errorf("hook file not refreshed to the canonical template")
+	}
+	bak := mustRead(t, filepath.Join(root, ".claude", "settings.json.bak"))
+	if string(bak) != string(stale) {
+		t.Errorf("backup = %q, want the stale original %q", bak, stale)
+	}
+}
+
+func TestRefreshHookCompatibilityLeavesMissingFilesMissing(t *testing.T) {
+	root := t.TempDir() // no hook files installed at all
+
+	refreshed, err := refreshHookCompatibility(root)
+	if err != nil {
+		t.Fatalf("refresh err = %v", err)
+	}
+	if len(refreshed) != 0 {
+		t.Fatalf("refreshed = %v, want none (existence-preserving no-create mode)", refreshed)
+	}
+	for _, w := range hookWrappers {
+		if _, err := os.Stat(filepath.Join(root, w.Dest)); !os.IsNotExist(err) {
+			t.Errorf("%s should not have been created; stat err = %v", w.Dest, err)
+		}
+	}
+}
+
+func TestRefreshHookCompatibilityAlreadyCurrentGetsNoBackup(t *testing.T) {
+	root := t.TempDir()
+	mustWriteCanonicalHook(t, root, "codex")
+
+	refreshed, err := refreshHookCompatibility(root)
+	if err != nil {
+		t.Fatalf("refresh err = %v", err)
+	}
+	if len(refreshed) != 0 {
+		t.Errorf("refreshed = %v, want none (file was already current)", refreshed)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".codex", "hooks.json.bak")); !os.IsNotExist(err) {
+		t.Errorf("no backup should be written for an already-current file; stat err = %v", err)
+	}
+}
+
+func TestVerifyHookCompatibilityCatchesUnknownSubcommand(t *testing.T) {
+	root := t.TempDir()
+	mustWriteStaleHook(t, root, "claude-code")
+
+	err := verifyHookCompatibility(root)
+	if err == nil {
+		t.Fatal("expected verification to fail for a hook invoking an unknown subcommand")
+	}
+	for _, want := range []string{"poller", "hooks install --wrapper all --scope repo --force"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err.Error(), want)
+		}
+	}
+}
+
+func TestVerifyHookCompatibilityPassesAfterRefresh(t *testing.T) {
+	root := t.TempDir()
+	mustWriteStaleHook(t, root, "claude-code")
+	if _, err := refreshHookCompatibility(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyHookCompatibility(root); err != nil {
+		t.Errorf("verify after refresh = %v, want nil", err)
+	}
+}
+
+func TestVerifyHookCompatibilityIgnoresMissingFiles(t *testing.T) {
+	root := t.TempDir() // no hook files at all
+	if err := verifyHookCompatibility(root); err != nil {
+		t.Errorf("verify with no installed hooks = %v, want nil", err)
+	}
+}
