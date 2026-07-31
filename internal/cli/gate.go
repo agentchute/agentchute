@@ -317,7 +317,7 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 		reasons = append(reasons, fmt.Sprintf("%d unread direct message(s) in inbox", s.UnreadCount))
 	}
 	if s.MalformedCount > 0 {
-		reasons = append(reasons, fmt.Sprintf("%d malformed inbox file(s); run `agentchute check --as %s` to quarantine + notify (§11)", s.MalformedCount, s.Agent))
+		reasons = append(reasons, fmt.Sprintf("%d malformed inbox file(s); run `agentchute check --as %s` to quarantine (§11)", s.MalformedCount, s.Agent))
 	}
 
 	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): every phase blocks
@@ -418,7 +418,7 @@ Phases:
 
 Outstanding work / trust blockers (all phases):
   - unread direct mail in the inbox
-  - malformed inbox files that require check quarantine + corrective notice
+  - malformed inbox files that require check quarantine
   - missing self-registration
 
 Reply obligations are asker-owned only (v0.9.0): a reply_required message

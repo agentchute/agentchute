@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 // TestAckCommitsUnconditionallyUnderForeignBlocker is the F7 contract (replaces
@@ -16,6 +18,12 @@ import (
 // the remaining blocker; it just no longer holds MY already-claimed mail
 // hostage to it.
 func TestAckCommitsUnconditionallyUnderForeignBlocker(t *testing.T) {
+	// v2.5 A7/C25: ack's unconditional-commit contract now applies to
+	// un-latched sessions only (a guarded session's own latch denies ack
+	// outside turn-end — see TestAckDeniedWhileOwnSessionLatched). Run
+	// explicitly without a serve token/guard bit so this pins the
+	// pre-existing, still-supported behavior for humans and unguarded lanes.
+	clearGuardEnv(t)
 	root, cfg := setupConsumeFixture(t)
 
 	send := func(body string) {
@@ -107,6 +115,9 @@ func TestAckCommitsUnconditionallyUnderForeignBlocker(t *testing.T) {
 // `ack` from committing the unrelated, already-claimed good message. `ack`
 // must now commit it anyway.
 func TestAckCommitsUnconditionallyUnderForeignMalformedFile(t *testing.T) {
+	// v2.5 A7/C25: run explicitly without a serve token/guard bit — see the
+	// comment on TestAckCommitsUnconditionallyUnderForeignBlocker.
+	clearGuardEnv(t)
 	root, cfg := setupConsumeFixture(t)
 
 	withCwd(t, root, func() {
@@ -242,4 +253,56 @@ func TestAckQuietIsHookModeSuppressesBothOutputAndExitCode(t *testing.T) {
 	if n := countMessageFiles(t, cfg.ArchiveDir()); n != 1 {
 		t.Fatalf("archive = %d; want 1 (quiet must not suppress the commit)", n)
 	}
+}
+
+// TestAckDeniedWhileOwnSessionLatched is the v2.5 A7/C25 self-denial: while
+// THIS session's own guard latch is set, `ack` outside turn-end is denied —
+// only `turn-end` may commit claimed mail and clear the latch atomically.
+// The claimed message must remain untouched (not archived) by the denied ack.
+func TestAckDeniedWhileOwnSessionLatched(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		// Send BEFORE arming the guard env: AGENTCHUTE_SERVE_TOKEN also fences
+		// `send`'s AllocateSeq against the FROM agent's own serve lease
+		// (unrelated to this guard test), and alice never acquired one.
+		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "hi"}); err != nil {
+			t.Fatalf("cmdSend: %v", err)
+		}
+
+		t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok-1")
+		t.Setenv("AGENTCHUTE_GUARD", "1")
+
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err != nil {
+			t.Fatalf("cmdCheck(bob): %v", err)
+		}
+		if n := countMessageFiles(t, cfg.AgentClaimedDir("bob")); n != 1 {
+			t.Fatalf(".claimed = %d after claim; want 1", n)
+		}
+
+		_, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "bob"}) })
+		if err == nil || errors.Is(err, errBlocked) {
+			t.Fatalf("ack err = %v, want a hard denial (not errBlocked, not nil)", err)
+		}
+
+		// Denied: nothing archived, .claimed untouched.
+		if n := countMessageFiles(t, cfg.AgentClaimedDir("bob")); n != 1 {
+			t.Fatalf(".claimed = %d after denied ack; want 1 (untouched)", n)
+		}
+		if n := countMessageFiles(t, cfg.ArchiveDir()); n != 0 {
+			t.Fatalf("archive = %d after denied ack; want 0 (denied, not committed)", n)
+		}
+
+		// A foreign/dead latch never denies — ack works exactly as today.
+		if err := loop.SetGuardLatch(cfg, "bob", "tok-someone-else"); err != nil {
+			t.Fatal(err)
+		}
+		out, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "bob"}) })
+		if err != nil {
+			t.Fatalf("ack under a foreign latch should not be denied: %v", err)
+		}
+		if !strings.Contains(out, "acked ") {
+			t.Fatalf("ack did not commit under a foreign latch; out=%q", out)
+		}
+	})
 }

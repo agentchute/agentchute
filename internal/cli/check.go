@@ -36,7 +36,7 @@ func cmdCheck(args []string) error {
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
-	fs.BoolVar(&noArchive, "no-archive", false, "dry run: suppress inbox side effects (no archive, quarantine, or corrective sends); own last_seen still updates")
+	fs.BoolVar(&noArchive, "no-archive", false, "dry run: suppress inbox side effects (no archive or quarantine); own last_seen still updates")
 	fs.IntVar(&limit, "limit", 0, "process at most N messages this turn (0 = no limit)")
 
 	if err := fs.Parse(args); err != nil {
@@ -67,6 +67,18 @@ func cmdCheck(args []string) error {
 	}
 	if err := loop.ValidateAgentID(agentID); err != nil {
 		return err
+	}
+
+	// v2.5 plan A7/C25: defense-in-depth self-denial. The PreToolUse guard
+	// (guard.go) already denies a model from invoking `check` a second time
+	// while this session holds its own unacked claimed mail; this refuses at
+	// the command level too, in case check runs some other way (a stale hook
+	// template, a human typing it directly) while guarded and latched. A
+	// latch belonging to no session, or a foreign/dead session, never denies.
+	if session := resolveGuardSession(); session != "" {
+		if latch, lerr := loop.ReadGuardLatch(cfg, agentID); lerr == nil && latch.Session == session {
+			return fmt.Errorf("claimed mail pending ack; finish the turn (turn-end) before checking again")
+		}
 	}
 
 	now := time.Now().UTC()
@@ -125,12 +137,30 @@ func cmdCheck(args []string) error {
 	// be idempotent.
 	claimedDir := cfg.AgentClaimedDir(agentID)
 
+	// v2.5 plan A7/C23: set the guard latch at the FIRST of (a) listing
+	// non-empty .claimed residue for redelivery or (b) claiming/displaying any
+	// message (including --no-archive). latchArmed makes repeat calls within
+	// this one invocation cheap no-ops (maybeSetGuardLatch itself is already
+	// idempotent per-session, but a large inbox would otherwise re-take the
+	// state lock once per displayed message for no benefit).
+	latchArmed := false
+	setLatch := func() {
+		if latchArmed {
+			return
+		}
+		maybeSetGuardLatch(cfg, agentID)
+		latchArmed = true
+	}
+
 	// FIRST: re-display any uncommitted residue from a crashed/un-acked prior
 	// turn. These were CLAIMED but never COMMITTED (no ack). We re-deliver them
 	// with a REDELIVERED banner so the agent re-acts; `ack` archives them.
 	redelivered, rerr := loop.ListClaimedMessages(claimedDir)
 	if rerr != nil {
 		return fmt.Errorf("list claimed residue: %w", rerr)
+	}
+	if len(redelivered) > 0 {
+		setLatch()
 	}
 	for _, msg := range redelivered {
 		content, err := loop.ReadFileLimit(msg.Path, loop.MaxInboxMessageBytes)
@@ -188,6 +218,7 @@ func cmdCheck(args []string) error {
 			// flip (ClearOwed) is a state mutation too, so displayConsumed's
 			// no-side-effect display is appropriate here — we pass a read-only
 			// flag below.
+			setLatch()
 			displayConsumedReadOnly(agentID, msg, content, now)
 			claimed++
 			continue
@@ -200,6 +231,7 @@ func cmdCheck(args []string) error {
 			return fmt.Errorf("claim message %s: %w", msg.Filename, cerr)
 		}
 		msg.Path = claimedPath
+		setLatch()
 		displayConsumed(cfg, agentID, msg, content, false, now)
 		claimed++
 	}
@@ -236,6 +268,21 @@ func cmdCheck(args []string) error {
 	}
 
 	return nil
+}
+
+// maybeSetGuardLatch sets agentID's guard latch for the current guarded
+// session (v2.5 plan A7/C23), or no-ops when the guard is disabled for this
+// process (resolveGuardSession returns ""). A write failure is surfaced as a
+// warning, not a hard error: check's job is delivering mail, and the guard is
+// defense-in-depth — a failed latch write must not itself block delivery.
+func maybeSetGuardLatch(cfg *loop.Config, agentID string) {
+	session := resolveGuardSession()
+	if session == "" {
+		return
+	}
+	if err := loop.SetGuardLatch(cfg, agentID, session); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to set guard latch: %v\n", err)
+	}
 }
 
 // displayConsumed prints one consumed message and runs the asker-side obligation

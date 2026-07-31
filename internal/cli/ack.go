@@ -96,23 +96,25 @@ func cmdAck(args []string) error {
 		return err
 	}
 
-	now := time.Now().UTC()
-
-	claimedDir := cfg.AgentClaimedDir(agentID)
-	residue, err := loop.ListClaimedMessages(claimedDir)
-	if err != nil {
-		return fmt.Errorf("list claimed residue: %w", err)
+	// v2.5 plan A7/C25: while this session's own guard latch is set, `ack`
+	// outside turn-end is denied — turn-end is the only path that may commit
+	// claimed mail and clear the latch atomically (C24). A latch belonging to
+	// no session, or a foreign/dead session, never denies: humans and
+	// non-serve sessions are unaffected, matching ack's unconditional-commit
+	// contract for everyone the guard doesn't apply to.
+	if session := resolveGuardSession(); session != "" {
+		if latch, lerr := loop.ReadGuardLatch(cfg, agentID); lerr == nil && latch.Session == session {
+			return fmt.Errorf("claimed mail is guarded this session; run `agentchute turn-end` (not `ack`) to commit and clear the gate")
+		}
 	}
+
+	now := time.Now().UTC()
 
 	// UNCONDITIONAL COMMIT (F7): archive every claimed message regardless of
 	// finish-gate status — see the doc comment above cmdAck.
-	acked := make([]ackItem, 0, len(residue))
-	for _, msg := range residue {
-		dest, err := loop.ArchiveMessage(msg, cfg.ArchiveDir(), agentID, now)
-		if err != nil {
-			return fmt.Errorf("ack (archive) %s: %w", msg.Filename, err)
-		}
-		acked = append(acked, ackItem{Filename: msg.Filename, ArchivePath: dest})
+	acked, err := archiveAllClaimed(cfg, agentID, now)
+	if err != nil {
+		return err
 	}
 
 	// Evaluate the finish gate AFTER committing, purely to REPORT whether other
@@ -152,6 +154,28 @@ func cmdAck(args []string) error {
 		return errBlocked
 	}
 	return nil
+}
+
+// archiveAllClaimed commits every message CLAIMED in inbox/<id>/.claimed
+// (phase 1) into the archive (phase 2, the actual commit point). Shared by
+// cmdAck and turn-end step 1 (v2.5 plan A7/C24) so the two entry points can
+// never diverge in what "commit claimed mail" means. An empty .claimed is a
+// no-op success (returns an empty, non-nil slice).
+func archiveAllClaimed(cfg *loop.Config, agentID string, now time.Time) ([]ackItem, error) {
+	claimedDir := cfg.AgentClaimedDir(agentID)
+	residue, err := loop.ListClaimedMessages(claimedDir)
+	if err != nil {
+		return nil, fmt.Errorf("list claimed residue: %w", err)
+	}
+	acked := make([]ackItem, 0, len(residue))
+	for _, msg := range residue {
+		dest, err := loop.ArchiveMessage(msg, cfg.ArchiveDir(), agentID, now)
+		if err != nil {
+			return nil, fmt.Errorf("ack (archive) %s: %w", msg.Filename, err)
+		}
+		acked = append(acked, ackItem{Filename: msg.Filename, ArchivePath: dest})
+	}
+	return acked, nil
 }
 
 // emitAckText prints the human-readable ack outcome: the committed items (or

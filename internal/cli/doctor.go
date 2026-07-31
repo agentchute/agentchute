@@ -198,6 +198,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 			checkSelfRegistration(cfg, agentID),
 			checkRegistrationFreshness(cfg, agentID, opts.Now),
 			checkInboxState(cfg, agentID),
+			checkGuardLatchAge(cfg, agentID, opts.Now),
 		)
 	} else {
 		checks = append(checks, doctorCheck{
@@ -970,6 +971,59 @@ func checkInboxState(cfg *loop.Config, agentID string) doctorCheck {
 		}
 	}
 	return doctorCheck{Name: "inbox_state", Severity: severityOK, Message: "inbox clear"}
+}
+
+// guardLatchStaleWarnThreshold is how old a guard latch (v2.5 A7) must be
+// before doctor surfaces it as a WARN. Read-only diagnostic only — doctor
+// never acts on this, it only reports (build-nothing ruling on the mixed
+// hook-trust wedge: codex's finding that any recovery mechanism here is
+// undermined by the latch being a same-UID-writable state file meant no new
+// enforcement code ships, only this visibility). Longer than a single normal
+// turn should plausibly take, short enough that a genuinely wedged lane
+// (its end-of-turn hook not running `turn-end`) doesn't go unnoticed for
+// long.
+const guardLatchStaleWarnThreshold = 15 * time.Minute
+
+// checkGuardLatchAge reports how long agentID's guard latch (if any) has
+// been held. A latch older than guardLatchStaleWarnThreshold WARNs with the
+// full remediation sequence (§15 AGENTCHUTE.md): repair the end-of-turn hook
+// FIRST; only then does relaunching or deleting the latch become durable,
+// rather than a temporary unwedge that re-latches on the very next check.
+func checkGuardLatchAge(cfg *loop.Config, agentID string, now time.Time) doctorCheck {
+	// PeekGuardLatch, not ReadGuardLatch: the latter takes WithAgentLock,
+	// which creates state/<id>/ and its lock file as a side effect — a
+	// write this strictly read-only diagnostic must never perform (codex
+	// review, PR #89 round 5).
+	latch, err := loop.PeekGuardLatch(cfg, agentID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return doctorCheck{Name: "guard_latch_age", Severity: severityOK, Message: "no guard latch"}
+		}
+		return doctorCheck{
+			Name:     "guard_latch_age",
+			Severity: severityWarn,
+			Message:  fmt.Sprintf("guard latch for %s is unreadable/corrupt (%v)", agentID, err),
+		}
+	}
+	age := now.Sub(latch.SetAt)
+	if age < 0 {
+		age = 0 // future-dated (clock skew) reads as fresh.
+	}
+	if age < guardLatchStaleWarnThreshold {
+		return doctorCheck{
+			Name:     "guard_latch_age",
+			Severity: severityOK,
+			Message:  fmt.Sprintf("guard latch set %s ago (session %s)", age.Round(time.Second), latch.Session),
+		}
+	}
+	return doctorCheck{
+		Name:     "guard_latch_age",
+		Severity: severityWarn,
+		Message: fmt.Sprintf(
+			"guard latch for %s has been held for %s (since %s) — if its Stop/end-of-turn hook is not running `turn-end` (a mixed hook-trust state: hook definitions untrusted after a change, individually disabled, or failing at runtime), repair that hook FIRST; only then does relaunching the lane or removing state/%s/guard.latch (and immediately running `agentchute turn-end`) become durable — doing either before the hook is fixed is a temporary unwedge that re-latches on the next check",
+			agentID, age.Round(time.Second), latch.SetAt.UTC().Format(time.RFC3339), agentID,
+		),
+	}
 }
 
 // Simple-again Gate 6a (pull-only): checkWakeTargetValidity and

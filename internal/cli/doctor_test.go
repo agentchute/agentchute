@@ -321,6 +321,52 @@ func TestDoctorMalformedHookJSONWithPermissionsSubstringDoesNotBlock(t *testing.
 	}
 }
 
+// TestDoctorCanonicalInstalledTemplatesPassHookContentSanity is codex review
+// PR #89 finding #5 (the A8 plan's explicit acceptance criterion): install
+// the REAL, embedded hook templates for all three hook-capable wrappers —
+// the exact bytes `hooks install` ships, now carrying the new
+// PreToolUse/BeforeTool guard entries and the collapsed turn-end Stop/
+// BeforeAgent entries — and prove `doctor`'s hook_content_sanity check stays
+// green against them. This is the regression class PR #74 shipped (an
+// embedded hook edit that silently tripped doctor's own sanity check);
+// synthetic hand-built fixtures in the tests above cannot catch a mistake in
+// the actual shipped templates.
+func TestDoctorCanonicalInstalledTemplatesPassHookContentSanity(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	// `hooks install` discovers its own control repo from cwd (it does not
+	// accept a *loop.Config directly), which requires the AGENTCHUTE.md
+	// marker newDoctorCfg's bare scaffold doesn't write.
+	mustWrite(t, filepath.Join(cfg.ControlRepo, "AGENTCHUTE.md"), []byte("# Spec"))
+	withCwd(t, cfg.ControlRepo, func() {
+		if _, err := captureStdout(t, func() error {
+			return cmdHooks([]string{"install", "--wrapper", "all"})
+		}); err != nil {
+			t.Fatalf("hooks install --wrapper all: %v", err)
+		}
+	})
+	// hook_content_sanity ALSO checks that every templated
+	// `${AGENTCHUTE_BIN:-agentchute}` reference actually resolves (dev
+	// machines have `agentchute`/`ac` on PATH from local builds, but a clean
+	// CI runner does not — codex review, PR #89: this test passed locally by
+	// accident and failed both CI jobs deterministically). Point
+	// AGENTCHUTE_BIN at a stub, mirroring
+	// TestDoctorTemplatedBinaryReferenceIsOKWhenAGENTCHUTE_BINSet.
+	stub := filepath.Join(cfg.ControlRepo, "stub-agentchute")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTCHUTE_BIN", stub)
+
+	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
+	got := findCheck(t, r, "hook_content_sanity")
+	if got.Severity != severityOK {
+		t.Fatalf("hook_content_sanity severity = %q, want OK against the canonical installed templates; msg=%q", got.Severity, got.Message)
+	}
+	if r.Blockers != 0 {
+		t.Errorf("Blockers = %d, want 0 against the canonical installed templates", r.Blockers)
+	}
+}
+
 // Codex review on bff226c: --json discovery failure must still exit
 // errBlocked. Previously emitDoctorJSON returned nil before the
 // errBlocked guard ran.
@@ -882,6 +928,83 @@ func TestCmdDoctorDiscoveryFailureBlocks(t *testing.T) {
 			t.Errorf("err = %v, want errBlocked (discovery failure should be a doctor blocker)", err)
 		}
 	})
+}
+
+// mustWriteGuardLatchAt writes a guard latch file directly with a specific
+// SetAt (loop.SetGuardLatch always stamps time.Now(), so backdating for a
+// staleness test needs a direct write).
+func mustWriteGuardLatchAt(t *testing.T, cfg *loop.Config, id, session string, setAt time.Time) {
+	t.Helper()
+	body, err := json.Marshal(loop.GuardLatch{V: 1, Session: session, SetAt: setAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, cfg.GuardLatchPath(id), body)
+}
+
+func TestDoctorGuardLatchAgeAbsent(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	got := checkGuardLatchAge(cfg, "bob", time.Now().UTC())
+	if got.Severity != severityOK {
+		t.Errorf("guard_latch_age severity = %q, want OK when absent; msg=%q", got.Severity, got.Message)
+	}
+}
+
+// TestDoctorGuardLatchAgeAbsentDoesNotCreateStateDir is codex review PR #89
+// round 5: doctor is documented strictly read-only, but ReadGuardLatch takes
+// WithAgentLock, which creates state/<id>/ and its lock file as a side
+// effect — checkGuardLatchAge must use the non-mutating loop.PeekGuardLatch
+// instead, so reporting "no guard latch" for an id with NO existing state
+// dir must not manufacture one.
+func TestDoctorGuardLatchAgeAbsentDoesNotCreateStateDir(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	stateDir := cfg.AgentStateDir("bob")
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("precondition failed: state dir already exists: %v", err)
+	}
+	if got := checkGuardLatchAge(cfg, "bob", time.Now().UTC()); got.Severity != severityOK {
+		t.Fatalf("guard_latch_age severity = %q, want OK", got.Severity)
+	}
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("read-only doctor check created state dir: %v", err)
+	}
+}
+
+func TestDoctorGuardLatchAgeFreshIsOK(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	now := time.Now().UTC()
+	mustWriteGuardLatchAt(t, cfg, "bob", "tok-1", now.Add(-1*time.Minute))
+	got := checkGuardLatchAge(cfg, "bob", now)
+	if got.Severity != severityOK {
+		t.Errorf("guard_latch_age severity = %q, want OK for a 1m-old latch; msg=%q", got.Severity, got.Message)
+	}
+}
+
+func TestDoctorGuardLatchAgeStaleWarns(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	now := time.Now().UTC()
+	mustWriteGuardLatchAt(t, cfg, "bob", "tok-1", now.Add(-45*time.Minute))
+	got := checkGuardLatchAge(cfg, "bob", now)
+	if got.Severity != severityWarn {
+		t.Errorf("guard_latch_age severity = %q, want WARN for a 45m-old latch; msg=%q", got.Severity, got.Message)
+	}
+	for _, want := range []string{"repair that hook FIRST", "temporary unwedge", "turn-end"} {
+		if !strings.Contains(got.Message, want) {
+			t.Errorf("message missing %q: %q", want, got.Message)
+		}
+	}
+}
+
+func TestDoctorGuardLatchAgeCorruptFileWarns(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	mustWrite(t, cfg.GuardLatchPath("bob"), []byte("{not valid json"))
+	got := checkGuardLatchAge(cfg, "bob", time.Now().UTC())
+	if got.Severity != severityWarn {
+		t.Errorf("guard_latch_age severity = %q, want WARN for a corrupt file; msg=%q", got.Severity, got.Message)
+	}
+	if !strings.Contains(got.Message, "corrupt") {
+		t.Errorf("message should say the latch is corrupt: %q", got.Message)
+	}
 }
 
 func TestAcServeHintForAgent_ContextualIDs(t *testing.T) {

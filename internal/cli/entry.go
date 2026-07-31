@@ -25,7 +25,7 @@ Commands:
   doctor         diagnostic aggregator: scaffold, hook content, registration, inbox, .live presence
 
 Advanced / internal (mostly hook- or setup-driven; run 'agentchute <cmd> --help' for any):
-  boot · register · gate · pending · poller · self-check · hooks · shims · prepare-pool · identity · update
+  boot · register · gate · pending · poller · self-check · turn-end · guard · hooks · shims · prepare-pool · identity · update
 
 Run 'agentchute <command> --help' for command-specific flags.
 See AGENTCHUTE.md for the full spec.
