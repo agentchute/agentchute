@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -199,8 +200,8 @@ func TestOwedFlip_RecordClearExpireGateWarn(t *testing.T) {
 		t.Fatalf("alice .owed has %d entries after --ask; want 1", len(out))
 	}
 	key := out[0].Key()
-	if key.To != "bob" || key.From != "alice" || key.Seq != 1 {
-		t.Fatalf("owed key = %+v; want {To:bob From:alice Seq:1}", key)
+	if key.To != "bob" || key.From != "alice" || key.Stamp == "" || key.Suffix == "" {
+		t.Fatalf("owed key = %+v; want {To:bob From:alice Stamp:<non-empty> Suffix:<non-empty>} (v2.5 plan B7: send now mints a timestamp identity)", key)
 	}
 	ref := key.RefString()
 
@@ -298,8 +299,8 @@ func TestOwedFlip_ThirdPartyReplyDoesNotClear(t *testing.T) {
 		t.Fatalf("alice .owed has %d entries after --ask; want 1", len(out))
 	}
 	key := out[0].Key()
-	if key.To != "bob" || key.From != "alice" || key.Seq != 1 {
-		t.Fatalf("owed key = %+v; want {To:bob From:alice Seq:1}", key)
+	if key.To != "bob" || key.From != "alice" || key.Stamp == "" || key.Suffix == "" {
+		t.Fatalf("owed key = %+v; want {To:bob From:alice Stamp:<non-empty> Suffix:<non-empty>} (v2.5 plan B7: send now mints a timestamp identity)", key)
 	}
 	ref := key.RefString()
 
@@ -364,7 +365,7 @@ func TestOwedFlip_UsesFilenameSenderNotFrontmatter(t *testing.T) {
 	})
 
 	// alice asks bob; alice is owed a reply specifically by bob.
-	arm := func() loop.MsgID {
+	arm := func() loop.OwedKey {
 		withCwd(t, root, func() {
 			if err := cmdSend([]string{"--from", "alice", "--to", "bob",
 				"--ask", "--body", "please review"}); err != nil {
@@ -429,5 +430,184 @@ func TestOwedFlip_UsesFilenameSenderNotFrontmatter(t *testing.T) {
 	}
 	if got := out[0].Key(); !got.Equal(key2) {
 		t.Fatalf("remaining owed key after variant 2 = %+v; want %+v", got, key2)
+	}
+}
+
+func TestOwedFlip_ThirdPartyReplyDoesNotClear_Timestamp(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		if err := cmdRegister([]string{"--as", "carol", "--vendor", "google", "--host", "third-host"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	key := loop.TsID{
+		To:     "bob",
+		From:   "alice",
+		Stamp:  "20260730T182415123456Z",
+		Suffix: "11111111111111111111111111111111",
+	}
+	now := time.Now().UTC()
+	if err := loop.RecordOwed(cfg, "alice", key, now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+
+	withCwd(t, root, func() {
+		spoof := loop.TsID{From: "carol", Stamp: "20260730T182416000000Z", Suffix: "22222222222222222222222222222222"}
+		body := "---\nfrom: carol\nin_reply_to: " + key.RefString() + "\n---\n\nspoofed\n"
+		mustWriteTsInbox(t, cfg.AgentInboxDir("alice"), spoof, []byte(body))
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+	})
+	owed, err := loop.LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owed.Owed) != 1 || !owed.Owed[0].MatchesRef(key) {
+		t.Fatalf("third-party timestamp reply cleared obligation: %+v", owed.Owed)
+	}
+
+	withCwd(t, root, func() {
+		reply := loop.TsID{From: "bob", Stamp: "20260730T182417000000Z", Suffix: "33333333333333333333333333333333"}
+		body := "---\nfrom: bob\nin_reply_to: " + key.RefString() + "\n---\n\ndone\n"
+		mustWriteTsInbox(t, cfg.AgentInboxDir("alice"), reply, []byte(body))
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+	})
+	owed, err = loop.LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owed.Owed) != 0 {
+		t.Fatalf("bob's timestamp reply did not clear obligation: %+v", owed.Owed)
+	}
+}
+
+func TestOwedFlip_UsesFilenameSenderNotFrontmatter_Timestamp(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		if err := cmdRegister([]string{"--as", "carol", "--vendor", "google", "--host", "third-host"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	record := func(stamp, suffix string) loop.TsID {
+		t.Helper()
+		key := loop.TsID{To: "bob", From: "alice", Stamp: stamp, Suffix: suffix}
+		now := time.Now().UTC()
+		if err := loop.RecordOwed(cfg, "alice", key, now.Add(time.Hour), now); err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+
+	key1 := record("20260730T182415123456Z", "44444444444444444444444444444444")
+	withCwd(t, root, func() {
+		reply := loop.TsID{From: "bob", Stamp: "20260730T182418000000Z", Suffix: "55555555555555555555555555555555"}
+		body := "---\nfrom: carol\nin_reply_to: " + key1.RefString() + "\n---\n\nfilename-bob\n"
+		mustWriteTsInbox(t, cfg.AgentInboxDir("alice"), reply, []byte(body))
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+	})
+	owed, err := loop.LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owed.Owed) != 0 {
+		t.Fatalf("filename bob did not clear timestamp obligation: %+v", owed.Owed)
+	}
+
+	key2 := record("20260730T182419000000Z", "66666666666666666666666666666666")
+	withCwd(t, root, func() {
+		spoof := loop.TsID{From: "carol", Stamp: "20260730T182420000000Z", Suffix: "77777777777777777777777777777777"}
+		body := "---\nfrom: bob\nin_reply_to: " + key2.RefString() + "\n---\n\nfilename-carol\n"
+		mustWriteTsInbox(t, cfg.AgentInboxDir("alice"), spoof, []byte(body))
+		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "alice"}) }); err != nil {
+			t.Fatal(err)
+		}
+	})
+	owed, err = loop.LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owed.Owed) != 1 || !owed.Owed[0].MatchesRef(key2) {
+		t.Fatalf("filename carol incorrectly cleared timestamp obligation: %+v", owed.Owed)
+	}
+}
+
+func TestDualReadMixedInboxClaimsQuarantinesClearsAndMatchesRefs(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	now := time.Now().UTC()
+	oldOwed := loop.MsgID{To: "bob", From: "alice", Seq: 91}
+	newOwed := loop.TsID{
+		To:     "bob",
+		From:   "alice",
+		Stamp:  "20260730T182421000000Z",
+		Suffix: "88888888888888888888888888888888",
+	}
+	if err := loop.RecordOwed(cfg, "alice", oldOwed, now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.RecordOwed(cfg, "alice", newOwed, now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+
+	oldMessage := loop.MsgID{To: "alice", From: "bob", Seq: 7}
+	newMessage := loop.TsID{
+		To:     "alice",
+		From:   "bob",
+		Stamp:  "20260730T182422000000Z",
+		Suffix: "99999999999999999999999999999999",
+	}
+	oldBody := "---\nfrom: bob\nreply_required: true\nin_reply_to: " + oldOwed.RefString() + "\n---\n\nold-format-body\n"
+	newBody := "---\nfrom: bob\nreply_required: true\nin_reply_to: " + newOwed.RefString() + "\n---\n\nnew-format-body\n"
+	mustWriteSeqInbox(t, cfg.AgentInboxDir("alice"), oldMessage.From, oldMessage.Seq, []byte(oldBody))
+	mustWriteTsInbox(t, cfg.AgentInboxDir("alice"), newMessage, []byte(newBody))
+	mustWrite(t, filepath.Join(cfg.AgentInboxDir("alice"), "garbage.md"), []byte("bad\n"))
+
+	var out string
+	withCwd(t, root, func() {
+		var err error
+		out, err = captureStdout(t, func() error { return cmdCheck([]string{"--as", "alice"}) })
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, want := range []string{
+		"old-format-body",
+		"new-format-body",
+		oldMessage.RefString(),
+		newMessage.RefString(),
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("check output missing %q:\n%s", want, out)
+		}
+	}
+
+	claimed, err := loop.ListClaimedMessages(cfg.AgentClaimedDir("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 2 {
+		t.Fatalf("claimed messages = %#v, want old and timestamp messages", claimed)
+	}
+	if countMessageFiles(t, cfg.MalformedDir()) != 1 {
+		t.Fatalf("malformed count = %d, want quarantined garbage", countMessageFiles(t, cfg.MalformedDir()))
+	}
+	owed, err := loop.LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owed.Owed) != 0 {
+		t.Fatalf("old and timestamp obligations were not both discharged: %+v", owed.Owed)
 	}
 }

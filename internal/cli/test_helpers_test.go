@@ -1,11 +1,9 @@
 package cli
 
 import (
-	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +47,11 @@ func mustWriteSeqInbox(t *testing.T, inboxDir, from string, seq uint64, content 
 	mustWrite(t, filepath.Join(inboxDir, name), content)
 }
 
+func mustWriteTsInbox(t *testing.T, inboxDir string, id loop.TsID, content []byte) {
+	t.Helper()
+	mustWrite(t, filepath.Join(inboxDir, id.Filename()), content)
+}
+
 // mustWriteAgedInbox is mustWriteSeqInbox plus a back-dated mtime, for tests
 // exercising the check age banner (v2.5 plan A3, C18): age is sourced from
 // file mtime today (Message.Timestamp), so back-dating mtime is how a test
@@ -74,37 +77,9 @@ func clearGuardEnv(t *testing.T) {
 	t.Setenv("AGENTCHUTE_GUARD", "")
 }
 
-func withFakeTmuxTargets(t *testing.T, targets ...string) {
-	t.Helper()
-	old := tmuxProbeBinary
-	path := filepath.Join(t.TempDir(), "tmux")
-	var cases strings.Builder
-	for _, target := range targets {
-		cases.WriteString("  '")
-		cases.WriteString(target)
-		cases.WriteString("') exit 0 ;;\n")
-	}
-	script := "#!/bin/sh\n" +
-		"target=\"\"\n" +
-		"while [ \"$#\" -gt 0 ]; do\n" +
-		"  if [ \"$1\" = \"-t\" ]; then shift; target=\"$1\"; fi\n" +
-		"  shift || true\n" +
-		"done\n" +
-		"case \"$target\" in\n" +
-		cases.String() +
-		"  *) exit 1 ;;\n" +
-		"esac\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	tmuxProbeBinary = path
-	t.Cleanup(func() {
-		tmuxProbeBinary = old
-	})
-}
-
 // Pull-only (Gate 6c): setTmuxPaneLockObserver was removed with the tmux
-// pane-registration lock it observed.
+// pane-registration lock it observed. v2.5 plan B5: withFakeTmuxTargets (its
+// last caller, the presence scan's tmux enumeration) is gone too.
 
 func mustWriteCanonicalHook(t *testing.T, root, wrapper string) {
 	t.Helper()
@@ -120,43 +95,6 @@ func mustWriteCanonicalHook(t *testing.T, root, wrapper string) {
 		return
 	}
 	t.Fatalf("unknown hook wrapper %q", wrapper)
-}
-
-// mustWriteLiveAt writes a `.live` presence fact for agentID with an explicit
-// last_seen, used by Gate 3 readers' tests to force a fresh OR stale presence
-// independently of registration last_seen (the freshness SOURCE is now `.live`).
-// It writes the same on-disk shape loop.WriteLive produces (the exported
-// loop.Live struct + the <loop>/live/<id>.live path), so loop.ReadLive /
-// loop.LiveLastSeen read it back.
-func mustWriteLiveAt(t *testing.T, cfg *loop.Config, agentID string, lastSeen time.Time) {
-	t.Helper()
-	live := loop.Live{
-		ID:       agentID,
-		LastSeen: lastSeen.UTC(),
-		Busy:     false,
-		PID:      os.Getpid(),
-		Host:     "test-host",
-	}
-	data, err := json.MarshalIndent(live, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data = append(data, '\n')
-	mustWrite(t, filepath.Join(cfg.LoopDir, "live", agentID+".live"), data)
-}
-
-func mustWriteFreshPollerHeartbeat(t *testing.T, cfg *loop.Config, agentID string) {
-	t.Helper()
-	if err := loop.SavePollerHeartbeat(cfg, loop.PollerHeartbeat{
-		AgentID:         agentID,
-		Method:          "test",
-		Host:            "test-host",
-		IntervalSeconds: loop.DefaultPollerIntervalSeconds,
-		LaunchEnabled:   true,
-		LastSeen:        time.Now().UTC(),
-	}); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func mustExampleRepo(t *testing.T, root string) {

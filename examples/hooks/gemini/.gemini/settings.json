@@ -5,14 +5,9 @@
         "matcher": "startup",
         "hooks": [
           {
-            "name": "agentchute-poller",
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor google --quiet"
-          },
-          {
             "name": "agentchute-boot",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} boot --vendor google --context-only"
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --context-only"
           }
         ]
       }
@@ -27,14 +22,9 @@
             "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --json"
           },
           {
-            "name": "agentchute-poller",
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor google --quiet"
-          },
-          {
             "name": "agentchute-pending",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} pending --vendor google --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --json"
           }
         ]
       }

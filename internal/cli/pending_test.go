@@ -72,6 +72,19 @@ func TestPendingJSONIncludesOwed(t *testing.T) {
 	})
 }
 
+func TestOwedLineRendersTimestampIdentity(t *testing.T) {
+	entry := loop.OwedEntry{
+		To:     "codex",
+		From:   "claude-code",
+		Stamp:  "20260730T182415123456Z",
+		Suffix: "9f2c04aa71de4b02b6d1c33f08e95a17",
+	}
+	wantRef := "to-codex_from-claude-code_20260730T182415123456Z_r9f2c04aa71de4b02b6d1c33f08e95a17"
+	if got := owedLine(entry); !strings.Contains(got, wantRef) {
+		t.Fatalf("owedLine = %q, want timestamp ref %q", got, wantRef)
+	}
+}
+
 // v0.9.0: --fail-if-any does NOT trigger on owed obligations. Owed is
 // asker-owned and NON-BLOCKING (mirrors gate not blocking + poller not waking on
 // owed), so an owed obligation with an empty inbox exits 0.

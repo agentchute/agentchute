@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
@@ -306,7 +307,7 @@ func TestSetupHelpAndInvalidWakeRunnerOnly(t *testing.T) {
 	})
 }
 
-func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
+func TestSetupInvalidatesServeLeasesAndPreservesRegistrations(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))
 	home := t.TempDir()
@@ -319,9 +320,16 @@ func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
 
 	agentsDir := filepath.Join(root, ".agentchute", "loop", "agents")
 	mustMkdir(t, agentsDir)
-	mustWrite(t, filepath.Join(agentsDir, "codex-agentchute.md"), []byte("---\nagent_id: codex-agentchute\nvendor: openai\ncontrol_repo: "+root+"\nhost: test\nlast_seen: 2026-01-01T00:00:00Z\nstatus: active\n---\n"))
+	registrationPath := filepath.Join(agentsDir, "codex-agentchute.md")
+	registration := []byte("---\nagent_id: codex-agentchute\nvendor: openai\ncontrol_repo: " + root + "\nhost: test\nlast_seen: 2026-01-01T00:00:00Z\nstatus: active\n---\n")
+	mustWrite(t, registrationPath, registration)
 	mustWrite(t, filepath.Join(agentsDir, "codex.example.md"), []byte("tracked example\n"))
 	mustWrite(t, filepath.Join(agentsDir, "README.md"), []byte("format reference\n"))
+	cfg := &loop.Config{ControlRepo: root, LoopDir: filepath.Join(root, ".agentchute", "loop")}
+	lease, err := loop.AcquireServeLease(cfg, "codex-agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	withCwd(t, root, func() {
 		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"}); err != nil {
@@ -329,8 +337,15 @@ func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
 		}
 	})
 
-	if _, err := os.Stat(filepath.Join(agentsDir, "codex-agentchute.md")); !os.IsNotExist(err) {
-		t.Fatalf("live registration should be cleared by setup: %v", err)
+	gotRegistration, err := os.ReadFile(registrationPath)
+	if err != nil {
+		t.Fatalf("registration should be preserved by setup: %v", err)
+	}
+	if string(gotRegistration) != string(registration) {
+		t.Fatalf("registration changed during setup:\ngot:  %s\nwant: %s", gotRegistration, registration)
+	}
+	if err := loop.RenewLease(lease); !errors.Is(err, loop.ErrFenced) {
+		t.Fatalf("old lease after setup = %v, want ErrFenced", err)
 	}
 	for _, keep := range []string{"codex.example.md", "README.md"} {
 		if _, err := os.Stat(filepath.Join(agentsDir, keep)); err != nil {
@@ -339,7 +354,79 @@ func TestSetupClearsExistingLiveRegistrations(t *testing.T) {
 	}
 }
 
-func TestSetupResetsRuntimeStateButPreservesPendingReplies(t *testing.T) {
+// C9: --stale-after round-trips through the pool's state/setup.json, and a
+// resync (no --stale-after passed) preserves the prior value rather than
+// silently reverting it to the 1h default.
+func TestSetupStaleAfterRoundTripsThroughPoolState(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--stale-after", "45m", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := readSetupPoolState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.StaleAfter != "45m" {
+		t.Fatalf("StaleAfter = %q, want 45m", pool.StaleAfter)
+	}
+	if got := loop.StaleAfter(cfg); got != 45*time.Minute {
+		t.Fatalf("loop.StaleAfter(cfg) = %v, want 45m", got)
+	}
+
+	// Resync without --stale-after: the prior value must survive, not revert
+	// to the 1h default.
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	pool, err = readSetupPoolState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.StaleAfter != "45m" {
+		t.Fatalf("resync StaleAfter = %q, want 45m preserved", pool.StaleAfter)
+	}
+}
+
+// C9: an invalid --stale-after value is rejected before any write.
+func TestSetupRejectsInvalidStaleAfter(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	withCwd(t, root, func() {
+		err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--stale-after", "not-a-duration", "--yes"})
+		if err == nil {
+			t.Fatal("expected an error for an invalid --stale-after value")
+		}
+	})
+}
+
+// v2.5 plan B5: the detached poller and session ancestry are deleted, so
+// setup reset no longer touches poller.json/session.json at all (they are
+// not even in setupRuntimeStatePaths's list anymore) — only the runner is
+// stopped+removed. owed.json (an unrelated ledger) stays preserved either way.
+func TestSetupResetsRunnerStateButPreservesPendingReplies(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))
 	home := t.TempDir()
@@ -353,13 +440,10 @@ func TestSetupResetsRuntimeStateButPreservesPendingReplies(t *testing.T) {
 	loopDir := filepath.Join(root, ".agentchute", "loop")
 	agentsDir := filepath.Join(loopDir, "agents")
 	mustMkdir(t, agentsDir)
-	mustWrite(t, filepath.Join(agentsDir, "codex-agentchute.md"), []byte("---\nagent_id: codex-agentchute\nvendor: openai\ncontrol_repo: "+root+"\nhost: test\nlast_seen: 2026-01-01T00:00:00Z\nstatus: active\n---\n"))
+	mustWrite(t, filepath.Join(agentsDir, "codex-agentchute.md"), []byte("---\nagent_id: codex-agentchute\nvendor: openai\ncontrol_repo: "+root+"\nhost: test\nlast_seen: 2026-01-01T00:00:00Z\n---\n"))
 	stateDir := filepath.Join(loopDir, "state", "codex-agentchute")
-	mustWrite(t, filepath.Join(stateDir, "poller.json"), []byte(`{"agent_id":"codex-agentchute","method":"poller-run","host":"`+localHostname()+`","pid":111,"interval_seconds":30,"last_seen":"2026-01-01T00:00:00Z"}`+"\n"))
 	mustWrite(t, filepath.Join(stateDir, "runner.json"), []byte(`{"agent_id":"codex-agentchute","runner_pid":222,"socket_path":"`+filepath.Join(stateDir, "runner.sock")+`","started_at":"2026-01-01T00:00:00Z","status":"active"}`+"\n"))
-	mustWrite(t, filepath.Join(stateDir, "session.json"), []byte(`{"agent_id":"codex-agentchute","source":"self-check","host":"`+localHostname()+`","pid":333,"last_seen":"2026-01-01T00:00:00Z"}`+"\n"))
 	mustWrite(t, filepath.Join(stateDir, "owed.json"), []byte(`{"owed":[]}`+"\n"))
-	mustWrite(t, filepath.Join(stateDir, "poller.log"), []byte("keep log\n"))
 
 	oldAlive, oldCommandLine, oldSignal := setupProcessAlive, setupProcessCommandLine, setupSignalProcess
 	signaled := map[int]bool{}
@@ -367,17 +451,13 @@ func TestSetupResetsRuntimeStateButPreservesPendingReplies(t *testing.T) {
 		if signaled[pid] {
 			return false
 		}
-		return pid == 111 || pid == 222
+		return pid == 222
 	}
 	setupProcessCommandLine = func(pid int) string {
-		switch pid {
-		case 111:
-			return filepath.Join(home, "agentchute") + " poller run --as codex-agentchute --control-repo " + root + " --loop-dir " + loopDir
-		case 222:
+		if pid == 222 {
 			return filepath.Join(home, "agentchute") + " serve --as codex-agentchute --control-repo " + root + " --loop-dir " + loopDir + " -- codex"
-		default:
-			return ""
 		}
+		return ""
 	}
 	setupSignalProcess = func(pid int, sig os.Signal) error {
 		signaled[pid] = true
@@ -395,33 +475,74 @@ func TestSetupResetsRuntimeStateButPreservesPendingReplies(t *testing.T) {
 		}
 	})
 
-	if !signaled[111] || !signaled[222] {
-		t.Fatalf("setup did not signal poller and runner pids: %#v", signaled)
+	if !signaled[222] {
+		t.Fatalf("setup did not signal the runner pid: %#v", signaled)
 	}
-	for _, removed := range []string{"poller.json", "runner.json", "session.json"} {
-		if _, err := os.Stat(filepath.Join(stateDir, removed)); !os.IsNotExist(err) {
-			t.Fatalf("%s should be removed by setup reset: %v", removed, err)
-		}
+	if _, err := os.Stat(filepath.Join(stateDir, "runner.json")); !os.IsNotExist(err) {
+		t.Fatalf("runner.json should be removed by setup reset: %v", err)
 	}
-	for _, keep := range []string{"owed.json", "poller.log"} {
-		if _, err := os.Stat(filepath.Join(stateDir, keep)); err != nil {
-			t.Fatalf("%s should be preserved: %v", keep, err)
-		}
+	if _, err := os.Stat(filepath.Join(stateDir, "owed.json")); err != nil {
+		t.Fatalf("owed.json should be preserved: %v", err)
 	}
 }
 
-func TestSetupCommandAgentIDMatchIsBounded(t *testing.T) {
+// codex PR #98 review, round 3: the legacy-poller stop was wired into the
+// destructive `wipe-state` path only. resetSetupRuntimeState — what ordinary
+// `setup --reset` and, critically, `update`'s re-sync call — still left a
+// live pre-B5 detached poller running untouched. This is the NORMAL upgrade
+// cutover every lane takes, so it matters more than wipe (the rare
+// deliberate destructive command). Asserts the ordinary reset path signals
+// and reaps a live legacy poller exactly like it does the runner.
+func TestSetupResetsSignalsLiveLegacyPoller(t *testing.T) {
 	root := t.TempDir()
-	cfg := &loop.Config{
-		ControlRepo: root,
-		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	loopDir := filepath.Join(root, ".agentchute", "loop")
+	agentsDir := filepath.Join(loopDir, "agents")
+	mustMkdir(t, agentsDir)
+	mustWrite(t, filepath.Join(agentsDir, "codex-agentchute.md"), []byte("---\nagent_id: codex-agentchute\nvendor: openai\ncontrol_repo: "+root+"\nhost: test\nlast_seen: 2026-01-01T00:00:00Z\n---\n"))
+	stateDir := filepath.Join(loopDir, "state", "codex-agentchute")
+	mustWrite(t, filepath.Join(stateDir, "poller.json"), []byte(`{"agent_id":"codex-agentchute","host":"`+localHostname()+`","pid":333}`+"\n"))
+
+	oldAlive, oldCommandLine, oldSignal := setupProcessAlive, setupProcessCommandLine, setupSignalProcess
+	signaled := map[int]bool{}
+	setupProcessAlive = func(pid int) bool {
+		if signaled[pid] {
+			return false
+		}
+		return pid == 333
 	}
-	cmdline := filepath.Join(root, "bin", "agentchute") + " poller run --as codex-agentchute-2 --control-repo " + root
-	if setupCommandMatches(cmdline, "codex-agentchute", "poller run", cfg) {
-		t.Fatal("setupCommandMatches matched codex-agentchute as a substring of codex-agentchute-2")
+	setupProcessCommandLine = func(pid int) string {
+		if pid == 333 {
+			return filepath.Join(home, "agentchute") + " poller run --as codex-agentchute --control-repo " + root + " --loop-dir " + loopDir
+		}
+		return ""
 	}
-	if !setupCommandMatches(cmdline, "codex-agentchute-2", "poller run", cfg) {
-		t.Fatal("setupCommandMatches did not match the exact --as agent id")
+	setupSignalProcess = func(pid int, sig os.Signal) error {
+		signaled[pid] = true
+		return nil
+	}
+	t.Cleanup(func() {
+		setupProcessAlive = oldAlive
+		setupProcessCommandLine = oldCommandLine
+		setupSignalProcess = oldSignal
+	})
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if !signaled[333] {
+		t.Fatalf("ordinary setup reset did not signal the legacy poller pid: %#v", signaled)
 	}
 }
 
@@ -453,8 +574,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v24 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v24 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v28 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v28 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)
@@ -585,7 +706,7 @@ func TestSetupWrapperNarrowingRemovesDroppedHooksAndShims(t *testing.T) {
 // hooks, shims, PATH block, saved setup state) must all land BEFORE the
 // destructive runtime reset. We inject a failure into the reset seam and assert
 // every wake-infrastructure artifact already exists — so a mid-setup failure can
-// never leave the bus with cleared registrations AND no wake infrastructure. A
+// never leave the bus with invalidated leases AND no wake infrastructure. A
 // pre-reorder build (reset first) leaves these unwritten when the reset fails and
 // this test goes red.
 func TestSetup_TemplatesWrittenBeforeRuntimeReset(t *testing.T) {

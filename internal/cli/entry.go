@@ -21,11 +21,11 @@ Commands:
   send           send a message from one agent to another
   check          claim + display messages addressed to me (at-least-once; run ack to commit)
   ack            commit messages claimed by check (archive the .claimed residue)
-  status         print registry overview, inbox depths, and .live presence freshness
-  doctor         diagnostic aggregator: scaffold, hook content, registration, inbox, .live presence
+  status         print registry overview, inbox depths, and registration freshness
+  doctor         diagnostic aggregator: scaffold, hook content, registration, inbox, presence
 
 Advanced / internal (mostly hook- or setup-driven; run 'agentchute <cmd> --help' for any):
-  boot · register · gate · pending · poller · self-check · turn-end · guard · hooks · shims · prepare-pool · identity · update
+  boot · register · gate · pending · self-check · turn-end · guard · hooks · shims · prepare-pool · identity · update
 
 Run 'agentchute <command> --help' for command-specific flags.
 See AGENTCHUTE.md for the full spec.

@@ -80,11 +80,7 @@ func cmdTurnEnd(args []string) error {
 		return turnEndUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	opts := registerOpts{Host: host, Bio: bio}
-	// WI-E3 provenance: turn-end is a lifecycle hook enroll, same as
-	// self-check. Under the runner (AGENTCHUTE_RUNNER=1) it records `runner`
-	// so the runner lane is not demoted.
-	opts.LaunchedBy, opts.HookEvent = hookLaunchProvenance("turn-end")
+	opts := registerOpts{Host: host, Bio: bio, ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "host":
@@ -121,7 +117,7 @@ func cmdTurnEnd(args []string) error {
 	// the old unconditional-abort-on-error fully wedged it). Only a genuine
 	// identity-resolution failure — no id could be determined at all, so
 	// resolvedID comes back empty — leaves nothing usable to proceed with.
-	resolvedID, _, repairErr := selfRepairRegistration(cfg, &opts, agentID, vendor, "turn-end", now)
+	resolvedID, _, repairErr := selfRepairRegistration(cfg, &opts, agentID, vendor, now)
 	if resolvedID == "" {
 		return repairErr
 	}

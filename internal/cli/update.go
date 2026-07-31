@@ -57,12 +57,11 @@ Updates an existing install in one step: self-updates the binary to the target
 release, then re-runs ` + "`setup`" + ` with this control repo's saved wake mode and
 wrappers so hooks, enrollment blocks, and shims re-sync to the new version.
 
-This clears live registrations; you MUST restart every active agent afterward.
+This invalidates every serve lease after the binary swap. Running supervisors
+fence out and exit on their next tick; registration rows are preserved.
 
-Pass --no-resync to swap ONLY the binary and skip the setup re-sync: live
-registrations are preserved and no bus reset happens. Use it for a pure binary
-refresh, or for a pool created by an older binary / via ` + "`init`" + ` that has no
-saved setup state to replay.
+Pass --no-resync to skip the setup re-sync. Lease invalidation still happens,
+because a binary-only update must also force running supervisors to restart.
 
 Flags:
   --version <tag>   release tag to install (default: latest release)
@@ -91,7 +90,7 @@ func cmdUpdate(args []string) error {
 	// 1. Discover the control repo. The setup re-sync replays the saved
 	// wake/wrappers, so it REQUIRES saved pool state — but --no-resync skips the
 	// re-sync entirely (binary-only update), so it neither needs nor reads that
-	// state and never resets the bus.
+	// state. Both paths invalidate serve leases after the binary swap.
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -129,6 +128,11 @@ func cmdUpdate(args []string) error {
 
 		// The exact setup re-sync, replaying the saved install config.
 		setupArgs = []string{"setup", "--control-repo", cfg.ControlRepo, "--wake", storedWake, "--wrappers", wrappersArg, "--yes"}
+		if sa := strings.TrimSpace(pool.StaleAfter); sa != "" {
+			// C9: replay the pool's configured staleness threshold so a resync
+			// never silently reverts it to the 1h default.
+			setupArgs = append(setupArgs, "--stale-after", sa)
+		}
 		if sd := strings.TrimSpace(global.ShimDir); sd != "" {
 			setupArgs = append(setupArgs, "--shim-dir", sd)
 		}
@@ -172,11 +176,11 @@ func cmdUpdate(args []string) error {
 		fmt.Printf("  binary:        %s\n", target)
 		fmt.Printf("  asset:         %s\n", asset)
 		if noResync {
-			fmt.Println("  re-sync:       skipped (--no-resync); binary swap only")
-			fmt.Println("  reset:         skipped (--no-resync); live registrations preserved")
+			fmt.Println("  re-sync:       skipped (--no-resync)")
+			fmt.Println("  restart:       would invalidate serve leases after the binary swap")
 		} else {
 			fmt.Printf("  re-sync:       %s\n", setupCmd)
-			fmt.Printf("  reset:         would stop local agentchute runtimes and clear %d live agent registration(s)\n", len(active))
+			fmt.Println("  restart:       would invalidate serve leases; registrations stay present")
 		}
 		printActiveAgents(active)
 		fmt.Println("(dry-run; no changes made)")
@@ -201,7 +205,6 @@ func cmdUpdate(args []string) error {
 	}
 	defer os.Remove(tmpBin)
 
-	// --no-resync is a pure binary refresh: no bus reset, no restart needed.
 	if !noResync {
 		printRestartWarning(targetTag, active, false)
 	}
@@ -213,10 +216,17 @@ func cmdUpdate(args []string) error {
 	syncDir(filepath.Dir(target))
 	fmt.Printf("Updated agentchute %s -> %s (%s)\n", current, targetTag, target)
 
+	invalidated, err := loop.InvalidateAllServeLeases(cfg)
+	if err != nil {
+		return fmt.Errorf("binary updated to %s but serve-lease invalidation failed: %w; rerun `agentchute setup --yes` before relaunching lanes", targetTag, err)
+	}
+	fmt.Printf("Invalidated %d serve lease(s); running supervisors will exit on their next tick.\n", invalidated)
+
 	if noResync {
-		// Binary-only update: skip the destructive setup re-sync entirely. Live
-		// registrations and wake infrastructure are left untouched.
-		fmt.Println("(--no-resync: skipped setup re-sync; live registrations preserved)")
+		// Binary-only update: hooks/templates stay untouched, but the wire-break
+		// forcing function still fences every running supervisor.
+		fmt.Println("(--no-resync: skipped setup re-sync; registrations preserved)")
+		printRestartWarning(targetTag, active, true)
 		return nil
 	}
 
@@ -472,13 +482,23 @@ func syncDir(dir string) {
 
 // activeAgentIDs returns the agent ids of live registrations on this host in
 // this pool, for the restart warning and dry-run plan.
+//
+// C9/B1 interim: soft-state registration has no reliable Status=offline
+// signal anymore (a quitting serve does nothing to its row — B1's Behavior
+// spec), so "active" is now computed the same way the sweep judges liveness:
+// row age <= the pool's configured StaleAfter threshold. This is interim
+// because it doesn't yet check the serve lease (that refinement is B2/B5's
+// concern, once lease invalidation is the forcing function); a fresh-enough
+// row is treated as active even if its owning process already exited.
 func activeAgentIDs(cfg *loop.Config) []string {
 	regs, _ := loop.ReadRegistrationsLenient(cfg.AgentsDir())
 	localHost, _ := os.Hostname()
 	localHost = strings.TrimSpace(localHost)
+	threshold := loop.StaleAfter(cfg)
+	now := time.Now().UTC()
 	var ids []string
 	for _, reg := range regs {
-		if reg.Status == loop.StatusOffline {
+		if now.Sub(reg.LastSeen) > threshold {
 			continue
 		}
 		if localHost != "" && strings.TrimSpace(reg.Host) != "" && reg.Host != localHost {
@@ -501,12 +521,12 @@ func printRestartWarning(tag string, active []string, done bool) {
 	bar := strings.Repeat("=", 70)
 	fmt.Fprintln(os.Stderr, bar)
 	if done {
-		fmt.Fprintf(os.Stderr, "agentchute updated to %s and re-ran setup.\n\n", tag)
+		fmt.Fprintf(os.Stderr, "agentchute updated to %s; serve leases were invalidated.\n\n", tag)
 	} else {
-		fmt.Fprintf(os.Stderr, "agentchute is updating to %s and will re-run setup.\n\n", tag)
+		fmt.Fprintf(os.Stderr, "agentchute is updating to %s; serve leases will be invalidated immediately after the binary swap.\n\n", tag)
 	}
-	fmt.Fprintln(os.Stderr, "setup stops local agentchute pollers/runners and clears live registrations.")
-	fmt.Fprintln(os.Stderr, "Each wrapper re-enrolls on its next start; until then it is absent from the pool.")
+	fmt.Fprintln(os.Stderr, "Running supervisors are fenced and will exit with a restart notice on their next tick.")
+	fmt.Fprintln(os.Stderr, "Registration rows stay present. Relaunch each lane with `ac serve <wrapper>`.")
 	if len(active) > 0 {
 		fmt.Fprintf(os.Stderr, "\nRESTART every active agent now (%d): %s\n", len(active), strings.Join(active, ", "))
 	}

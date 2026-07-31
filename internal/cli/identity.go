@@ -3,32 +3,28 @@ package cli
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strings"
-	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-func resolveAgentID(flagID, vendor string, cfg *loop.Config) (string, error) {
-	id, err := resolveAgentIDRaw(flagID, vendor, cfg)
+const missingAgentIdentityHint = "missing agent identity: pass --as/--from or set AGENTCHUTE_AGENT_ID (e.g. export AGENTCHUTE_AGENT_ID=claude-code). See AGENTS.md enrollment."
+
+func resolveAgentID(flagID string) (string, error) {
+	id, err := resolveAgentIDRaw(flagID)
 	if err != nil {
 		return "", err
 	}
 	// Structural traversal-safety: every path that produces an agent id flows
 	// through this single validation, so a hostile --as / AGENTCHUTE_AGENT_ID
-	// (e.g. "../../etc/x") can never escape to filesystem resolution. The
-	// contextual-default derivation already yields valid ids; this re-check is
-	// defense in depth and the sole gate for the explicit-input paths.
+	// (e.g. "../../etc/x") can never escape to filesystem resolution.
 	if err := loop.ValidateAgentID(id); err != nil {
 		return "", err
 	}
 	return id, nil
 }
 
-func resolveAgentIDRaw(flagID, vendor string, cfg *loop.Config) (string, error) {
+func resolveAgentIDRaw(flagID string) (string, error) {
 	// 1. Explicit --as flag wins.
 	if strings.TrimSpace(flagID) != "" {
 		return strings.TrimSpace(flagID), nil
@@ -39,68 +35,7 @@ func resolveAgentIDRaw(flagID, vendor string, cfg *loop.Config) (string, error) 
 		return envID, nil
 	}
 
-	// 3. Contextual default: <canonical-wrapper-id>-<folder-slug>.
-	//
-	// Pull-only (Gate 6c): registrations carry no wake target, so there is no
-	// tmux/herdr pane to map back to a prior registration; identity comes from
-	// --as / $AGENTCHUTE_AGENT_ID or the contextual default below.
-	canon := canonicalAgentIDForVendor(vendor)
-	if canon == "" {
-		return "", fmt.Errorf("missing agent identity; pass --as, set AGENTCHUTE_AGENT_ID, or provide a recognized --vendor/--wrapper for a contextual default")
-	}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	baseID := canon + "-" + getFolderSlug(cwd)
-
-	// If we don't have a config yet (e.g. discovery failed elsewhere),
-	// we can't do conflict detection. Just return the base.
-	if cfg == nil {
-		return baseID, nil
-	}
-	id, err := availableContextualAgentID(cfg, baseID, time.Now().UTC())
-	if err != nil {
-		return "", err
-	}
-	return id, nil
-}
-
-func contextualIdentityBase(flagID, vendor string) (string, bool, error) {
-	if strings.TrimSpace(flagID) != "" || strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID")) != "" {
-		return "", false, nil
-	}
-	canon := canonicalAgentIDForVendor(vendor)
-	if canon == "" {
-		return "", false, nil
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", false, err
-	}
-	return canon + "-" + getFolderSlug(cwd), true, nil
-}
-
-func availableContextualAgentID(cfg *loop.Config, baseID string, now time.Time) (string, error) {
-	regs, _ := loop.ReadRegistrationsLenient(cfg.AgentsDir())
-	reserved := make(map[string]bool)
-	for _, reg := range regs {
-		if registrationReservesIdentity(cfg, reg, now) {
-			reserved[reg.AgentID] = true
-		}
-	}
-
-	candidate := baseID
-	for i := 2; ; i++ {
-		if !reserved[candidate] {
-			return candidate, nil
-		}
-		candidate = fmt.Sprintf("%s-%d", baseID, i)
-		if i > 100 {
-			return "", fmt.Errorf("could not allocate a free agent id for base %q after %d attempts", baseID, 100)
-		}
-	}
+	return "", fmt.Errorf("%s", missingAgentIdentityHint)
 }
 
 func canonicalAgentIDForVendor(vendor string) string {
@@ -144,67 +79,11 @@ func resolveAgentVendor(vendor, agentID string, cfg *loop.Config) string {
 			return strings.TrimSpace(reg.Vendor)
 		}
 	}
-	if preset, ok := vendorPresets[agentID]; ok {
-		return preset.Vendor
-	}
 	return vendorForAgentID(agentID)
-}
-
-func getFolderSlug(cwd string) string {
-	root, err := gitRootForCwd(cwd)
-	if err != nil {
-		root = cwd
-	}
-	slug := slugify(filepath.Base(root))
-	if slug == "" {
-		return "repo"
-	}
-	return slug
-}
-
-func gitRootForCwd(cwd string) (string, error) {
-	cmd := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	root := strings.TrimSpace(string(out))
-	if root == "" {
-		return "", fmt.Errorf("git root empty")
-	}
-	return root, nil
-}
-
-var slugifyRE = regexp.MustCompile(`[^a-z0-9]+`)
-
-func slugify(s string) string {
-	s = strings.ToLower(s)
-	s = slugifyRE.ReplaceAllString(s, "-")
-	return strings.Trim(s, "-")
 }
 
 func registrationMatchesCanonical(agentID, canon string) bool {
 	agentID = strings.TrimSpace(agentID)
 	canon = strings.TrimSpace(canon)
 	return agentID == canon || strings.HasPrefix(agentID, canon+"-")
-}
-
-func registrationReservesIdentity(cfg *loop.Config, reg *loop.Registration, now time.Time) bool {
-	if reg == nil || strings.TrimSpace(reg.AgentID) == "" {
-		return false
-	}
-	if reg.RestartAt != nil && reg.RestartAt.After(now) {
-		return true
-	}
-	if reg.Status == loop.StatusOffline || reg.Status == loop.StatusExhausted {
-		return false
-	}
-	if reg.LastSeen.IsZero() {
-		return true
-	}
-	age := now.Sub(reg.LastSeen.UTC())
-	if age < 0 {
-		age = 0
-	}
-	return age < StaleRegThreshold
 }

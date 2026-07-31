@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,7 +9,12 @@ import (
 	"time"
 )
 
-func TestReadRegistrationParsesFrontmatterAndBody(t *testing.T) {
+// v2.5 plan B5: status/restart_at/last_active are retired keys. An old row
+// still carrying them on disk for one release must still parse cleanly —
+// parseFrontmatter accepts them as ordinary key:value pairs, and simply not
+// reading them into the (now-smaller) Registration struct is the entire
+// "tolerate and drop" migration.
+func TestReadRegistrationToleratesRetiredKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "codex.md")
 	mustWrite(t, path, []byte(`---
 agent_id: codex
@@ -30,22 +36,13 @@ review-first
 
 	reg, err := ReadRegistration(path)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("registration with retired keys must still parse: %v", err)
 	}
 	if reg.AgentID != "codex" || reg.Vendor != "openai" {
 		t.Fatalf("unexpected scalar fields: %#v", reg)
 	}
 	if len(reg.WorkingRepos) != 2 || reg.WorkingRepos[1] != "/tmp/other repo" {
 		t.Fatalf("WorkingRepos = %#v", reg.WorkingRepos)
-	}
-	if reg.Status != StatusExhausted {
-		t.Fatalf("Status = %q", reg.Status)
-	}
-	if reg.RestartAt == nil || reg.RestartAt.UTC().Format(time.RFC3339) != "2026-05-09T18:00:00Z" {
-		t.Fatalf("RestartAt = %#v", reg.RestartAt)
-	}
-	if reg.LastActive == nil || reg.LastActive.UTC().Format(time.RFC3339Nano) != "2026-05-09T16:00:12.123456Z" {
-		t.Fatalf("LastActive = %#v", reg.LastActive)
 	}
 	if reg.Body == "" || reg.Body[0] != '#' {
 		t.Fatalf("Body = %q", reg.Body)
@@ -55,15 +52,12 @@ review-first
 func TestWriteRegistrationRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "alex.md")
 	lastSeen := time.Date(2026, 5, 9, 16, 8, 36, 0, time.UTC)
-	lastActive := time.Date(2026, 5, 9, 16, 9, 0, 0, time.UTC)
 	reg := &Registration{
 		AgentID:      "alex",
 		Vendor:       "human",
 		ControlRepo:  "/tmp/repo",
 		WorkingRepos: []string{"/tmp/repo"},
 		LastSeen:     lastSeen,
-		Status:       StatusActive,
-		LastActive:   &lastActive,
 		Body:         "# Alex\n",
 	}
 
@@ -81,7 +75,7 @@ func TestWriteRegistrationRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.AgentID != reg.AgentID || got.Vendor != reg.Vendor || got.LastActive == nil {
+	if got.AgentID != reg.AgentID || got.Vendor != reg.Vendor || !got.LastSeen.Equal(lastSeen) {
 		t.Fatalf("round trip mismatch: %#v", got)
 	}
 }
@@ -93,7 +87,6 @@ func TestWriteRegistrationExclusiveRefusesExisting(t *testing.T) {
 		Vendor:      "openai",
 		ControlRepo: "/tmp/repo",
 		LastSeen:    time.Now().UTC(),
-		Status:      StatusActive,
 	}
 	if err := WriteRegistrationExclusive(path, reg); err != nil {
 		t.Fatal(err)
@@ -140,7 +133,29 @@ func TestReadFileLimit_RejectsSymlink(t *testing.T) {
 // shape-validates a wake target (ValidateWakeTarget is gone with the wake
 // adapters).
 
-func TestUpdateLastSeenPreservesBody(t *testing.T) {
+// heartbeatTestTemplate builds a minimal template for HeartbeatRegistration
+// tests: agent_id/vendor/control_repo only, mirroring the fields serve's real
+// template carries (WorkingRepos/Host vary by test).
+func heartbeatTestTemplate(agentID string) Registration {
+	return Registration{
+		AgentID:     agentID,
+		Vendor:      "openai",
+		ControlRepo: "/tmp/repo",
+	}
+}
+
+// mustAcquireTestLease acquires a real serve lease for agentID so
+// HeartbeatRegistration's VerifyFence has a genuine claim to check against.
+func mustAcquireTestLease(t *testing.T, cfg *Config, agentID string) *ServeLease {
+	t.Helper()
+	lease, err := AcquireServeLease(cfg, agentID)
+	if err != nil {
+		t.Fatalf("AcquireServeLease(%s): %v", agentID, err)
+	}
+	return lease
+}
+
+func TestHeartbeatRegistrationPreservesBody(t *testing.T) {
 	cfg := newLockTestConfig(t)
 	path := cfg.AgentRegistrationPath("codex")
 	mustWrite(t, path, []byte(`---
@@ -148,59 +163,140 @@ agent_id: codex
 vendor: openai
 control_repo: /tmp/repo
 last_seen: 2026-05-09T16:08:36Z
-status: active
 ---
 
 # Keep this body
 `))
+	lease := mustAcquireTestLease(t, cfg, "codex")
 
-	next := time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
-	if err := UpdateLastSeen(cfg, "codex", next); err != nil {
+	if err := HeartbeatRegistration(cfg, heartbeatTestTemplate("codex"), lease.Token); err != nil {
 		t.Fatal(err)
 	}
 	reg, err := ReadRegistration(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reg.LastSeen.UTC().Format(time.RFC3339) != "2026-05-10T00:00:00Z" {
-		t.Fatalf("LastSeen = %s", reg.LastSeen.Format(time.RFC3339))
+	if reg.LastSeen.Before(time.Now().Add(-time.Minute)) {
+		t.Fatalf("LastSeen = %s, want ~now", reg.LastSeen.Format(time.RFC3339))
 	}
 	if reg.Body != "# Keep this body\n" {
 		t.Fatalf("Body = %q", reg.Body)
 	}
 }
 
-func TestUpdateLastActivePreservesBody(t *testing.T) {
+// TestHeartbeatRegistrationPreservesWorkingRepos: the on-disk row's
+// WorkingRepos wins over the template's, since only register/boot's explicit
+// --working-repo flag should change it — a heartbeat tick must not silently
+// drop repos the template doesn't know about (C13).
+func TestHeartbeatRegistrationPreservesWorkingRepos(t *testing.T) {
 	cfg := newLockTestConfig(t)
-	path := cfg.AgentRegistrationPath("codex")
-	mustWrite(t, path, []byte(`---
-agent_id: codex
-vendor: openai
-control_repo: /tmp/repo
-last_seen: 2026-05-09T16:08:36Z
-status: active
----
-
-# Keep this body
-`))
-
-	next := time.Date(2026, 5, 10, 0, 1, 0, 0, time.UTC)
-	if err := UpdateLastActive(cfg, "codex", next); err != nil {
+	agentID := "codex"
+	existing := &Registration{
+		AgentID:      agentID,
+		Vendor:       "openai",
+		ControlRepo:  "/tmp/repo",
+		WorkingRepos: []string{"/tmp/repo", "/tmp/other-repo"},
+		LastSeen:     time.Now().UTC().Add(-time.Hour),
+	}
+	if err := WriteRegistration(cfg.AgentRegistrationPath(agentID), existing); err != nil {
 		t.Fatal(err)
+	}
+	lease := mustAcquireTestLease(t, cfg, agentID)
+
+	template := heartbeatTestTemplate(agentID)
+	template.WorkingRepos = []string{"/tmp/repo"} // narrower than the on-disk row
+	if err := HeartbeatRegistration(cfg, template, lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := ReadRegistration(cfg.AgentRegistrationPath(agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.WorkingRepos) != 2 || reg.WorkingRepos[0] != "/tmp/repo" || reg.WorkingRepos[1] != "/tmp/other-repo" {
+		t.Fatalf("WorkingRepos = %v, want the on-disk row preserved", reg.WorkingRepos)
+	}
+}
+
+// TestHeartbeatRegistrationCreatesWhenMissing: a swept-away (or never-yet-
+// written) row is recreated from template rather than erroring (C13,
+// "create-from-template if missing").
+func TestHeartbeatRegistrationCreatesWhenMissing(t *testing.T) {
+	cfg := newLockTestConfig(t)
+	agentID := "codex"
+	lease := mustAcquireTestLease(t, cfg, agentID)
+
+	path := cfg.AgentRegistrationPath(agentID)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("precondition: registration should not exist yet, stat err = %v", err)
+	}
+
+	if err := HeartbeatRegistration(cfg, heartbeatTestTemplate(agentID), lease.Token); err != nil {
+		t.Fatalf("HeartbeatRegistration on a missing row must create it, not error: %v", err)
 	}
 	reg, err := ReadRegistration(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reg.LastActive == nil || !reg.LastActive.Equal(next) {
-		t.Fatalf("LastActive = %v, want %v", reg.LastActive, next)
-	}
-	if reg.Body != "# Keep this body\n" {
-		t.Fatalf("Body = %q", reg.Body)
+	if reg.AgentID != agentID || reg.Vendor != "openai" || reg.ControlRepo != "/tmp/repo" {
+		t.Fatalf("recreated registration = %+v, want the template's fields", reg)
 	}
 }
 
-func TestUpdateLastSeenUsesStructuredRegistrationWrite(t *testing.T) {
+// TestHeartbeatRegistrationRefusesWithoutLease: no serve claim exists at all
+// for this id, so VerifyFence fails closed with ErrFenced and the call must
+// write NOTHING — a caller passing a token with no backing claim (e.g. a
+// stale/forged token) must never resurrect or create a row.
+func TestHeartbeatRegistrationRefusesWithoutLease(t *testing.T) {
+	cfg := newLockTestConfig(t)
+	agentID := "codex"
+	path := cfg.AgentRegistrationPath(agentID)
+
+	err := HeartbeatRegistration(cfg, heartbeatTestTemplate(agentID), "not-a-real-token")
+	if !errors.Is(err, ErrFenced) {
+		t.Fatalf("err = %v, want ErrFenced", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("HeartbeatRegistration wrote a registration despite ErrFenced: stat err = %v", statErr)
+	}
+}
+
+// TestHeartbeatRegistrationRefusesReclaimedLease: a token that DID once own
+// the lease, but was reclaimed by a fresh AcquireServeLease in the meantime
+// (the paused-laptop-resume scenario), must also fail closed — the stale
+// token no longer equals the live claim's token. Mirrors lease_test.go's own
+// stale-reclaim pattern: pidAlive is forced false so a same-host stale claim
+// is reclaimable (pid-proof failure), not protected as "frozen but alive".
+func TestHeartbeatRegistrationRefusesReclaimedLease(t *testing.T) {
+	cfg := newLockTestConfig(t)
+	agentID := "codex"
+	host, _ := os.Hostname()
+	writeClaim(t, cfg, &ServeClaim{
+		ID:         agentID,
+		Host:       host,
+		PID:        4242,
+		ServeToken: "stale-token",
+		StartedAt:  time.Now().Add(-time.Hour).UTC(),
+		LastSeen:   time.Now().Add(-time.Hour).UTC(),
+	})
+	withPidAlive(t, func(int) bool { return false })
+	if _, err := AcquireServeLease(cfg, agentID); err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+
+	err := HeartbeatRegistration(cfg, heartbeatTestTemplate(agentID), "stale-token")
+	if !errors.Is(err, ErrFenced) {
+		t.Fatalf("err = %v, want ErrFenced for a reclaimed (stale) token", err)
+	}
+}
+
+func TestHeartbeatRegistrationEmptyTokenErrors(t *testing.T) {
+	cfg := newLockTestConfig(t)
+	if err := HeartbeatRegistration(cfg, heartbeatTestTemplate("codex"), ""); err == nil {
+		t.Fatal("expected an error for an empty lease token (heartbeat is serve-only)")
+	}
+}
+
+func TestHeartbeatRegistrationUsesStructuredRegistrationWrite(t *testing.T) {
 	cfg := newLockTestConfig(t)
 	path := cfg.AgentRegistrationPath("codex")
 	mustWrite(t, path, []byte(`---
@@ -209,12 +305,11 @@ vendor: openai
 control_repo: /tmp/repo
 custom_field: preserved-by-line-edit-only
 last_seen: 2026-05-09T16:08:36Z
-status: active
 ---
 `))
+	lease := mustAcquireTestLease(t, cfg, "codex")
 
-	next := time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
-	if err := UpdateLastSeen(cfg, "codex", next); err != nil {
+	if err := HeartbeatRegistration(cfg, heartbeatTestTemplate("codex"), lease.Token); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -222,44 +317,7 @@ status: active
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), "custom_field:") {
-		t.Fatalf("UpdateLastSeen preserved unknown frontmatter field:\n%s", string(data))
-	}
-}
-
-// GATE 3: UpdateLastSeen is the shared heartbeat path (runner tick, check, send,
-// status). Besides refreshing registration last_seen it must publish a fresh
-// `.live` presence fact (busy=false; busy is advisory, set only by serve) so all
-// heartbeat sites yield fresh presence with no per-call-site edits.
-func TestUpdateLastSeenWritesLive(t *testing.T) {
-	cfg := newLockTestConfig(t)
-	path := cfg.AgentRegistrationPath("codex")
-	mustWrite(t, path, []byte(`---
-agent_id: codex
-vendor: openai
-control_repo: /tmp/repo
-last_seen: 2026-05-09T16:08:36Z
-status: active
----
-`))
-
-	// No `.live` exists before the heartbeat.
-	if _, err := ReadLive(cfg, "codex"); err == nil {
-		t.Fatal("expected no .live before UpdateLastSeen")
-	}
-
-	if err := UpdateLastSeen(cfg, "codex", time.Now().UTC()); err != nil {
-		t.Fatal(err)
-	}
-
-	if !IsLive(cfg, "codex", liveWindow, time.Now()) {
-		t.Fatal("UpdateLastSeen did not publish a fresh .live")
-	}
-	live, err := ReadLive(cfg, "codex")
-	if err != nil {
-		t.Fatalf("ReadLive: %v", err)
-	}
-	if live.Busy {
-		t.Error("UpdateLastSeen wrote busy=true; busy is advisory and must be false here")
+		t.Fatalf("HeartbeatRegistration preserved unknown frontmatter field:\n%s", string(data))
 	}
 }
 
@@ -271,7 +329,6 @@ vendor: openai
 vendor: local
 control_repo: /tmp/repo
 last_seen: 2026-05-09T16:08:36Z
-status: active
 ---
 `))
 
@@ -286,7 +343,6 @@ func TestRegistrationRejectsRelativeControlRepo(t *testing.T) {
 		Vendor:      "openai",
 		ControlRepo: "relative/path",
 		LastSeen:    time.Now(),
-		Status:      StatusActive,
 	}
 	if err := reg.Validate(); err == nil {
 		t.Fatal("expected relative control_repo to be rejected")
@@ -300,7 +356,6 @@ func TestRegistrationRejectsRelativeWorkingRepos(t *testing.T) {
 		ControlRepo:  "/tmp/repo",
 		WorkingRepos: []string{"/tmp/repo", "relative/elsewhere"},
 		LastSeen:     time.Now(),
-		Status:       StatusActive,
 	}
 	if err := reg.Validate(); err == nil {
 		t.Fatal("expected relative working_repos entry to be rejected")
@@ -313,7 +368,6 @@ func TestRegistrationRejectsInvalidAgentID(t *testing.T) {
 		Vendor:      "openai",
 		ControlRepo: "/tmp/repo",
 		LastSeen:    time.Now(),
-		Status:      StatusActive,
 	}
 	if err := reg.Validate(); err == nil {
 		t.Fatal("expected invalid agent_id error")
@@ -352,7 +406,6 @@ agent_id: alpha
 vendor: human
 control_repo: /tmp/repo
 last_seen: 2026-05-12T00:00:00Z
-status: active
 ---
 `))
 	mustWrite(t, filepath.Join(dir, "broken.md"), []byte(`---
@@ -366,7 +419,6 @@ agent_id: beta
 vendor: human
 control_repo: /tmp/repo
 last_seen: 2026-05-12T00:00:00Z
-status: active
 ---
 `))
 	// Also drop entries that MUST be silently skipped.
@@ -410,7 +462,6 @@ agent_id: codex
 vendor: openai
 control_repo: /tmp/repo
 last_seen: 2026-05-09T16:08:36Z
-status: active
 ---
 `))
 	if err := os.Symlink(target, link); err != nil {
@@ -419,69 +470,6 @@ status: active
 
 	if _, err := ReadRegistration(link); err == nil {
 		t.Fatal("expected symlink-registration rejection")
-	}
-}
-
-// WI-E3: launch provenance (launched_by / shim_name / hook_event) round-trips
-// through write/read, and an absent-provenance registration stays byte-identical
-// to the pre-upgrade format (no new keys emitted).
-func TestRegistration_LaunchProvenanceRoundTrips(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gemini.md")
-	reg := &Registration{
-		AgentID:     "gemini-cli",
-		Vendor:      "google",
-		ControlRepo: "/tmp/repo",
-		LastSeen:    time.Now().UTC(),
-		Status:      StatusActive,
-		LaunchedBy:  LaunchedByRunner,
-		ShimName:    "ac-gemini",
-		HookEvent:   "boot",
-	}
-	if err := WriteRegistration(path, reg); err != nil {
-		t.Fatal(err)
-	}
-	got, err := ReadRegistration(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.LaunchedBy != LaunchedByRunner {
-		t.Fatalf("LaunchedBy = %q, want %q", got.LaunchedBy, LaunchedByRunner)
-	}
-	if got.ShimName != "ac-gemini" {
-		t.Fatalf("ShimName = %q, want ac-gemini", got.ShimName)
-	}
-	if got.HookEvent != "boot" {
-		t.Fatalf("HookEvent = %q, want boot", got.HookEvent)
-	}
-
-	// Backward-compat: a registration with NO provenance fields reads back with
-	// all three absent AND serializes byte-identically (no new keys present).
-	plain := &Registration{
-		AgentID:     "gemini-cli",
-		Vendor:      "google",
-		ControlRepo: "/tmp/repo",
-		LastSeen:    time.Now().UTC(),
-		Status:      StatusActive,
-	}
-	plainPath := filepath.Join(t.TempDir(), "plain.md")
-	if err := WriteRegistration(plainPath, plain); err != nil {
-		t.Fatal(err)
-	}
-	gotPlain, err := ReadRegistration(plainPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotPlain.LaunchedBy != "" || gotPlain.ShimName != "" || gotPlain.HookEvent != "" {
-		t.Fatalf("plain registration grew provenance fields: %#v", gotPlain)
-	}
-	data, err := os.ReadFile(plainPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{"launched_by", "shim_name", "hook_event"} {
-		if strings.Contains(string(data), key) {
-			t.Fatalf("plain registration serialized %q key (not byte-identical to pre-upgrade):\n%s", key, data)
-		}
 	}
 }
 
@@ -501,7 +489,6 @@ func TestRegistration_RoundTripsWithNoWakeFields(t *testing.T) {
 		WorkingRepos: []string{"/tmp/repo"},
 		Host:         "h1",
 		LastSeen:     time.Now().UTC(),
-		Status:       StatusActive,
 	}
 	if err := WriteRegistration(path, reg); err != nil {
 		t.Fatal(err)

@@ -63,8 +63,12 @@ func TestSendSpoolsBodyOnPostStdinFailure(t *testing.T) {
 		!strings.Contains(sendErr.Error(), wantRetry) {
 		t.Fatalf("error missing spool path/retry:\n%v", sendErr)
 	}
-	if strings.Contains(sendErr.Error(), "register") {
-		t.Fatalf("error coaches recipient registration:\n%v", sendErr)
+	// C29(a)'s literal text (v2.5 plan B3) deliberately contains "register" as
+	// part of an explicit anti-coaching clause ("do NOT register on their
+	// behalf") — check for actual coaching (a suggested command), not the
+	// bare word.
+	if strings.Contains(sendErr.Error(), "agentchute register") {
+		t.Fatalf("error coaches running `agentchute register` for the recipient:\n%v", sendErr)
 	}
 
 	if err := os.MkdirAll(cfg.AgentInboxDir("codex"), 0o700); err != nil {
@@ -203,7 +207,7 @@ func TestSendPartialSuccessOnOwedFailure(t *testing.T) {
 	if sendErr != nil {
 		t.Fatalf("post-link owed failure returned nonzero: %v", sendErr)
 	}
-	if !strings.Contains(stdout, "Sent from-claude-code_seq-") ||
+	if !strings.Contains(stdout, "Sent ") || !strings.Contains(stdout, "_from-claude-code_r") ||
 		!strings.Contains(stderr, "WARNING: reply-obligation bookkeeping failed:") ||
 		!strings.Contains(stderr, "Do NOT resend.") {
 		t.Fatalf("partial-success output mismatch:\nstdout=%s\nstderr=%s", stdout, stderr)
@@ -222,15 +226,15 @@ func TestSendPartialSuccessOnOwedFailure(t *testing.T) {
 
 func TestSendPostLinkSyncFailureIsPartialSuccess(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	originalSend := sendSeqMessageWithCommit
-	sendSeqMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, idempotencyKey, serveToken string) (loop.MsgID, bool, error) {
-		id, committed, err := originalSend(cfg, from, to, content, idempotencyKey, serveToken)
+	originalSend := sendTsMessageWithCommit
+	sendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, serveToken string) (loop.TsID, bool, error) {
+		id, committed, err := originalSend(cfg, from, to, content, serveToken)
 		if err != nil {
 			return id, committed, err
 		}
 		return id, true, errors.New("forced post-link sync failure")
 	}
-	defer func() { sendSeqMessageWithCommit = originalSend }()
+	defer func() { sendTsMessageWithCommit = originalSend }()
 
 	var stdout string
 	var sendErr error
@@ -248,7 +252,7 @@ func TestSendPostLinkSyncFailureIsPartialSuccess(t *testing.T) {
 	if sendErr != nil {
 		t.Fatalf("post-link sync failure returned nonzero: %v", sendErr)
 	}
-	if !strings.Contains(stdout, "Sent from-claude-code_seq-") ||
+	if !strings.Contains(stdout, "Sent ") || !strings.Contains(stdout, "_from-claude-code_r") ||
 		!strings.Contains(stderr, "WARNING: message delivered but inbox durability sync failed: forced post-link sync failure.") ||
 		!strings.Contains(stderr, "Do NOT resend.") {
 		t.Fatalf("partial-success output mismatch:\nstdout=%s\nstderr=%s", stdout, stderr)

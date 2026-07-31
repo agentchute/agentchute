@@ -45,9 +45,14 @@ type AnnounceResult struct {
 // tracked *.example.md files, dotfiles, and non-.md entries). It is N direct
 // sends — NOT a broadcast mechanism — and stays within AGENTCHUTE.md §7.1.
 //
-// Per-peer failures (missing inbox, malformed registration) are collected as
-// Warnings; the function does not abort on them. A returned error means the
-// agents directory itself could not be read.
+// Per-peer failures (missing inbox, malformed registration, a stale peer per
+// B3's freshness enforcement) are collected as Warnings; the function does
+// not abort on them. A returned error means the agents directory itself
+// could not be read. Delivery goes through the same locked path send.go
+// uses (SendSeqMessage -> DeliverUnderRecipientLock): a stale peer is simply
+// skipped with a warning, exactly like any other per-peer failure — there is
+// no separate preflight here (AnnounceEnrollment has no user-facing C29
+// wording to choose between; every freshness failure reads the same way).
 func AnnounceEnrollment(cfg *Config, self *Registration) (AnnounceResult, error) {
 	entries, err := os.ReadDir(cfg.AgentsDir())
 	if err != nil {
@@ -77,10 +82,11 @@ func AnnounceEnrollment(cfg *Config, self *Registration) (AnnounceResult, error)
 		}
 		result.Total++
 		content := ComposeMessage(self.AgentID, "", body)
-		// Deliver under the canonical (to,from,seq) identity. Empty
-		// idempotencyKey means at-most-once across a sender crash between seq
-		// allocation and link; empty serveToken means intentionally unfenced.
-		if _, err := SendSeqMessage(cfg, self.AgentID, peer.AgentID, content, "", ""); err != nil {
+		// Deliver under the new timestamp identity (v2.5 plan B7): mint a
+		// stamp under self's own lock, release, then deliver under peer's
+		// lock (C8). Empty serveToken means intentionally unfenced — an
+		// enrollment announcement is not gated on a live serve lease.
+		if _, _, err := SendTsMessageWithCommit(cfg, self.AgentID, peer.AgentID, content, ""); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("send to %s: %v", peer.AgentID, err))
 			continue
 		}
@@ -107,9 +113,10 @@ func ValidateMessageFrontmatter(content []byte) error {
 }
 
 // ExtractMessageBody returns the body portion of a message (everything
-// after the closing frontmatter `---` line). Honors the same lenient
-// delimiter semantics as ParseMessageFrontmatter (trimmed `---` opens
-// and closes the block — surrounding whitespace tolerated per §6.4).
+// after the closing frontmatter `---` line). Body-splitting only depends on
+// where the delimiters are, never on whether the key:value content between
+// them parses, so this shares frontmatterClosingLine (registration.go) with
+// parseFrontmatter rather than validating the block itself (v2.5 plan B8).
 // Returns the full content unchanged when there's no frontmatter block
 // (body-only is valid per §6.4) or when the open delimiter has no
 // matching close.
@@ -119,49 +126,40 @@ func ExtractMessageBody(content []byte) string {
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
 		return text
 	}
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "---" {
-			// Body starts on the line after the closing delimiter; a
-			// blank line immediately following is conventional but not
-			// required, so don't trim it.
-			return strings.Join(lines[i+1:], "\n")
-		}
+	closing := frontmatterClosingLine(lines)
+	if closing == -1 {
+		return text
 	}
-	return text
+	// Body starts on the line after the closing delimiter; a blank line
+	// immediately following is conventional but not required, so don't trim it.
+	return strings.Join(lines[closing+1:], "\n")
 }
 
 // ParseMessageFrontmatter extracts the leading frontmatter block from a
-// message's bytes into a flat key/value map, honoring the same lenient
-// delimiter semantics as ValidateMessageFrontmatter (a trimmed `---` line
-// opens the block, a later trimmed `---` line closes it — surrounding
-// whitespace tolerated per §6.4). Body-only messages return an empty
-// map. Malformed blocks (opening `---` with no close) also return an empty
-// map; callers that need malformed-vs-absent distinction should call
-// ValidateMessageFrontmatter first.
-//
-// Mirrors the in-package parser used by `pending` / `check` so the
-// hot-path peek (pending.readFrontmatter) and the consume path
-// (check.displayConsumed) cannot disagree on what counts as a
-// well-formed frontmatter block.
+// message's bytes into a flat key/value map, using the SAME strict engine
+// (parseFrontmatter, registration.go) as ValidateMessageFrontmatter — the two
+// can no longer disagree on what counts as a well-formed block (v2.5 plan
+// B8; this closes the validator/recorder skew WI-10 named). Body-only
+// messages return an empty map. Malformed blocks (opening `---` with no
+// close, an indented line, a non-key:value line, a duplicate key, an empty
+// key) also return an empty map; callers that need malformed-vs-absent
+// distinction should call ValidateMessageFrontmatter first. List-shaped
+// fields (e.g. working_repos) surface with an empty string, matching
+// parseFrontmatter's own scalar/list split — no current message field is
+// list-valued.
 func ParseMessageFrontmatter(content []byte) map[string]string {
 	out := map[string]string{}
-	block, ok := firstFrontmatterBlock(content)
-	if !ok {
+	text := strings.ReplaceAll(string(content), "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
 		return out
 	}
-	for _, line := range strings.Split(block, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		colon := strings.IndexByte(line, ':')
-		if colon < 0 {
-			continue
-		}
-		key := strings.TrimSpace(line[:colon])
-		val := strings.TrimSpace(line[colon+1:])
-		val = strings.Trim(val, `"'`)
-		out[key] = val
+	fields, _, err := parseFrontmatter(text)
+	if err != nil {
+		return out
+	}
+	for key := range fields {
+		out[key] = fields.scalar(key)
 	}
 	return out
 }

@@ -264,7 +264,7 @@ func TestAckDeniedWhileOwnSessionLatched(t *testing.T) {
 	withCwd(t, root, func() {
 		clearGuardEnv(t)
 		// Send BEFORE arming the guard env: AGENTCHUTE_SERVE_TOKEN also fences
-		// `send`'s AllocateSeq against the FROM agent's own serve lease
+		// `send`'s MintSendStamp against the FROM agent's own serve lease
 		// (unrelated to this guard test), and alice never acquired one.
 		if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "hi"}); err != nil {
 			t.Fatalf("cmdSend: %v", err)

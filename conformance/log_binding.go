@@ -20,8 +20,8 @@ import (
 // What this model BUYS (each shown by the conformance run against it):
 //   - O1 cross-agent order is REAL — one global seq, no sender-clock fiction.
 //   - Presence is FREE — an agent's last cursor advance IS its last_seen.
-//     There is NO .live primitive anywhere. (Compare inbox_binding, which needs
-//     a separate published fact.)
+//     There is no separate presence primitive at all. (Compare inbox_binding,
+//     which needs a separate published fact.)
 //   - No torn-read class — append-only records are atomic by construction.
 //   - Audit/replay is inherent — the stream is the history.
 //
@@ -43,7 +43,7 @@ type logBinding struct {
 	log       []record             // the single shared stream (append-only)
 	cursor    map[string]uint64    // id -> next seq to read
 	advanced  map[string]time.Time // id -> last cursor advance == last_seen
-	delivered map[string]bool      // "to|from|seq" -> already landed (EEXIST dedup)
+	delivered map[string]bool      // "to|id" -> already landed (v2.5 plan B7: collision detection ONLY, never a dedup no-op)
 	window    time.Duration
 	crash     bool
 }
@@ -85,7 +85,7 @@ func (b *logBinding) Presence(id string) (bool, time.Time, bool) {
 	if !ok {
 		return false, time.Time{}, false
 	}
-	// PRESENCE FALLS OUT OF THE CURSOR — no .live file exists in this model.
+	// PRESENCE FALLS OUT OF THE CURSOR — no separate presence file exists in this model.
 	return time.Since(ts) < b.window, ts, true
 }
 
@@ -98,13 +98,13 @@ func (b *logBinding) Deliver(to string, m Msg) error {
 	if _, ok := b.cursor[to]; !ok {
 		return fmt.Errorf("unknown recipient %q (mailbox dead / not registered)", to)
 	}
-	if m.Seq > 0 {
-		// Delivery-side EEXIST-style idempotency only, keyed (to,from,seq).
-		// This is not a receiver-side dedup backstop; post-delivery handler
-		// duplicates (if any) are the handler's problem (idempotency covenant).
-		k := fmt.Sprintf("%s|%s|%d", to, m.From, m.Seq)
+	if m.ID != "" {
+		// v2.5 plan B7: a collision is REFUSED, never a silent dedup no-op —
+		// delivery is at-most-once now (TS3). See inboxBinding.Deliver for the
+		// full rationale.
+		k := to + "|" + m.ID
 		if b.delivered[k] {
-			return nil
+			return fmt.Errorf("TS3: id %q already delivered to %q (collision; retry with a fresh id)", m.ID, to)
 		}
 		b.delivered[k] = true
 	}

@@ -31,10 +31,32 @@ type testVector struct {
 	StaleSeconds   int       `json:"stale_seconds,omitempty"`
 	Bodies         []string  `json:"bodies,omitempty"`
 	Message        vectorMsg `json:"message,omitempty"`
-	NextMessage    vectorMsg `json:"next_message,omitempty"`
-	DifferentMsg   vectorMsg `json:"different_message,omitempty"`
 	InvalidMessage vectorMsg `json:"invalid_message,omitempty"`
 	MalformedItems []string  `json:"malformed_items,omitempty"`
+
+	// TS1 (filename_grammar): a parse/sort/reject table over the C3 grammar.
+	ValidNames   []string `json:"valid_names,omitempty"`
+	InvalidNames []string `json:"invalid_names,omitempty"`
+
+	// DR1 (dual_read_listing): a mixed inbox of old-grammar, new-grammar, and
+	// garbage names, classified via classifyInboxName.
+	OldNames     []string `json:"old_names,omitempty"`
+	NewNames     []string `json:"new_names,omitempty"`
+	GarbageNames []string `json:"garbage_names,omitempty"`
+
+	// FM1/FM2 (frontmatter_accept/frontmatter_reject): the one flat
+	// key:value envelope grammar's accept and reject tables (v2.5 plan B8),
+	// promoted from internal/loop/frontmatter_characterization_test.go.
+	AcceptCases []fmCase `json:"accept_cases,omitempty"`
+	RejectCases []fmCase `json:"reject_cases,omitempty"`
+}
+
+// fmCase is one FM1/FM2 row: a named input and, for FM1, the exact flat
+// field map ParseFrontmatterFields must return for it.
+type fmCase struct {
+	Name   string            `json:"name"`
+	Input  string            `json:"input"`
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 type vectorMsg struct {
@@ -42,9 +64,7 @@ type vectorMsg struct {
 	Body          string            `json:"body,omitempty"`
 	ReplyRequired bool              `json:"reply_required,omitempty"`
 	InReplyTo     string            `json:"in_reply_to,omitempty"`
-	Key           string            `json:"key,omitempty"`
 	Extra         map[string]string `json:"extra,omitempty"`
-	Seq           uint64            `json:"seq,omitempty"`
 }
 
 func (m vectorMsg) msg() Msg {
@@ -53,9 +73,7 @@ func (m vectorMsg) msg() Msg {
 		Body:          m.Body,
 		ReplyRequired: m.ReplyRequired,
 		InReplyTo:     m.InReplyTo,
-		Key:           m.Key,
 		Extra:         m.Extra,
-		Seq:           m.Seq,
 	}
 }
 
@@ -83,7 +101,7 @@ func loadVectors(t *testing.T) map[string]testVector {
 		}
 		out[v.ID] = v
 	}
-	for _, id := range []string{"R1", "D1", "D2", "O1", "C1", "C2", "E1", "B1", "Q1"} {
+	for _, id := range []string{"R1", "D1", "D2", "O1", "C1", "E1", "B1", "Q1", "TS1", "TS2", "TS3", "DR1", "FM1", "FM2"} {
 		if _, ok := out[id]; !ok {
 			t.Fatalf("missing vector %s", id)
 		}

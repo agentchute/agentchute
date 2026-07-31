@@ -12,7 +12,7 @@ implementation.
 For a copy-pasteable filesystem walkthrough, see
 [`AGENTCHUTE.md` Appendix C](AGENTCHUTE.md#appendix-c-hand-protocol-walkthrough).
 
-The conformance vectors — seven core invariants (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`) plus the crash-safety vectors (`C2`, `Q1`) — *are* those semantics,
+The conformance vectors — seven core invariants (`R1`/`D1`/`D2`/`O1`/`C1`/`E1`/`B1`), the malformed-quarantine vector (`Q1`), the v2.5 wire-break vectors (`TS1`/`TS2`/`TS3`/`DR1`), and the frontmatter-grammar vectors (`FM1`/`FM2`) — *are* those semantics,
 and [`conformance/`](conformance/) is the executable spec — the invariants as a
 Go test suite driven against multiple substrate bindings. An implementation that
 passes the suite is conformant; when this prose and the suite disagree, the suite
@@ -31,7 +31,7 @@ coordination **pull-only**, and pull-only has no wake surface to extend:
 - A recipient discovers its own mail by polling its own inbox. A loopless
   wrapper is polled by the reference CLI's runner, which is local to the agent it
   supervises, not a sender-reachable endpoint.
-- Presence is a published `.live` freshness fact, not a wake target: fresh ⇒
+- Presence is a registration-row freshness fact, not a wake target: fresh ⇒
   alive, stale/absent ⇒ not-alive.
 
 So "plug in a new wake mechanism" is no longer a thing. The one genuinely
@@ -48,10 +48,15 @@ recipient reads on its own can carry agentchute messages. Whatever the substrate
 an implementation maps the same primitives (§1):
 
 - a **per-recipient inbox** the recipient alone consumes;
-- message **identity = `(to, from, seq)`** — the sort key and the dedup key, with
-  a durable, monotonic per-`(from, to)` `seq`;
-- **no-overwrite delivery** — committing the same `(to, from, seq)` twice is a
-  benign no-op;
+- message **identity = `(to, from, timestamp+suffix)`** — a per-sender
+  monotonic timestamp plus a 128-bit random suffix (v2.5 plan B7). Delivery is
+  **at-most-once**: there is no sender-asserted idempotency key and no
+  delivery-side dedup — the contract is at-most-once delivery, at-least-once
+  *consume* (via claim/act/commit), and handler idempotency as the covenant
+  that reconciles the two;
+- **no-overwrite delivery** — a collision (two sends landing under the
+  identical identity, astronomically rare with a 128-bit suffix) is REFUSED,
+  never a silent no-op; the sender retries under a fresh suffix (C4);
 - **pull** — the recipient reads its own inbox; senders only write;
 - **presence** as a published freshness fact;
 - **self-registration** — each agent publishes a small record naming itself.
@@ -62,24 +67,32 @@ spec, not this list, is the contract.
 ### Message queue (e.g. SQS, NATS)
 
 One queue or subject per recipient. Deliver by publishing to the recipient's
-queue; get no-overwrite from message deduplication keyed on `(to, from, seq)`
-(SQS FIFO deduplication id, NATS message id). The recipient consumes only its own
-queue. `seq` gives per-sender FIFO; presence is a separate published record.
+queue under the message's own opaque `(to, from, timestamp+suffix)` identity.
+Delivery is at-most-once by design — a fresh identity is never intentionally
+reused, so no substrate-level dedup feature is load-bearing (SQS FIFO
+deduplication id / NATS message id are optional collision guards, not a resume
+mechanism). The recipient consumes only its own queue; per-sender FIFO is
+guaranteed, cross-sender order is advisory; presence is a separate published
+record.
 
 ### Object store (e.g. S3, GCS)
 
 An inbox is a key prefix per recipient (`inbox/<id>/`). Deliver with a
-conditional put — `If-None-Match: *` / put-if-absent — under the `(to, from, seq)`
-key, so a re-put of the same key is the no-overwrite no-op. The recipient lists
-its own prefix to read; archive is another prefix.
+conditional put — `If-None-Match: *` / put-if-absent — under the
+`(to, from, timestamp+suffix)` key. A collision (astronomically rare with a
+128-bit suffix) fails the put; the sender retries under a FRESH suffix (C4),
+never treating the collision as a safe no-op. The recipient lists its own
+prefix to read; archive is another prefix.
 
 ### HTTP endpoint
 
-Each recipient has an inbox endpoint. A sender POSTs a message; the server
-enforces `(to, from, seq)` idempotency (a repeat is a benign 200/204, not a
-second message). The recipient GETs its own inbox (poll or long-poll) and marks
-each message consumed. ETag / `If-None-Match` is the natural no-overwrite
-primitive.
+Each recipient has an inbox endpoint. A sender POSTs a message under its own
+opaque `(to, from, timestamp+suffix)` identity; the server enforces
+no-overwrite (a repeat 409s / is refused, never silently landed twice), and
+the sender retries with a fresh identity on collision (C4) — the server does
+not deduplicate on the caller's behalf. The recipient GETs its own inbox (poll
+or long-poll) and marks each message consumed. ETag / `If-None-Match` is the
+natural no-overwrite primitive.
 
 ### Git-backed
 
@@ -87,7 +100,8 @@ Each recipient has an inbox path or ref (e.g. a branch `agentchute/inbox/<id>`).
 A sender writes the message file and pushes; the ref update is the atomic commit
 point, and a rejected push (someone landed first) is the no-overwrite primitive
 at commit granularity. The recipient pulls its own ref and reads oldest-first by
-the `(to, from, seq)` filename. Cross-machine reach and an audit trail come for
+the `(to, from, timestamp+suffix)` filename (the fixed-width timestamp sorts
+lexicographically == chronologically). Cross-machine reach and an audit trail come for
 free; you trade latency and finer-grained atomicity for it.
 
 ### Interoperability

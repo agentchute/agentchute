@@ -17,13 +17,14 @@ import (
 // another agent's mail.
 // What it costs (and the suite shows): cross-agent order is not real (separate
 // inboxes, separate sender clocks), and presence needs a SEPARATE published fact
-// (last_seen / the .live file), because an idle inbox looks identical whether
-// the agent is alive or long gone.
+// (last_seen, v2.5 plan B5 — read directly from the registration row, no
+// separate presence file), because an idle inbox looks identical whether the
+// agent is alive or long gone.
 type inboxBinding struct {
 	mu        sync.Mutex
 	inbox     map[string][]Msg     // id -> ordered messages
-	seen      map[string]time.Time // id -> last_seen  (the .live fact)
-	delivered map[string]bool      // "to|from|seq" -> already landed (EEXIST dedup)
+	seen      map[string]time.Time // id -> last_seen (the registration row's presence fact)
+	delivered map[string]bool      // "to|id" -> already landed (v2.5 plan B7: collision detection ONLY, never a dedup no-op)
 	malformed map[string][]string  // id -> quarantined item names (§11.1)
 	window    time.Duration        // freshness window for "alive"
 	crash     bool                 // C1 fault: panic after act, before commit
@@ -77,14 +78,14 @@ func (b *inboxBinding) Deliver(to string, m Msg) error {
 		// Dead-mailbox / D2: refuse delivery to an unregistered recipient.
 		return fmt.Errorf("unknown recipient %q (mailbox dead / not registered)", to)
 	}
-	if m.Seq > 0 {
-		// link()-EEXIST semantics: this exact (to,from,seq) already landed, so a
-		// crash-uncertain resend is a SAFE NO-OP (success), not a duplicate. The
-		// hazard the crash test exposes: if a DIFFERENT body reuses a seq, this
-		// silently drops it — which is why the seq counter must be durable.
-		k := fmt.Sprintf("%s|%s|%d", to, m.From, m.Seq)
+	if m.ID != "" {
+		// v2.5 plan B7: a collision is REFUSED, never a silent dedup no-op —
+		// delivery is at-most-once now (TS3). The caller (a real sender) is
+		// responsible for retrying with a fresh ID, exactly as
+		// DeliverUnderRecipientLock does on a real link EEXIST (C4).
+		k := to + "|" + m.ID
 		if b.delivered[k] {
-			return nil
+			return fmt.Errorf("TS3: id %q already delivered to %q (collision; retry with a fresh id)", m.ID, to)
 		}
 		b.delivered[k] = true
 	}
@@ -118,21 +119,13 @@ func (b *inboxBinding) Consume(id string, handler func(Msg) error) (int, error) 
 		}
 		// COMMIT: drop the oldest (the one we just handled). A crash before this
 		// leaves the message in the inbox -> it re-delivers (at-least-once).
+		// v2.5 plan B7: the delivered-map entry is NOT cleared here — an ID is
+		// never intentionally reused (the real grammar's timestamp+random
+		// suffix makes that pointless), so `delivered` is a permanent
+		// collision record, not a pre-consume-only dedup window.
 		b.mu.Lock()
 		if len(b.inbox[id]) > 0 {
 			b.inbox[id] = b.inbox[id][1:]
-		}
-		// Post-consume the delivery slot is freed, so drop the EEXIST dedup key:
-		// a later resend of the SAME (to,from,seq) must RE-LAND, matching the real
-		// FS where EEXIST-as-no-op holds only pre-consume/pre-archive. Once archived
-		// there is no delivery-side or protocol-level receiver-side dedup backstop;
-		// a re-landed copy is a second delivery and the covenant is handler
-		// idempotency (the optional Key/Deduper helper below is a demo aid only,
-		// not a protocol backstop). Done at COMMIT only (after handler success +
-		// the crash check), so a crash before commit keeps the slot present and
-		// EEXIST remains a no-op (C1 consume at-least-once holds).
-		if msgs[i].Seq > 0 {
-			delete(b.delivered, fmt.Sprintf("%s|%s|%d", id, msgs[i].From, msgs[i].Seq))
 		}
 		b.seen[id] = time.Now() // a consume is also a liveness signal
 		b.mu.Unlock()

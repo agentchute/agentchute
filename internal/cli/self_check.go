@@ -39,12 +39,10 @@ func cmdSelfCheck(args []string) error {
 	}
 
 	opts := registerOpts{
-		Host: host,
-		Bio:  bio,
+		Host:       host,
+		Bio:        bio,
+		ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN"),
 	}
-	// WI-E3 provenance: self-check is a lifecycle hook enroll. Under the runner
-	// (AGENTCHUTE_RUNNER=1) it records `runner` so the runner lane is not demoted.
-	opts.LaunchedBy, opts.HookEvent = hookLaunchProvenance("self-check")
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "host":
@@ -70,7 +68,7 @@ func cmdSelfCheck(args []string) error {
 	}
 
 	now := time.Now().UTC()
-	agentID, result, err := selfRepairRegistration(cfg, &opts, agentID, vendor, "self-check", now)
+	agentID, result, err := selfRepairRegistration(cfg, &opts, agentID, vendor, now)
 	if err != nil {
 		return err
 	}
@@ -97,14 +95,13 @@ func cmdSelfCheck(args []string) error {
 }
 
 // selfRepairRegistration resolves this process's identity and reconciles its
-// live registration (last_seen/host) plus its active-session heartbeat —
-// exactly what cmdSelfCheck has always done. Shared with turn-end step 0
-// (v2.5 plan A7/C24) so "the agent is enrolled and present" can never diverge
-// between the two entry points.
+// live registration (last_seen/host) — exactly what cmdSelfCheck has always
+// done. Shared with turn-end step 0 (v2.5 plan A7/C24) so "the agent is
+// enrolled and present" can never diverge between the two entry points.
 //
-// opts must already carry the caller's Host/Bio/LaunchedBy/HookEvent; this
-// fills in AgentID/Vendor/ContextualIdentity/ContextualBaseID on it (hence the
-// pointer — callers that need the resolved opts.Vendor afterward, like
+// opts must already carry the caller's Host/Bio; this fills in AgentID/Vendor
+// on it (hence the pointer — callers that need the
+// resolved opts.Vendor afterward, like
 // cmdSelfCheck's status report, see it without a second resolve) and returns
 // the resolved agent id alongside performRegister's result.
 //
@@ -117,12 +114,8 @@ func cmdSelfCheck(args []string) error {
 // fails). Only a genuine identity-resolution failure (no id could be
 // determined at all) returns "" — that is the one case nothing downstream can
 // proceed on.
-func selfRepairRegistration(cfg *loop.Config, opts *registerOpts, agentIDFlag, vendorFlag, source string, now time.Time) (string, *registerResult, error) {
-	contextualBase, contextual, err := contextualIdentityBase(agentIDFlag, vendorFlag)
-	if err != nil {
-		return "", nil, err
-	}
-	agentID, err := resolveAgentID(agentIDFlag, vendorFlag, cfg)
+func selfRepairRegistration(cfg *loop.Config, opts *registerOpts, agentIDFlag, vendorFlag string, now time.Time) (string, *registerResult, error) {
+	agentID, err := resolveAgentID(agentIDFlag)
 	if err != nil {
 		return "", nil, err
 	}
@@ -131,15 +124,10 @@ func selfRepairRegistration(cfg *loop.Config, opts *registerOpts, agentIDFlag, v
 	}
 	opts.AgentID = agentID
 	opts.Vendor = resolveAgentVendor(vendorFlag, agentID, cfg)
-	opts.ContextualIdentity = contextual
-	opts.ContextualBaseID = contextualBase
 
 	result, err := performRegister(cfg, *opts, now)
 	if err != nil {
 		return agentID, nil, err
-	}
-	if err := saveActiveSessionHeartbeat(cfg, agentID, source, now); err != nil {
-		return agentID, result, fmt.Errorf("write active session heartbeat: %w", err)
 	}
 	return agentID, result, nil
 }

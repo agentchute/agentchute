@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -31,17 +30,10 @@ func cmdStatus(args []string) error {
 		return statusUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	// --as / $AGENTCHUTE_AGENT_ID is now optional. When omitted, status
-	// behaves as a pool-overview operator command: it prints the registry
-	// without claiming an agent identity and without ticking anyone's
-	// last_seen. The acting-agent mode (caller IS one of the pool agents,
-	// wants their last_seen refreshed as a side effect) is preserved when
-	// --as / env is set. v0.1.2 UX nit per codex review.
-	agentID = strings.TrimSpace(firstNonEmpty(agentID, os.Getenv("AGENTCHUTE_AGENT_ID")))
-	if agentID != "" {
-		if err := loop.ValidateAgentID(agentID); err != nil {
-			return err
-		}
+	var err error
+	agentID, err = resolveAgentID(agentID)
+	if err != nil {
+		return err
 	}
 
 	cwd, err := os.Getwd()
@@ -60,80 +52,46 @@ func cmdStatus(args []string) error {
 	}
 
 	now := time.Now().UTC()
-	if agentID != "" {
-		// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): status --as
-		// acts AS the agent (refreshes its last_seen). Refuse for an
-		// unregistered id. Pool-overview status (no --as) stays
-		// unaffected and remains a side-effect-free read.
-		selfPath := cfg.AgentRegistrationPath(agentID)
-		if _, err := os.Stat(selfPath); err == nil {
-			if err := loop.UpdateLastSeen(cfg, agentID, now); err != nil {
-				return fmt.Errorf("update last_seen for %s: %w", agentID, err)
-			}
-		} else if os.IsNotExist(err) {
-			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first, or omit --as to view the pool overview (AGENTCHUTE.md §5.3)", agentID, agentID)
-		} else {
-			return fmt.Errorf("stat own registration: %w", err)
-		}
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): status acts AS
+	// the explicitly identified agent. B1: this preflight confirms enrollment
+	// but does not refresh liveness.
+	selfPath := cfg.AgentRegistrationPath(agentID)
+	if _, err := os.Stat(selfPath); err == nil {
+		// registered; proceed.
+	} else if os.IsNotExist(err) {
+		return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
+	} else {
+		return fmt.Errorf("stat own registration: %w", err)
 	}
 
-	regs, err := readRegistrations(cfg)
-	if err != nil {
-		return err
+	regs, warnings := readRegistrations(cfg)
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
 
 	printStatus(os.Stdout, cfg, regs, now)
-	printUnenrolledSection(os.Stdout, cfg)
 	return nil
 }
 
-// printUnenrolledSection appends the read-only "PRESENT BUT NOT ENROLLED"
-// section: wrappers present in this pool with no live registration. Quiet when
-// there are none or the scan fails gracefully (nothing is printed).
-func printUnenrolledSection(w io.Writer, cfg *loop.Config) {
-	found, err := scanUnenrolledWrappers(cfg)
-	if err != nil || len(found) == 0 {
-		return
-	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "PRESENT BUT NOT ENROLLED (wrappers in this pool with no live registration):")
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "KIND\tHINT\tCWD\tSUGGESTION")
-	for _, p := range found {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.Kind, p.Hint, formatDash(p.Cwd), p.Suggestion)
-	}
-	_ = tw.Flush()
-}
-
 func statusUsage(err error) error {
-	return fmt.Errorf("%w\nusage: agentchute status [--as <agent-id>] [--control-repo <path>] [--loop-dir <path>]\n\n  --as is optional. With it set, the caller's last_seen is refreshed as a side effect\n  (the historical \"acting-agent\" mode). Without it, status prints a pool overview only.", err)
+	return fmt.Errorf("%w\nusage: agentchute status --as <agent-id> [--control-repo <path>] [--loop-dir <path>]", err)
 }
 
-func readRegistrations(cfg *loop.Config) (map[string]*loop.Registration, error) {
-	entries, err := os.ReadDir(cfg.AgentsDir())
-	if err != nil {
-		// Fresh pool with no agents registered yet: that's a valid state
-		// for a read-only pool-overview, not an error.
-		if os.IsNotExist(err) {
-			return map[string]*loop.Registration{}, nil
-		}
-		return nil, fmt.Errorf("read agents dir: %w", err)
-	}
-
-	regs := make(map[string]*loop.Registration)
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || name == "README.md" || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".example.md") {
-			continue
-		}
-		path := filepath.Join(cfg.AgentsDir(), name)
-		reg, err := loop.ReadRegistration(path)
-		if err != nil {
-			return nil, err
-		}
+// readRegistrations reads every registration in the pool leniently (v2.5 plan
+// B5): one corrupt or unreadable row must not abort `status` for the whole
+// pool — it is surfaced as a warning instead, and every other row still
+// renders.
+func readRegistrations(cfg *loop.Config) (map[string]*loop.Registration, []string) {
+	regList, errs := loop.ReadRegistrationsLenient(cfg.AgentsDir())
+	regs := make(map[string]*loop.Registration, len(regList))
+	for _, reg := range regList {
 		regs[reg.AgentID] = reg
 	}
-	return regs, nil
+	var warnings []string
+	for _, e := range errs {
+		warnings = append(warnings, e.Error())
+	}
+	return regs, warnings
 }
 
 func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registration, now time.Time) {
@@ -146,20 +104,19 @@ func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registrati
 	fmt.Fprintln(w)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	// Pull-only (Gate 6c): registrations carry no wake state and presence is the
-	// `.live` fact. There is no WAKE / REACHABLE / CACHED column; LAST_SEEN/AGE
-	// come from `.live` (loop.LiveLastSeen), absent => "-".
+	// Pull-only (Gate 6c): registrations carry no wake state. There is no
+	// WAKE / REACHABLE / CACHED column; LAST_SEEN/AGE come from the
+	// registration's own heartbeat (v2.5 plan B5 — `.live` is deleted).
 	fmt.Fprintln(tw, "AGENT\tSTATUS\tINBOX\tLAST_SEEN\tAGE\tHOST\tPROTO")
 	for _, id := range loop.RegistrationsByAgentID(regs) {
 		reg := regs[id]
 		inboxDepth := countInbox(cfg.AgentInboxDir(id))
-		liveSeen, _ := loop.LiveLastSeen(cfg, reg.AgentID)
 		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
 			reg.AgentID,
-			reg.Status,
+			registrationStatusLabel(cfg, reg, now),
 			inboxDepth,
-			formatMaybeTime(liveSeen),
-			formatAge(now, liveSeen),
+			formatMaybeTime(reg.LastSeen),
+			formatAge(now, reg.LastSeen),
 			formatDash(reg.Host),
 			formatProtocolVersion(reg.ProtocolVersion),
 		)
@@ -179,6 +136,30 @@ func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registrati
 			fmt.Fprintf(w, "- %s\n", warning)
 		}
 	}
+}
+
+// registrationStatusLabel derives a display STATUS for a registration row
+// (v2.5 plan B5: the .live-published Status field is gone). A live serve
+// claim is the strongest signal — it means a fresh lease immunizes an
+// old-looking row (C12: never call a row stale-would-sweep when a claim
+// still owns it, since the sweep itself would back off too) — checked first,
+// mirroring SweepStaleRegistrations' own claimProvablyDead ordering. Absent
+// that, the row's own age vs the pool's stale_after decides fresh vs stale.
+// Single hyphenated token (no embedded spaces) so simple whitespace-based
+// column parsing of this output — including this package's own
+// statusColumnValue test helper — never misaligns a later column.
+func registrationStatusLabel(cfg *loop.Config, reg *loop.Registration, now time.Time) string {
+	if claim, err := loop.ReadServeClaim(cfg, reg.AgentID); err == nil && !loop.ClaimIsStale(claim, now) {
+		return "lease-held"
+	}
+	age := now.Sub(reg.LastSeen)
+	if age < 0 {
+		age = 0
+	}
+	if age > loop.StaleAfter(cfg) {
+		return "stale-would-sweep"
+	}
+	return "fresh"
 }
 
 func countInbox(dir string) int {
@@ -245,15 +226,22 @@ func formatProtocolVersion(version int) string {
 	case 0:
 		return "legacy"
 	case loop.CurrentProtocolVersion:
-		return fmt.Sprintf("v%d", version)
+		return protocolVersionLabel(version)
 	default:
-		return fmt.Sprintf("v%d!", version)
+		return protocolVersionLabel(version) + "!"
 	}
+}
+
+func protocolVersionLabel(version int) string {
+	if version == 3 {
+		return "v2.5"
+	}
+	return fmt.Sprintf("v%d", version)
 }
 
 func protocolVersionWarning(reg *loop.Registration) string {
 	if reg == nil || reg.ProtocolVersion == 0 || reg.ProtocolVersion == loop.CurrentProtocolVersion {
 		return ""
 	}
-	return fmt.Sprintf("%s reports protocol v%d; expected v%d", reg.AgentID, reg.ProtocolVersion, loop.CurrentProtocolVersion)
+	return fmt.Sprintf("%s reports protocol %s; expected %s — update and restart every lane before resuming sends", reg.AgentID, protocolVersionLabel(reg.ProtocolVersion), protocolVersionLabel(loop.CurrentProtocolVersion))
 }

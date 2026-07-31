@@ -183,11 +183,10 @@ func TestRunnerPollShutsDownWhenFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt := newPollTestRuntime(t, cfg, "runner-test")
-	lease, err := loop.AcquireServeLease(cfg, "runner-test")
-	if err != nil {
-		t.Fatalf("acquire lease: %v", err)
-	}
-	rt.lease = lease
+	// newPollTestRuntime already acquires a real lease for "runner-test"
+	// (B1: HeartbeatRegistration needs a genuine token); reuse it rather than
+	// acquiring a second one, which would fail closed (ErrLeaseHeld) against
+	// the fixture's still-fresh claim.
 
 	// Simulate a reclaim: overwrite the live claim with a different serve_token.
 	reclaimed := loop.ServeClaim{
@@ -214,7 +213,7 @@ func TestRunnerPollShutsDownWhenFenced(t *testing.T) {
 	}
 }
 
-func TestRunnerFencedShutdownLogsAndBuffersFatal(t *testing.T) {
+func TestRunnerInvalidatedLeaseLogsC15NoticeAndBuffersFatal(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 	if err != nil {
@@ -223,25 +222,18 @@ func TestRunnerFencedShutdownLogsAndBuffersFatal(t *testing.T) {
 	rt := newPollTestRuntime(t, cfg, "runner-test")
 	rt.diag = newRunnerDiagnostics(cfg, "runner-test")
 	defer rt.diag.close()
-	lease, err := loop.AcquireServeLease(cfg, "runner-test")
-	if err != nil {
-		t.Fatalf("acquire lease: %v", err)
-	}
-	rt.lease = lease
+	// newPollTestRuntime already acquires a real lease for "runner-test"
+	// (B1: HeartbeatRegistration needs a genuine token); reuse it rather than
+	// acquiring a second one, which would fail closed (ErrLeaseHeld) against
+	// the fixture's still-fresh claim.
 
-	reclaimed := loop.ServeClaim{
-		ID:         "runner-test",
-		Host:       "other-host",
-		PID:        os.Getpid(),
-		ServeToken: "ffffffffffffffffffffffffffffffff",
-		StartedAt:  time.Now().UTC(),
-		LastSeen:   time.Now().UTC(),
-	}
-	data, err := json.Marshal(reclaimed)
+	invalidated, err := loop.InvalidateAllServeLeases(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(cfg.AgentStateDir("runner-test"), "serve.claim"), data)
+	if invalidated != 1 {
+		t.Fatalf("invalidated = %d, want 1", invalidated)
+	}
 
 	stderr := captureStderr(t, func() {
 		rt.pollOnce()
@@ -253,7 +245,7 @@ func TestRunnerFencedShutdownLogsAndBuffersFatal(t *testing.T) {
 		t.Fatal("fenced runner did not request shutdown")
 	}
 	log := readRunnerLog(t, cfg, "runner-test")
-	want := "agentchute serve: serve lease reclaimed (fenced); shutting down"
+	want := "serve: this agentchute binary was fenced out (update or identity reclaim). Restart this lane: ac serve <wrapper>"
 	if !strings.Contains(log, want) {
 		t.Fatalf("runner.log missing fenced fatal:\n%s", log)
 	}
@@ -392,43 +384,12 @@ func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 	}
 }
 
-// Pull-only (Gate 6c): markRunnerOffline sets Status=offline. The reachability
-// cache it used to clear no longer exists (registrations carry no wake state).
-func TestMarkRunnerOfflineSetsOfflineStatus(t *testing.T) {
-	root := setupShortRunFixture(t)
-	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	agentID := "runner-test"
-	reg := &loop.Registration{
-		AgentID:     agentID,
-		Vendor:      "test",
-		ControlRepo: cfg.ControlRepo,
-		Host:        localHostname(),
-		LastSeen:    time.Now().UTC().Add(-time.Minute),
-		Status:      loop.StatusActive,
-	}
-	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := markRunnerOffline(cfg, agentID); err != nil {
-		t.Fatal(err)
-	}
-	got, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != loop.StatusOffline {
-		t.Fatalf("status = %s, want offline", got.Status)
-	}
-}
-
 // newPollTestRuntime builds a minimal runnerRuntime sufficient to exercise
-// pollOnce in isolation (no PTY, no socket). It registers the agent so the
-// pollOnce UpdateLastSeen call has a registration to read, and seeds the
-// runner state dir so saveState can write.
+// pollOnce in isolation (no PTY, no socket). It registers the agent and
+// acquires a real serve lease so pollOnce's HeartbeatRegistration call
+// (B1: lease-gated, requires a genuine token) has both a registration to
+// read and a claim to verify against, and seeds the runner state dir so
+// saveState can write.
 func newPollTestRuntime(t *testing.T, cfg *loop.Config, agentID string) *runnerRuntime {
 	t.Helper()
 	if err := loop.EnsurePrivateDir(cfg.AgentInboxDir(agentID)); err != nil {
@@ -439,17 +400,23 @@ func newPollTestRuntime(t *testing.T, cfg *loop.Config, agentID string) *runnerR
 		Vendor:      "test",
 		ControlRepo: cfg.ControlRepo,
 		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
 	}
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
 		t.Fatal(err)
 	}
+	opts := runnerOptions{AgentID: agentID, Vendor: "test", IntervalSeconds: 5}
+	lease, err := loop.AcquireServeLease(cfg, agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rt := &runnerRuntime{
-		cfg:     cfg,
-		opts:    runnerOptions{AgentID: agentID, Vendor: "test", IntervalSeconds: 5},
-		started: time.Now().UTC(),
-		wakeCh:  make(chan bool, 1),
-		stopCh:  make(chan struct{}),
+		cfg:         cfg,
+		opts:        opts,
+		started:     time.Now().UTC(),
+		lease:       lease,
+		regTemplate: heartbeatTemplate(cfg, opts),
+		wakeCh:      make(chan bool, 1),
+		stopCh:      make(chan struct{}),
 	}
 	return rt
 }

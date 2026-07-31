@@ -111,18 +111,6 @@ class InboxBinding:
         return [m.body for m in self.poll(owner)]
 
 
-class Deduper:
-    def __init__(self) -> None:
-        self.seen: set[str] = set()
-
-    def once(self, msg: Msg, fn: callable) -> None:
-        if msg.key and msg.key in self.seen:
-            return
-        fn(msg)
-        if msg.key:
-            self.seen.add(msg.key)
-
-
 def msg(data: dict) -> Msg:
     return Msg(
         from_id=data.get("from", ""),
@@ -190,6 +178,10 @@ def run_o1(v: dict) -> None:
 
 
 def run_c1(v: dict) -> None:
+    # v2.5 plan B7: msg_key/Deduper receiver-side dedup demo is removed along
+    # with the sender-asserted idempotency key it modeled. This proves only
+    # the half that remains true: consume is at-least-once (crash after act
+    # re-delivers on retry).
     b = InboxBinding()
     b.register(v["recipient"])
     b.deliver(v["recipient"], msg(v["message"]))
@@ -206,16 +198,6 @@ def run_c1(v: dict) -> None:
     assert acts == [v["message"]["body"]]
     assert b.consume(v["recipient"], act) == 1
     assert acts == [v["message"]["body"], v["message"]["body"]]
-    deduper = Deduper()
-    effects = 0
-
-    def effect(_: Msg) -> None:
-        nonlocal effects
-        effects += 1
-
-    for _ in acts:
-        deduper.once(Msg(key=v["message"]["key"]), effect)
-    assert effects == 1
 
 
 def run_e1(v: dict) -> None:

@@ -17,10 +17,9 @@ import (
 // surfaces age loudly, the reader judges relevance — no expiry, no auto-action.
 const oldMailBannerAfter = 24 * time.Hour
 
-// messageAge returns how long ago msg was sent, relative to now. Age source
-// today is always msg.Timestamp (file mtime) — the filename-timestamp
-// grammar doesn't exist yet (v2.5 plan B7). This is the one place plan slice
-// B6 edits to add the new-format filename-timestamp branch alongside mtime.
+// messageAge returns how long ago msg was sent, relative to now. The lister
+// populates msg.Timestamp from the embedded timestamp for new-format messages
+// and from file mtime for legacy seq messages.
 func messageAge(msg loop.Message, now time.Time) time.Duration {
 	return now.Sub(msg.Timestamp)
 }
@@ -61,7 +60,7 @@ func cmdCheck(args []string) error {
 		return err
 	}
 
-	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	agentID, err = resolveAgentID(agentID)
 	if err != nil {
 		return err
 	}
@@ -87,13 +86,12 @@ func cmdCheck(args []string) error {
 	// for an unregistered agent. check is an active agent command — it
 	// archives, quarantines, and sends corrective notify; all of those
 	// imply the agent IS enrolled in the pool.
+	// B1: CLI touches no longer refresh liveness — only serve's lease-gated
+	// heartbeat does (HeartbeatRegistration). This preflight only confirms
+	// the agent is enrolled at all.
 	selfPath := cfg.AgentRegistrationPath(agentID)
-	selfExists := false
 	if _, err := os.Stat(selfPath); err == nil {
-		selfExists = true
-		if err := loop.UpdateLastSeen(cfg, agentID, now); err != nil {
-			return fmt.Errorf("update last_seen for %s: %w", agentID, err)
-		}
+		// registered; proceed.
 	} else if os.IsNotExist(err) {
 		return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
 	} else {
@@ -240,14 +238,6 @@ func cmdCheck(args []string) error {
 		fmt.Println("note: messages CLAIMED (at-least-once), not yet archived. Run `agentchute ack` to commit; a crash before ack re-delivers them.")
 	}
 
-	// Update last_active per AGENTCHUTE.md §6.3 step 4 if we actually consumed.
-	if !noArchive && claimed > 0 && selfExists {
-		if err := loop.UpdateLastActive(cfg, agentID, now); err != nil {
-			// Non-fatal: messages are claimed; only the timestamp update lost.
-			fmt.Fprintf(os.Stderr, "warning: failed to update last_active (%v)\n", err)
-		}
-	}
-
 	// C19 (v2.5 plan A3): offer this agent's own expired reply obligations
 	// for pruning. Print-only — never auto-removes; `agentchute clean --owed`
 	// (plan A4) is the explicit, human-triggered command that actually
@@ -306,6 +296,10 @@ func displayConsumed(cfg *loop.Config, agentID string, msg loop.Message, content
 	// obligation by echoing someone else's ref.
 	if ref := strings.TrimSpace(fm["in_reply_to"]); ref != "" {
 		if key, ok := loop.ParseMsgIDRef(ref); ok && key.From == agentID && msg.Sender == key.To {
+			if err := loop.ClearOwed(cfg, agentID, key); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to clear owed obligation %s: %v\n", ref, err)
+			}
+		} else if key, ok := loop.ParseTsRef(ref); ok && key.From == agentID && msg.Sender == key.To {
 			if err := loop.ClearOwed(cfg, agentID, key); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: failed to clear owed obligation %s: %v\n", ref, err)
 			}
@@ -369,22 +363,22 @@ func sanitizeControlBytes(s string) string {
 }
 
 // printReplyRefIfRequired prints the copyable in_reply_to ref a reply to msg must
-// carry, when msg is reply_required. The ref is the ORIGINAL message's identity
-// MsgID{To: agentID (us, the recipient), From: msg.Sender, Seq}: the asker
-// recorded their `.owed` obligation under this exact tuple, so echoing it back as
-// the reply's in_reply_to is what lets the asker's `check` discharge it. A name
-// that does not parse as a canonical seq filename yields Seq=0 (a degenerate
-// ref); the listers surface only seq messages, so this does not occur on the
-// live path.
+// carry, when msg is reply_required. The emitted reference matches the message's
+// filename identity form so it clears the asker's matching obligation.
 func printReplyRefIfRequired(agentID string, msg loop.Message, fm map[string]string) {
 	if !isFrontmatterReplyRequired(fm) {
 		return
 	}
-	var seq uint64
-	if _, s, ok := loop.ParseSeqFilename(msg.Filename); ok {
-		seq = s
+
+	var ref string
+	if from, seq, ok := loop.ParseSeqFilename(msg.Filename); ok {
+		ref = (loop.MsgID{To: agentID, From: from, Seq: seq}).RefString()
+	} else if id, ok := loop.ParseTsFilename(msg.Filename); ok {
+		id.To = agentID
+		ref = id.RefString()
+	} else {
+		return
 	}
-	ref := loop.MsgID{To: agentID, From: msg.Sender, Seq: seq}.RefString()
 	fmt.Printf("reply-required: reply with `agentchute send --from %s --to %s --reply-to %s ...`\n\n", agentID, msg.Sender, ref)
 }
 

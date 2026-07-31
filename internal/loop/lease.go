@@ -17,7 +17,7 @@ import (
 // sound if a single writer owns an id; the lease produces that guarantee.
 //
 // GATE 2: PURELY ADDITIVE. Not wired into launch/heartbeat/seq-write yet (that
-// is Gate 6). The fence verifier IS already callable by AllocateSeq via a
+// is Gate 6). The fence verifier IS already callable by MintSendStamp via a
 // non-empty serveToken so the two halves can be tested together.
 //
 // THE FENCE (the load-bearing addition): a stale holder that resumes AFTER its
@@ -47,7 +47,7 @@ var ErrLeaseHeld = errors.New("agentchute: serve lease already held")
 
 // ErrFenced is returned when a token check fails: the holder was reclaimed (or
 // the claim is gone), so this process no longer owns the id. RenewLease,
-// ReleaseLease, and AllocateSeq all surface it — a fenced holder must stop.
+// ReleaseLease, and MintSendStamp all surface it — a fenced holder must stop.
 var ErrFenced = errors.New("agentchute: serve lease fenced (token mismatch)")
 
 // ServeClaim is the on-disk lease at <loop>/state/<id>/serve.claim. Acquired via
@@ -92,6 +92,11 @@ var mintServeToken = func() (string, error) {
 // mid-reclaim window — e.g. confirm a concurrent acquirer is BLOCKED on the lock
 // while the reclaim holds it. nil in production.
 var afterReclaimWriteHook func()
+
+// afterInvalidateSnapshotHook runs after InvalidateAllServeLeases snapshots a
+// claim and before it takes that agent's lock. Test-only: lets a test replace
+// the claim in the exact enumeration-to-lock window. nil in production.
+var afterInvalidateSnapshotHook func(string)
 
 func readClaim(path string) (*ServeClaim, error) {
 	data, err := ReadFileLimit(path, MaxClaimBytes)
@@ -263,7 +268,7 @@ func AcquireServeLease(cfg *Config, id string) (*ServeLease, error) {
 //
 // LOCK-FREE: it takes NO lock (just readClaim of the claim file), so it is safe
 // to call from INSIDE withAgentLock(id) without violating non-reentrancy — which
-// is exactly what AllocateSeq's in-lock fence re-check relies on to close its
+// is exactly what MintSendStamp's in-lock fence re-check relies on to close its
 // reclaim TOCTOU.
 func VerifyFence(cfg *Config, id, token string) error {
 	if token == "" {
@@ -358,4 +363,114 @@ func ReleaseLease(l *ServeLease) error {
 		}
 		return syncDir(filepath.Dir(path))
 	})
+}
+
+// InvalidateAllServeLeases fences every currently-running supervisor in this
+// pool by removing its serve.claim under that agent's lock. The next
+// RenewLease or VerifyFence by an old holder returns ErrFenced. Registration
+// rows are deliberately preserved; setup/update use lease invalidation, not
+// row deletion, as the wire-break forcing function.
+func InvalidateAllServeLeases(cfg *Config) (int, error) {
+	if cfg == nil {
+		return 0, fmt.Errorf("InvalidateAllServeLeases: nil config")
+	}
+	stateDir := filepath.Join(cfg.LoopDir, "state")
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("list serve leases in %s: %w", stateDir, err)
+	}
+
+	type claimSnapshot struct {
+		id         string
+		path       string
+		token      string
+		tokenKnown bool
+		info       os.FileInfo
+	}
+
+	var (
+		snapshots []claimSnapshot
+		failures  []error
+	)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		id := entry.Name()
+		path := claimPath(cfg, id)
+		info, err := os.Lstat(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			failures = append(failures, fmt.Errorf("%s: inspect serve claim: %w", id, err))
+			continue
+		}
+		if err := ValidateAgentID(id); err != nil {
+			failures = append(failures, fmt.Errorf("%q: invalid serve-lease directory: %w", id, err))
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			failures = append(failures, fmt.Errorf("%s: serve claim is not a regular file", id))
+			continue
+		}
+
+		snapshot := claimSnapshot{id: id, path: path, info: info}
+		if claim, err := readClaim(path); err == nil {
+			snapshot.token = claim.ServeToken
+			snapshot.tokenKnown = true
+		}
+		snapshots = append(snapshots, snapshot)
+		if afterInvalidateSnapshotHook != nil {
+			afterInvalidateSnapshotHook(id)
+		}
+	}
+
+	invalidated := 0
+	for _, snapshot := range snapshots {
+		removed := false
+		err := withAgentLock(cfg, snapshot.id, func() error {
+			currentInfo, err := os.Lstat(snapshot.path)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return nil
+				}
+				return fmt.Errorf("inspect current serve claim: %w", err)
+			}
+			if !currentInfo.Mode().IsRegular() {
+				return fmt.Errorf("current serve claim is not a regular file")
+			}
+
+			if snapshot.tokenKnown {
+				current, err := readClaim(snapshot.path)
+				switch {
+				case err == nil && current.ServeToken != snapshot.token:
+					return nil
+				case err != nil && !os.SameFile(snapshot.info, currentInfo):
+					return fmt.Errorf("current serve claim changed and is unreadable: %w", err)
+				}
+			} else if !os.SameFile(snapshot.info, currentInfo) {
+				return nil
+			}
+
+			if err := os.Remove(snapshot.path); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return nil
+				}
+				return fmt.Errorf("remove serve claim: %w", err)
+			}
+			removed = true
+			return syncDir(filepath.Dir(snapshot.path))
+		})
+		if removed {
+			invalidated++
+		}
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: invalidate serve lease: %w", snapshot.id, err))
+		}
+	}
+	return invalidated, errors.Join(failures...)
 }

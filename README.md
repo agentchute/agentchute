@@ -4,13 +4,13 @@
 
 **An inbox per agent. A Markdown message. That's the protocol.**
 
-**Protocol v2 · Reference CLI v1.0**
+**Protocol v2.5 · Reference CLI v2.5**
 
 A small Markdown protocol that lets AI agents hand off work, request review, and message each other — without a human relaying every step. No server, no broker, no SDK.
 
-[![Protocol v2 — stable](https://img.shields.io/badge/protocol-v2%20stable-1e6f57.svg)](AGENTCHUTE.md) [![CLI v1.0.0](https://img.shields.io/badge/CLI-v1.0.0-1e6f57.svg)](CHANGELOG.md) [![MIT](https://img.shields.io/badge/license-MIT-1e6f57.svg)](LICENSE) [![Conformance · 9 vectors](https://img.shields.io/badge/conformance-9%20vectors-1e6f57.svg)](conformance/)
+[![Protocol v2.5](https://img.shields.io/badge/protocol-v2.5-1e6f57.svg)](AGENTCHUTE.md) [![CLI v2.5.0](https://img.shields.io/badge/CLI-v2.5.0-1e6f57.svg)](CHANGELOG.md) [![MIT](https://img.shields.io/badge/license-MIT-1e6f57.svg)](LICENSE) [![Conformance · 14 vectors](https://img.shields.io/badge/conformance-14%20vectors-1e6f57.svg)](conformance/)
 
-[Spec](AGENTCHUTE.md) · [Conformance](conformance/) · [Extensions](EXTENSIONS.md) · [Website](https://agentchute.dev) · [Why 1.0 means done →](https://agentchute.dev/blog/v1-0-done-not-big.html)
+[Spec](AGENTCHUTE.md) · [Conformance](conformance/) · [Extensions](EXTENSIONS.md) · [Website](https://agentchute.dev) · [Why the wire moved →](https://agentchute.dev/blog/v2-5-the-wire-broke.html)
 
 <img src="docs/agentchute-hero.svg" alt="AI agents — e.g. claude, codex, gemini, grok, but any terminal-based agent works — each with its own inbox, passing Markdown messages peer to peer with no central broker." width="760">
 
@@ -20,7 +20,7 @@ A small Markdown protocol that lets AI agents hand off work, request review, and
 curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
 ```
 
-Already on 0.x? `agentchute update` — CLI 1.0.0 carries no wire or behavior change over the dogfooded v0.11.8. Coming from 0.7.x or earlier? See the clean-upgrade note in the [CHANGELOG](CHANGELOG.md).
+Already installed? Read the [v2.5 cutover checklist](docs/V2_5_CUTOVER.md) before `agentchute update`. This release changes the wire and must be upgraded pool-at-once; never use `--no-resync` for the first old→v2.5 update.
 
 That's the reference CLI. The protocol itself is just files — an implementation of your own interoperates with it directly, and the [conformance vectors](conformance/) tell you whether you got it right.
 
@@ -30,9 +30,9 @@ That's the reference CLI. The protocol itself is just files — an implementatio
 
 **Done, not big.** Most projects reach 1.0 by adding; agentchute got here by deleting. The pull-only redesign removed the watchdog, the wake adapters, and the reachability machinery; one release alone removed 8,262 lines; every release since is required to remove something. What's left is the stable core:
 
-- **Protocol v2 is stable.** *Stable* is SemVer-serious, not rhetorical: the covenants — the primitives (§1), the envelope (§6.4), the identity grammar (§6.1), the lifecycle guarantees — change only through the written deprecation process. The protocol can still be improved and extended — clarifications, extension profiles — but a breaking change means Protocol v3, entered through that same process. Registrations now carry `v: 2` on the wire, so the version claim self-evidences instead of living in prose.
-- **CLI 1.x implements Protocol v2.** That's the whole compatibility contract. The CLI patches and minors freely underneath it.
-- **Honesty clause:** the protocol has been stable since v0.10.0, so 1.0 adds almost nothing technically new — and that's the point. It adds three small things: wire self-evidence (`v: 2`), a written two-line versioning contract, and the boundary below.
+- **Protocol v2 was declared stable.** *Stable* was meant SemVer-serious, not rhetorical: the covenants — the primitives (§1), the envelope (§6.4), the identity grammar (§6.1), the lifecycle guarantees — were to change only through the written deprecation process. The primitives, envelope, and lifecycle guarantees held. **The identity grammar didn't**: v2.5 replaces it (see [`AGENTCHUTE.md`](AGENTCHUTE.md)'s own top note and [the write-up](https://agentchute.dev/blog/v2-5-the-wire-broke.html)) — a real wire break, walked back openly rather than smuggled into a minor.
+- **CLI v2.5.0 implements Protocol v2.5.** Registration rows carry integer `v: 3`; `status` and `doctor` render it as v2.5 and warn on mixed pools.
+- **Honesty clause:** the protocol had been stable since v0.10.0 through 1.0; v2.5 is the first time that changed, and this section says so rather than quietly updating the claim above it.
 
 ## The idea
 
@@ -43,12 +43,12 @@ Every agent has an inbox — a directory. A message is a Markdown file dropped i
 Five implementation-agnostic primitives. The inbox medium and transport are your choice — files, a queue, HTTP, or git all fit.
 
 - **Per-recipient inbox.** Each agent owns an ordered message stream; the recipient owns consumption.
-- **Identified messages.** Each message has a durable `(to, from, seq)` identity. A sender's messages stay in order, with no clock.
-- **No-overwrite delivery.** A sender never clobbers an existing message; re-sending the same one is a safe no-op.
+- **Identified messages.** Each message has a durable committed identity. A sender's messages stay in order, with no clock.
+- **No-overwrite delivery.** A sender never clobbers an existing message; a collision is refused and retried under a fresh identity — delivery is at-most-once, not deduped.
 - **Recipient reads its own inbox.** Pull, not push. Senders write and walk away.
 - **Self-registration + presence.** Each agent publishes a small record and a liveness heartbeat, read on demand.
 
-The guarantees are pinned by **language-neutral conformance vectors** — seven invariants as JSON, run against both shipped bindings, plus a 269-line stdlib-Python proof that the vectors are implementable in any language. An implementation that passes the vectors is conformant, on any substrate.
+The guarantees are pinned by **language-neutral conformance vectors** — 14 vectors as JSON, run against both shipped bindings, plus a 251-line stdlib-Python proof that the vectors are implementable in any language. An implementation that passes the vectors is conformant, on any substrate.
 
 ## A handoff
 
@@ -98,7 +98,7 @@ agentchute ack --as codex       # COMMIT: archive the claimed message
 
 Not a multi-agent framework. No task graphs, no role election, no central broker, no SaaS tier.
 
-- **Not a delivery broker.** Best-effort and idempotent; the recipient reads on its own cadence. Need retries and exactly-once? Use a queue.
+- **Not a delivery broker.** Best-effort and at-most-once (consume is at-least-once via claim/ack; handler idempotency is the covenant); the recipient reads on its own cadence. Need retries and exactly-once? Use a queue.
 - **Not an auth system.** Messages are unsigned plain text. If you don't trust your peers, don't run them on your machine.
 - **Not a router.** Agents are peers; senders pick recipients explicitly. No wildcard, no broadcast.
 - **Not an audit log.** The loop is a transient, local operational trace, gitignored by default.

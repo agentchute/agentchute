@@ -242,3 +242,25 @@ func TestBuildDispatchRunArgs_SingleAuthoritativePair(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureDispatchIdentity(t *testing.T) {
+	t.Run("unnamed uses canonical wrapper id", func(t *testing.T) {
+		got := ensureDispatchIdentity([]string{"--interval", "5"}, "codex", "")
+		want := []string{"--as", "codex", "--interval", "5"}
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Fatalf("args = %v, want %v", got, want)
+		}
+	})
+	t.Run("explicit flag wins", func(t *testing.T) {
+		got := ensureDispatchIdentity([]string{"--as", "reviewer"}, "codex", "")
+		if strings.Join(got, " ") != "--as reviewer" {
+			t.Fatalf("args = %v, want explicit id unchanged", got)
+		}
+	})
+	t.Run("environment wins", func(t *testing.T) {
+		got := ensureDispatchIdentity([]string{"--interval", "5"}, "codex", "reviewer")
+		if strings.Join(got, " ") != "--interval 5" {
+			t.Fatalf("args = %v, want no injected --as", got)
+		}
+	})
+}

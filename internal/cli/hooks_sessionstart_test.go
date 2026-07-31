@@ -10,11 +10,11 @@ import (
 // At SessionStart, boot already registers/refreshes the agent (it runs
 // performRegister even in --context-only / --codex-hook mode). A redundant
 // self-check in the same SessionStart block doubles the registration write and
-// is the engine of the contextual-identity duplicate race: two writes resolve
-// the same base before either is visible. The fix removes self-check from
+// can race a second write for the same explicit identity. The fix removes
+// self-check from
 // SessionStart (boot owns it there) while keeping it on the per-turn hook,
-// where no boot runs and last_seen/.live presence still need active
-// reconciliation — claude/codex do this via a standalone `self-check` entry
+// where no boot runs and last_seen still needs active reconciliation —
+// claude/codex do this via a standalone `self-check` entry
 // on UserPromptSubmit (untouched by A7/A8); gemini does it via `turn-end`'s
 // step 0 (v2.5 plan A7/C24), since self-check folded into turn-end there —
 // BeforeAgent has no separate per-turn event from its end-of-turn one.
@@ -26,7 +26,7 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 		path              string
 		sessionStart      string // event key holding the startup commands
 		turnEvent         string // event key holding the per-turn commands
-		turnSelfRepairCmd string // substring the per-turn event must run to reconcile last_seen/.live
+		turnSelfRepairCmd string // substring the per-turn event must run to reconcile last_seen
 	}{
 		{"claude-code", "examples/hooks/claude-code/.claude/settings.json", "SessionStart", "UserPromptSubmit", "self-check"},
 		{"codex", "examples/hooks/codex/.codex/hooks.json", "SessionStart", "UserPromptSubmit", "self-check"},
@@ -38,6 +38,9 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 		if err != nil {
 			t.Errorf("%s: read embedded template: %v", c.wrapper, err)
 			continue
+		}
+		if strings.Contains(string(data), "--vendor") {
+			t.Errorf("%s: hook template still passes --vendor; identity must come from AGENTCHUTE_AGENT_ID", c.wrapper)
 		}
 		cmds := hookCommandsForEvent(t, data, c.sessionStart)
 		if len(cmds) == 0 {
@@ -60,7 +63,7 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 			t.Errorf("%s: %s no longer runs boot; it must own session-start registration", c.wrapper, c.sessionStart)
 		}
 
-		// The per-turn hook must still reconcile last_seen/.live, whether via
+		// The per-turn hook must still reconcile last_seen, whether via
 		// a standalone self-check (claude/codex) or turn-end's step 0 (gemini).
 		turn := hookCommandsForEvent(t, data, c.turnEvent)
 		var sawSelfRepair bool
@@ -70,7 +73,7 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 			}
 		}
 		if !sawSelfRepair {
-			t.Errorf("%s: %s dropped %s; per-turn last_seen/.live reconciliation still needs it", c.wrapper, c.turnEvent, c.turnSelfRepairCmd)
+			t.Errorf("%s: %s dropped %s; per-turn last_seen reconciliation still needs it", c.wrapper, c.turnEvent, c.turnSelfRepairCmd)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,7 +18,7 @@ import (
 // preflight has passed and the body has been read, but delivery has not begun.
 var afterSendPreflightHook func()
 
-var sendSeqMessageWithCommit = loop.SendSeqMessageWithCommit
+var sendTsMessageWithCommit = loop.SendTsMessageWithCommit
 
 var sendStdin = os.Stdin
 
@@ -29,14 +30,15 @@ var sendStdin = os.Stdin
 //     obligation (the sole reply-obligation mechanism, v0.9.0).
 //   - --reply-to:   emits the `in_reply_to` frontmatter ref. When the asker
 //     consumes this reply, their `.owed` obligation for the referenced
-//     (to,from,seq) discharges (ClearOwed, check.go). There is NO recipient-side
-//     ledger — reply obligations are asker-owned only.
+//     identity discharges (ClearOwed, check.go — both ref grammars are
+//     accepted). There is NO recipient-side ledger — reply obligations are
+//     asker-owned only.
 //   - --json:       structured output (filename, path).
 func cmdSend(args []string) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var fromID, toID, body, replyTo, controlRepo, loopDir, idempotencyKey string
+	var fromID, toID, body, replyTo, controlRepo, loopDir string
 	var ask, jsonOut bool
 	var replyBy time.Duration
 	fs.StringVar(&fromID, "from", "", "sender agent id (or $AGENTCHUTE_AGENT_ID)")
@@ -46,7 +48,6 @@ func cmdSend(args []string) error {
 	fs.BoolVar(&ask, "ask", false, "set reply_required: true and prepend `## ASK` heading to the body")
 	fs.DurationVar(&replyBy, "reply-by", 0, "with --ask: override the owed-reply deadline (e.g. 1h; default 30m)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
-	fs.StringVar(&idempotencyKey, "idempotency-key", "", "opt-in: a resend with the same key re-issues the same seq (at-least-once, within the sender's 256-entry re-issue window); the key must be unique per logical message and STABLE across retries of that same message (a fresh value per attempt, e.g. $(uuidgen), gives zero resume protection — see AGENTCHUTE.md §6.2); reusing a key for different content silently drops the new content; default (unset) is at-most-once")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 
@@ -98,9 +99,9 @@ func cmdSend(args []string) error {
 	if err != nil {
 		return err
 	}
-	fromID, err = resolveAgentID(fromID, "", cfg)
+	fromID, err = resolveAgentID(fromID)
 	if err != nil {
-		return fmt.Errorf("missing --from; pass --from explicitly or set AGENTCHUTE_AGENT_ID")
+		return err
 	}
 	if err := loop.ValidateAgentID(fromID); err != nil {
 		return fmt.Errorf("--from: %w", err)
@@ -109,20 +110,40 @@ func cmdSend(args []string) error {
 	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse invalid
 	// sender or recipient state before reading stdin, so a piped body remains
 	// untouched on every preflight failure.
+	// B1: CLI touches no longer refresh liveness — only serve's lease-gated
+	// heartbeat does (HeartbeatRegistration). This preflight only confirms
+	// the sender is enrolled at all.
 	selfPath := cfg.AgentRegistrationPath(fromID)
 	if _, err := os.Stat(selfPath); err == nil {
-		if err := loop.UpdateLastSeen(cfg, fromID, time.Now().UTC()); err != nil {
-			return fmt.Errorf("update last_seen for %s: %w", fromID, err)
-		}
+		// registered; proceed.
 	} else if os.IsNotExist(err) {
 		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", fromID, fromID)
 	} else {
 		return fmt.Errorf("stat own registration: %w", err)
 	}
 
+	// B3 (v2.5 plan): the recipient preflight is a LOCK-FREE read of to's
+	// registration — never WithAgentLock(toID) here, whose ensurePrivateDir
+	// side effect would manufacture state/<toID>/ for an arbitrary --to typo
+	// (§4 risk; TestSendTakesNoLockForUnknownRecipient pins it). This is a
+	// fast-fail optimization only, run BEFORE stdin so a piped body is never
+	// touched on a doomed send (A5 ordering) — the actual enforcement is the
+	// re-check inside loop.DeliverUnderRecipientLock, which a sweep or a
+	// heartbeat can always race against between here and there.
 	inboxDir := cfg.AgentInboxDir(toID)
-	if fi, statErr := os.Stat(inboxDir); statErr != nil || !fi.IsDir() {
-		return unknownRecipientError(toID, os.ErrNotExist)
+	now := time.Now().UTC()
+	rr, rrErr := loop.CheckRecipientReachability(cfg, toID, now)
+	if rrErr != nil {
+		if errors.Is(rrErr, loop.ErrRecipientUnknown) {
+			return unknownRecipientError(toID, rrErr)
+		}
+		if errors.Is(rrErr, loop.ErrRecipientUnreadable) {
+			return unreadableRecipientError(toID)
+		}
+		return rrErr
+	}
+	if !rr.Fresh {
+		return staleRecipientError(toID, rr)
 	}
 
 	if body == "" {
@@ -144,6 +165,12 @@ func cmdSend(args []string) error {
 	// present. Pure body manipulation; the reply_required frontmatter
 	// is plumbed via ComposeMessage below.
 	if ask {
+		// Warn-only done-when check (AGENTS.md Communication Rules, rule 2):
+		// an --ask with no verifiable done-when forces the recipient to guess
+		// scope. Advisory only — never blocks the send.
+		if !strings.Contains(strings.ToLower(rawBody), "done-when") {
+			fmt.Fprintf(os.Stderr, "warning: --ask body has no 'done-when' line; the recipient will have to guess when this is done\n")
+		}
 		body = applyAskHeading(body)
 		// Self-send + --ask is a loop hazard per AGENTCHUTE.md §6.4: the
 		// sender immediately owes itself a reply. The combination is
@@ -157,34 +184,28 @@ func cmdSend(args []string) error {
 		}
 	}
 
-	now := time.Now().UTC()
-
 	content := loop.ComposeMessage(fromID, replyTo, body)
 	if ask {
 		content = applyReplyRequiredFrontmatter(content)
 	}
 
-	// Land the message under the canonical (to,from,seq) identity (Gate 4):
-	// `to` is encoded by the inbox directory, (from,seq) by the filename. The
-	// durable per-(from,to) seq replaces the legacy crypto/rand nonce — it makes
-	// the lexicographic inbox sort exact per-sender FIFO (the live O1 fix) and
-	// folds delivery-dedup into the substrate (link-EEXIST on a resend).
+	// Land the message under a new timestamp+random-suffix identity (v2.5 plan
+	// B7, Gate 4): `to` is encoded by the inbox directory; from/stamp/suffix by
+	// the filename. Delivery is AT-MOST-ONCE: a sender crash between the
+	// write-ahead floor commit and the link loses the minted stamp as a legal
+	// gap — there is no idempotency key or resend-dedup path (deleted with the
+	// old per-(from,to) seq allocator). Consume remains AT-LEAST-ONCE via the
+	// existing claim/ack two-phase; handler idempotency is the covenant, not
+	// delivery-side dedup.
 	if afterSendPreflightHook != nil {
 		afterSendPreflightHook()
 	}
-	// idempotencyKey defaults to "": send has no stable per-message content key,
-	// so a sender crash between the durable seq commit and the link loses the
-	// allocated seq as a legal gap (at-most-once for this message) — unchanged
-	// default behavior. --idempotency-key is the opt-in escape hatch (F1): a
-	// caller that supplies a stable non-empty key gets at-least-once, because a
-	// resend with the same key re-issues the SAME seq instead of consuming a new
-	// one (AllocateSeq). No default body-hash key, no retries, no delivery
-	// guarantee beyond the write (C.6). serveToken rides AGENTCHUTE_SERVE_TOKEN: a
-	// send from a child launched under `agentchute serve` carries the runner's
-	// active serve-lease fence, so a write from a fenced (reclaimed) agent fails
-	// closed (AllocateSeq VerifyFence -> ErrFenced). Empty env (no serve lease) =>
-	// intentionally unfenced.
-	id, committed, sendErr := sendSeqMessageWithCommit(cfg, fromID, toID, content, idempotencyKey, os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
+	// serveToken rides AGENTCHUTE_SERVE_TOKEN: a send from a child launched
+	// under `agentchute serve` carries the runner's active serve-lease fence,
+	// so a write from a fenced (reclaimed) agent fails closed (MintSendStamp's
+	// VerifyFence -> ErrFenced). Empty env (no serve lease) => intentionally
+	// unfenced.
+	id, committed, sendErr := sendTsMessageWithCommit(cfg, fromID, toID, content, os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
 	retry := sendRetryOptions{
 		Ask:        ask,
 		ReplyBy:    replyBy.String(),
@@ -195,8 +216,11 @@ func cmdSend(args []string) error {
 	if sendErr != nil && !committed {
 		return preserveSendBody(cfg, fromID, toID, rawBody, now, retry, sendErr)
 	}
-	// The on-wire identity is (to,from,seq): `to` is the inbox directory, (from,seq)
-	// the filename. No sender-asserted message_id is emitted (v0.9.0).
+	// The on-wire identity is (to,from,timestamp,suffix) (v2.5 plan B7): `to`
+	// is the inbox directory, from/stamp/suffix the filename. `id` here is the
+	// identity DeliverUnderRecipientLock actually committed, whose suffix may
+	// differ from what was first proposed if a link collision forced a
+	// fresh-suffix retry (C4). No sender-asserted message_id is emitted.
 	msg := loop.Message{Filename: id.Filename(), Path: filepath.Join(inboxDir, id.Filename())}
 	result := sendResult{
 		Filename: msg.Filename,
@@ -282,6 +306,10 @@ type sendRetryOptions struct {
 	ReplyToSet bool
 }
 
+// C29(a): never-registered. Text is literal per the v2.5 plan — "no
+// registration row" (not "no inbox/registration") and an explicit "do NOT
+// register on their behalf" so no reading of this text can be mistaken for
+// coaching the sender to register the RECIPIENT (AGENTCHUTE.md §9).
 func unknownRecipientError(to string, cause error) error {
 	return unknownRecipientSendError{to: to, cause: cause}
 }
@@ -292,19 +320,70 @@ type unknownRecipientSendError struct {
 }
 
 func (e unknownRecipientSendError) Error() string {
-	return fmt.Sprintf("unknown agent %q: no inbox/registration. Check the id (agentchute status).", e.to)
+	return fmt.Sprintf("unknown agent %q: no registration row. Check the id (agentchute status) — do NOT register on their behalf.", e.to)
 }
 
 func (e unknownRecipientSendError) Unwrap() error {
 	return e.cause
 }
 
+// C29(b): stale, caught by cmdSend's OWN lock-free preflight — a direct,
+// non-racing classification (no send has been attempted yet; stdin has not
+// even been read).
+func staleRecipientError(to string, rr loop.RecipientReachability) error {
+	return fmt.Errorf("%q was here, gone since %s (%s ago); not sending (row older than stale_after=%s). They re-register at boot.",
+		to, rr.LastSeen.UTC().Format(time.RFC3339), rr.Age.Round(time.Second), rr.Threshold)
+}
+
+// C29(c): fresh-but-racing. Reached ONLY from loop.DeliverUnderRecipientLock
+// returning *loop.ErrRecipientStale — which, by construction, is reachable in
+// cmdSend's flow ONLY after its OWN preflight already found `to` fresh. Text
+// deliberately does not repeat "stale"/"gone since": the row was here
+// moments ago, so the honest read is a race (a fleet-wake storm mid-restart),
+// not the same failure C29(b) describes.
+func racingRecipientError(to string) error {
+	return fmt.Errorf("%q was here seconds ago — likely mid-restart; retry once.", to)
+}
+
+// Malformed row: neither C29(a) (no row exists) nor C29(b)/(c) (a row exists
+// and is stale/racing) — a row that fails to parse tells us nothing about
+// whether `to` is reachable, so it gets its own text rather than being
+// folded into either. Telling an operator "was here, gone since <time>"
+// about a file that failed to parse would be actively misleading (codex/
+// claude-code review, PR #95 P1).
+func unreadableRecipientError(to string) error {
+	return fmt.Errorf("%q's registration could not be read (malformed); not sending. Inspect agents/%s.md by hand.", to, to)
+}
+
+// classifySendFailure maps a post-stdin delivery failure to its C29 text.
+// Reached only after cmdSend's own preflight already passed, so a stale
+// classification here is always the racing case (c), never the direct
+// stale case (b) — that one is caught earlier, before any spool/retry
+// machinery even runs.
+func classifySendFailure(to string, cause error) error {
+	if errors.Is(cause, loop.ErrRecipientUnknown) {
+		return unknownRecipientError(to, cause)
+	}
+	if errors.Is(cause, loop.ErrRecipientUnreadable) {
+		return unreadableRecipientError(to)
+	}
+	if os.IsNotExist(cause) {
+		// A registration can be fresh while its inbox dir is unexpectedly
+		// gone (an inconsistent-state edge case, not a normal C29 branch);
+		// same "unknown agent" text applies since the recipient is not
+		// reachable either way.
+		return unknownRecipientError(to, cause)
+	}
+	var staleErr *loop.ErrRecipientStale
+	if errors.As(cause, &staleErr) {
+		return racingRecipientError(to)
+	}
+	return fmt.Errorf("write inbox message: %w", cause)
+}
+
 func preserveSendBody(cfg *loop.Config, from, to, body string, now time.Time, retry sendRetryOptions, cause error) error {
 	spoolPath, spoolErr := writeSendSpool(cfg, from, to, body, now)
-	baseErr := fmt.Errorf("write inbox message: %w", cause)
-	if os.IsNotExist(cause) {
-		baseErr = unknownRecipientError(to, cause)
-	}
+	baseErr := classifySendFailure(to, cause)
 	if spoolErr != nil {
 		return fmt.Errorf("%w; body preservation failed: %v", baseErr, spoolErr)
 	}
@@ -414,7 +493,7 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 
 func sendUsage(err error) error {
 	return fmt.Errorf(`%w
-usage: agentchute send --from <sender> --to <recipient> [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--idempotency-key <key>] [--json] [--control-repo <path>] [--loop-dir <path>]
+usage: agentchute send --from <sender> --to <recipient> [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
 
   Ways to provide the body (pick one):
     --body "literal text"             short replies

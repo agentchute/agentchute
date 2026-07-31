@@ -1,74 +1,41 @@
 package loop
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-// This file CHARACTERIZES the current behavior of the frontmatter parsers
-// that historically caused validator/recorder skew (WI-10). It is a
-// behavior snapshot, NOT an aspiration: every assertion below documents what
-// the code does TODAY. If a future change alters these outputs, that is a
-// real behavior change and must be justified, not silently re-baselined.
+// This file CHARACTERIZES the behavior of the single frontmatter parser
+// (parseFrontmatter, registration.go) as seen through the two message-level
+// entry points that wrap it: ValidateMessageFrontmatter (the §11.1 malformed
+// gate) and ParseMessageFrontmatter (the field extractor). It is a behavior
+// snapshot, NOT an aspiration: every assertion below documents what the code
+// does TODAY. If a future change alters these outputs, that is a real
+// behavior change and must be justified, not silently re-baselined.
 //
-// Originally characterized THREE parsers; parser A (InferSenderFromFrontmatter)
-// was deleted in v2.5 plan A6 along with its sole production caller (the
-// §11.1 corrective-notify path) — this file dropped its A-specific
-// assertions accordingly. Full consolidation to ONE parser (dropping the B
-// vs C distinction below too) is v2.5 plan B8's job, not this one.
+// History: originally characterized THREE parsers. Parser A
+// (InferSenderFromFrontmatter) was deleted in v2.5 plan A6 along with its
+// sole production caller. Parser C (ParseMessageFrontmatter's own ad-hoc
+// lenient scanner) was deleted in v2.5 plan B8 — it now routes through
+// parseFrontmatter (parser B) like everything else in this package, closing
+// the validator/recorder skew WI-10 named (a message could be GATED one way
+// by B and have its fields EXTRACTED a different way by C). There is now
+// exactly one grammar; the fixtures below are its accept/reject vectors,
+// promoted to conformance/vectors/core.json as FM1/FM2.
 //
-// The two parsers still under characterization:
-//
-//	B. parseFrontmatter (registration.go) — STRICT key:value parser. Returns
-//	   (fields, body, error). Rejects indentation, non-key:value lines, dup
-//	   keys, missing close. Also reached via ValidateMessageFrontmatter, which
-//	   runs it as a pure validity GATE over message content.
-//	C. ParseMessageFrontmatter (message.go) — LENIENT key:value parser. Returns
-//	   map[string]string. Skips comments/blank lines, ignores non-key:value
-//	   lines, last-write-wins on dup keys, strips surrounding quotes.
-//
-// The skew that motivated WI-10: a message is GATED by B (via
-// ValidateMessageFrontmatter) but its fields are EXTRACTED by C. If an input
-// passes B but C reads it differently (or vice-versa), the recorder and the
-// validator disagree.
-
-// fmProbe runs both remaining parsers over one input and returns a comparable
-// snapshot. We feed C the raw content; B gets the CRLF-normalized text
-// exactly as ValidateMessageFrontmatter does.
-type fmProbe struct {
-	// B: parseFrontmatter (strict). bErr is the error string ("" if nil).
-	bErr    string
-	bFields map[string]string // scalar values only, for comparison
-	bBody   string
-	// C: ParseMessageFrontmatter (lenient)
-	cMap map[string]string
-}
-
-func probeFrontmatter(t *testing.T, content string) fmProbe {
-	t.Helper()
-	p := fmProbe{}
-
-	// B (strict).
-	fields, body, err := parseFrontmatter(content)
-	if err != nil {
-		p.bErr = err.Error()
-	} else {
-		p.bFields = map[string]string{}
-		for k, v := range fields {
-			p.bFields[k] = v.scalar
-		}
-		p.bBody = body
-	}
-
-	// C (lenient).
-	p.cMap = ParseMessageFrontmatter([]byte(content))
-
-	return p
-}
+// B8 REAL BEHAVIOR CHANGES for message frontmatter (not just the
+// plan-sanctioned dup-key/indentation tightening) — see the PR body for the
+// full list:
+//   - `#` comment lines and other non-key:value prose lines now reject the
+//     WHOLE block (previously silently skipped by parser C).
+//   - An empty-key line (`: value`) now rejects the whole block (previously
+//     recorded under an empty-string key).
+//   - Quoted values with backslash escapes are now unquoted via
+//     strconv.Unquote (previously a blunt strings.Trim left escapes literal).
+//   - `null`/`~` values now collapse to empty string (previously kept as
+//     literal text).
 
 // frontmatterFixtures is the shared fixture set covering the dimensions the
-// task calls out: quoting, whitespace, indentation, comments, blank lines,
-// CRLF, missing close, dup keys, lists, empty values, and `:`/`#` in values.
+// grammar cares about: quoting, whitespace, indentation, comments, blank
+// lines, CRLF, missing close, dup keys, lists, empty values, and `:`/`#` in
+// values. This is the FM1/FM2 vector source (conformance/vectors/core.json).
 func frontmatterFixtures() map[string]string {
 	return map[string]string{
 		"quoted-value": "---\n" +
@@ -96,262 +63,299 @@ func frontmatterFixtures() map[string]string {
 		"empty-key":            "---\n: value\n---\n\nbody\n",
 		"body-only":            "no frontmatter, just body\n",
 		"reply-required-true":  "---\nmessage_id: m1\nfrom: codex\nreply_required: true\n---\n\nbody\n",
+
+		// Added after codex's second-round finding on PR #100: the §6.4
+		// grammar block claimed a key charset (ALPHA/DIGIT/_) and a fixed
+		// 2-space list indent that NEITHER implementation actually enforces,
+		// and FM1 never pinned the escaped-quote / null-sentinel RESULT
+		// values (only that the block parsed). These fixtures close both gaps.
+		"unusual-key-chars":     "---\nweird key-name!: value\nfrom: codex\n---\n\nbody\n",
+		"list-zero-indent":      "---\nfrom: codex\nworking_repos:\n- /a\n- /b\n---\n\nbody\n",
+		"list-tab-indent":       "---\nfrom: codex\nworking_repos:\n\t- /a\n\t- /b\n---\n\nbody\n",
+		"quoted-value-escaped":  "---\nfrom: codex\ntask: \"a\\tb\"\n---\n\nbody\n",
+		"null-value":            "---\nfrom: codex\ntask: null\n---\n\nbody\n",
+		"tilde-value":           "---\nfrom: codex\ntask: ~\n---\n\nbody\n",
+		"list-item-missing-gap": "---\nfrom: codex\nworking_repos:\n-nospace\n---\n\nbody\n",
 	}
 }
 
-// TestFrontmatterCharacterization_Snapshot drives both remaining parsers over
-// the shared fixtures and emits a comparison table (visible with -v). It does
-// not assert; the targeted tests below pin the load-bearing comparisons. Run
-// with `go test -run Characterization -v ./internal/loop` to see the table.
-func TestFrontmatterCharacterization_Snapshot(t *testing.T) {
+// frontmatterAcceptCases is FM1: fixture name -> the exact flat field map
+// ParseMessageFrontmatter must return once ValidateMessageFrontmatter has
+// confirmed the block is well-formed. "body-only" has no frontmatter block
+// at all, which is valid-but-empty per §6.4, not a rejection.
+func frontmatterAcceptCases() map[string]map[string]string {
+	return map[string]map[string]string{
+		"quoted-value":         {"from": "codex", "task": "do the thing"},
+		"single-quoted-value":  {"from": "codex"},
+		"unquoted-value":       {"from": "codex", "task": "do-thing"},
+		"leading-ws-in-value":  {"from": "codex"},
+		"trailing-ws-in-value": {"from": "codex"},
+		"blank-line-in-block":  {"from": "codex", "task": "after-blank"},
+		"crlf":                 {"from": "codex", "task": "t"},
+		"list-value":           {"from": "codex", "working_repos": ""},
+		"empty-value":          {"from": "codex", "task": ""},
+		"value-with-colon":     {"from": "codex", "task": "a: b: c"},
+		"value-with-hash":      {"from": "codex", "task": "trailing # not-a-comment"},
+		"ws-around-delim":      {"from": "codex"},
+		"body-only":            {},
+		"reply-required-true":  {"message_id": "m1", "from": "codex", "reply_required": "true"},
+
+		"unusual-key-chars":    {"weird key-name!": "value", "from": "codex"},
+		"list-zero-indent":     {"from": "codex", "working_repos": ""},
+		"list-tab-indent":      {"from": "codex", "working_repos": ""},
+		"quoted-value-escaped": {"from": "codex", "task": "a\tb"},
+		"null-value":           {"from": "codex", "task": ""},
+		"tilde-value":          {"from": "codex", "task": ""},
+	}
+}
+
+// frontmatterRejectCases is FM2: fixture names whose block
+// ValidateMessageFrontmatter must error on, and whose ParseMessageFrontmatter
+// must therefore return an empty map.
+func frontmatterRejectCases() []string {
+	return []string{
+		"indented-line",
+		"comment-line",
+		"missing-close",
+		"dup-key",
+		"non-keyvalue-line",
+		"empty-key",
+		"list-item-missing-gap",
+	}
+}
+
+// TestFrontmatterFixtures_AllClassified guards against a fixture being added
+// without an FM1/FM2 classification (or a classification without a fixture).
+func TestFrontmatterFixtures_AllClassified(t *testing.T) {
 	fx := frontmatterFixtures()
-	names := make([]string, 0, len(fx))
-	for n := range fx {
-		names = append(names, n)
+	classified := map[string]bool{}
+	for name := range frontmatterAcceptCases() {
+		classified[name] = true
 	}
-	// deterministic order
-	for i := 0; i < len(names); i++ {
-		for j := i + 1; j < len(names); j++ {
-			if names[j] < names[i] {
-				names[i], names[j] = names[j], names[i]
+	for _, name := range frontmatterRejectCases() {
+		classified[name] = true
+	}
+	for name := range fx {
+		if !classified[name] {
+			t.Errorf("fixture %q has no FM1/FM2 classification", name)
+		}
+	}
+	for name := range classified {
+		if _, ok := fx[name]; !ok {
+			t.Errorf("classified case %q has no fixture", name)
+		}
+	}
+}
+
+// TestFrontmatterAccept_FM1 drives the accept table: ValidateMessageFrontmatter
+// must not error, and ParseMessageFrontmatter must return exactly the
+// documented field map.
+func TestFrontmatterAccept_FM1(t *testing.T) {
+	fx := frontmatterFixtures()
+	for name, want := range frontmatterAcceptCases() {
+		in, ok := fx[name]
+		if !ok {
+			t.Fatalf("fixture %q not found", name)
+		}
+		if err := ValidateMessageFrontmatter([]byte(in)); err != nil {
+			t.Fatalf("%s: expected ACCEPT, got error: %v", name, err)
+		}
+		got := ParseMessageFrontmatter([]byte(in))
+		if len(got) != len(want) {
+			t.Fatalf("%s: field count mismatch: got %v, want %v", name, got, want)
+		}
+		for k, v := range want {
+			if got[k] != v {
+				t.Fatalf("%s: field %q: got %q, want %q (map=%v)", name, k, got[k], v, got)
 			}
 		}
 	}
-	for _, n := range names {
-		p := probeFrontmatter(t, fx[n])
-		bSummary := "ok " + mapStr(p.bFields)
-		if p.bErr != "" {
-			bSummary = "ERR(" + p.bErr + ")"
+}
+
+// TestFrontmatterReject_FM2 drives the reject table: ValidateMessageFrontmatter
+// must error, and ParseMessageFrontmatter must return an empty map (the two
+// entry points can no longer disagree — this is the WI-10 fix).
+func TestFrontmatterReject_FM2(t *testing.T) {
+	fx := frontmatterFixtures()
+	for _, name := range frontmatterRejectCases() {
+		in, ok := fx[name]
+		if !ok {
+			t.Fatalf("fixture %q not found", name)
 		}
-		t.Logf("%-22s | B=%s | C=%s",
-			n, bSummary, mapStr(p.cMap))
+		if err := ValidateMessageFrontmatter([]byte(in)); err == nil {
+			t.Fatalf("%s: expected REJECT, got no error", name)
+		}
+		if got := ParseMessageFrontmatter([]byte(in)); len(got) != 0 {
+			t.Fatalf("%s: rejected block must extract as empty map, got %v", name, got)
+		}
 	}
 }
 
-func mapStr(m map[string]string) string {
-	if m == nil {
-		return "<nil>"
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	for i := 0; i < len(keys); i++ {
-		for j := i + 1; j < len(keys); j++ {
-			if keys[j] < keys[i] {
-				keys[i], keys[j] = keys[j], keys[i]
-			}
-		}
-	}
-	var b strings.Builder
-	b.WriteByte('{')
-	for i, k := range keys {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(m[k])
-	}
-	b.WriteByte('}')
-	return b.String()
-}
+// --- Focused characterization tests (named, for revert-verification) ---
 
-// --- Targeted characterization assertions (pin current behavior) ---
-
-// strictGate reports whether parseFrontmatter (parser B, the validity gate used
-// by ValidateMessageFrontmatter) ACCEPTS the input.
-func strictGate(content string) bool {
-	_, _, err := parseFrontmatter(content)
-	return err == nil
-}
-
-// TestChar_StrictRejectsIndentation pins that the strict parser (B) rejects an
-// indented line, while the lenient parser (C) silently absorbs it.
-func TestChar_StrictRejectsIndentation(t *testing.T) {
+// TestChar_IndentedLineRejected pins the plan-sanctioned tightening: an
+// indented continuation line now rejects the whole block. Before B8,
+// ParseMessageFrontmatter silently absorbed it as its own key.
+func TestChar_IndentedLineRejected(t *testing.T) {
 	in := "---\nfrom: codex\n  task: indented\n---\n\nbody\n"
-	if strictGate(in) {
-		t.Fatal("B: expected strict parser to REJECT indented line")
+	if err := ValidateMessageFrontmatter([]byte(in)); err == nil {
+		t.Fatal("expected indented continuation line to be REJECTED")
 	}
-	c := ParseMessageFrontmatter([]byte(in))
-	// C trims each line, so "  task: indented" becomes "task: indented".
-	if c["task"] != "indented" {
-		t.Fatalf("C: want task=indented, got %q (map=%v)", c["task"], c)
-	}
-	// from is still readable by C and A.
-	if c["from"] != "codex" {
-		t.Fatalf("C: want from=codex, got %q", c["from"])
+	if got := ParseMessageFrontmatter([]byte(in)); len(got) != 0 {
+		t.Fatalf("rejected block must extract as empty map, got %v", got)
 	}
 }
 
-// TestChar_StrictRejectsNonKeyValueLine pins that a prose line inside the block
-// is rejected by B but ignored by C.
-func TestChar_StrictRejectsNonKeyValueLine(t *testing.T) {
+// TestChar_NonKeyValueLineRejected pins that a prose line inside the block
+// (no colon) rejects the whole block. Before B8, ParseMessageFrontmatter
+// silently skipped it.
+func TestChar_NonKeyValueLineRejected(t *testing.T) {
 	in := "---\nfrom: codex\nthis is just prose\n---\n\nbody\n"
-	if strictGate(in) {
-		t.Fatal("B: expected strict parser to REJECT non-key:value line")
+	if err := ValidateMessageFrontmatter([]byte(in)); err == nil {
+		t.Fatal("expected non-key:value line to be REJECTED")
 	}
-	c := ParseMessageFrontmatter([]byte(in))
-	if c["from"] != "codex" {
-		t.Fatalf("C: want from=codex, got %q (map=%v)", c["from"], c)
+	if got := ParseMessageFrontmatter([]byte(in)); len(got) != 0 {
+		t.Fatalf("rejected block must extract as empty map, got %v", got)
 	}
 }
 
-// TestChar_StrictRejectsDupKey pins B rejecting a duplicate key; C is
+// TestChar_DupKeyRejected pins the plan-sanctioned tightening: a duplicate
+// key now rejects the whole block. Before B8, ParseMessageFrontmatter was
 // last-write-wins.
-func TestChar_StrictRejectsDupKey(t *testing.T) {
+func TestChar_DupKeyRejected(t *testing.T) {
 	in := "---\nfrom: codex\nfrom: gemini-cli\n---\n\nbody\n"
-	if strictGate(in) {
-		t.Fatal("B: expected strict parser to REJECT duplicate key")
+	if err := ValidateMessageFrontmatter([]byte(in)); err == nil {
+		t.Fatal("expected duplicate key to be REJECTED")
 	}
-	c := ParseMessageFrontmatter([]byte(in))
-	if c["from"] != "gemini-cli" {
-		t.Fatalf("C: dup key last-write-wins; want gemini-cli, got %q", c["from"])
+	if got := ParseMessageFrontmatter([]byte(in)); len(got) != 0 {
+		t.Fatalf("rejected block must extract as empty map, got %v", got)
 	}
 }
 
-// TestChar_CommentLine pins that B rejects a `#` comment line (it is not
-// key:value) while C explicitly skips it.
-func TestChar_CommentLine(t *testing.T) {
+// TestChar_CommentLineRejected pins a REAL (not plan-named) B8 behavior
+// change: a `#` comment line now makes the whole block unparseable, since
+// parseFrontmatter has no comment syntax and message frontmatter is no
+// longer more lenient about this than registration frontmatter. Before B8,
+// ParseMessageFrontmatter silently skipped the comment and still recorded
+// `from`.
+func TestChar_CommentLineRejected(t *testing.T) {
 	in := "---\n# a comment\nfrom: codex\n---\n\nbody\n"
-	if strictGate(in) {
-		t.Fatal("B: expected strict parser to REJECT comment line (not key:value)")
+	if err := ValidateMessageFrontmatter([]byte(in)); err == nil {
+		t.Fatal("expected comment line to be REJECTED (no comment syntax in the single engine)")
 	}
-	c := ParseMessageFrontmatter([]byte(in))
-	if _, ok := c["#"]; ok {
-		t.Fatalf("C: comment must be skipped, got map=%v", c)
-	}
-	if c["from"] != "codex" {
-		t.Fatalf("C: want from=codex, got %q", c)
+	if got := ParseMessageFrontmatter([]byte(in)); len(got) != 0 {
+		t.Fatalf("rejected block must extract as empty map (from is NO LONGER recovered), got %v", got)
 	}
 }
 
-// TestChar_ValueWithColon pins that both B and C keep everything after the
-// FIRST colon as the value (strings.Cut / IndexByte on first ':').
+// TestChar_EmptyKeyRejected pins another REAL B8 behavior change: a line
+// with nothing before the colon now rejects the whole block. Before B8,
+// ParseMessageFrontmatter recorded a spurious empty-string-keyed entry.
+func TestChar_EmptyKeyRejected(t *testing.T) {
+	in := "---\n: value\n---\n\nbody\n"
+	if err := ValidateMessageFrontmatter([]byte(in)); err == nil {
+		t.Fatal("expected empty key to be REJECTED")
+	}
+	if got := ParseMessageFrontmatter([]byte(in)); len(got) != 0 {
+		t.Fatalf("rejected block must extract as empty map, got %v", got)
+	}
+}
+
+// TestChar_ValueWithColon pins that everything after the FIRST colon is kept
+// as the value (strings.Cut on first ':').
 func TestChar_ValueWithColon(t *testing.T) {
 	in := "---\nfrom: codex\ntask: a: b: c\n---\n\nbody\n"
-	if !strictGate(in) {
-		t.Fatal("B: expected strict parser to ACCEPT value-with-colon")
+	if err := ValidateMessageFrontmatter([]byte(in)); err != nil {
+		t.Fatalf("expected ACCEPT, got %v", err)
 	}
-	fields, _, _ := parseFrontmatter(in)
-	if got := fields.scalar("task"); got != "a: b: c" {
-		t.Fatalf("B: want task=%q, got %q", "a: b: c", got)
-	}
-	c := ParseMessageFrontmatter([]byte(in))
-	if c["task"] != "a: b: c" {
-		t.Fatalf("C: want task=%q, got %q", "a: b: c", c["task"])
+	if got := ParseMessageFrontmatter([]byte(in))["task"]; got != "a: b: c" {
+		t.Fatalf("want task=%q, got %q", "a: b: c", got)
 	}
 }
 
-// TestChar_QuoteStripping pins the divergence in HOW B and C strip quotes.
-// B (cleanScalar) uses strconv.Unquote first (interprets escapes) then a
-// simple paired-quote strip. C (strings.Trim) strips ANY leading/trailing
-// run of quote characters.
+// TestChar_QuoteStripping pins a REAL B8 behavior change: quoted values now
+// run through cleanScalar (strconv.Unquote first, falling back to a
+// paired-quote strip), so backslash escapes are INTERPRETED. Before B8,
+// ParseMessageFrontmatter did a blunt strings.Trim(val, `"'`) and left
+// escapes literal.
 func TestChar_QuoteStripping(t *testing.T) {
-	// Simple paired double-quote: both agree.
 	in := "---\nfrom: codex\ntask: \"hello\"\n---\n\nbody\n"
-	fields, _, _ := parseFrontmatter(in)
-	c := ParseMessageFrontmatter([]byte(in))
-	if fields.scalar("task") != "hello" {
-		t.Fatalf("B: want hello, got %q", fields.scalar("task"))
-	}
-	if c["task"] != "hello" {
-		t.Fatalf("C: want hello, got %q", c["task"])
+	if got := ParseMessageFrontmatter([]byte(in))["task"]; got != "hello" {
+		t.Fatalf("want hello, got %q", got)
 	}
 
-	// A value that is a quote-balanced string with embedded escape: B unquotes
-	// (interprets \t), C strips outer quotes only.
 	in2 := "---\nfrom: codex\ntask: \"a\\tb\"\n---\n\nbody\n"
-	fields2, _, _ := parseFrontmatter(in2)
-	c2 := ParseMessageFrontmatter([]byte(in2))
-	if fields2.scalar("task") != "a\tb" {
-		t.Fatalf("B: strconv.Unquote interprets escape; want a<TAB>b, got %q", fields2.scalar("task"))
-	}
-	if c2["task"] != "a\\tb" {
-		t.Fatalf("C: literal quote-strip keeps backslash; want a\\tb, got %q", c2["task"])
+	if got := ParseMessageFrontmatter([]byte(in2))["task"]; got != "a\tb" {
+		t.Fatalf("strconv.Unquote interprets escape; want a<TAB>b, got %q", got)
 	}
 }
 
-// TestChar_NullSentinel pins that B maps `null`/`~` to empty string
-// (cleanScalar) while C keeps the literal text.
+// TestChar_NullSentinel pins a REAL B8 behavior change: `null`/`~` now map to
+// empty string in message frontmatter too (cleanScalar, shared with
+// registration). Before B8, ParseMessageFrontmatter kept the literal text.
 func TestChar_NullSentinel(t *testing.T) {
 	in := "---\nfrom: codex\ntask: null\n---\n\nbody\n"
-	fields, _, _ := parseFrontmatter(in)
-	c := ParseMessageFrontmatter([]byte(in))
-	if fields.scalar("task") != "" {
-		t.Fatalf("B: null sentinel -> empty; got %q", fields.scalar("task"))
-	}
-	if c["task"] != "null" {
-		t.Fatalf("C: literal; want null, got %q", c["task"])
+	if got := ParseMessageFrontmatter([]byte(in))["task"]; got != "" {
+		t.Fatalf("null sentinel -> empty string; got %q", got)
 	}
 }
 
-// TestChar_WhitespaceAroundDelimiter pins that BOTH B and C treat a
-// whitespace-padded `---` line as a delimiter (TrimSpace before compare). This
-// is the codex-flagged consistency that was already fixed.
+// TestChar_WhitespaceAroundDelimiter pins that a whitespace-padded `---` line
+// still closes the block (TrimSpace before compare).
 func TestChar_WhitespaceAroundDelimiter(t *testing.T) {
 	in := "---\nfrom: codex\ntask: t\n  ---  \n\nbody\n"
-	if !strictGate(in) {
-		t.Fatal("B: padded --- must close the block")
+	if err := ValidateMessageFrontmatter([]byte(in)); err != nil {
+		t.Fatalf("padded --- must close the block: %v", err)
 	}
-	c := ParseMessageFrontmatter([]byte(in))
-	if c["task"] != "t" || c["from"] != "codex" {
-		t.Fatalf("C: padded --- must close block; got map=%v", c)
+	got := ParseMessageFrontmatter([]byte(in))
+	if got["task"] != "t" || got["from"] != "codex" {
+		t.Fatalf("padded --- must close block; got map=%v", got)
 	}
 }
 
-// TestChar_MissingClose pins that B ERRORS on a missing closing `---`, while C
-// returns an EMPTY map (firstFrontmatterBlock returns ok=false).
-// ValidateMessageFrontmatter surfaces B's error.
+// TestChar_MissingClose pins that a missing closing `---` errors, and
+// ParseMessageFrontmatter returns an empty map for it.
 func TestChar_MissingClose(t *testing.T) {
 	in := "---\nfrom: codex\ntask: t\n\nbody without close\n"
-	if strictGate(in) {
-		t.Fatal("B: missing close must error")
+	if err := ValidateMessageFrontmatter([]byte(in)); err == nil {
+		t.Fatal("missing close must error")
 	}
-	c := ParseMessageFrontmatter([]byte(in))
-	if len(c) != 0 {
-		t.Fatalf("C: missing close -> empty map; got %v", c)
+	if got := ParseMessageFrontmatter([]byte(in)); len(got) != 0 {
+		t.Fatalf("missing close -> empty map; got %v", got)
 	}
 }
 
-// TestChar_EmptyValueListVsScalar pins the empty-value divergence. B treats a
-// bare `task:` as a potential LIST header (scalar empty, list possibly empty);
-// C records an empty-string scalar.
-func TestChar_EmptyValueListVsScalar(t *testing.T) {
+// TestChar_EmptyValueScalar pins that a bare `task:` (no list items follow)
+// records an empty-string scalar.
+func TestChar_EmptyValueScalar(t *testing.T) {
 	in := "---\nfrom: codex\ntask:\n---\n\nbody\n"
-	fields, _, err := parseFrontmatter(in)
-	if err != nil {
-		t.Fatalf("B: unexpected error %v", err)
+	if err := ValidateMessageFrontmatter([]byte(in)); err != nil {
+		t.Fatalf("unexpected error %v", err)
 	}
-	if fields.scalar("task") != "" {
-		t.Fatalf("B: empty value scalar should be empty, got %q", fields.scalar("task"))
-	}
-	c := ParseMessageFrontmatter([]byte(in))
-	if v, ok := c["task"]; !ok || v != "" {
-		t.Fatalf("C: empty value -> empty-string scalar present; got map=%v", c)
+	got := ParseMessageFrontmatter([]byte(in))
+	if v, ok := got["task"]; !ok || v != "" {
+		t.Fatalf("empty value -> empty-string scalar present; got map=%v", got)
 	}
 }
 
-// TestChar_ListValue pins that B parses `- ` list items into a list field
-// (scalar empty), while C records only the HEADER key with an empty value and
-// silently treats the `- /a` lines as their own (malformed) keys are NOT —
-// actually `- /a` has no colon so C SKIPS them. Document that.
+// TestChar_ListValue pins that `- ` list items parse into a list field
+// (parseFrontmatter's own fields.list), while ParseMessageFrontmatter's flat
+// map surfaces only the header key with an empty scalar — no current message
+// field is list-valued, so this is documentation, not a load-bearing path.
 func TestChar_ListValue(t *testing.T) {
 	in := "---\nfrom: codex\nworking_repos:\n  - /a\n  - /b\n---\n\nbody\n"
 	fields, _, err := parseFrontmatter(in)
 	if err != nil {
-		t.Fatalf("B: list parse unexpected error %v", err)
+		t.Fatalf("list parse unexpected error %v", err)
 	}
 	if got := fields.list("working_repos"); len(got) != 2 || got[0] != "/a" || got[1] != "/b" {
-		t.Fatalf("B: want [/a /b], got %v", got)
+		t.Fatalf("want [/a /b], got %v", got)
 	}
-	c := ParseMessageFrontmatter([]byte(in))
-	// C: header has empty value; `- /a` lines contain a... no colon? "- /a"
-	// has no ':' so IndexByte returns -1 and the line is skipped.
-	if v, ok := c["working_repos"]; !ok || v != "" {
-		t.Fatalf("C: want working_repos= (empty), got %v (map=%v)", v, c)
+	got := ParseMessageFrontmatter([]byte(in))
+	if v, ok := got["working_repos"]; !ok || v != "" {
+		t.Fatalf("want working_repos= (empty), got %v (map=%v)", v, got)
 	}
-	if len(c) != 2 { // from + working_repos
-		t.Fatalf("C: list item lines must be skipped (no colon); got map=%v", c)
+	if len(got) != 2 {
+		t.Fatalf("want exactly 2 keys (from + working_repos); got map=%v", got)
 	}
 }

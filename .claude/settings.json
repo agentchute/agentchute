@@ -9,7 +9,6 @@
       "Bash(agentchute doctor:*)",
       "Bash(agentchute status:*)",
       "Bash(agentchute pending:*)",
-      "Bash(agentchute poller:*)",
       "Bash(agentchute identity:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
@@ -39,11 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor anthropic --quiet"
-          },
-          {
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} boot --vendor anthropic --context-only"
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --context-only"
           }
         ]
       }
@@ -53,15 +48,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor anthropic --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --quiet"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --vendor anthropic --quiet"
-          },
-          {
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} pending --vendor anthropic --claude-hook UserPromptSubmit"
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --claude-hook UserPromptSubmit"
           }
         ]
       }
@@ -71,15 +62,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor anthropic --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --quiet"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} ack --vendor anthropic --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} ack --quiet"
           },
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} gate --vendor anthropic --before finish --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} gate --before finish --json"
           }
         ]
       }

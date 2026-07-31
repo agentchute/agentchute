@@ -162,7 +162,6 @@ func TestCleanMailboxRefusesOnLiveRegistration(t *testing.T) {
 			Vendor:      "test",
 			ControlRepo: cfg.ControlRepo,
 			LastSeen:    time.Now().UTC().Add(-2 * time.Hour), // stale age, but the row EXISTS
-			Status:      loop.StatusActive,
 		}
 		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("abandoned"), reg); err != nil {
 			t.Fatal(err)
@@ -237,7 +236,6 @@ func TestCleanMailboxApplyRefusesOnLiveRegistration(t *testing.T) {
 				Vendor:      "test",
 				ControlRepo: cfg.ControlRepo,
 				LastSeen:    time.Now().UTC(),
-				Status:      loop.StatusActive,
 			}
 			if werr := loop.WriteRegistration(cfg.AgentRegistrationPath("abandoned"), reg); werr != nil {
 				t.Fatal(werr)
@@ -497,7 +495,7 @@ func TestCleanMailboxApplyTakesTargetLock(t *testing.T) {
 }
 
 // TestCleanOwedRequiresExplicitIdentity is the review's nit: --owed must not
-// fall through to the contextual-guess identity fallback — a destructive
+// fall through to any guessed identity fallback — a destructive
 // command should error rather than guess whose obligations to prune.
 func TestCleanOwedRequiresExplicitIdentity(t *testing.T) {
 	root := setupBootFixture(t)

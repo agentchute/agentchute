@@ -395,12 +395,9 @@ func resolveCleanInputs(cfg *loop.Config, controlRepo string, agentIDs []string)
 	}
 
 	// Orphan processes: matched pool processes whose pid is NOT bound by a
-	// current runner.json/poller heartbeat.
+	// current runner.json.
 	bound := map[int]bool{}
 	for _, id := range agentIDs {
-		if hb, err := loop.LoadPollerHeartbeat(cfg, id); err == nil && hb.PID > 0 {
-			bound[hb.PID] = true
-		}
 		if st, err := loop.LoadRunnerState(cfg, id); err == nil && st.RunnerPID > 0 {
 			bound[st.RunnerPID] = true
 		}
@@ -416,9 +413,9 @@ func resolveCleanInputs(cfg *loop.Config, controlRepo string, agentIDs []string)
 // printWipeStateDryRun so the clean-all shares the wipe's single destructive
 // confirm and post-confirm live-bus rescan.)
 
-// listPoolAgentchuteProcesses enumerates live `agentchute serve`/`poller run`
-// processes whose cmdline matches THIS pool (the FIXED matcher from Task 1).
-// Package var so the wipe orchestration stays testable without shelling out.
+// listPoolAgentchuteProcesses enumerates live `agentchute serve` processes
+// whose cmdline matches THIS pool (the FIXED matcher from Task 1). Package
+// var so the wipe orchestration stays testable without shelling out.
 var listPoolAgentchuteProcesses = defaultListPoolAgentchuteProcesses
 
 func defaultListPoolAgentchuteProcesses(cfg *loop.Config) []cleanProcess {
@@ -444,11 +441,8 @@ func defaultListPoolAgentchuteProcesses(cfg *loop.Config) []cleanProcess {
 			continue
 		}
 		cmd := strings.Join(fields[1:], " ")
-		switch {
-		case setupCommandMatchesRunnerPool(cmd, cfg):
+		if setupCommandMatchesRunnerPool(cmd, cfg) {
 			procs = append(procs, cleanProcess{PID: pid, Kind: "runner"})
-		case setupCommandMatchesPool(cmd, "poller run", cfg):
-			procs = append(procs, cleanProcess{PID: pid, Kind: "poller"})
 		}
 	}
 	return procs

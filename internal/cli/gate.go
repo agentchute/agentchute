@@ -77,7 +77,7 @@ func cmdGate(args []string) error {
 		return err
 	}
 
-	agentID, err = resolveAgentID(agentID, vendor, cfg)
+	agentID, err = resolveAgentID(agentID)
 	if err != nil {
 		return err
 	}
@@ -182,10 +182,11 @@ func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackSt
 	missingReg := inboxMissing
 	staleRegAge := ""
 	regPath := cfg.AgentRegistrationPath(agentID)
-	// The registration read still gates missing-vs-present (and surfaces a
-	// corrupt own-registration as a hard error); only the FRESHNESS source
-	// moves to `.live`.
-	_, regErr := loop.ReadRegistration(regPath)
+	// The registration read gates missing-vs-present (and surfaces a corrupt
+	// own-registration as a hard error); FRESHNESS also comes from this same
+	// read now (v2.5 plan B5: `.live` is deleted — registration heartbeat age
+	// is the sole presence source left).
+	reg, regErr := loop.ReadRegistration(regPath)
 	if regErr != nil {
 		if os.IsNotExist(regErr) {
 			missingReg = true
@@ -193,23 +194,20 @@ func evaluateGate(cfg *loop.Config, agentID, phase string, requireConfirm, ackSt
 			return gateStatus{}, fmt.Errorf("read own registration: %w", regErr)
 		}
 	} else if phaseChecksStaleReg(phase) {
-		// GATE 3: presence/freshness comes from `.live`, NOT registration
-		// last_seen. A fresh `.live` => not stale; a `.live` older than the
-		// threshold => stale; an absent `.live` for a registered agent (never
-		// published, or expired) => stale, same as an old registration would be.
-		// StaleRegThreshold and the staleReg/StaleRegAge JSON shape are kept.
-		liveSeen, present := loop.LiveLastSeen(cfg, agentID)
-		if !present {
-			staleReg = true // .live absent => stale (StaleRegAge stays empty).
-		} else {
-			age := now.Sub(liveSeen)
-			if age < 0 {
-				age = 0 // future-dated (clock skew) reads as fresh.
-			}
-			staleRegAge = age.String()
-			if age > StaleRegThreshold {
-				staleReg = true
-			}
+		// StaleRegThreshold and the staleReg/StaleRegAge JSON shape are kept
+		// (a de facto interface for the codex Stop hook) — only the source
+		// moves from `.live` to reg.LastSeen. No zero-LastSeen special case:
+		// Validate (called by ReadRegistration before success, above) already
+		// rejects a zero LastSeen, so a successfully-read row is structurally
+		// non-zero and that branch would be dead code — age-vs-threshold
+		// handles every parsed row uniformly.
+		age := now.Sub(reg.LastSeen)
+		if age < 0 {
+			age = 0 // future-dated (clock skew) reads as fresh.
+		}
+		staleRegAge = age.String()
+		if age > StaleRegThreshold {
+			staleReg = true
 		}
 	}
 	status := gateStatus{
@@ -333,14 +331,11 @@ func evaluateGatePhase(phase string, s gateStatus, requireConfirm, ackStaleReg b
 	// this"); otherwise stale-reg always blocks per the spec default.
 	if phaseChecksStaleReg(phase) && s.StaleReg && !s.MissingReg {
 		if !(requireConfirm && ackStaleReg) {
-			if s.StaleRegAge == "" {
-				// `.live` absent for a registered agent: no presence ever
-				// published (or it expired). Cite that distinctly rather than
-				// leaking a misleading "age 0s > threshold".
-				reasons = append(reasons, fmt.Sprintf("registration is stale (no recent presence; run `agentchute boot --as %s`)", s.Agent))
-			} else {
-				reasons = append(reasons, fmt.Sprintf("registration is stale (last_seen age %s > %s)", s.StaleRegAge, StaleRegThreshold))
-			}
+			// !s.MissingReg here guarantees regErr was nil above, so
+			// StaleRegAge was always populated (v2.5 plan B5: age-vs-threshold
+			// now covers every parsed row uniformly — there is no longer an
+			// "absent presence" case distinct from "old registration").
+			reasons = append(reasons, fmt.Sprintf("registration is stale (last_seen age %s > %s)", s.StaleRegAge, StaleRegThreshold))
 		}
 	}
 

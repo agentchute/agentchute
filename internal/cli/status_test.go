@@ -28,14 +28,13 @@ func TestPrintStatusIncludesAgentsAndInboxDepth(t *testing.T) {
 			Vendor:      "openai",
 			ControlRepo: root,
 			LastSeen:    now.Add(-2 * time.Minute),
-			Status:      loop.StatusActive,
 		},
 	}
 
 	var out bytes.Buffer
 	printStatus(&out, cfg, regs, now)
 	text := out.String()
-	for _, want := range []string{"control_repo:", "codex", "active"} {
+	for _, want := range []string{"control_repo:", "codex", "fresh"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("status output missing %q:\n%s", want, text)
 		}
@@ -52,10 +51,9 @@ func TestPrintStatusIncludesAgentsAndInboxDepth(t *testing.T) {
 	}
 }
 
-// GATE 3: the LAST_SEEN/AGE presence columns come from the `.live` fact, not
-// registration last_seen. An agent with a `.live` shows that timestamp/age even
-// when its registration last_seen differs; an agent with no `.live` shows "-".
-func TestStatus_PresenceFromLive(t *testing.T) {
+// v2.5 plan B5: the LAST_SEEN/AGE presence columns come directly from the
+// registration's own last_seen (`.live` is deleted).
+func TestStatusLastSeenAgeFromRegistration(t *testing.T) {
 	root := t.TempDir()
 	cfg := &loop.Config{
 		ControlRepo: root,
@@ -65,43 +63,77 @@ func TestStatus_PresenceFromLive(t *testing.T) {
 	mustMkdir(t, cfg.AgentsDir())
 
 	now := time.Date(2026, 5, 9, 16, 40, 0, 0, time.UTC)
+	lastSeen := now.Add(-2 * time.Minute)
 	regs := map[string]*loop.Registration{
 		"codex": {
 			AgentID:     "codex",
 			Vendor:      "openai",
 			ControlRepo: root,
-			// Registration last_seen is wildly stale on purpose — presence must
-			// come from `.live`, not from here.
-			LastSeen: now.Add(-99 * time.Hour),
-			Status:   loop.StatusActive,
-		},
-		"grok": { // no `.live` written -> presence renders "-"
-			AgentID:     "grok",
-			Vendor:      "xai",
-			ControlRepo: root,
-			LastSeen:    now.Add(-time.Minute),
-			Status:      loop.StatusActive,
+			LastSeen:    lastSeen,
 		},
 	}
-
-	liveSeen := now.Add(-2 * time.Minute)
-	mustWriteLiveAt(t, cfg, "codex", liveSeen)
 
 	var out bytes.Buffer
 	printStatus(&out, cfg, regs, now)
 	text := out.String()
 
 	if got := statusColumnValue(t, text, "AGE", "codex"); got != "2m0s" {
-		t.Errorf("codex AGE = %q, want 2m0s (from .live, not reg.LastSeen):\n%s", got, text)
+		t.Errorf("codex AGE = %q, want 2m0s:\n%s", got, text)
 	}
-	if got, want := statusColumnValue(t, text, "LAST_SEEN", "codex"), liveSeen.UTC().Format(time.RFC3339); got != want {
-		t.Errorf("codex LAST_SEEN = %q, want %q (from .live):\n%s", got, want, text)
+	if got, want := statusColumnValue(t, text, "LAST_SEEN", "codex"), lastSeen.UTC().Format(time.RFC3339); got != want {
+		t.Errorf("codex LAST_SEEN = %q, want %q:\n%s", got, want, text)
 	}
-	if got := statusColumnValue(t, text, "AGE", "grok"); got != "-" {
-		t.Errorf("grok AGE = %q, want - (no .live):\n%s", got, text)
+}
+
+// v2.5 plan B5: STATUS is derived — fresh / stale (would sweep) / lease-held,
+// via ReadServeClaim — instead of the old .live-published Status field.
+func TestStatusColumnDerivesFreshStaleAndLeaseHeld(t *testing.T) {
+	root := t.TempDir()
+	cfg := &loop.Config{
+		ControlRepo: root,
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Vendor:      "agentchute",
 	}
-	if got := statusColumnValue(t, text, "LAST_SEEN", "grok"); got != "-" {
-		t.Errorf("grok LAST_SEEN = %q, want - (no .live):\n%s", got, text)
+	mustMkdir(t, cfg.AgentsDir())
+
+	now := time.Now().UTC()
+	regs := map[string]*loop.Registration{
+		"fresh-agent": {
+			AgentID:     "fresh-agent",
+			Vendor:      "openai",
+			ControlRepo: root,
+			LastSeen:    now.Add(-time.Minute),
+		},
+		"stale-agent": {
+			AgentID:     "stale-agent",
+			Vendor:      "openai",
+			ControlRepo: root,
+			LastSeen:    now.Add(-2 * time.Hour),
+		},
+		"leased-agent": {
+			AgentID:     "leased-agent",
+			Vendor:      "openai",
+			ControlRepo: root,
+			// Old-looking row, but a live claim immunizes it (C12).
+			LastSeen: now.Add(-2 * time.Hour),
+		},
+	}
+	if _, err := loop.AcquireServeLease(cfg, "leased-agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	printStatus(&out, cfg, regs, now)
+	text := out.String()
+
+	if got := statusColumnValue(t, text, "STATUS", "fresh-agent"); got != "fresh" {
+		t.Errorf("fresh-agent STATUS = %q, want fresh:\n%s", got, text)
+	}
+	if got := statusColumnValue(t, text, "STATUS", "stale-agent"); got != "stale-would-sweep" {
+		t.Errorf("stale-agent STATUS = %q, want stale-would-sweep:\n%s", got, text)
+	}
+	if got := statusColumnValue(t, text, "STATUS", "leased-agent"); got != "lease-held" {
+		t.Errorf("leased-agent STATUS = %q, want lease-held:\n%s", got, text)
 	}
 }
 
@@ -122,14 +154,12 @@ func TestStatusProtocolVersionColumnAndWarnings(t *testing.T) {
 			Vendor:          "openai",
 			ControlRepo:     root,
 			LastSeen:        now,
-			Status:          loop.StatusActive,
 		},
 		"gemini-cli": {
 			AgentID:     "gemini-cli",
 			Vendor:      "google",
 			ControlRepo: root,
 			LastSeen:    now,
-			Status:      loop.StatusActive,
 		},
 		"future": {
 			AgentID:         "future",
@@ -137,7 +167,13 @@ func TestStatusProtocolVersionColumnAndWarnings(t *testing.T) {
 			Vendor:          "test",
 			ControlRepo:     root,
 			LastSeen:        now,
-			Status:          loop.StatusActive,
+		},
+		"old": {
+			AgentID:         "old",
+			ProtocolVersion: 2,
+			Vendor:          "test",
+			ControlRepo:     root,
+			LastSeen:        now,
 		},
 	}
 
@@ -145,17 +181,23 @@ func TestStatusProtocolVersionColumnAndWarnings(t *testing.T) {
 	printStatus(&out, cfg, regs, now)
 	text := out.String()
 
-	if got := statusColumnValue(t, text, "PROTO", "codex"); got != "v2" {
-		t.Fatalf("codex PROTO = %q, want v2:\n%s", got, text)
+	if got := statusColumnValue(t, text, "PROTO", "codex"); got != "v2.5" {
+		t.Fatalf("codex PROTO = %q, want v2.5:\n%s", got, text)
 	}
 	if got := statusColumnValue(t, text, "PROTO", "gemini-cli"); got != "legacy" {
 		t.Fatalf("gemini-cli PROTO = %q, want legacy:\n%s", got, text)
 	}
-	if got := statusColumnValue(t, text, "PROTO", "future"); got != "v3!" {
-		t.Fatalf("future PROTO = %q, want v3!:\n%s", got, text)
+	if got := statusColumnValue(t, text, "PROTO", "future"); got != "v4!" {
+		t.Fatalf("future PROTO = %q, want v4!:\n%s", got, text)
 	}
-	if !strings.Contains(text, "PROTOCOL WARNINGS:") || !strings.Contains(text, "future reports protocol v3; expected v2") {
+	if got := statusColumnValue(t, text, "PROTO", "old"); got != "v2!" {
+		t.Fatalf("old PROTO = %q, want v2!:\n%s", got, text)
+	}
+	if !strings.Contains(text, "PROTOCOL WARNINGS:") || !strings.Contains(text, "future reports protocol v4; expected v2.5") {
 		t.Fatalf("status missing protocol mismatch warning:\n%s", text)
+	}
+	if !strings.Contains(text, "old reports protocol v2; expected v2.5 — update and restart every lane before resuming sends") {
+		t.Fatalf("status missing mixed-pool restart guidance:\n%s", text)
 	}
 	if strings.Contains(text, "gemini-cli reports protocol") {
 		t.Fatalf("absent-v legacy registration must not warn:\n%s", text)
@@ -207,102 +249,27 @@ func statusColumnValue(t *testing.T, text, header, agentID string) string {
 	return row[idx]
 }
 
-// WI-E1: status appends a "PRESENT BUT NOT ENROLLED" section listing wrappers in
-// this pool that have no live registration.
-func TestStatus_PresentButNotEnrolledSection(t *testing.T) {
-	cfg, root := presencePoolCfg(t)
-
-	stubPresenceListers(t)
-	listHerdrAgents = func() []herdrPresenceEntry {
-		return []herdrPresenceEntry{{Name: "ghost-agent", Cwd: root}}
-	}
-
-	var buf bytes.Buffer
-	printUnenrolledSection(&buf, cfg)
-	text := buf.String()
-	if !strings.Contains(text, "PRESENT BUT NOT ENROLLED") {
-		t.Fatalf("missing presence section:\n%s", text)
-	}
-	if !strings.Contains(text, "ghost-agent") {
-		t.Fatalf("presence section missing ghost-agent hint:\n%s", text)
-	}
-}
-
-// With no unenrolled wrappers, the section is quiet (no output).
-func TestStatus_PresentButNotEnrolledSectionQuietWhenClean(t *testing.T) {
-	cfg, _ := presencePoolCfg(t)
-	stubPresenceListers(t)
-
-	var buf bytes.Buffer
-	printUnenrolledSection(&buf, cfg)
-	if buf.Len() != 0 {
-		t.Fatalf("expected no output when nothing is unenrolled, got:\n%s", buf.String())
-	}
-}
-
-// v0.1.2 UX nit: status without --as / $AGENTCHUTE_AGENT_ID prints the
-// pool overview without claiming an agent identity and without touching
-// anyone's last_seen. Codex review aligned: diagnostic command, not a
-// lifecycle event.
-func TestCmdStatusWithoutAgentIDPrintsPoolWithoutSideEffects(t *testing.T) {
+func TestCmdStatusWithoutAgentIDFailsWithHint(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
-
-	withCwd(t, root, func() {
-		t.Setenv("TMUX_PANE", "%1")
-		if err := cmdRegister([]string{"--as", "codex", "--vendor", "openai"}); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Backdate codex's last_seen so we can detect a side-effecting update.
-	regPath := cfg.AgentRegistrationPath("codex")
-	reg, err := loop.ReadRegistration(regPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Registration stores last_seen at second precision; use a wall-second
-	// timestamp so the post-write read compares equal.
-	backdated := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Second)
-	reg.LastSeen = backdated
-	if err := loop.WriteRegistration(regPath, reg); err != nil {
-		t.Fatal(err)
-	}
-
-	// Make sure no env var is set; otherwise --as would be implicit.
-	// Use t.Setenv with empty value so test cleanup restores any prior
-	// shell state (codex review on 37d87e1).
 	t.Setenv("AGENTCHUTE_AGENT_ID", "")
-
 	withCwd(t, root, func() {
-		out, err := captureStdout(t, func() error { return cmdStatus(nil) })
-		if err != nil {
-			t.Fatalf("cmdStatus with no --as returned err: %v", err)
+		_, err := captureStdout(t, func() error { return cmdStatus(nil) })
+		if err == nil {
+			t.Fatal("cmdStatus with no identity returned nil error")
 		}
-		if !strings.Contains(out, "codex") {
-			t.Errorf("pool overview missing codex agent: %q", out)
+		if err.Error() != missingAgentIdentityHint {
+			t.Fatalf("error = %q, want %q", err, missingAgentIdentityHint)
 		}
 	})
-
-	// last_seen must not have been touched by the no-flag invocation.
-	after, err := loop.ReadRegistration(regPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !after.LastSeen.Equal(backdated) {
-		t.Errorf("status without --as updated last_seen: %v -> %v", backdated, after.LastSeen)
-	}
 }
 
-// With --as set, status still ticks the caller's last_seen (preserves the
-// historical acting-agent mode).
-func TestCmdStatusWithAgentIDRefreshesLastSeen(t *testing.T) {
+// B1: CLI touches no longer refresh liveness — only serve's lease-gated
+// HeartbeatRegistration does. `status --as` still requires the agent to be
+// enrolled (the registration-exists preflight stays), but no longer bumps
+// last_seen as a side effect of that preflight.
+func TestCmdStatusWithAgentIDDoesNotRefreshLastSeen(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
@@ -347,7 +314,7 @@ func TestCmdStatusWithAgentIDRefreshesLastSeen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !after.LastSeen.After(before.LastSeen) {
-		t.Errorf("status with --as did NOT refresh last_seen: %v → %v", before.LastSeen, after.LastSeen)
+	if !after.LastSeen.Equal(before.LastSeen) {
+		t.Errorf("status with --as refreshed last_seen (B1: CLI touches must not): %v → %v", before.LastSeen, after.LastSeen)
 	}
 }

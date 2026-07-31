@@ -1,8 +1,43 @@
 # Changelog
 
-All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTCHUTE.md`](AGENTCHUTE.md)) tracks its own version (Protocol v2 — stable as of v0.10.0).
+All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTCHUTE.md`](AGENTCHUTE.md)) tracks its own version; Protocol v2.5 is the deliberate wire break recorded below.
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
+
+## v2.5.0 (2026-07-31) — the wire moved
+
+**Protocol v2.5 is a deliberate wire break.** Protocol v2's pull-only primitives, small envelope, and two-phase recipient lifecycle remain. The filename/identity grammar changes, so registration rows now carry integer `v: 3`, rendered by the CLI as `v2.5`; `doctor` and `status` warn on explicit mixed-version rows and direct operators to update and restart every lane.
+
+**Wire and delivery**
+- Message identity is now `(to, from, timestamp, random-suffix)`: a fixed-width microsecond UTC timestamp minted under a durable per-sender floor plus a 128-bit random suffix. The old shared per-`(sender,recipient)` sequence allocator and `--idempotency-key` machinery are gone.
+- Delivery is explicitly **at-most-once**. A committed-identity collision is refused and retried under a fresh suffix; it is never silently treated as a successful dedup. Recipient consumption remains at-least-once (`check` claims, `turn-end`/`ack` commits), so handlers still must be idempotent.
+- The v2.5 reader accepts both timestamp-format and legacy sequence-format filenames, reply references, claimed residue, archive names, and owed keys during the migration window; writers emit only the new grammar.
+
+**Registration, identity, and lifecycle**
+- Registration is soft state. The registration row's `last_seen` is the presence record, refreshed by a fenced `serve` heartbeat, explicit boot/register, and the vendor-specific hook cadence. The detached poller, separate `.live` source, session files, and dead liveness readers are removed.
+- Agent identity is explicit: `--as`/`--from`, then `AGENTCHUTE_AGENT_ID`; contextual folder guessing and live-conflict suffix allocation are removed.
+- Stale registrations are swept lazily without touching inboxes. Cross-host remains real but unverified compatibility: only lease reclaim and wipe's foreign-claim refusal are described as fail-closed; there is no broader cross-host correctness guarantee.
+
+**Parser and guard honesty**
+- Message envelopes and registration rows now use one flat frontmatter parser, with the grammar pinned in the spec and conformance vectors.
+- The guard latch is best-effort defense-in-depth, never a security boundary. Coverage is stated per vendor and launch mode, including Codex hosted-tool gaps, Gemini's start-of-next-turn handler, Grok's lack of hooks, and unsupervised sessions.
+
+**Measured release delta**
+- Canonical tag-range measurement: `git diff --numstat v1.0.0..v2.5.0` = `+14,524 / -8,617` lines, net `+5,907`, across the complete unreleased range. The deletion count is measured from Git rather than copied from the implementation plan.
+
+**Migration and live-pool cutover**
+
+Preconditions: all Group B slices merged to the release branch; Group A already live on the pool (it is wire-compatible and de-risks the break).
+
+1. **Freeze sends.** Announce on the bus; agents finish in-flight turns. (Soft step — the mechanism below tolerates stragglers.)
+2. **Run `agentchute update` once** (any lane, or operator shell) — **NEVER with `--no-resync` for this upgrade** (the old updater's no-resync path exits without executing the new binary, so nothing would ever fence — codex catch). What actually happens on this FIRST upgrade: the OLD update.go swaps the binary, then re-execs the NEW binary's setup, whose reset step runs `InvalidateAllServeLeases` (the current enrollment marker and `--stale-after` are replayed). Registrations are NOT cleared. The in-process invalidate-right-after-swap behavior described in B2 exists only from v2.5 onward.
+3. **Every running old-binary supervisor fences out** on its next poll tick — but only AFTER the new binary's setup reaches its reset step. **Verify with two samples, not one** (codex catch, sharpened rev 2.4: registrations are preserved, so immediately after a CORRECT fence an old-protocol row still exists and is recently fresh — one snapshot cannot distinguish that from a surviving supervisor). Exact pass/fail rule: run `agentchute status` twice, ≥15 seconds apart (three poll ticks). PASS = no old-protocol row's last-seen time advanced between the samples AND no `state/<id>/serve.claim` exists that predates the invalidation (fenced supervisors never re-acquire — reclaim happens only at process start). FAIL (some old row's last-seen advanced) = that supervisor never got fenced (setup died before its reset step): re-run `agentchute setup --yes`, re-verify, or close the pane by hand. Fenced supervisors print the C15 restart notice, SIGTERM their wrapper, exit.
+4. **Relaunch lanes** via `ac serve <wrapper>` — now the new binary: acquires a fresh lease, registers (rows recreated with `v: 3`), heartbeats.
+5. **Old mail**: all old-format files and crash residue stay fully readable (B6 dual-read); all old-keyed obligations stay dischargeable; old refs keep matching. `check` shows age banners on the stale backlog.
+6. **Mixed-version hazard, stated honestly**: an OLD binary receiving NEW-format mail would quarantine it (its lister only knows seq names) — and pre-A6 binaries would also auto-send correctives about it. This is why the cutover is pool-at-once: lease invalidation (step 2/3) makes old binaries stop being able to send or heartbeat within seconds, so the mixed window is bounded by relaunch time, not negotiation. Do not run mixed pools deliberately; `doctor` warns on mixed `v:` values (C27).
+7. **Old state left behind** (harmless, cleaned lazily or by hand): `state/<from>/seq/*.json` counter files (dead — nothing reads them; delete opportunistically via `agentchute clean` extension or leave), `live/` dir, `poller.json`/`session.json` (wipe/reset paths no longer recreate them).
+8. **Rollback stance**: rollback = reinstall the previous release binary + `agentchute setup`. Caveats, recorded: (a) new-format inbox files are INVISIBLE-then-quarantined to the old binary — drain inboxes (`check` + `turn-end`/`ack` on the new binary) BEFORE rolling back, or accept quarantine + hand-restore from `malformed/`; (b) new registration rows parse fine under the old binary (superset fields absent, `v: 3` warns in doctor); (c) floor files are ignored by the old binary; the seq counters it resumes from are still on disk and monotonic, so old-format sends resume safely. Rollback is a real option through the whole window — that is why B7 does NOT delete old counter files on upgrade.
+9. **Post-cutover watch**: `agentchute doctor` clean; `status` shows fresh ages; first sweep observed in serve logs after ~10min; certification/dogfood window per repo convention before the tag is called final.
 
 ## v1.0.0 (2026-07-02) — done, not big
 

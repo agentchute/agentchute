@@ -25,6 +25,7 @@
 #   AGENTCHUTE_FRESH=1       DESTRUCTIVE clean reinstall (implies --setup, --wake runner)
 #   AGENTCHUTE_YES=1         confirm the destructive --fresh wipe non-interactively
 #   AGENTCHUTE_DRY_RUN=1     print the plan and exit; no mutation
+#   AGENTCHUTE_BASE_URL       test-only release base URL override
 #
 # Security: this script verifies release checksums; piping the installer
 # still trusts this GitHub repository. To inspect before running:
@@ -36,7 +37,7 @@ set -eu
 
 REPO_OWNER="agentchute"
 REPO_NAME="agentchute"
-GITHUB="https://github.com/${REPO_OWNER}/${REPO_NAME}"
+GITHUB="${AGENTCHUTE_BASE_URL:-https://github.com/${REPO_OWNER}/${REPO_NAME}}"
 
 # Source guard: when an outer test harness sources this file, it sets
 # AGENTCHUTE_INSTALL_LIB=1 to load helpers without running main.

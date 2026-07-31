@@ -50,6 +50,86 @@ func TestRecordThenClearOnMatchingReply(t *testing.T) {
 	}
 }
 
+func TestRecordThenClearTimestampIdentity(t *testing.T) {
+	cfg := newOwedTestConfig(t)
+	now := time.Date(2026, 7, 30, 18, 24, 15, 0, time.UTC)
+	key := TsID{
+		To:     "bob",
+		From:   "alice",
+		Stamp:  "20260730T182415123456Z",
+		Suffix: testTsSuffix,
+	}
+
+	if err := RecordOwed(cfg, "alice", key, now.Add(time.Hour), now); err != nil {
+		t.Fatalf("RecordOwed: %v", err)
+	}
+	ledger, err := LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Owed) != 1 || !ledger.Owed[0].MatchesRef(key) {
+		t.Fatalf("timestamp obligation = %+v, want key %+v", ledger.Owed, key)
+	}
+	if got := ledger.Owed[0].Key().RefString(); got != key.RefString() {
+		t.Fatalf("rendered timestamp ref = %q, want %q", got, key.RefString())
+	}
+
+	if err := ClearOwed(cfg, "alice", key); err != nil {
+		t.Fatalf("ClearOwed: %v", err)
+	}
+	ledger, err = LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Owed) != 0 {
+		t.Fatalf("timestamp obligation remained after clear: %+v", ledger.Owed)
+	}
+}
+
+func TestRecordOwedRejectsFilenameTsIDUntilRecipientIsSet(t *testing.T) {
+	cfg := newOwedTestConfig(t)
+	now := time.Now()
+	id, ok := ParseTsFilename("20260730T182415123456Z_from-alice_r" + testTsSuffix + ".md")
+	if !ok {
+		t.Fatal("ParseTsFilename failed")
+	}
+	if id.To != "" {
+		t.Fatalf("filename-derived TsID.To = %q, want empty", id.To)
+	}
+	if err := RecordOwed(cfg, "alice", id, now.Add(time.Hour), now); err == nil {
+		t.Fatal("RecordOwed accepted filename-derived TsID without setting To")
+	}
+
+	id.To = "bob"
+	if err := RecordOwed(cfg, "alice", id, now.Add(time.Hour), now); err != nil {
+		t.Fatalf("RecordOwed rejected TsID after setting To: %v", err)
+	}
+}
+
+func TestClearOwedMatchesOnlySameIdentityForm(t *testing.T) {
+	cfg := newOwedTestConfig(t)
+	now := time.Now()
+	tsKey := TsID{
+		To:     "bob",
+		From:   "alice",
+		Stamp:  "20260730T182415123456Z",
+		Suffix: testTsSuffix,
+	}
+	if err := RecordOwed(cfg, "alice", tsKey, now.Add(time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := ClearOwed(cfg, "alice", MsgID{To: "bob", From: "alice", Seq: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := LoadOwedLedger(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Owed) != 1 || !ledger.Owed[0].MatchesRef(tsKey) {
+		t.Fatalf("legacy key cleared timestamp obligation: %+v", ledger.Owed)
+	}
+}
+
 func TestClearNonMatchingLeavesObligation(t *testing.T) {
 	cfg := newOwedTestConfig(t)
 	now := time.Now()
@@ -119,7 +199,7 @@ func TestSaveOwedLedgerRoundTrips(t *testing.T) {
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC).UTC()
 	in := &OwedLedger{Owed: []OwedEntry{
 		{To: "bob", From: "alice", Seq: 1, By: now.Add(time.Hour), RecordedAt: now},
-		{To: "carol", From: "alice", Seq: 5, By: now.Add(2 * time.Hour), RecordedAt: now},
+		{To: "carol", From: "alice", Stamp: "20260730T182415123456Z", Suffix: testTsSuffix, By: now.Add(2 * time.Hour), RecordedAt: now},
 	}}
 	if err := SaveOwedLedger(cfg, "alice", in); err != nil {
 		t.Fatalf("SaveOwedLedger: %v", err)
@@ -134,7 +214,7 @@ func TestSaveOwedLedgerRoundTrips(t *testing.T) {
 	if out.Owed[0].To != "bob" || out.Owed[0].Seq != 1 || !out.Owed[0].By.Equal(now.Add(time.Hour)) {
 		t.Fatalf("entry 0 mismatch: %+v", out.Owed[0])
 	}
-	if out.Owed[1].To != "carol" || out.Owed[1].Seq != 5 {
+	if out.Owed[1].To != "carol" || out.Owed[1].Stamp != "20260730T182415123456Z" || out.Owed[1].Suffix != testTsSuffix {
 		t.Fatalf("entry 1 mismatch: %+v", out.Owed[1])
 	}
 }
@@ -161,13 +241,31 @@ func TestLoadOwedLedgerRejectsNonCanonical(t *testing.T) {
 		t.Fatal("non-canonical to must be rejected on load")
 	}
 
-	// Zero seq is also non-canonical.
+	// Neither identity form is non-canonical.
 	badSeq := []byte(`{"owed":[{"to":"bob","from":"alice","seq":0,"by":"2026-06-30T13:00:00Z","recorded_at":"2026-06-30T12:00:00Z"}]}`)
 	if err := atomicWriteFile(owedPath(cfg, "alice"), badSeq); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadOwedLedger(cfg, "alice"); err == nil {
-		t.Fatal("zero seq must be rejected on load")
+		t.Fatal("entry with neither identity form must be rejected on load")
+	}
+
+	// Both identity forms are non-canonical.
+	both := []byte(`{"owed":[{"to":"bob","from":"alice","seq":1,"stamp":"20260730T182415123456Z","suffix":"9f2c04aa71de4b02b6d1c33f08e95a17","by":"2026-06-30T13:00:00Z","recorded_at":"2026-06-30T12:00:00Z"}]}`)
+	if err := atomicWriteFile(owedPath(cfg, "alice"), both); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOwedLedger(cfg, "alice"); err == nil {
+		t.Fatal("entry with both identity forms must be rejected on load")
+	}
+
+	// A partial timestamp identity is non-canonical.
+	partialTs := []byte(`{"owed":[{"to":"bob","from":"alice","stamp":"20260730T182415123456Z","by":"2026-06-30T13:00:00Z","recorded_at":"2026-06-30T12:00:00Z"}]}`)
+	if err := atomicWriteFile(owedPath(cfg, "alice"), partialTs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOwedLedger(cfg, "alice"); err == nil {
+		t.Fatal("partial timestamp identity must be rejected on load")
 	}
 }
 
