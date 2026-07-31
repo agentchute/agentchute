@@ -63,6 +63,17 @@ func mustWriteAgedInbox(t *testing.T, inboxDir, from string, seq uint64, content
 	}
 }
 
+// clearGuardEnv resets both guard-enablement env vars (v2.5 plan A7/C22) to
+// empty, via t.Setenv so the ambient process env can never leak a serve
+// token/guard bit into a test that must run "as if this session were never
+// launched under `ac serve`" — see the known go-test-under-runner env-leak
+// class this codebase already works around elsewhere.
+func clearGuardEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("AGENTCHUTE_SERVE_TOKEN", "")
+	t.Setenv("AGENTCHUTE_GUARD", "")
+}
+
 func withFakeTmuxTargets(t *testing.T, targets ...string) {
 	t.Helper()
 	old := tmuxProbeBinary

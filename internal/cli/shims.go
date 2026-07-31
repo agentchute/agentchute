@@ -21,13 +21,19 @@ type wrapperSpec struct {
 	AgentID    string
 	Vendor     string
 	Candidates []string
+	// Guarded reports whether this wrapper's installed hooks can clear the
+	// PreToolUse guard latch (v2.5 plan A7/C22): serve exports
+	// AGENTCHUTE_GUARD=1 into the child only for guarded wrappers. Grok has
+	// no hook system at all (grok_cli_hookless) and must stay unguarded —
+	// arming a latch nothing can clear would wedge every serve lane.
+	Guarded bool
 }
 
 var wrapperSpecs = []wrapperSpec{
-	{Key: "claude", Name: "ac-claude", Aliases: []string{"claude", "claude-code"}, AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}},
-	{Key: "codex", Name: "ac-codex", Aliases: []string{"codex"}, AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}},
-	{Key: "gemini", Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli", "agy"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli", "agy"}},
-	{Key: "grok", Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}},
+	{Key: "claude", Name: "ac-claude", Aliases: []string{"claude", "claude-code"}, AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}, Guarded: true},
+	{Key: "codex", Name: "ac-codex", Aliases: []string{"codex"}, AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}, Guarded: true},
+	{Key: "gemini", Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli", "agy"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli", "agy"}, Guarded: true},
+	{Key: "grok", Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}, Guarded: false},
 }
 
 var legacyShimNamesBySetupWrapper = map[string][]string{

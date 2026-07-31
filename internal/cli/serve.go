@@ -60,6 +60,7 @@ type runnerOptions struct {
 	ContextualID    bool
 	ContextualBase  string
 	ShimName        string // ac-* launcher shim that started this lane (provenance).
+	Guarded         bool   // wrapper's hooks can clear the guard latch (v2.5 A7/C22); serve exports AGENTCHUTE_GUARD=1 only when true.
 }
 
 func cmdServe(args []string) error {
@@ -108,10 +109,11 @@ func cmdServe(args []string) error {
 		return runUsage(fmt.Errorf("missing wrapper command after --"))
 	}
 	opts.Vendor = strings.TrimSpace(opts.Vendor)
-	if opts.Vendor == "" {
-		if spec, ok := wrapperSpecForName(filepath.Base(opts.WrapperArgs[0])); ok {
+	if spec, ok := wrapperSpecForName(filepath.Base(opts.WrapperArgs[0])); ok {
+		if opts.Vendor == "" {
 			opts.Vendor = spec.Vendor
 		}
+		opts.Guarded = spec.Guarded
 	}
 
 	cwd, err := os.Getwd()
@@ -462,6 +464,13 @@ func runnerChildEnv(cfg *loop.Config, opts runnerOptions, serveToken string) []s
 		// (protocol-v2 §6b). Empty when launched without a lease => unfenced.
 		"AGENTCHUTE_SERVE_TOKEN="+serveToken,
 	)
+	if opts.Guarded {
+		// v2.5 A7/C22: only a wrapper whose installed hooks can clear the
+		// guard latch (via turn-end) may have it armed. Unguarded wrappers
+		// (grok: hookless) never see this bit, so guard.go's session
+		// resolution always allows them.
+		env = append(env, "AGENTCHUTE_GUARD=1")
+	}
 	return env
 }
 

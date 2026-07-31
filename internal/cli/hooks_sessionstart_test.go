@@ -12,21 +12,25 @@ import (
 // self-check in the same SessionStart block doubles the registration write and
 // is the engine of the contextual-identity duplicate race: two writes resolve
 // the same base before either is visible. The fix removes self-check from
-// SessionStart (boot owns it there) while keeping it on the per-turn hook
-// (UserPromptSubmit / BeforeAgent), where no boot runs and last_seen/.live
-// presence still need active reconciliation.
+// SessionStart (boot owns it there) while keeping it on the per-turn hook,
+// where no boot runs and last_seen/.live presence still need active
+// reconciliation — claude/codex do this via a standalone `self-check` entry
+// on UserPromptSubmit (untouched by A7/A8); gemini does it via `turn-end`'s
+// step 0 (v2.5 plan A7/C24), since self-check folded into turn-end there —
+// BeforeAgent has no separate per-turn event from its end-of-turn one.
 //
 // This pins the contract against the embedded templates `hooks install` ships.
 func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 	cases := []struct {
-		wrapper      string
-		path         string
-		sessionStart string // event key holding the startup commands
-		turnEvent    string // event key holding the per-turn commands
+		wrapper           string
+		path              string
+		sessionStart      string // event key holding the startup commands
+		turnEvent         string // event key holding the per-turn commands
+		turnSelfRepairCmd string // substring the per-turn event must run to reconcile last_seen/.live
 	}{
-		{"claude-code", "examples/hooks/claude-code/.claude/settings.json", "SessionStart", "UserPromptSubmit"},
-		{"codex", "examples/hooks/codex/.codex/hooks.json", "SessionStart", "UserPromptSubmit"},
-		{"gemini-cli", "examples/hooks/gemini/.gemini/settings.json", "SessionStart", "BeforeAgent"},
+		{"claude-code", "examples/hooks/claude-code/.claude/settings.json", "SessionStart", "UserPromptSubmit", "self-check"},
+		{"codex", "examples/hooks/codex/.codex/hooks.json", "SessionStart", "UserPromptSubmit", "self-check"},
+		{"gemini-cli", "examples/hooks/gemini/.gemini/settings.json", "SessionStart", "BeforeAgent", "turn-end"},
 	}
 
 	for _, c := range cases {
@@ -56,89 +60,53 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 			t.Errorf("%s: %s no longer runs boot; it must own session-start registration", c.wrapper, c.sessionStart)
 		}
 
-		// self-check must remain on the per-turn hook, where no boot runs.
+		// The per-turn hook must still reconcile last_seen/.live, whether via
+		// a standalone self-check (claude/codex) or turn-end's step 0 (gemini).
 		turn := hookCommandsForEvent(t, data, c.turnEvent)
-		var sawTurnSelfCheck bool
+		var sawSelfRepair bool
 		for _, cmd := range turn {
-			if strings.Contains(cmd, "self-check") {
-				sawTurnSelfCheck = true
+			if strings.Contains(cmd, c.turnSelfRepairCmd) {
+				sawSelfRepair = true
 			}
 		}
-		if !sawTurnSelfCheck {
-			t.Errorf("%s: %s dropped self-check; per-turn last_seen/.live reconciliation still needs it", c.wrapper, c.turnEvent)
+		if !sawSelfRepair {
+			t.Errorf("%s: %s dropped %s; per-turn last_seen/.live reconciliation still needs it", c.wrapper, c.turnEvent, c.turnSelfRepairCmd)
 		}
 	}
 }
 
-func TestHookTemplatesRunSelfCheckBeforeFinishGate(t *testing.T) {
-	cases := []struct {
-		wrapper string
-		path    string
-		event   string
-	}{
-		{"claude-code", "examples/hooks/claude-code/.claude/settings.json", "Stop"},
-		{"codex", "examples/hooks/codex/.codex/hooks.json", "Stop"},
-		{"gemini-cli", "examples/hooks/gemini/.gemini/settings.json", "BeforeAgent"},
-	}
-
-	for _, c := range cases {
-		data, err := fs.ReadFile(hooksFS, c.path)
-		if err != nil {
-			t.Errorf("%s: read embedded template: %v", c.wrapper, err)
-			continue
-		}
-		cmds := hookCommandsForEvent(t, data, c.event)
-		selfCheckAt, gateAt := -1, -1
-		for i, cmd := range cmds {
-			switch {
-			case strings.Contains(cmd, "self-check"):
-				if selfCheckAt == -1 {
-					selfCheckAt = i
-				}
-			case strings.Contains(cmd, " gate "):
-				if gateAt == -1 {
-					gateAt = i
-				}
-			}
-		}
-		if gateAt == -1 {
-			t.Errorf("%s: %s has no finish gate", c.wrapper, c.event)
-			continue
-		}
-		if selfCheckAt == -1 {
-			t.Errorf("%s: %s has no self-check before finish gate", c.wrapper, c.event)
-			continue
-		}
-		if selfCheckAt > gateAt {
-			t.Errorf("%s: %s self-check must run before gate; commands=%v", c.wrapper, c.event, cmds)
-		}
-	}
-}
-
-func TestGeminiHookTemplateUsesBeforeAgentJSONGate(t *testing.T) {
+// TestGeminiHookTemplateUsesBeforeAgentJSONTurnEnd is
+// TestGeminiHookTemplateUsesBeforeAgentJSONGate's successor (v2.5 plan A8):
+// gemini's end-of-turn gate evaluation now runs inside `turn-end --json`
+// (folded from the old standalone `gate --before finish --json` entry), so
+// this pins the new command's shape instead of the retired one.
+func TestGeminiHookTemplateUsesBeforeAgentJSONTurnEnd(t *testing.T) {
 	data, err := fs.ReadFile(hooksFS, "examples/hooks/gemini/.gemini/settings.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cmds := hookCommandsForEvent(t, data, "BeforeAgent")
-	var gateCmd string
+	var turnEndCmd string
 	for _, cmd := range cmds {
-		if strings.Contains(cmd, " gate ") {
-			gateCmd = cmd
+		if strings.Contains(cmd, "turn-end") {
+			turnEndCmd = cmd
 			break
 		}
 	}
-	if gateCmd == "" {
-		t.Fatal("Gemini BeforeAgent hook has no gate command")
+	if turnEndCmd == "" {
+		t.Fatal("Gemini BeforeAgent hook has no turn-end command")
 	}
-	for _, want := range []string{"--before finish", "--json"} {
-		if !strings.Contains(gateCmd, want) {
-			t.Fatalf("Gemini gate command missing %q: %q", want, gateCmd)
+	if !strings.Contains(turnEndCmd, "--json") {
+		t.Fatalf("Gemini turn-end command missing --json: %q", turnEndCmd)
+	}
+	for _, stale := range []string{"--gemini-hook", "AfterAgent", "--before finish"} {
+		if strings.Contains(turnEndCmd, stale) {
+			t.Fatalf("Gemini shipped turn-end hook must use BeforeAgent + --json, not %s: %q", stale, turnEndCmd)
 		}
 	}
-	for _, stale := range []string{"--gemini-hook", "AfterAgent"} {
-		if strings.Contains(gateCmd, stale) {
-			t.Fatalf("Gemini shipped hook must use BeforeAgent + --json, not %s: %q", stale, gateCmd)
+	for _, cmd := range cmds {
+		if strings.Contains(cmd, " gate ") {
+			t.Fatalf("Gemini BeforeAgent must no longer run a standalone gate entry (folded into turn-end): %q", cmd)
 		}
 	}
 }

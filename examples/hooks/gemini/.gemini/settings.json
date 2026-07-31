@@ -22,9 +22,9 @@
         "matcher": "*",
         "hooks": [
           {
-            "name": "agentchute-self-check",
+            "name": "agentchute-turn-end",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor google --quiet"
+            "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --json"
           },
           {
             "name": "agentchute-poller",
@@ -35,16 +35,18 @@
             "name": "agentchute-pending",
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} pending --vendor google --json"
-          },
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "matcher": "*",
+        "hooks": [
           {
-            "name": "agentchute-ack",
+            "name": "agentchute-guard",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} ack --vendor google --quiet"
-          },
-          {
-            "name": "agentchute-gate",
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} gate --vendor google --before finish --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} guard --pre-tool-use --gemini-hook BeforeTool"
           }
         ]
       }

@@ -33,6 +33,8 @@ var commandHandlers = map[string]func([]string) error{
 	"doctor":       cmdDoctor,
 	"hooks":        cmdHooks,
 	"clean":        cmdClean,
+	"guard":        cmdGuard,
+	"turn-end":     cmdTurnEnd,
 }
 
 // globalValueFlags are the leading flags the `ac` dispatcher accepts BEFORE the

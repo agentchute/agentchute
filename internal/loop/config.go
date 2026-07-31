@@ -163,6 +163,15 @@ func (c *Config) RunnerStatePath(agentID string) string {
 	return filepath.Join(c.AgentStateDir(agentID), "runner.json")
 }
 
+// GuardLatchPath returns the per-agent PreToolUse guard latch path (v2.5 plan
+// A7, C21). Recipient-owned local lifecycle state, not part of the wire
+// protocol: it records which session currently holds claimed-but-unacked
+// mail so guard.go can deny risky tool calls until that session's own
+// turn-end clears it.
+func (c *Config) GuardLatchPath(agentID string) string {
+	return filepath.Join(c.AgentStateDir(agentID), "guard.latch")
+}
+
 // RunnerSocketPath returns the default local Unix socket path for the
 // agentchute-run runner. Pull-only (Gate 6b) no longer binds this socket; the
 // path is retained only so reset can clean up a socket left by a pre-pull-only

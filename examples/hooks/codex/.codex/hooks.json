@@ -38,26 +38,26 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} guard --pre-tool-use --codex-hook PreToolUse",
+            "timeout": 30,
+            "statusMessage": "agentchute: guard"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --vendor openai --quiet",
+            "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --codex-hook Stop",
             "timeout": 30,
-            "statusMessage": "agentchute: self-check"
-          },
-          {
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} ack --vendor openai --quiet",
-            "timeout": 30,
-            "statusMessage": "agentchute: ack"
-          },
-          {
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} gate --vendor openai --before finish --codex-hook Stop",
-            "timeout": 30,
-            "statusMessage": "agentchute: finish gate"
+            "statusMessage": "agentchute: turn-end"
           }
         ]
       }

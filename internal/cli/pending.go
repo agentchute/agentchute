@@ -203,7 +203,7 @@ func emitPendingText(entries []pendingEntry, owed []loop.OwedEntry, malformed in
 			fmt.Println("(no unread messages; no owed reply obligations)")
 		}
 		if malformed > 0 {
-			fmt.Printf("(%d malformed file(s) skipped; run `agentchute check --as %s` to quarantine + notify)\n", malformed, agentID)
+			fmt.Printf("(%d malformed file(s) skipped; run `agentchute check --as %s` to quarantine)\n", malformed, agentID)
 		}
 		return
 	}
@@ -228,7 +228,7 @@ func emitPendingText(entries []pendingEntry, owed []loop.OwedEntry, malformed in
 		}
 	}
 	if malformed > 0 {
-		fmt.Printf("(%d malformed file(s) skipped; run `agentchute check --as %s` to quarantine + notify)\n", malformed, agentID)
+		fmt.Printf("(%d malformed file(s) skipped; run `agentchute check --as %s` to quarantine)\n", malformed, agentID)
 	}
 }
 

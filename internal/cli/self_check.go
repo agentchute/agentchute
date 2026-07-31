@@ -69,29 +69,10 @@ func cmdSelfCheck(args []string) error {
 		return err
 	}
 
-	contextualBase, contextual, err := contextualIdentityBase(agentID, vendor)
-	if err != nil {
-		return err
-	}
-	agentID, err = resolveAgentID(agentID, vendor, cfg)
-	if err != nil {
-		return err
-	}
-	if err := loop.ValidateAgentID(agentID); err != nil {
-		return err
-	}
-	opts.AgentID = agentID
-	opts.Vendor = resolveAgentVendor(vendor, agentID, cfg)
-	opts.ContextualIdentity = contextual
-	opts.ContextualBaseID = contextualBase
-
 	now := time.Now().UTC()
-	result, err := performRegister(cfg, opts, now)
+	agentID, result, err := selfRepairRegistration(cfg, &opts, agentID, vendor, "self-check", now)
 	if err != nil {
 		return err
-	}
-	if err := saveActiveSessionHeartbeat(cfg, agentID, "self-check", now); err != nil {
-		return fmt.Errorf("write active session heartbeat: %w", err)
 	}
 
 	status := selfCheckStatus{
@@ -113,6 +94,44 @@ func cmdSelfCheck(args []string) error {
 		emitSelfCheckText(status)
 		return nil
 	}
+}
+
+// selfRepairRegistration resolves this process's identity and reconciles its
+// live registration (last_seen/host) plus its active-session heartbeat —
+// exactly what cmdSelfCheck has always done. Shared with turn-end step 0
+// (v2.5 plan A7/C24) so "the agent is enrolled and present" can never diverge
+// between the two entry points.
+//
+// opts must already carry the caller's Host/Bio/LaunchedBy/HookEvent; this
+// fills in AgentID/Vendor/ContextualIdentity/ContextualBaseID on it (hence the
+// pointer — callers that need the resolved opts.Vendor afterward, like
+// cmdSelfCheck's status report, see it without a second resolve) and returns
+// the resolved agent id alongside performRegister's result.
+func selfRepairRegistration(cfg *loop.Config, opts *registerOpts, agentIDFlag, vendorFlag, source string, now time.Time) (string, *registerResult, error) {
+	contextualBase, contextual, err := contextualIdentityBase(agentIDFlag, vendorFlag)
+	if err != nil {
+		return "", nil, err
+	}
+	agentID, err := resolveAgentID(agentIDFlag, vendorFlag, cfg)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := loop.ValidateAgentID(agentID); err != nil {
+		return "", nil, err
+	}
+	opts.AgentID = agentID
+	opts.Vendor = resolveAgentVendor(vendorFlag, agentID, cfg)
+	opts.ContextualIdentity = contextual
+	opts.ContextualBaseID = contextualBase
+
+	result, err := performRegister(cfg, *opts, now)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := saveActiveSessionHeartbeat(cfg, agentID, source, now); err != nil {
+		return "", nil, fmt.Errorf("write active session heartbeat: %w", err)
+	}
+	return agentID, result, nil
 }
 
 type selfCheckStatus struct {
