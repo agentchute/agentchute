@@ -285,7 +285,6 @@ func newReg(t *testing.T, cfg *Config, agentID, vendor, body string) *Registrati
 		Vendor:      vendor,
 		ControlRepo: cfg.ControlRepo,
 		LastSeen:    time.Now().UTC(),
-		Status:      StatusActive,
 		Body:        body,
 	}
 	if err := WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {

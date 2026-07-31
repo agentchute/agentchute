@@ -90,9 +90,8 @@ func cmdCheck(args []string) error {
 	// heartbeat does (HeartbeatRegistration). This preflight only confirms
 	// the agent is enrolled at all.
 	selfPath := cfg.AgentRegistrationPath(agentID)
-	selfExists := false
 	if _, err := os.Stat(selfPath); err == nil {
-		selfExists = true
+		// registered; proceed.
 	} else if os.IsNotExist(err) {
 		return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
 	} else {
@@ -237,14 +236,6 @@ func cmdCheck(args []string) error {
 
 	if !noArchive && claimed > 0 {
 		fmt.Println("note: messages CLAIMED (at-least-once), not yet archived. Run `agentchute ack` to commit; a crash before ack re-delivers them.")
-	}
-
-	// Update last_active per AGENTCHUTE.md §6.3 step 4 if we actually consumed.
-	if !noArchive && claimed > 0 && selfExists {
-		if err := loop.UpdateLastActive(cfg, agentID, now); err != nil {
-			// Non-fatal: messages are claimed; only the timestamp update lost.
-			fmt.Fprintf(os.Stderr, "warning: failed to update last_active (%v)\n", err)
-		}
 	}
 
 	// C19 (v2.5 plan A3): offer this agent's own expired reply obligations

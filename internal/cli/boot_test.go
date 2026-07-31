@@ -134,7 +134,6 @@ func TestBootRegistersSelfFirstThenSweepsStalePeers(t *testing.T) {
 			Vendor:      "anthropic",
 			ControlRepo: cfg.ControlRepo,
 			LastSeen:    old,
-			Status:      loop.StatusActive,
 		}
 		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("claude-code"), selfReg); err != nil {
 			t.Fatal(err)
@@ -144,7 +143,6 @@ func TestBootRegistersSelfFirstThenSweepsStalePeers(t *testing.T) {
 			Vendor:      "openai",
 			ControlRepo: cfg.ControlRepo,
 			LastSeen:    old,
-			Status:      loop.StatusActive,
 		}
 		if err := loop.WriteRegistration(cfg.AgentRegistrationPath("stale-peer"), peerReg); err != nil {
 			t.Fatal(err)

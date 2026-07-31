@@ -16,11 +16,11 @@ import (
 )
 
 type setupRuntimeResetResult struct {
-	Agents       []string
-	Pollers      []string
-	Runners      []string
-	RuntimeFiles []string
-	Warnings     []string
+	Agents        []string
+	Runners       []string
+	LegacyPollers []string
+	RuntimeFiles  []string
+	Warnings      []string
 }
 
 var setupProcessCommandLine = processCommandLine
@@ -31,15 +31,21 @@ func resetSetupRuntimeState(root string, cfg *loop.Config, wrappers []string) se
 	agentIDs, warnings := setupResetAgentIDs(root, cfg, wrappers)
 	result := setupRuntimeResetResult{Agents: agentIDs, Warnings: warnings}
 	for _, agentID := range agentIDs {
-		if stopped, warning := stopSetupPoller(cfg, agentID); warning != "" {
-			result.Warnings = append(result.Warnings, warning)
-		} else if stopped {
-			result.Pollers = append(result.Pollers, agentID)
-		}
 		if stopped, warning := stopSetupRunner(cfg, agentID); warning != "" {
 			result.Warnings = append(result.Warnings, warning)
 		} else if stopped {
 			result.Runners = append(result.Runners, agentID)
+		}
+		// Legacy (pre-B5) detached poller: ordinary `setup --reset` and
+		// `update`'s re-sync call this same path — the NORMAL upgrade cutover
+		// every lane takes — so a still-running pre-B5 poller must be
+		// recognized and stopped here too, not only in the rare destructive
+		// `wipe-state` path (codex PR #98 review, round 3: wipe stopped it,
+		// ordinary reset left it running).
+		if stopped, warning := stopSetupLegacyPoller(cfg, agentID); warning != "" {
+			result.Warnings = append(result.Warnings, warning)
+		} else if stopped {
+			result.LegacyPollers = append(result.LegacyPollers, agentID)
 		}
 		for _, path := range setupRuntimeStatePaths(cfg, agentID) {
 			if err := os.Remove(path); err == nil {
@@ -49,8 +55,8 @@ func resetSetupRuntimeState(root string, cfg *loop.Config, wrappers []string) se
 			}
 		}
 	}
-	sort.Strings(result.Pollers)
 	sort.Strings(result.Runners)
+	sort.Strings(result.LegacyPollers)
 	sort.Strings(result.RuntimeFiles)
 	sort.Strings(result.Warnings)
 	return result
@@ -182,30 +188,9 @@ func setupAgentMatchesCanonical(agentID string, allowed []string) bool {
 
 func setupRuntimeStatePaths(cfg *loop.Config, agentID string) []string {
 	return []string{
-		cfg.PollerHeartbeatPath(agentID),
-		cfg.ActiveSessionPath(agentID),
 		cfg.RunnerStatePath(agentID),
 		cfg.RunnerSocketPath(agentID),
 	}
-}
-
-func stopSetupPoller(cfg *loop.Config, agentID string) (bool, string) {
-	hb, err := loop.LoadPollerHeartbeat(cfg, agentID)
-	if err != nil {
-		return false, ""
-	}
-	if !setupLocalHost(hb.Host) || hb.PID <= 0 || !setupProcessAlive(hb.PID) {
-		return false, ""
-	}
-	cmdline := setupProcessCommandLine(hb.PID)
-	if !setupCommandMatches(cmdline, agentID, "poller run", cfg) {
-		return false, fmt.Sprintf("not stopping poller for %s pid=%d; process command did not match this agentchute pool", agentID, hb.PID)
-	}
-	if err := setupSignalProcess(hb.PID, syscall.SIGTERM); err != nil {
-		return false, fmt.Sprintf("stop poller for %s pid=%d: %v", agentID, hb.PID, err)
-	}
-	waitSetupProcessExit(hb.PID, 500*time.Millisecond)
-	return true, ""
 }
 
 func stopSetupRunner(cfg *loop.Config, agentID string) (bool, string) {
@@ -238,6 +223,63 @@ func stopSetupRunner(cfg *loop.Config, agentID string) (bool, string) {
 	return true, ""
 }
 
+// legacyPollerHeartbeat is a MINIMAL read-only recognition shape for the
+// retired state/<id>/poller.json file (v2.5 plan B5 deleted the writer, the
+// loop.PollerHeartbeat type, and every other reader). This one-release
+// tombstone reader exists ONLY so setup/wipe can still recognize and
+// stop-or-refuse an old poller process left running after an upgrade —
+// deleting the code that WRITES poller.json does not stop a process already
+// running against it (codex PR #98 review). Restoring the public `poller`
+// verb or the writer is explicitly out of scope; only recognition survives.
+type legacyPollerHeartbeat struct {
+	Host string `json:"host"`
+	PID  int    `json:"pid"`
+}
+
+// loadLegacyPollerHeartbeat reads agentID's legacy poller.json, if present.
+func loadLegacyPollerHeartbeat(cfg *loop.Config, agentID string) (*legacyPollerHeartbeat, error) {
+	if err := loop.ValidateAgentID(agentID); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(cfg.AgentStateDir(agentID), "poller.json"))
+	if err != nil {
+		return nil, err
+	}
+	var hb legacyPollerHeartbeat
+	if err := json.Unmarshal(data, &hb); err != nil {
+		return nil, err
+	}
+	return &hb, nil
+}
+
+// stopSetupLegacyPoller mirrors stopSetupRunner for a legacy (pre-B5)
+// detached poller: recognized via the leftover poller.json a pre-upgrade
+// binary wrote, attributed to this pool via the SAME `agentchute poller run`
+// cmdline match `setupCommandMatchesPool` already carried (dead code until
+// now — nothing called its "poller run" case once the poller subsystem was
+// deleted).
+func stopSetupLegacyPoller(cfg *loop.Config, agentID string) (bool, string) {
+	hb, err := loadLegacyPollerHeartbeat(cfg, agentID)
+	if err != nil {
+		return false, ""
+	}
+	if !setupLocalHost(hb.Host) {
+		return false, ""
+	}
+	if hb.PID <= 0 || !setupProcessAlive(hb.PID) {
+		return false, ""
+	}
+	cmdline := setupProcessCommandLine(hb.PID)
+	if !setupCommandMatchesPool(cmdline, "poller run", cfg) {
+		return false, fmt.Sprintf("not stopping legacy poller for %s pid=%d; process command did not match this agentchute pool", agentID, hb.PID)
+	}
+	if err := setupSignalProcess(hb.PID, syscall.SIGTERM); err != nil {
+		return false, fmt.Sprintf("stop legacy poller for %s pid=%d: %v", agentID, hb.PID, err)
+	}
+	waitSetupProcessExit(hb.PID, 500*time.Millisecond)
+	return true, ""
+}
+
 func waitSetupProcessExit(pid int, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -246,13 +288,6 @@ func waitSetupProcessExit(pid int, timeout time.Duration) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-}
-
-func setupCommandMatches(cmdline, agentID, subcommand string, cfg *loop.Config) bool {
-	if !setupCommandMatchesPool(cmdline, subcommand, cfg) {
-		return false
-	}
-	return setupCommandHasAgentID(cmdline, agentID)
 }
 
 // setupCommandMatchesRunnerPool attributes a live RUNNER to THIS pool. Unlike a
@@ -373,29 +408,6 @@ func setupPathsEquivalent(a, b string) bool {
 	ca := setupPathCandidates(a)
 	for c := range setupPathCandidates(b) {
 		if c != "" && ca[c] {
-			return true
-		}
-	}
-	return false
-}
-
-func setupCommandHasAgentID(cmdline, agentID string) bool {
-	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
-		return false
-	}
-	fields := strings.Fields(cmdline)
-	for i, field := range fields {
-		switch {
-		case field == agentID:
-			return true
-		case field == "--as="+agentID:
-			return true
-		case field == "--agent-id="+agentID:
-			return true
-		case strings.HasPrefix(field, "AGENTCHUTE_AGENT_ID=") && strings.TrimPrefix(field, "AGENTCHUTE_AGENT_ID=") == agentID:
-			return true
-		case (field == "--as" || field == "--agent-id") && i+1 < len(fields) && fields[i+1] == agentID:
 			return true
 		}
 	}

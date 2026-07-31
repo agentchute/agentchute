@@ -400,7 +400,6 @@ func newPollTestRuntime(t *testing.T, cfg *loop.Config, agentID string) *runnerR
 		Vendor:      "test",
 		ControlRepo: cfg.ControlRepo,
 		LastSeen:    time.Now().UTC(),
-		Status:      loop.StatusActive,
 	}
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
 		t.Fatal(err)

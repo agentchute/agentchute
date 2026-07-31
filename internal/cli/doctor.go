@@ -190,8 +190,6 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 		checkHookFilePresence(cfg, agentID),
 		checkHookContentSanity(cfg),
 		checkWrapperShadowing(cfg, agentID, opts),
-		checkUnenrolledPresence(cfg),
-		checkLaunchProvenance(cfg, agentID, opts),
 	}
 	if agentID != "" {
 		checks = append(checks,
@@ -401,9 +399,6 @@ func findStaleTempFiles(cfg *loop.Config, now time.Time, olderThan time.Duration
 	if err := scanDir(cfg.AgentsDir()); err != nil {
 		return nil, err
 	}
-	if err := scanDir(filepath.Join(cfg.LoopDir, "live")); err != nil {
-		return nil, err
-	}
 	sort.Slice(stale, func(i, j int) bool { return stale[i].path < stale[j].path })
 	return stale, nil
 }
@@ -521,101 +516,6 @@ func checkWrapperShadowing(cfg *loop.Config, agentID string, opts doctorOptions)
 		Severity: severityWarn,
 		Message:  fmt.Sprintf("the system `ac` shadows the agentchute dispatcher; ensure %s precedes /usr/sbin on PATH (open a new shell or `hash -r`)", shimDir),
 	}
-}
-
-// checkUnenrolledPresence is the WI-E1 read-only presence check. It runs
-// scanUnenrolledWrappers and reports OK when nothing is present-but-unenrolled,
-// or WARN listing the offenders. It is ADVISORY ONLY — never a BLOCKER: a raw
-// wrapper that skipped enrollment is an operator signal, not a reason to fail a
-// gate. The scan performs ZERO writes (it never repairs a registration; that is
-// WI-E4's job).
-func checkUnenrolledPresence(cfg *loop.Config) doctorCheck {
-	found, err := scanUnenrolledWrappers(cfg)
-	if err != nil {
-		return doctorCheck{Name: "unenrolled_presence", Severity: severitySkip, Message: fmt.Sprintf("presence scan unavailable: %v", err)}
-	}
-	if len(found) == 0 {
-		return doctorCheck{Name: "unenrolled_presence", Severity: severityOK, Message: "no unenrolled wrappers detected in this pool"}
-	}
-	parts := make([]string, 0, len(found))
-	for _, p := range found {
-		parts = append(parts, fmt.Sprintf("%s:%s", p.Kind, p.Hint))
-	}
-	return doctorCheck{
-		Name:     "unenrolled_presence",
-		Severity: severityWarn,
-		Message:  fmt.Sprintf("%d wrapper(s) present in this pool but not enrolled: %s — enroll via the `ac` dispatcher (`ac serve <wrapper>`) or `agentchute boot --as <id>`", len(found), strings.Join(parts, ", ")),
-	}
-}
-
-// checkLaunchProvenance is the WI-E3 detect-and-warn launch-bypass check. When
-// the runner wake path IS configured (setup installed the ac-* launchers and the
-// expected launch is `ac serve <wrapper>` -> runner), it WARNS — never BLOCKS — if a
-// wrapper is running raw:
-//
-//   - the agent's registration records launched_by=manual or has no provenance
-//     (a hand/raw launch, not via the runner), OR
-//   - a real wrapper binary shadows the launcher shim earlier on PATH
-//     (pathIsPrioritized==false while the shim dir IS on PATH).
-//
-// This is ADVISORY by design (codex guardrail): it NEVER returns a BLOCKER, it
-// does NOT flip the runner default (runner stays opt-in), and it installs no
-// same-name shadowing — it only points the operator at `ac serve <wrapper>`. Managed
-// enrollments (runner/hook/poller) and non-runner setups do not warn.
-func checkLaunchProvenance(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
-	const name = "launch_provenance"
-
-	wake := ""
-	if opts.PoolState != nil && opts.PoolState.Wake != "" {
-		wake = opts.PoolState.Wake
-	} else if opts.GlobalState != nil && opts.GlobalState.Wake != "" {
-		wake = opts.GlobalState.Wake
-	}
-	if wake == "" {
-		return doctorCheck{Name: name, Severity: severitySkip, Message: "agentchute setup not run; launch-bypass check not applicable"}
-	}
-	if !setupNeedsShims(wake) {
-		return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("%s wake does not include the runner; raw-launch bypass only applies to runner setups", wake)}
-	}
-
-	var reasons []string
-	// Provenance: the agent enrolled raw (manual / no provenance) rather than via
-	// the runner. Managed provenance (runner/hook/poller) is fine. The old
-	// per-wrapper-shim shadow check is obsolete under the `ac` dispatcher — launch
-	// is `ac serve <wrapper>`, and `ac`'s own PATH precedence is the ac_dispatcher check.
-	if agentID != "" {
-		if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID)); err == nil {
-			switch strings.TrimSpace(reg.LaunchedBy) {
-			case loop.LaunchedByRunner, loop.LaunchedByHook, loop.LaunchedByPoller:
-				// Managed enrollment — not a raw bypass.
-			default: // "" (legacy/unknown) or "manual"
-				reasons = append(reasons, fmt.Sprintf("registration launched_by=%q indicates a raw launch (not routed through the runner)", firstNonEmpty(reg.LaunchedBy, "unset")))
-			}
-		}
-	}
-
-	if len(reasons) == 0 {
-		return doctorCheck{Name: name, Severity: severityOK, Message: "no raw-launch bypass detected; this lane routes through the runner"}
-	}
-	return doctorCheck{
-		Name:     name,
-		Severity: severityWarn,
-		Message:  fmt.Sprintf("%s — relaunch via `%s` to route through the runner (advisory only; the runner stays opt-in and is never auto-activated)", strings.Join(reasons, "; "), acServeHintForAgent(agentID)),
-	}
-}
-
-// acServeHintForAgent renders the canonical launch command for an agent id, e.g.
-// "ac serve codex". Falls back to a generic hint for an unrecognized id.
-func acServeHintForAgent(agentID string) string {
-	agentID = strings.TrimSpace(agentID)
-	for _, spec := range wrapperSpecs {
-		// Match explicitly named ids (codex-review) to their canonical wrapper,
-		// not just exact base ids — mirrors shimNamesForAgent.
-		if registrationMatchesCanonical(agentID, spec.AgentID) {
-			return "ac serve " + spec.Key
-		}
-	}
-	return "ac serve <wrapper>"
 }
 
 func shimNamesForAgent(agentID string) []string {
@@ -911,25 +811,19 @@ func checkSelfRegistration(cfg *loop.Config, agentID string) doctorCheck {
 	return doctorCheck{Name: "self_registration", Severity: severityOK, Message: fmt.Sprintf("registration valid: %s (%s)", reg.AgentID, reg.Vendor)}
 }
 
-// checkRegistrationFreshness reports presence freshness. GATE 3: the freshness
-// SOURCE is the `.live` presence fact, not registration last_seen. The check
-// name ("registration_freshness"), the StaleRegThreshold, the severities, and
-// the "run `agentchute boot`" remediation are unchanged.
+// checkRegistrationFreshness reports presence freshness. v2.5 plan B5: the
+// freshness SOURCE is registration last_seen itself (`.live` is deleted). The
+// check name ("registration_freshness"), StaleRegThreshold, and severities
+// are unchanged; the remediation text now implements "report, never act" —
+// doctor never sweeps or otherwise mutates state on the caller's behalf, it
+// just names what will eventually happen on its own (a stale row re-registers
+// at boot, or is swept lazily after stale_after).
 func checkRegistrationFreshness(cfg *loop.Config, agentID string, now time.Time) doctorCheck {
-	if _, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID)); err != nil {
+	reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID))
+	if err != nil {
 		return doctorCheck{Name: "registration_freshness", Severity: severitySkip, Message: "registration unreadable (see self_registration)"}
 	}
-	liveSeen, present := loop.LiveLastSeen(cfg, agentID)
-	if !present {
-		// Registered but no `.live` published (never booted under this gate, or
-		// presence expired) — surface as a warn with the same boot remediation.
-		return doctorCheck{
-			Name:     "registration_freshness",
-			Severity: severityWarn,
-			Message:  "no recent presence (`.live` absent); run `agentchute boot` to refresh",
-		}
-	}
-	age := now.Sub(liveSeen)
+	age := now.Sub(reg.LastSeen)
 	if age < 0 {
 		age = 0 // future-dated (clock skew) reads as fresh.
 	}
@@ -937,7 +831,7 @@ func checkRegistrationFreshness(cfg *loop.Config, agentID string, now time.Time)
 		return doctorCheck{
 			Name:     "registration_freshness",
 			Severity: severityWarn,
-			Message:  fmt.Sprintf("last_seen age %s exceeds %s threshold; run `agentchute boot` to refresh", age.Round(time.Second), StaleRegThreshold),
+			Message:  fmt.Sprintf("agent is stale (last_seen age %s exceeds %s threshold); it re-registers at boot (would be swept after %s)", age.Round(time.Second), StaleRegThreshold, loop.StaleAfter(cfg)),
 		}
 	}
 	return doctorCheck{Name: "registration_freshness", Severity: severityOK, Message: fmt.Sprintf("last_seen age %s within threshold", age.Round(time.Second))}

@@ -22,15 +22,14 @@ func newLockTestConfig(t *testing.T) *Config {
 }
 
 // writeTestRegistration lays down a minimal valid registration for agentID so
-// concurrent UpdateLastSeen / status mutations have a file to read-modify-write.
-func writeTestRegistration(t *testing.T, cfg *Config, agentID string, status Status) {
+// concurrent mutations have a file to read-modify-write.
+func writeTestRegistration(t *testing.T, cfg *Config, agentID string) {
 	t.Helper()
 	reg := &Registration{
 		AgentID:     agentID,
 		Vendor:      "agentchute",
 		ControlRepo: "/tmp/repo",
 		LastSeen:    time.Date(2026, 5, 9, 16, 8, 36, 0, time.UTC),
-		Status:      status,
 	}
 	if err := WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
 		t.Fatalf("seed registration: %v", err)
@@ -193,14 +192,17 @@ func TestWithAgentLock_BoundedWaitDoesNotDeadlock(t *testing.T) {
 }
 
 // TestHeartbeatRegistration_NoLostUpdateUnderConcurrency runs concurrent
-// HeartbeatRegistration calls alongside a status mutation and asserts the
-// registration is never torn (always parses) and the status mutation
-// survives. B1: replaces the retired UpdateLastSeen version of this test —
-// the heartbeat is now lease-gated, so it needs a real serve lease token.
+// HeartbeatRegistration calls alongside a concurrent Body mutation (standing
+// in for another command's read-modify-write, e.g. a re-register updating
+// the bio) and asserts the registration is never torn (always parses) and
+// survives the race. B1: replaces the retired UpdateLastSeen version of this
+// test — the heartbeat is now lease-gated, so it needs a real serve lease
+// token. v2.5 plan B5: Status is gone, so the concurrent mutation now targets
+// Body — the field HeartbeatRegistration's merge is documented to preserve.
 func TestHeartbeatRegistration_NoLostUpdateUnderConcurrency(t *testing.T) {
 	cfg := newLockTestConfig(t)
 	const agentID = "claude-code"
-	writeTestRegistration(t, cfg, agentID, StatusActive)
+	writeTestRegistration(t, cfg, agentID)
 	lease, err := AcquireServeLease(cfg, agentID)
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +211,6 @@ func TestHeartbeatRegistration_NoLostUpdateUnderConcurrency(t *testing.T) {
 		AgentID:     agentID,
 		Vendor:      "agentchute",
 		ControlRepo: cfg.ControlRepo,
-		Status:      StatusActive,
 	}
 
 	var wg sync.WaitGroup
@@ -223,7 +224,7 @@ func TestHeartbeatRegistration_NoLostUpdateUnderConcurrency(t *testing.T) {
 			}
 		}(i)
 	}
-	// One concurrent status mutation through the same lock.
+	// One concurrent Body mutation through the same lock.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -232,7 +233,7 @@ func TestHeartbeatRegistration_NoLostUpdateUnderConcurrency(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			reg.Status = StatusExhausted
+			reg.Body = "updated bio"
 			return WriteRegistration(cfg.AgentRegistrationPath(agentID), reg)
 		}); err != nil {
 			errs <- err

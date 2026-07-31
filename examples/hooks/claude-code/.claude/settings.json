@@ -10,7 +10,6 @@
       "Bash(agentchute doctor:*)",
       "Bash(agentchute status:*)",
       "Bash(agentchute pending:*)",
-      "Bash(agentchute poller:*)",
       "Bash(agentchute identity:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
@@ -40,10 +39,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --quiet"
-          },
-          {
-            "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} boot --context-only"
           }
         ]
@@ -55,10 +50,6 @@
           {
             "type": "command",
             "command": "${AGENTCHUTE_BIN:-agentchute} self-check --quiet"
-          },
-          {
-            "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} poller ensure --quiet"
           },
           {
             "type": "command",

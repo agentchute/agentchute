@@ -26,7 +26,6 @@ var commandHandlers = map[string]func([]string) error{
 	"setup":        cmdSetup,
 	"update":       cmdUpdate,
 	"self-check":   cmdSelfCheck,
-	"poller":       cmdPoller,
 	"identity":     cmdIdentity,
 	"shims":        cmdShims,
 	"status":       cmdStatus,

@@ -63,7 +63,7 @@ refuse_live_pool() {
 	# guard then refuses to run anywhere — which is exactly what happened: the
 	# rehearsal has never once executed on a release/v2.5 push, leaving B2's
 	# safety net unverified. Exempt them, the same way every other enumerator
-	# in this codebase does (presence_scan.go, setup_wipe.go, sweep.go).
+	# in this codebase does (setup_wipe.go, sweep.go).
 	if pool_has_registration "$loop" || ls "$loop"/state/*/serve.claim >/dev/null 2>&1; then
 		printf 'REFUSING TO RUN: %s points at a real agentchute pool (%s).\n' "$label" "$loop" >&2
 		printf 'This rehearsal invalidates every serve lease in the pool it resolves and would fence that fleet.\n' >&2

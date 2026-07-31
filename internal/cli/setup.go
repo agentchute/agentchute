@@ -568,7 +568,7 @@ func previousSetupShimWrappers(state setupGlobalState) []string {
 }
 
 // setupRunRuntimeReset is the DESTRUCTIVE phase of setup: it stops local
-// pollers/runners, clears runtime state files, then invalidates every serve
+// runners, clears runtime state files, then invalidates every serve
 // lease so surviving supervisors fence out. Registration rows are preserved.
 // It is a package var so tests can inject a failure to
 // prove the ordering invariant below. It is invoked LAST in
@@ -577,11 +577,11 @@ func previousSetupShimWrappers(state setupGlobalState) []string {
 // never leave the bus fenced AND without wake infrastructure.
 var setupRunRuntimeReset = func(root string, cfg *loop.Config, wrappers []string) error {
 	reset := resetSetupRuntimeState(root, cfg, wrappers)
-	if len(reset.Pollers) > 0 {
-		fmt.Printf("stopped %d local poller(s): %s\n", len(reset.Pollers), strings.Join(reset.Pollers, ", "))
-	}
 	if len(reset.Runners) > 0 {
 		fmt.Printf("stopped %d local runner(s): %s\n", len(reset.Runners), strings.Join(reset.Runners, ", "))
+	}
+	if len(reset.LegacyPollers) > 0 {
+		fmt.Printf("stopped %d legacy poller(s): %s\n", len(reset.LegacyPollers), strings.Join(reset.LegacyPollers, ", "))
 	}
 	if len(reset.RuntimeFiles) > 0 {
 		fmt.Printf("cleared %d runtime state file(s)\n", len(reset.RuntimeFiles))

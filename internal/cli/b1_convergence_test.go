@@ -100,7 +100,6 @@ func writeConvergenceRegistration(t *testing.T, cfg *loop.Config, agentID string
 		Vendor:      "test",
 		ControlRepo: cfg.ControlRepo,
 		LastSeen:    lastSeen,
-		Status:      loop.StatusActive,
 	}
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
 		t.Fatalf("seed registration %s: %v", agentID, err)
