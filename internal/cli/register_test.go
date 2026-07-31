@@ -405,6 +405,69 @@ func TestRegisterRefusesFreshForeignLeaseWithStaleRow(t *testing.T) {
 	})
 }
 
+func TestRegisterRefusesFreshForeignLeaseWithoutRow(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "claude-code"
+		lease, err := loop.AcquireServeLease(cfg, agentID)
+		if err != nil {
+			t.Fatalf("acquire fresh foreign lease: %v", err)
+		}
+		defer loop.ReleaseLease(lease)
+
+		_, err = performRegister(cfg, registerOpts{AgentID: agentID, Vendor: "anthropic"}, time.Now().UTC())
+		if err == nil {
+			t.Fatal("registration with no row and fresh foreign lease returned nil error")
+		}
+		want := `agent id "claude-code" is live elsewhere; pick a distinct name (--as claude-code-2?)`
+		if err.Error() != want {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+		if _, err := os.Stat(cfg.AgentRegistrationPath(agentID)); !os.IsNotExist(err) {
+			t.Fatalf("foreign lease registration created a row: stat err = %v", err)
+		}
+	})
+}
+
+func TestRegisterCreatesMissingRowWithMatchingLeaseToken(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
+		mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		const agentID = "claude-code"
+		lease, err := loop.AcquireServeLease(cfg, agentID)
+		if err != nil {
+			t.Fatalf("acquire own lease: %v", err)
+		}
+		defer loop.ReleaseLease(lease)
+
+		result, err := performRegister(cfg, registerOpts{
+			AgentID:    agentID,
+			Vendor:     "anthropic",
+			ServeToken: lease.Token,
+		}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("register under own lease: %v", err)
+		}
+		if result.ExistingFound {
+			t.Fatal("missing-row registration reported an existing row")
+		}
+		if result.Reg.AgentID != agentID {
+			t.Fatalf("agent id = %q, want %q", result.Reg.AgentID, agentID)
+		}
+	})
+}
+
 func TestRegisterMergesOverStaleSameID(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {

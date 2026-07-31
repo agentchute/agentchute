@@ -76,9 +76,9 @@ type registerResult struct {
 // Pull-only (simple-again Gate 6c): a registration carries no wake state, so
 // there is no wake autodetect, no tmux pane lock, and no same-pane/stale-peer
 // dedup. The retained behavior is: write the registration record + the initial
-// `.live` presence (Gate 3). A fresh row plus a fresh serve lease owned by
-// another process refuses the registration; stale same-id state is merged as
-// crash recovery.
+// `.live` presence (Gate 3). A fresh serve lease owned by another process
+// refuses the registration regardless of row age or presence; stale same-id
+// state is merged as crash recovery.
 func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*registerResult, error) {
 	if err := loop.ValidateAgentID(opts.AgentID); err != nil {
 		return nil, err
@@ -131,7 +131,7 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 		} else if !os.IsNotExist(rerr) {
 			return fmt.Errorf("read existing registration: %w", rerr)
 		}
-		if existingFound && registrationLiveElsewhere(cfg, existing, opts.ServeToken, now) {
+		if registrationLiveElsewhere(cfg, opts.AgentID, opts.ServeToken, now) {
 			return fmt.Errorf("agent id %q is live elsewhere; pick a distinct name (--as %s-2?)", opts.AgentID, opts.AgentID)
 		}
 
@@ -234,11 +234,8 @@ func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, n
 	}, nil
 }
 
-func registrationLiveElsewhere(cfg *loop.Config, reg *loop.Registration, serveToken string, now time.Time) bool {
-	if reg == nil {
-		return false
-	}
-	claim, err := loop.ReadServeClaim(cfg, reg.AgentID)
+func registrationLiveElsewhere(cfg *loop.Config, agentID, serveToken string, now time.Time) bool {
+	claim, err := loop.ReadServeClaim(cfg, agentID)
 	if err != nil || loop.ClaimIsStale(claim, now) {
 		return false
 	}
