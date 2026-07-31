@@ -930,6 +930,63 @@ func TestCmdDoctorDiscoveryFailureBlocks(t *testing.T) {
 	})
 }
 
+// mustWriteGuardLatchAt writes a guard latch file directly with a specific
+// SetAt (loop.SetGuardLatch always stamps time.Now(), so backdating for a
+// staleness test needs a direct write).
+func mustWriteGuardLatchAt(t *testing.T, cfg *loop.Config, id, session string, setAt time.Time) {
+	t.Helper()
+	body, err := json.Marshal(loop.GuardLatch{V: 1, Session: session, SetAt: setAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, cfg.GuardLatchPath(id), body)
+}
+
+func TestDoctorGuardLatchAgeAbsent(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	got := checkGuardLatchAge(cfg, "bob", time.Now().UTC())
+	if got.Severity != severityOK {
+		t.Errorf("guard_latch_age severity = %q, want OK when absent; msg=%q", got.Severity, got.Message)
+	}
+}
+
+func TestDoctorGuardLatchAgeFreshIsOK(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	now := time.Now().UTC()
+	mustWriteGuardLatchAt(t, cfg, "bob", "tok-1", now.Add(-1*time.Minute))
+	got := checkGuardLatchAge(cfg, "bob", now)
+	if got.Severity != severityOK {
+		t.Errorf("guard_latch_age severity = %q, want OK for a 1m-old latch; msg=%q", got.Severity, got.Message)
+	}
+}
+
+func TestDoctorGuardLatchAgeStaleWarns(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	now := time.Now().UTC()
+	mustWriteGuardLatchAt(t, cfg, "bob", "tok-1", now.Add(-45*time.Minute))
+	got := checkGuardLatchAge(cfg, "bob", now)
+	if got.Severity != severityWarn {
+		t.Errorf("guard_latch_age severity = %q, want WARN for a 45m-old latch; msg=%q", got.Severity, got.Message)
+	}
+	for _, want := range []string{"repair that hook FIRST", "temporary unwedge", "turn-end"} {
+		if !strings.Contains(got.Message, want) {
+			t.Errorf("message missing %q: %q", want, got.Message)
+		}
+	}
+}
+
+func TestDoctorGuardLatchAgeCorruptFileWarns(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	mustWrite(t, cfg.GuardLatchPath("bob"), []byte("{not valid json"))
+	got := checkGuardLatchAge(cfg, "bob", time.Now().UTC())
+	if got.Severity != severityWarn {
+		t.Errorf("guard_latch_age severity = %q, want WARN for a corrupt file; msg=%q", got.Severity, got.Message)
+	}
+	if !strings.Contains(got.Message, "corrupt") {
+		t.Errorf("message should say the latch is corrupt: %q", got.Message)
+	}
+}
+
 func TestAcServeHintForAgent_ContextualIDs(t *testing.T) {
 	cases := map[string]string{
 		"codex":                 "ac serve codex",
