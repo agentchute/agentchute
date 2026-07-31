@@ -177,7 +177,7 @@
 <div class="announce">
   <div class="wrap">
     <span class="tag">v2.5</span>
-    <span>Deliberate wire break · pool-at-once migration</span>
+    <span>v2.5 is out — and it changes the wire</span>
     <a href="/blog/v2-5-the-wire-broke.html">read the announcement →</a>
   </div>
 </div>
@@ -200,7 +200,7 @@
       <div class="copy">
         <p class="eyebrow">protocol v2.5 · reference cli 2.5</p>
         <h1><span class="b">Stop being the message bus</span><span class="b">for your agents.</span></h1>
-        <p class="sub">Running agents is easy — coordinating them isn't. agentchute gives every AI agent an <b>inbox</b>. They hand off work, request review, and message each other — <b>no human relaying every step</b>, no broker, just plain files. v2.5 keeps that core and openly migrates the identity wire.</p>
+        <p class="sub">Running agents is easy — coordinating them isn't. agentchute gives every AI agent an <b>inbox</b>. They hand off work, request review, and message each other — <b>no human relaying every step</b>, no broker, just plain files.</p>
 
         <div class="term" role="group" aria-label="install command">
           <span class="p">$</span> <span id="install-cmd">curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</span>
@@ -210,7 +210,7 @@
 
         <div class="cta">
           <a class="btn primary" href="#get-started">Get started</a>
-          <a class="btn ghost" href="/blog/v2-5-the-wire-broke.html">Why we broke it →</a>
+          
         </div>
       </div>
 
@@ -300,9 +300,8 @@
         <p class="lbl">what changed in v2.5</p>
         <h2>We broke it on purpose.</h2>
         <p>We stopped using our own agents for three weeks. When we came back, one had a message waiting that had been unread for <b>twenty-three days</b>. Nothing had failed — the message was delivered exactly as designed, sitting intact in the right inbox. That was the problem. We had built a mailbox that accepted letters for people who had moved out, and never mentioned it to anyone.</p>
-        <p>So v2.5 makes absence visible. When an agent's supervisor stops heartbeating, its registration goes stale — about an hour by default — and <b>sending to it fails right away</b> instead of disappearing into a mailbox nobody will open. Long jobs are fine: the supervisor keeps heartbeating whether the model is busy or idle. Message names became timestamps, which let us delete a lot of machinery that existed to keep counters in step.</p>
+        <p>So v2.5 makes absence visible. When an agent's supervisor stops heartbeating, its registration goes stale — about an hour by default — and <b>sending to it fails right away</b> instead of disappearing into a mailbox nobody will open. Long jobs are fine: the supervisor keeps heartbeating whether the model is busy or idle.</p>
         <p><b>It is a real break.</b> A v2.5 agent still reads normal v2 mail; a v2 agent cannot read v2.5 names — so every agent sharing a pool moves together. At 1.0 we said this would only happen through a deprecation process. It didn't, and we would rather say so here than let you find out from a stack trace.</p>
-        <p class="fine">$ agentchute update — then restart every lane</p>
       </div>
     </section>
 
@@ -353,7 +352,7 @@
           <div class="term">
 <span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh<br>
 <span class="p">$</span> agentchute setup<br>
-<span class="p">$</span> ac serve claude <span class="c"># per-agent runner</span><br>
+<span class="p">$</span> ac serve claude <span class="c"># per-agent runner (new shell; blocks)</span><br>
 <span class="p">$</span> agentchute doctor <span class="c"># health check</span>
           </div>
         </div>
@@ -372,12 +371,12 @@
 
   <div class="roadmap">
     <div class="wrap">
-      <p><b>Already running v2?</b> Every agent sharing a pool has to move together — half a pool on each version can't read itself.</p>
+      <p><b>Already running v2?</b> v2.5 reads v2 mail, but v2 cannot read v2.5 messages — so every agent sharing a pool moves together. Freeze sends first, and never use <span class="mono">--no-resync</span> for this upgrade.</p>
       <div class="term" style="margin:14px 0 12px;text-align:left">
-        <span class="p">$</span> agentchute update       <span class="c"># old supervisors fence themselves out</span><br>
-        <span class="p">$</span> agentchute status       <span class="c"># twice, ~15s apart — nobody's clock should still be moving</span><br>
-        <span class="p">$</span> ac serve &lt;wrapper&gt;      <span class="c"># relaunch every lane</span><br>
-        <span class="p">$</span> agentchute doctor       <span class="c"># until no mixed versions</span>
+        <span class="p">$</span> agentchute update<br>
+        <span class="p">$</span> agentchute status --as &lt;agent-id&gt;   <span class="c"># twice, 15s apart — old last_seen must not advance</span><br>
+        <span class="p">$</span> ac serve &lt;wrapper&gt;                <span class="c"># relaunch every lane</span><br>
+        <span class="p">$</span> agentchute doctor --as &lt;agent-id&gt;   <span class="c"># from another shell, until clean</span>
       </div>
       <a class="btn ghost" href="https://github.com/agentchute/agentchute/blob/main/docs/V2_5_CUTOVER.md">Full cutover guide →</a>
     </div>
