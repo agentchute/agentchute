@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 436" role="img" aria-labelledby="title desc"
+     font-family="ui-monospace,'JetBrains Mono',SFMono-Regular,Menlo,monospace">
+  <title id="title">agentchute v2.5 — lived with it, learned, replaced what failed</title>
+  <desc id="desc">Three-panel illustration: a three-week fleet pause left a message unread for 23 days; the bus could not tell silence from absence; v2.5 replaces old machinery with soft registration, loud send-fail, timestamps, and a guard — replacement, not a smaller codebase.</desc>
+
+  <defs>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="1.1" cy="1.1" r="1.1" fill="#17180F" opacity="0.04"/>
+    </pattern>
+    <filter id="soft" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1.4" flood-color="#17180F" flood-opacity="0.09"/>
+    </filter>
+  </defs>
+
+  <!-- frame -->
+  <rect x="0.5" y="0.5" width="919" height="435" rx="18" fill="#FAF9F5" stroke="#E9E7DD"/>
+  <rect x="0.5" y="0.5" width="919" height="435" rx="18" fill="url(#dots)"/>
+
+  <!-- header -->
+  <text x="40" y="42" font-size="11.5" fill="#8A8C7C" letter-spacing="0.08em">WE RAN IT ON OURSELVES</text>
+  <text x="40" y="68" font-size="18" font-weight="600" fill="#17180F" letter-spacing="-0.01em">Lived with the bus. Hit a real failure. Replaced what failed.</text>
+  <text x="40" y="90" font-size="12" fill="#5C5E50">Not a smaller tree — a clearer one. Old machinery out, new machinery in.</text>
+
+  <!-- === PANEL 1: INCIDENT === -->
+  <g filter="url(#soft)">
+    <rect x="36" y="118" width="260" height="264" rx="14" fill="#FFFFFF" stroke="#E2E0D6"/>
+  </g>
+  <text x="56" y="146" font-size="10.5" fill="#C8791A" font-weight="600" letter-spacing="0.07em">1 · THE INCIDENT</text>
+
+  <!-- closed panes suggestion -->
+  <g transform="translate(56,164)">
+    <rect x="0" y="0" width="72" height="48" rx="6" fill="#F4F3EE" stroke="#E2E0D6"/>
+    <rect x="8" y="10" width="56" height="6" rx="2" fill="#C7C9B8"/>
+    <rect x="8" y="22" width="40" height="6" rx="2" fill="#E2E0D6"/>
+    <rect x="8" y="34" width="48" height="6" rx="2" fill="#E2E0D6"/>
+    <text x="84" y="22" font-size="11.5" fill="#5C5E50">fleet paused</text>
+    <text x="84" y="40" font-size="11.5" fill="#17180F" font-weight="600">~ 3 weeks</text>
+  </g>
+
+  <!-- inbox with waiting mail -->
+  <g transform="translate(56,232)">
+    <rect x="0" y="0" width="220" height="100" rx="10" fill="#FAF9F5" stroke="#E2E0D6"/>
+    <text x="14" y="24" font-size="11" fill="#8A8C7C" letter-spacing="0.04em">inbox / codex</text>
+    <!-- envelope -->
+    <g transform="translate(14,36)">
+      <rect x="0" y="0" width="120" height="48" rx="6" fill="#FFFFFF" stroke="#1E6F57" stroke-width="1.4"/>
+      <path d="M4 4 L60 28 L116 4" fill="none" stroke="#1E6F57" stroke-width="1.3" opacity="0.7"/>
+      <text x="60" y="40" text-anchor="middle" font-size="10" fill="#5C5E50">review request</text>
+    </g>
+    <!-- amber age badge -->
+    <g transform="translate(148,44)">
+      <rect x="0" y="0" width="58" height="36" rx="8" fill="#C8791A"/>
+      <text x="29" y="15" text-anchor="middle" font-size="10" fill="#FAF9F5" font-weight="600">23 days</text>
+      <text x="29" y="28" text-anchor="middle" font-size="9" fill="#FAF9F5" opacity="0.9">unread</text>
+    </g>
+  </g>
+  <text x="56" y="366" font-size="11.5" fill="#5C5E50">Delivered. Intact. Nobody home.</text>
+
+  <!-- arrow 1→2 -->
+  <g fill="none" stroke="#C7C9B8" stroke-width="1.6" stroke-linecap="round">
+    <path d="M308 240 L332 240"/>
+    <path d="M324 234 L332 240 L324 246"/>
+  </g>
+
+  <!-- === PANEL 2: LESSON === -->
+  <g filter="url(#soft)">
+    <rect x="348" y="118" width="224" height="264" rx="14" fill="#FFFFFF" stroke="#E2E0D6"/>
+  </g>
+  <text x="368" y="146" font-size="10.5" fill="#C8791A" font-weight="600" letter-spacing="0.07em">2 · THE LESSON</text>
+
+  <text x="368" y="178" font-size="12.5" fill="#17180F" font-weight="600">The bus could not tell</text>
+  <text x="368" y="196" font-size="12.5" fill="#17180F" font-weight="600">silence from absence.</text>
+
+  <!-- two states that looked the same -->
+  <g transform="translate(368,220)">
+    <rect x="0" y="0" width="184" height="52" rx="8" fill="#F4F3EE" stroke="#E2E0D6"/>
+    <circle cx="22" cy="26" r="8" fill="none" stroke="#1E6F57" stroke-width="1.6"/>
+    <circle cx="22" cy="26" r="3" fill="#1E6F57"/>
+    <text x="40" y="22" font-size="11" fill="#17180F">thinking hard</text>
+    <text x="40" y="38" font-size="10" fill="#8A8C7C">still reachable?</text>
+  </g>
+  <g transform="translate(368,284)">
+    <rect x="0" y="0" width="184" height="52" rx="8" fill="#F4F3EE" stroke="#E2E0D6"/>
+    <circle cx="22" cy="26" r="8" fill="none" stroke="#C8791A" stroke-width="1.6"/>
+    <line x1="17" y1="21" x2="27" y2="31" stroke="#C8791A" stroke-width="1.6" stroke-linecap="round"/>
+    <line x1="27" y1="21" x2="17" y2="31" stroke="#C8791A" stroke-width="1.6" stroke-linecap="round"/>
+    <text x="40" y="22" font-size="11" fill="#17180F">moved out</text>
+    <text x="40" y="38" font-size="10" fill="#8A8C7C">mailbox still accepts</text>
+  </g>
+  <text x="368" y="376" font-size="11" fill="#5C5E50">Same “success.” Wrong outcome.</text>
+
+  <!-- arrow 2→3 -->
+  <g fill="none" stroke="#C7C9B8" stroke-width="1.6" stroke-linecap="round">
+    <path d="M584 240 L608 240"/>
+    <path d="M600 234 L608 240 L600 246"/>
+  </g>
+
+  <!-- === PANEL 3: REPLACEMENT === -->
+  <g filter="url(#soft)">
+    <rect x="624" y="118" width="260" height="264" rx="14" fill="#FFFFFF" stroke="#E2E0D6"/>
+  </g>
+  <text x="644" y="146" font-size="10.5" fill="#1E6F57" font-weight="600" letter-spacing="0.07em">3 · THE CHANGE</text>
+  <text x="644" y="168" font-size="11.5" fill="#5C5E50">Replacement — not a diet.</text>
+
+  <!-- OUT column -->
+  <g transform="translate(644,184)">
+    <text x="0" y="0" font-size="10" fill="#8A8C7C" letter-spacing="0.06em">OUT</text>
+    <g font-size="11" fill="#8A8C7C">
+      <text x="0" y="22" text-decoration="line-through">.live / poller / presence scan</text>
+      <text x="0" y="42" text-decoration="line-through">shared seq allocator</text>
+      <text x="0" y="62" text-decoration="line-through">identity guessing (-N)</text>
+      <text x="0" y="82" text-decoration="line-through">three frontmatter parsers</text>
+    </g>
+  </g>
+
+  <!-- IN column -->
+  <g transform="translate(644,290)">
+    <text x="0" y="0" font-size="10" fill="#1E6F57" font-weight="600" letter-spacing="0.06em">IN</text>
+    <g font-size="11" fill="#17180F">
+      <text x="0" y="22"><tspan fill="#1E6F57" font-weight="600">·</tspan> soft registration + sweep</text>
+      <text x="0" y="42"><tspan fill="#1E6F57" font-weight="600">·</tspan> send fails if unreachable</text>
+      <text x="0" y="62"><tspan fill="#1E6F57" font-weight="600">·</tspan> timestamp identity</text>
+      <text x="0" y="82"><tspan fill="#1E6F57" font-weight="600">·</tspan> per-session guard latch</text>
+    </g>
+  </g>
+
+  <!-- footer chip -->
+  <g transform="translate(36,398)">
+    <rect x="0" y="0" width="848" height="26" rx="8" fill="#EAF1ED" stroke="#CFE3D8"/>
+    <text x="424" y="17" text-anchor="middle" font-size="11" fill="#1E6F57" font-weight="600" letter-spacing="0.04em">v2 → v2.5 · same inbox idea · clearer absence · net lines up, design sharper</text>
+  </g>
+</svg>
