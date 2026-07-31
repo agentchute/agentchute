@@ -1,6 +1,6 @@
 # AGENTCHUTE.md
 
-*Open spec for inbox-based agent coordination. **Protocol v2 (pull-only) — stable; declared final at CLI v1.0.0.** It will not break under you: the primitives (§1), envelope (§6.4), filename/identity grammar (§6.1), lifecycle guarantees (§6.3, §11.1), and the conformance invariants are covenants that change only through the versioned deprecation process in [`CONTRIBUTING.md`](CONTRIBUTING.md); a breaking change would be Protocol v3. The reference CLI 1.x implements Protocol v2.*
+*Open spec for inbox-based agent coordination. **Protocol v2 (pull-only) — declared final at CLI v1.0.0.** That declaration held for the primitives (§1), the envelope (§6.4), and the lifecycle guarantees (§6.3, §11.1) — none of those changed. It did **not** hold for the filename/identity grammar (§6.1): v2.5 deliberately replaces the per-`(sender,recipient)` sequence counter with a timestamp+random-suffix identity — a real wire break, the exact kind the 1.0 covenant said would only happen through Protocol v3. It ships as "2.5," not "3.0," on purpose; the reasoning for both the break and that naming choice is recorded in `docs/decisions/agentchute-v2.5-proposal.md` and on the project blog, not left implicit. The reference CLI's formal wire-version number and CHANGELOG entry for this are declared separately, at release. Conformance invariants remain covenants that change only through the versioned deprecation process in [`CONTRIBUTING.md`](CONTRIBUTING.md).*
 
 > **Executable spec.** The normative invariants below are encoded as runnable,
 > language-neutral conformance vectors in [`conformance/`](conformance/) — seven
@@ -45,24 +45,28 @@ These are reference choices, not protocol requirements. Conforming implementatio
 ### In scope
 - **Pull-only inbox coordination** through per-recipient inboxes (§6).
 - **Per-agent supervision.** A loopless wrapper runs under `agentchute serve` (PTY supervisor) for inbox polling and `check inbox` injection. No sender-side wake.
-- **Small shared-FS pool.** 2 to ~10 agents sharing a **single-host** filesystem. Beyond that, routing/role-election would be required (a future protocol major; a non-goal today, §12).
+- **Small shared-FS pool.** 2 to ~10 agents sharing a filesystem — **single-host is the supported, CI-tested configuration** ("Tested targets" below); a pool spanning hosts over a shared network mount is a real deployment shape some pools already use (this project's own included), riding fail-closed compatibility behavior rather than a verified guarantee. Beyond ~10 agents, routing/role-election would be required regardless of host count (a future protocol major; a non-goal today, §12).
 - **Substrate-defined pool locator.** _Reference CLI: a repo containing `AGENTCHUTE.md` and a `.agentchute/loop` directory._
 - **Free-form messages with optional structured envelope** (§6.4).
 - **Registration presence with freshness** (§9) and **asker-owned reply obligations** (§6.6).
 
 ### Out of scope
-See **§12 Non-goals**. Exclusions: non-filesystem transports in the reference CLI, sender-side wake / push presence, durable audit trails, capability-based routing, cryptographic signing, and multi-host operation (below).
+See **§12 Non-goals**. Exclusions: non-filesystem transports in the reference CLI, sender-side wake / push presence, durable audit trails, capability-based routing, and cryptographic signing.
 
 ### Tested targets and assumptions
 
-The reference implementation makes specific assumptions about its runtime environment. **The substrate is single-host**, matching what CI actually exercises: every lock (`flock`), lease, and fence in this spec assumes one shared local filesystem under one kernel's advisory locking. Earlier drafts of this spec described a multi-host, network-mounted posture (mount-flag guidance, cross-host lease semantics); that text is removed, not softened — it was never CI-verified and no decision in this program's history has tested it. A network-mounted loop directory is untested and unsupported; treat it as out of scope, not as a degraded mode.
+The reference implementation makes specific assumptions about its runtime environment.
 
-| Axis | Tested Configuration | Out of Scope / Untested |
-| :--- | :--- | :--- |
-| **Operating System** | macOS, Linux (CI verified) | Native Windows (WSL required for run) |
-| **Filesystem Layout** | Single-host shared directory (tested local disk) | Multi-disk, non-POSIX layouts, any network-mounted loop directory |
-| **PTY / Supervision** | Unix-like PTY (SIGWINCH propagation, best-effort) | Non-PTY shell wrappers, raw Windows Cmd/PowerShell PTY emulation |
-| **Security Model** | Cooperative local trust (POSIX file permissions) | Cryptographic signing, transport encryption, host-isolation bypass |
+**Single-host is the supported and CI-tested configuration.** Every lock (`flock`), lease, and fence in this spec is verified against one shared local filesystem under one kernel's advisory locking — that is what CI exercises, and it is the configuration to target for a new deployment.
+
+**Cross-host operation is real but unverified — not unsupported, and not merely historical.** Some pools, including this project's own as of this writing, run the loop directory on a shared network mount across more than one host. The reference CLI does not refuse this, and specific paths are deliberately host-aware for safety rather than by oversight: the serve lease's reclaim rule falls back to freshness/timeout alone when the holder is on another host, since a pid can't be proven cross-host (§5.4), and `agentchute setup --wipe-state` refuses to wipe a bus a foreign host's fresh serve claim still owns. These exist so a pool that is ALREADY cross-host fails CLOSED — refuses a destructive action, or degrades to a slower reclaim — rather than silently corrupting shared state. They are compatibility and safety behavior, not a claim that cross-host correctness has been verified under concurrent writes, network-filesystem mount-cache edge cases, or clock skew beyond the NTP-loose assumption already stated (§5.4). Earlier drafts of this spec offered specific mount-flag guidance (`actimeo`, `noac`, `lookupcache`) for this case; that guidance is removed, not replaced — it was never CI-verified, and no decision in this program's history tested it. **If your pool already spans hosts**, keep doing so on the fail-closed behavior above — nothing here asks you to colocate before upgrading — but treat cross-host as inherited compatibility, not a newly-endorsed target; a fresh deployment should default to single-host, and a pool considering going cross-host for the first time should not expect the same tested guarantees single-host gets.
+
+| Axis | Tested Configuration | Real, Unverified | Out of Scope |
+| :--- | :--- | :--- | :--- |
+| **Operating System** | macOS, Linux (CI verified) | — | Native Windows (WSL required for run) |
+| **Filesystem Layout** | Single-host shared directory (tested local disk) | Network-mounted loop directory shared across hosts (fail-closed safety only; no correctness guarantee) | Multi-disk, non-POSIX layouts |
+| **PTY / Supervision** | Unix-like PTY (SIGWINCH propagation, best-effort) | — | Non-PTY shell wrappers, raw Windows Cmd/PowerShell PTY emulation |
+| **Security Model** | Cooperative local trust (POSIX file permissions) | — | Cryptographic signing, transport encryption, host-isolation bypass |
 
 ### Concurrency and Access
 agentchute is **concurrency-agnostic**: it neither enforces nor prevents simultaneous work. The expected default is linear (one agent at a time per task). Agents MUST have read/write access to their configured inbox medium. **One live process owns an id at a time** — the reference CLI enforces this with a serve lease + fencing token (§5.4).
@@ -135,7 +139,7 @@ The reference CLI's per-sender monotonic timestamp floor (§6.1) and its uncondi
 - A **stale** claim is reclaimable only via the liveness rule: stale past the lease timeout, **plus** a same-host pid-proof failure when the holder is same-host (a frozen-but-alive process keeps its id); cross-host reclaim uses freshness/timeout only (pid is not provable across hosts).
 - The **fencing token** (`serve_token`, a 128-bit random epoch) is the load-bearing part: every heartbeat, every mint of a new timestamp identity, and every registration write from `serve` verifies it. A zombie/paused holder that resumes after its lease was reclaimed fails the token check and stops — so it cannot create a dup-writer even though launch was guarded. The runner passes its token to the child via `AGENTCHUTE_SERVE_TOKEN`, so a fenced (reclaimed) child's `send` fails closed too.
 
-This makes "give each process its own id" an enforced, fenced invariant rather than a convention. (Operational assumption: the lease state lives on the same single-host filesystem as the inboxes — see §2 — and clocks are NTP-loose with `lease-timeout ≫ heartbeat + max-skew`. Severe skew degrades to premature/delayed reclaim; within that assumption the fence still prevents an actual dup-write. Multi-host operation over a network-mounted loop directory is untested and out of scope, not a degraded-but-supported mode.)
+This makes "give each process its own id" an enforced, fenced invariant rather than a convention. (Operational assumption: clocks are NTP-loose with `lease-timeout ≫ heartbeat + max-skew`. Severe skew degrades to premature/delayed reclaim. The lease state typically lives on the same single-host filesystem as the inboxes — the CI-tested configuration, §2 — but the cross-host reclaim branch above is real, shipped behavior, not dead code: some pools, including this project's own, run the loop directory on a shared network mount across more than one host. That path is fail-closed compatibility, not a verified guarantee — see §2's "Tested targets" for the honest boundary between the two.)
 
 ## 6. Messaging
 
@@ -166,7 +170,7 @@ Consumption is at-least-once and split across two verbs:
 1. Enumerate and sort inbox messages (per-sender FIFO).
 2. **`check` — phase 1 (CLAIM + display).** First re-display any uncommitted `.claimed` residue from a crashed/un-acked prior turn, each tagged with a **`REDELIVERED`** banner. Then, for each new message: validate envelope/body (quarantine if malformed, §11), CLAIM it (move `inbox/<id>/<name>` → `inbox/<id>/.claimed/<name>` under its canonical name), and display it. `check` does **not** archive, and it does **not** touch presence — a registration row's freshness (§9) is refreshed independently, by a live `serve` process's own heartbeat tick (or once, at explicit `boot`/`register`), never by a read/consume CLI touch.
 3. **Act on each displayed message.** Because the CLI prints and exits before the model acts, archiving during `check` would be at-most-once for the *work*; claiming instead makes the work at-least-once. **Handlers MUST be idempotent** — a crash between `check` and `ack` re-delivers.
-4. **`ack` — phase 2 (COMMIT).** Archive the `.claimed` residue. `ack` commits unconditionally (moving `.claimed` → `archive/` is a mutation of the recipient's own state only) and then reports any outstanding finish-gate blockers rather than withholding the commit. Archiving is the single commit point; an already-archived message is a benign no-op (idempotent).
+4. **`ack` — phase 2 (COMMIT).** Archive the `.claimed` residue (moving `.claimed` → `archive/` is a mutation of the recipient's own state only), then report any outstanding finish-gate blockers rather than withholding the commit. For anyone the guard (§15) does not apply to — a human, an unguarded/hookless session, or a latch belonging to no session or a foreign/dead one — this commit is unconditional. **It is not unconditional for a guarded session whose OWN current-session latch is armed**: that call is refused, directing the caller to `agentchute turn-end` instead (the only path that may commit claimed mail and clear that latch together, §15) — a deliberate exception, not an oversight, since letting a bare `ack` bypass the ordered handler would let it commit without ever clearing the latch. Archiving is the single commit point regardless of which path reaches it; an already-archived message is a benign no-op (idempotent).
 
 **Retention model.** `archive/` and `malformed/` are **caller-managed**. They grow without bound by design and are **not** part of the delivery guarantee. The delivery contract ends at claim (`check`) / commit (`ack`); `archive/` is an audit residue only. This includes malformed/ — §11.1's never-silently-dropped guarantee binds the reader (quarantine, don't drop); subsequent disposal is the caller's retention choice.
 
@@ -257,7 +261,13 @@ Presence is **soft state, read directly from the registration row** (v2.5 plan B
 
 A row's age compares its `last_seen` against the reader's clock under the same NTP-loose assumption as §5.4: clock skew between reader and writer shifts perceived freshness in either direction. Stale or absent ⇒ **not-alive** — never an error; an unregistered or long-gone agent simply reads not-alive. This is the dead-mailbox detection: "came back days later, one agent never returned" surfaces as a stale row.
 
-**Refresh.** A live `agentchute serve` process advances its own agent's `last_seen` unconditionally on every poll tick (default interval 5s, configurable via `--interval`, floored at 5s), gated by its serve-lease fencing token (§5.4) — a fenced-out (reclaimed) holder's heartbeat writes nothing, so it cannot resurrect a row another lease now owns. Explicit `boot`/`register` sets `last_seen` once, at that moment, needing no lease (it is not the continuous heartbeat). No other command — `check`, `send`, `status`, `gate`, `doctor` — ever writes `last_seen`; they only read it.
+**Refresh — four writers, not one:**
+1. A live `agentchute serve` process advances its own agent's `last_seen` unconditionally on every poll tick (default interval 5s, configurable via `--interval`, floored at 5s), gated by its serve-lease fencing token (§5.4) — a fenced-out (reclaimed) holder's heartbeat writes nothing, so it cannot resurrect a row another lease now owns.
+2. Explicit `boot`/`register` sets `last_seen` at that moment, needing no lease.
+3. On guarded vendors (§15), `self-check` (the turn-start hook) writes it again at the START of every turn — the same registration self-repair logic `boot` uses, needing no lease either.
+4. On guarded vendors, `turn-end` (the end-of-turn handler, §15) writes it a second time at the END of every turn, as step 0 of its ordered sequence — before it evaluates the finish gate.
+
+The practical effect: a hook-covered session refreshes its own freshness on every turn boundary purely from hooks, whether or not it is ALSO running under `agentchute serve` — `serve` is what keeps a row fresh between turns (while the agent is thinking, or idle), while self-check/turn-end are what keep it fresh across many short turns even without a supervising `serve` process. No other command — `check`, `send`, `status`, `gate`, `doctor` — ever writes `last_seen`; they only read it.
 
 **Registration rows are pool-shared state, not exclusively self-owned.** Any agent's row may be removed by another process — in practice, whichever one is running `boot` or `serve`'s own slow tick — once it satisfies both sweep conditions below; this is the intended hygiene mechanism, not a violation of the named agent's authority over its own state.
 

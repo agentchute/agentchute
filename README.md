@@ -30,9 +30,9 @@ That's the reference CLI. The protocol itself is just files — an implementatio
 
 **Done, not big.** Most projects reach 1.0 by adding; agentchute got here by deleting. The pull-only redesign removed the watchdog, the wake adapters, and the reachability machinery; one release alone removed 8,262 lines; every release since is required to remove something. What's left is the stable core:
 
-- **Protocol v2 is stable.** *Stable* is SemVer-serious, not rhetorical: the covenants — the primitives (§1), the envelope (§6.4), the identity grammar (§6.1), the lifecycle guarantees — change only through the written deprecation process. The protocol can still be improved and extended — clarifications, extension profiles — but a breaking change means Protocol v3, entered through that same process. Registrations now carry `v: 2` on the wire, so the version claim self-evidences instead of living in prose.
-- **CLI 1.x implements Protocol v2.** That's the whole compatibility contract. The CLI patches and minors freely underneath it.
-- **Honesty clause:** the protocol has been stable since v0.10.0, so 1.0 adds almost nothing technically new — and that's the point. It adds three small things: wire self-evidence (`v: 2`), a written two-line versioning contract, and the boundary below.
+- **Protocol v2 was declared stable.** *Stable* was meant SemVer-serious, not rhetorical: the covenants — the primitives (§1), the envelope (§6.4), the identity grammar (§6.1), the lifecycle guarantees — were to change only through the written deprecation process. The primitives, envelope, and lifecycle guarantees held. **The identity grammar didn't**: v2.5 replaces it (see [`AGENTCHUTE.md`](AGENTCHUTE.md)'s own top note and [the write-up](https://agentchute.dev/blog/v2-5-the-wire-broke.html)) — a real wire break, walked back openly rather than smuggled into a minor.
+- **CLI 1.x implements Protocol v2; the reference CLI's actual current wire version and CHANGELOG entry for v2.5 are declared at release.**
+- **Honesty clause:** the protocol had been stable since v0.10.0 through 1.0; v2.5 is the first time that changed, and this section says so rather than quietly updating the claim above it.
 
 ## The idea
 
