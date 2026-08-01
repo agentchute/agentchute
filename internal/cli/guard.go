@@ -228,8 +228,14 @@ func evaluateGuardDecision(cfg *loop.Config, agentID, session, toolCmd string) g
 }
 
 // guardCommandDenied reports whether toolCmd matches guardAgentchuteSubcmdRE
-// or any guardPipelineDenySubstrings entry, case-insensitive.
+// or any guardPipelineDenySubstrings entry, case-insensitive. A direct,
+// single-command `agentchute send`/`ac send` invocation is a known data sink:
+// its argument text is not shell syntax, so deny-list words in a quoted body
+// are inert. The exception fails closed on compound or expandable shell syntax.
 func guardCommandDenied(toolCmd string) bool {
+	if candidate, inert := guardDirectSendInvocation(toolCmd); candidate {
+		return !inert
+	}
 	lower := strings.ToLower(toolCmd)
 	normalized := guardDispatchPrefixRE.ReplaceAllString(lower, "")
 	if guardAgentchuteSubcmdRE.MatchString(normalized) {
@@ -241,6 +247,158 @@ func guardCommandDenied(toolCmd string) bool {
 		}
 	}
 	return false
+}
+
+// guardDirectSendInvocation recognizes only the literal send binaries this
+// repo teaches, optionally preceded by the tool-name text parseGuardToolCommand
+// adds. It returns candidate=true for a send prefix even when later shell
+// syntax is unsafe, so a compound send is denied rather than falling through
+// to the best-effort substring list.
+func guardDirectSendInvocation(toolCmd string) (candidate, inert bool) {
+	cmd := strings.TrimSpace(toolCmd)
+	for _, prefix := range []string{"Bash ", "functions.exec_command "} {
+		if strings.HasPrefix(cmd, prefix) {
+			cmd = strings.TrimSpace(strings.TrimPrefix(cmd, prefix))
+			break
+		}
+	}
+
+	words, inert := guardInertShellWords(cmd)
+	candidate = len(words) >= 2 && (words[0] == "agentchute" || words[0] == "ac") && words[1] == "send"
+	return candidate, inert
+}
+
+// guardInertShellWords tokenizes the small shell subset needed to recognize a
+// direct send. Quotes and escapes may make argument text inert; executable
+// syntax (operators, substitutions, redirections, comments, or malformed
+// quoting) rejects the exception. This is deliberately not a general shell
+// parser and never strips a quoted or heredoc body before the deny checks.
+//
+// The invariant this tokenizer exists to hold: text that reads as literal
+// data to one layer is live syntax to another. guardCommandDenied decides on
+// toolCmd text, but that text is also handed to a DIFFERENT shell — the one
+// that actually executes the Bash/exec_command call — which interprets and
+// expands it before the command runs. A double-quoted send body is inert
+// only to the extent that the executing shell also treats it as inert; where
+// the two disagree, the executing shell wins, after this function has
+// already said yes. The double-quote branch below rejects a backtick or
+// dollar-paren for exactly this reason. It originally stopped there and
+// missed a bare $VAR or ${VAR}: also live to the executing shell, but not
+// command substitution, so it slipped through. That let a quoted send body
+// carry a literal reference to AGENTCHUTE_SERVE_TOKEN which the executing
+// shell would expand to the real token value before the body was ever sent
+// — the guard's own exception turned into an exfiltration path. A future
+// editor adding a case here must ask "is there a layer downstream that
+// interprets this differently than this tokenizer does?", not just
+// pattern-match against the rows already under test. The same failure class
+// has bitten this bus at a different boundary: composing a message body as
+// an unquoted heredoc (`<<EOF` instead of `<<'EOF'`) let the composing shell
+// evaluate literal backticks and dollar-parens in the message prose before
+// the body was ever sent, silently blanking text with no visible error.
+func guardInertShellWords(cmd string) ([]string, bool) {
+	words := make([]string, 0, 4)
+	var word strings.Builder
+	inWord := false
+
+	finishWord := func() {
+		if inWord {
+			words = append(words, word.String())
+			word.Reset()
+			inWord = false
+		}
+	}
+	reject := func() ([]string, bool) {
+		finishWord()
+		return words, false
+	}
+
+	for i := 0; i < len(cmd); {
+		switch c := cmd[i]; {
+		case c == ' ' || c == '\t':
+			finishWord()
+			i++
+		case c == '\n' || c == '\r':
+			return reject()
+		case strings.ContainsRune(";&|<>(){}#`", rune(c)):
+			return reject()
+		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '(':
+			return reject()
+		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '\'':
+			inWord = true
+			i += 2
+			closed := false
+			for i < len(cmd) {
+				if cmd[i] == '\'' {
+					closed = true
+					i++
+					break
+				}
+				if cmd[i] == '\\' {
+					if i+1 >= len(cmd) || cmd[i+1] == '\n' || cmd[i+1] == '\r' {
+						return reject()
+					}
+					i++
+				}
+				word.WriteByte(cmd[i])
+				i++
+			}
+			if !closed {
+				return reject()
+			}
+		case c == '$':
+			return reject()
+		case c == '\'':
+			inWord = true
+			i++
+			start := i
+			for i < len(cmd) && cmd[i] != '\'' {
+				i++
+			}
+			if i >= len(cmd) {
+				return reject()
+			}
+			word.WriteString(cmd[start:i])
+			i++
+		case c == '"':
+			inWord = true
+			i++
+			closed := false
+			for i < len(cmd) {
+				if cmd[i] == '"' {
+					closed = true
+					i++
+					break
+				}
+				if cmd[i] == '`' || cmd[i] == '$' {
+					return reject()
+				}
+				if cmd[i] == '\\' {
+					if i+1 >= len(cmd) || cmd[i+1] == '\n' || cmd[i+1] == '\r' {
+						return reject()
+					}
+					i++
+				}
+				word.WriteByte(cmd[i])
+				i++
+			}
+			if !closed {
+				return reject()
+			}
+		case c == '\\':
+			if i+1 >= len(cmd) || cmd[i+1] == '\n' || cmd[i+1] == '\r' {
+				return reject()
+			}
+			inWord = true
+			word.WriteByte(cmd[i+1])
+			i += 2
+		default:
+			inWord = true
+			word.WriteByte(c)
+			i++
+		}
+	}
+	finishWord()
+	return words, true
 }
 
 // guardHookInput is the tolerant shape of a PreToolUse-family hook's stdin
