@@ -273,6 +273,28 @@ func guardDirectSendInvocation(toolCmd string) (candidate, inert bool) {
 // syntax (operators, substitutions, redirections, comments, or malformed
 // quoting) rejects the exception. This is deliberately not a general shell
 // parser and never strips a quoted or heredoc body before the deny checks.
+//
+// The invariant this tokenizer exists to hold: text that reads as literal
+// data to one layer is live syntax to another. guardCommandDenied decides on
+// toolCmd text, but that text is also handed to a DIFFERENT shell — the one
+// that actually executes the Bash/exec_command call — which interprets and
+// expands it before the command runs. A double-quoted send body is inert
+// only to the extent that the executing shell also treats it as inert; where
+// the two disagree, the executing shell wins, after this function has
+// already said yes. The double-quote branch below rejects a backtick or
+// dollar-paren for exactly this reason. It originally stopped there and
+// missed a bare $VAR or ${VAR}: also live to the executing shell, but not
+// command substitution, so it slipped through. That let a quoted send body
+// carry a literal reference to AGENTCHUTE_SERVE_TOKEN which the executing
+// shell would expand to the real token value before the body was ever sent
+// — the guard's own exception turned into an exfiltration path. A future
+// editor adding a case here must ask "is there a layer downstream that
+// interprets this differently than this tokenizer does?", not just
+// pattern-match against the rows already under test. The same failure class
+// has bitten this bus at a different boundary: composing a message body as
+// an unquoted heredoc (`<<EOF` instead of `<<'EOF'`) let the composing shell
+// evaluate literal backticks and dollar-parens in the message prose before
+// the body was ever sent, silently blanking text with no visible error.
 func guardInertShellWords(cmd string) ([]string, bool) {
 	words := make([]string, 0, 4)
 	var word strings.Builder
