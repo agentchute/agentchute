@@ -345,7 +345,7 @@ func guardInertShellWords(cmd string) ([]string, bool) {
 					i++
 					break
 				}
-				if cmd[i] == '`' || (cmd[i] == '$' && i+1 < len(cmd) && cmd[i+1] == '(') {
+				if cmd[i] == '`' || cmd[i] == '$' {
 					return reject()
 				}
 				if cmd[i] == '\\' {
