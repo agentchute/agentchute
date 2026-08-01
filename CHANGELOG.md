@@ -4,6 +4,17 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.5.3 (2026-07-31) — smoother turns, narrower authority
+
+**Operator-facing coordination**
+- A plain acknowledgement is no longer documented as ending a bus turn; the recipient continues toward the task's stated done-when instead of stalling after an ACK ([#114](https://github.com/agentchute/agentchute/pull/114)).
+- The `--ask` done-when warning is gone. It checked one optional label spelling that the message contract never required, so valid asks no longer produce a misleading warning ([#115](https://github.com/agentchute/agentchute/pull/115)).
+- Direct sends can quote guard-protected command text as inert body data without being blocked. Parameter expansion, command substitution, compound shell syntax, redirection, and heredocs still deny the exception ([#119](https://github.com/agentchute/agentchute/pull/119)).
+- Review lanes now remove separate pinned-SHA checkouts in the same turn, only after verifying a clean tree at the reviewed SHA. The obligation lives in the shared playbook, so it applies across wrappers ([#118](https://github.com/agentchute/agentchute/pull/118)).
+
+**Authorization boundary**
+- Task messages may authorize only the enumerated lane-local and repository-additive scopes. Operator-reserved actions still require direct operator confirmation to the acting lane; a same-UID local grant file was rejected because it cannot authenticate a human principal ([#117](https://github.com/agentchute/agentchute/pull/117)).
+
 ## v1.5.2 (2026-07-31) — guard the mail pipeline, not the turn
 
 **Guard-latch livelock fix**
