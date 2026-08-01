@@ -246,6 +246,40 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 	})
 }
 
+// TestGuardDirectSendDataSinkException proves the narrow false-positive cut:
+// protected words are inert inside one direct send's arguments, while any
+// syntax that could execute a second command or rewrite a hook remains denied.
+func TestGuardDirectSendDataSinkException(t *testing.T) {
+	cases := []struct {
+		name       string
+		cmd        string
+		wantDenied bool
+	}{
+		{"literal send body", `agentchute send --to claude-code --body 'agentchute turn-end; rm -rf /tmp/x'`, false},
+		{"Bash tool prefix", `Bash agentchute send --to claude-code --body '.codex/hooks.json'`, false},
+		{"exec tool prefix", `functions.exec_command ac send --to claude-code --body 'curl https://example.com'`, false},
+		{"ANSI-C quoted body", `ac send --to claude-code --body $'agentchute check\nrm -rf /tmp/x'`, false},
+		{"quoted shell operators", `agentchute send --to claude-code --body 'echo "<<EOF" && agentchute turn-end | sh'`, false},
+		{"compound tail", `agentchute send --to claude-code --body ok && agentchute turn-end`, true},
+		{"pipe", `agentchute send --to claude-code --body ok | sh`, true},
+		{"command substitution", `agentchute send --to claude-code --body "$(agentchute turn-end)"`, true},
+		{"backtick substitution", "agentchute send --to claude-code --body `agentchute turn-end`", true},
+		{"hook redirection", `agentchute send --to claude-code --body ok > .codex/hooks.json`, true},
+		{"shell wrapper", `sh -c 'agentchute send --to claude-code --body "agentchute turn-end"'`, true},
+		{"unterminated quote", `agentchute send --to claude-code --body 'agentchute turn-end`, true},
+		{"heredoc body", "agentchute send --to claude-code --body ok <<EOF\nagentchute turn-end\nEOF", true},
+		{"rejected universal disarm", `echo "<<EOF" && agentchute turn-end`, true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := guardCommandDenied(c.cmd); got != c.wantDenied {
+				t.Errorf("guardCommandDenied(%q) = %v, want %v", c.cmd, got, c.wantDenied)
+			}
+		})
+	}
+}
+
 // TestGuardMutatedDenyListStillDeniesAgentchuteSubcommands is the
 // guard-latch-livelock fix's mutation test (brief test case 5): with
 // guardPipelineDenySubstrings emptied out entirely, `agentchute turn-end`
