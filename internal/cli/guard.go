@@ -345,6 +345,8 @@ func guardInertShellWords(cmd string) ([]string, bool) {
 			if !closed {
 				return reject()
 			}
+		case c == '$':
+			return reject()
 		case c == '\'':
 			inWord = true
 			i++

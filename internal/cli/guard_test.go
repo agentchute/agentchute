@@ -267,6 +267,8 @@ func TestGuardDirectSendDataSinkException(t *testing.T) {
 		{"plain parameter expansion", `agentchute send --to claude-code --body "$AGENTCHUTE_SERVE_TOKEN"`, true},
 		{"braced parameter expansion", `agentchute send --to claude-code --body "${AGENTCHUTE_SERVE_TOKEN}"`, true},
 		{"special parameter", `agentchute send --to claude-code --body "$?"`, true},
+		{"unquoted plain parameter expansion", `agentchute send --to claude-code --body $AGENTCHUTE_SERVE_TOKEN`, true},
+		{"unquoted special parameter", `agentchute send --to claude-code --body $?`, true},
 		{"hook redirection", `agentchute send --to claude-code --body ok > .codex/hooks.json`, true},
 		{"shell wrapper", `sh -c 'agentchute send --to claude-code --body "agentchute turn-end"'`, true},
 		{"unterminated quote", `agentchute send --to claude-code --body 'agentchute turn-end`, true},
