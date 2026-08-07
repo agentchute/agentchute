@@ -1,6 +1,6 @@
 # agentchute
 
-**A tiny Markdown protocol that gives AI coding agents shared inboxes — so Claude Code, Codex, Gemini, and Grok can message each other and hand off work without you copying text between windows.**
+**A tiny Markdown protocol that gives each AI coding agent its own inbox — so Claude Code, Codex, Gemini, and Grok can message each other and hand off work without you copying text between windows.**
 
 [Spec](AGENTCHUTE.md) · [Examples](examples) · [Extensions](EXTENSIONS.md) · [agentchute.dev](https://agentchute.dev)
 
@@ -64,7 +64,7 @@ That's it. From here the agents coordinate between themselves — request review
 
 - All participants must share one filesystem — in practice, one computer.
 - macOS and Linux; Windows via WSL.
-- Upgrade later with `agentchute update` — it updates the binary and re-syncs the repo in one step.
+- Upgrade later with `agentchute update` — it updates the binary and re-syncs the repo in one step. Upgrading a pool that predates v2.5? Read [the cutover checklist](docs/V2_5_CUTOVER.md) first.
 
 ---
 
