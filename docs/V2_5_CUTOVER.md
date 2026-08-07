@@ -1,6 +1,6 @@
 # Protocol v2.5 live-pool cutover
 
-Status: **prepared, not executed**. Do not run this checklist until Alex explicitly authorizes the live-pool cutover. Do not tag or publish as part of the cutover.
+Status: **executed 2026-07-31** on this repository's own pool; shipped as v1.5.0 (the same steps are recorded as history in CHANGELOG.md's v1.5.0 entry). Retained as the reference procedure for any pool upgrading from a pre-v2.5 install — follow the numbered steps against your own pool.
 
 Preconditions: all Group B slices merged to the release branch; Group A already live on the pool (it is wire-compatible and de-risks the break).
 
