@@ -585,14 +585,25 @@ func printRestartWarning(tag string, active []string, done bool) {
 	bar := strings.Repeat("=", 70)
 	fmt.Fprintln(os.Stderr, bar)
 	if done {
+		// codex review on PR #130: the pre-resync (done=false) banner below
+		// must not claim supervisors are already fenced or tell the operator
+		// to restart now — under the resync-gated ordering this function
+		// documents, neither is true until invalidation actually runs, which
+		// only happens after a successful resync. Printing it unconditionally
+		// would directly contradict the safety behavior by prompting a
+		// restart into a possibly-incomplete update.
 		fmt.Fprintf(os.Stderr, "agentchute updated to %s; serve leases were invalidated.\n\n", tag)
+		fmt.Fprintln(os.Stderr, "Running supervisors are fenced and will exit with a restart notice on their next tick.")
+		fmt.Fprintln(os.Stderr, "Registration rows stay present. Relaunch each lane with `ac serve <wrapper>`.")
+		if len(active) > 0 {
+			fmt.Fprintf(os.Stderr, "\nRESTART every active agent now (%d): %s\n", len(active), strings.Join(active, ", "))
+		}
 	} else {
 		fmt.Fprintf(os.Stderr, "agentchute is updating to %s; serve leases will be invalidated once the setup re-sync succeeds.\n\n", tag)
-	}
-	fmt.Fprintln(os.Stderr, "Running supervisors are fenced and will exit with a restart notice on their next tick.")
-	fmt.Fprintln(os.Stderr, "Registration rows stay present. Relaunch each lane with `ac serve <wrapper>`.")
-	if len(active) > 0 {
-		fmt.Fprintf(os.Stderr, "\nRESTART every active agent now (%d): %s\n", len(active), strings.Join(active, ", "))
+		fmt.Fprintln(os.Stderr, "Supervisors stay active until then; nothing to restart yet.")
+		if len(active) > 0 {
+			fmt.Fprintf(os.Stderr, "\nActive now (%d), pending the resync outcome: %s\n", len(active), strings.Join(active, ", "))
+		}
 	}
 	fmt.Fprintln(os.Stderr, bar)
 }

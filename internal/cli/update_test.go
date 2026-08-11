@@ -538,6 +538,38 @@ func TestUpdate_ResyncFailureLeavesLeaseIntact(t *testing.T) {
 	}
 }
 
+// TestPrintRestartWarningDoneFalseDoesNotClaimFenced is the regression test
+// codex asked for on PR #130's gate: the pre-resync (done=false) banner
+// previously printed "will be invalidated once the setup re-sync succeeds"
+// on its own first line, but then UNCONDITIONALLY continued with "Running
+// supervisors are fenced" and "RESTART every active agent now" — a direct
+// contradiction of the resync-gated ordering (neither is true until
+// invalidation actually runs), and exactly the kind of prompt that would
+// defeat the safety fix by pushing an operator to restart into a possibly-
+// incomplete update. done=true must still say both.
+func TestPrintRestartWarningDoneFalseDoesNotClaimFenced(t *testing.T) {
+	pending := captureStderr(t, func() {
+		printRestartWarning("v0.5.0", []string{"codex-agentchute"}, false)
+	})
+	for _, mustNotContain := range []string{"are fenced", "RESTART every active agent now"} {
+		if strings.Contains(pending, mustNotContain) {
+			t.Errorf("done=false banner must not claim %q before the resync has succeeded:\n%s", mustNotContain, pending)
+		}
+	}
+	if !strings.Contains(pending, "will be invalidated once the setup re-sync succeeds") {
+		t.Errorf("done=false banner missing the resync-gated timing statement:\n%s", pending)
+	}
+
+	done := captureStderr(t, func() {
+		printRestartWarning("v0.5.0", []string{"codex-agentchute"}, true)
+	})
+	for _, mustContain := range []string{"are fenced", "RESTART every active agent now"} {
+		if !strings.Contains(done, mustContain) {
+			t.Errorf("done=true banner missing %q:\n%s", mustContain, done)
+		}
+	}
+}
+
 // codex review on PR #110 [P1]: the forced-verification-failure test in
 // setup_test.go proves cmdSetup's own contract, but acceptance item 3
 // ("forced verification failure propagates through setup/update resync")
