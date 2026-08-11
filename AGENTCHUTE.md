@@ -1,4 +1,5 @@
 # AGENTCHUTE.md
+<!-- agentchute-spec v1 -->
 
 *Open spec for inbox-based agent coordination. **Protocol v2 (pull-only) was declared final at CLI v1.0.0.** That declaration held for the primitives (§1), the envelope (§6.4), and the lifecycle guarantees (§6.3, §11.1) — none of those changed. It did **not** hold for the filename/identity grammar (§6.1): v2.5 deliberately replaces the per-`(sender,recipient)` sequence counter with a timestamp+random-suffix identity — a real wire break, the exact kind the 1.0 covenant said would only happen through Protocol v3. It ships as "2.5," not "3.0," on purpose; the reasoning for both the break and that naming choice is recorded in `docs/decisions/agentchute-v2.5-proposal.md` and on the project blog, not left implicit. The reference CLI writes integer `v: 3` on registration rows and renders that wire value as Protocol v2.5; the release history is recorded in [`CHANGELOG.md`](CHANGELOG.md). Conformance invariants remain covenants that change only through the versioned deprecation process in [`CONTRIBUTING.md`](CONTRIBUTING.md).*
 

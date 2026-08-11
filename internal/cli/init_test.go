@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ func TestInitFreshEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expectAction(t, plan, "AGENTCHUTE.md", "write")
+	expectAction(t, plan, "AGENTCHUTE.md", "create v1")
 	expectAction(t, plan, "CLAUDE.md", "create v29")
 	expectAction(t, plan, "CODEX.md", "create v29")
 	expectAction(t, plan, "GEMINI.md", "create v29")
@@ -297,6 +298,106 @@ func TestInitFailsOnUnrecognizableAgentchuteMd(t *testing.T) {
 	if !strings.Contains(err.Error(), "does not look like an agentchute spec") {
 		t.Errorf("error should mention recognizability: %v", err)
 	}
+}
+
+// 2026-08-11 hook-refresh-reliability follow-up, finding 3: planSpecFile now
+// gets the same version-compare-and-replace treatment planEnrollmentFile
+// already has, instead of skipping unconditionally once recognizable.
+
+// A recognizable AGENTCHUTE.md with no agentchute-spec marker at all predates
+// this versioning scheme entirely — treated as older than any version, so it
+// is replaced with the current embedded content (matching planEnrollmentFile's
+// own "no marker — write current" branch for CLAUDE.md/AGENTS.md/etc).
+func TestInitReplacesLegacySpecWithNoMarker(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# AGENTCHUTE.md\n\nan old spec from before versioning existed\n"))
+
+	plan, err := computeInitPlan(root, "agentchute", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectAction(t, plan, "AGENTCHUTE.md", "replace legacy→v1")
+	applyAll(t, plan)
+
+	got, err := os.ReadFile(filepath.Join(root, "AGENTCHUTE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != embeddedSpecContent {
+		t.Errorf("legacy AGENTCHUTE.md was not replaced with the embedded spec")
+	}
+}
+
+// A marker at the current version whose content byte-matches the embedded
+// spec exactly → no-op, no Apply function (planHasMutations-safe).
+func TestInitSkipsWhenSpecMarkerCurrentAndMatches(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte(embeddedSpecContent))
+
+	plan, err := computeInitPlan(root, "agentchute", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range plan.Actions {
+		if a.Target != "AGENTCHUTE.md" {
+			continue
+		}
+		if a.Action != "skip" {
+			t.Errorf("action = %q, want skip", a.Action)
+		}
+		if a.Apply != nil {
+			t.Errorf("an already-current spec must be a no-op")
+		}
+	}
+}
+
+// A marker at the current version whose content has DRIFTED from the
+// embedded spec (e.g. hand-edited) → replace per the same ruling
+// planEnrollmentFile already follows for its own marked block.
+func TestInitReplacesDriftedCurrentVersionSpec(t *testing.T) {
+	root := t.TempDir()
+	drifted := "# AGENTCHUTE.md\n<!-- agentchute-spec v1 -->\n\nhand-edited drift, not the canonical body\n"
+	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte(drifted))
+
+	plan, err := computeInitPlan(root, "agentchute", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectAction(t, plan, "AGENTCHUTE.md", "replace v1 drift")
+	applyAll(t, plan)
+
+	got, err := os.ReadFile(filepath.Join(root, "AGENTCHUTE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != embeddedSpecContent {
+		t.Errorf("drifted AGENTCHUTE.md was not replaced with the embedded spec")
+	}
+}
+
+// A marker newer than this binary's embedded specVersion → leave alone with
+// a warning, never overwrite a deliberately future-dated spec.
+func TestInitLeavesNewerSpecVersionAlone(t *testing.T) {
+	root := t.TempDir()
+	future := fmt.Sprintf("# AGENTCHUTE.md\n<!-- agentchute-spec v%d -->\n\nfrom a newer binary\n", specVersion+1)
+	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte(future))
+
+	plan, err := computeInitPlan(root, "agentchute", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range plan.Actions {
+		if a.Target == "AGENTCHUTE.md" {
+			if a.Action != "skip (warn)" {
+				t.Errorf("expected skip (warn), got %q", a.Action)
+			}
+			if a.Apply != nil {
+				t.Errorf("future-version action should be a no-op")
+			}
+			return
+		}
+	}
+	t.Fatal("AGENTCHUTE.md action not found in plan")
 }
 
 // Existing dir at 0755 → chmod 0700 action.
