@@ -91,6 +91,32 @@ func TestGateFinishBlocksOnUnreadMail(t *testing.T) {
 	})
 }
 
+// A blocked gate mirrors its reasons to stderr in the non-envelope modes
+// (same aws-demo Stop-hook contract as turn-end: stdout is not a feedback
+// channel when the caller is a hook that only surfaces stderr).
+func TestGateBlockedMirrorsReasonsToStderr(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		t.Setenv("TMUX_PANE", "%1")
+		if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs()) }); err != nil {
+			t.Fatal(err)
+		}
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
+		mustWriteSeqInbox(t, inboxDir, "codex", 1,
+			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
+
+		_, errOut, err := captureStdoutStderr(t, func() error {
+			return cmdGate(gateArgs("finish"))
+		})
+		if !errors.Is(err, errBlocked) {
+			t.Fatalf("err = %v, want errBlocked", err)
+		}
+		if !strings.Contains(errOut, "unread") {
+			t.Errorf("stderr = %q, want the unread-mail reason mirrored there", errOut)
+		}
+	})
+}
+
 // gate --before consensus does NOT consult the stale-reg threshold. Stale
 // registration alone (with empty inbox + ledger) must pass consensus.
 func TestGateConsensusIgnoresStaleReg(t *testing.T) {

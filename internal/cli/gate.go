@@ -113,6 +113,7 @@ func cmdGate(args []string) error {
 		emitGateText(status)
 	}
 
+	emitGateBlockedStderr(status)
 	if status.Blocked {
 		return errBlocked
 	}
@@ -365,6 +366,27 @@ func emitGateJSON(s gateStatus) error {
 	return enc.Encode(s)
 }
 
+// gateBlockedReasonLine is the one-line block verdict shared by every channel
+// that carries the reason to a model: the codex Stop envelope's "reason" field
+// and the stderr mirror below.
+func gateBlockedReasonLine(s gateStatus) string {
+	return fmt.Sprintf("agentchute gate --before %s: %s", s.Phase, strings.Join(s.Reasons, "; "))
+}
+
+// emitGateBlockedStderr mirrors a blocked verdict to stderr in the
+// non-envelope modes (text and --json). Claude Code's Stop hook surfaces only
+// stderr for an exit-2 hook — its stdout is reserved for that harness's own
+// decision-JSON schema, which the plain --json shape is not — so a
+// stdout-only block re-prompted the session with "No stderr output" and no
+// actionable content, an empty-feedback wake loop (aws-demo report,
+// 2026-08-11). Envelope modes (--codex-hook) keep their single channel.
+func emitGateBlockedStderr(s gateStatus) {
+	if !s.Blocked {
+		return
+	}
+	fmt.Fprintln(os.Stderr, gateBlockedReasonLine(s))
+}
+
 // emitGateCodexStop emits codex's Stop-hook shape. On block: `{"decision":
 // "block","reason":"..."}` to stdout, exit 0 (returned nil) — codex sees
 // the decision and continues the turn. On clear: no stdout (codex stops
@@ -374,10 +396,9 @@ func emitGateCodexStop(s gateStatus) error {
 	if !s.Blocked {
 		return nil
 	}
-	reason := fmt.Sprintf("agentchute gate --before %s: %s", s.Phase, strings.Join(s.Reasons, "; "))
 	out := map[string]any{
 		"decision": "block",
-		"reason":   reason,
+		"reason":   gateBlockedReasonLine(s),
 	}
 	enc := json.NewEncoder(os.Stdout)
 	return enc.Encode(out)
