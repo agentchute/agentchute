@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +136,12 @@ func TestDoctorSpecFreshnessMatchesEmbeddedSpec(t *testing.T) {
 	}
 }
 
+// TestDoctorSpecFreshnessWarnsOnStaleSpec: 2026-08-11 hook-refresh-
+// reliability follow-up, finding 3. planSpecFile now actually refreshes a
+// stale AGENTCHUTE.md on resync (init.go's version-compare-and-replace, no
+// longer skip-if-present), so the remediation text must say so instead of
+// the old, actively wrong "update the binary instead" framing that never
+// fixed anything.
 func TestDoctorSpecFreshnessWarnsOnStaleSpec(t *testing.T) {
 	cfg := newDoctorCfg(t)
 	if err := os.WriteFile(filepath.Join(cfg.ControlRepo, "AGENTCHUTE.md"), []byte("# AGENTCHUTE.md\n\nstale copy\n"), 0o644); err != nil {
@@ -145,13 +152,38 @@ func TestDoctorSpecFreshnessWarnsOnStaleSpec(t *testing.T) {
 	if got.Severity != severityWarn {
 		t.Fatalf("spec_freshness severity = %q, want WARN; message=%q", got.Severity, got.Message)
 	}
-	for _, want := range []string{"differs from this binary's embedded spec", "disk sha256=", "embedded sha256=", "update your checkout", "agentchute update"} {
+	for _, want := range []string{"differs from this binary's embedded spec", "disk sha256=", "embedded sha256=", "stale", "agentchute setup", "agentchute update", "automatically"} {
 		if !strings.Contains(got.Message, want) {
 			t.Fatalf("spec_freshness message missing %q: %q", want, got.Message)
 		}
 	}
 	if strings.Contains(got.Message, "agentchute init") {
-		t.Fatalf("spec_freshness message still recommends `agentchute init`, which never fixes divergence (init.go skip-if-present): %q", got.Message)
+		t.Fatalf("spec_freshness message must not recommend `agentchute init`, which never touches an existing recognizable spec: %q", got.Message)
+	}
+}
+
+// TestDoctorSpecFreshnessNewerVersionLeftAlone: a disk copy marked newer
+// than this binary's embedded spec version is the one case planSpecFile
+// deliberately leaves untouched — doctor's message must say so, not claim
+// it is stale and about to be auto-fixed.
+func TestDoctorSpecFreshnessNewerVersionLeftAlone(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	future := fmt.Sprintf("# AGENTCHUTE.md\n<!-- agentchute-spec v%d -->\n\nfrom-the-future copy\n", specVersion+1)
+	if err := os.WriteFile(filepath.Join(cfg.ControlRepo, "AGENTCHUTE.md"), []byte(future), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := checkSpecFreshness(cfg)
+	if got.Severity != severityWarn {
+		t.Fatalf("spec_freshness severity = %q, want WARN; message=%q", got.Severity, got.Message)
+	}
+	for _, want := range []string{"newer than this binary", "left alone on purpose"} {
+		if !strings.Contains(got.Message, want) {
+			t.Fatalf("spec_freshness message missing %q: %q", want, got.Message)
+		}
+	}
+	if strings.Contains(got.Message, "stale") {
+		t.Fatalf("spec_freshness message must not call a deliberately newer spec stale: %q", got.Message)
 	}
 }
 

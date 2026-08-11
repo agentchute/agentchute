@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -254,10 +255,26 @@ func checkSpecFreshness(cfg *loop.Config) doctorCheck {
 	if bytes.Equal(onDisk, embedded) {
 		return doctorCheck{Name: name, Severity: severityOK, Message: "AGENTCHUTE.md matches embedded spec"}
 	}
+	// planSpecFile (init.go) now version-compares and auto-replaces AGENTCHUTE.md
+	// on every setup/update resync, same as the enrollment blocks — so the disk
+	// copy differing is only ever a WARN needing a resync, unless it is marked
+	// newer than this binary knows about (deliberately future-dated), which
+	// planSpecFile leaves alone on purpose. Tell the operator which case this is
+	// rather than a generic "this may be expected" hedge.
+	if match := specMarkerRE.FindStringSubmatch(string(onDisk)); match != nil {
+		if diskVersion, err := strconv.Atoi(match[1]); err == nil && diskVersion > specVersion {
+			return doctorCheck{
+				Name:     name,
+				Severity: severityWarn,
+				Message: fmt.Sprintf("AGENTCHUTE.md is marked v%d, newer than this binary's embedded v%d (disk sha256=%s, embedded sha256=%s); this is left alone on purpose — upgrade agentchute to manage it",
+					diskVersion, specVersion, shortSHA256(onDisk), shortSHA256(embedded)),
+			}
+		}
+	}
 	return doctorCheck{
 		Name:     name,
 		Severity: severityWarn,
-		Message: fmt.Sprintf("AGENTCHUTE.md differs from this binary's embedded spec (disk sha256=%s, embedded sha256=%s); if the disk copy is stale, update your checkout; if it is deliberately newer or locally edited, this is expected — update the binary instead (`agentchute update`)",
+		Message: fmt.Sprintf("AGENTCHUTE.md differs from this binary's embedded spec (disk sha256=%s, embedded sha256=%s); stale — run `agentchute setup --yes` or `agentchute update` to refresh it automatically",
 			shortSHA256(onDisk), shortSHA256(embedded)),
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -20,6 +21,16 @@ import (
 // counting + version extraction work uniformly. Captures: 1=version, 2=kind.
 var enrollmentMarkerRE = regexp.MustCompile(`<!-- agentchute-enrollment v(\d+) (begin|end) -->`)
 
+// specMarkerRE extracts the version from AGENTCHUTE.md's own marker line
+// (`<!-- agentchute-spec vN -->`, right after the `# AGENTCHUTE.md` title).
+// AGENTCHUTE.md is wholly agentchute-owned once recognized (planSpecFile's
+// "does not look like an agentchute spec" branch already refuses to touch
+// anything else), unlike CLAUDE.md/AGENTS.md where the enrollment block is
+// one marked region inside an otherwise operator-owned file — so a single
+// version marker is enough to gate a whole-file replace, no begin/end pair
+// needed.
+var specMarkerRE = regexp.MustCompile(`<!-- agentchute-spec v(\d+) -->`)
+
 // AGENTCHUTE.md content is embedded at build time so `init` writes the spec
 // version pinned to the binary. The embed lives in the root main package
 // (//go:embed cannot reach a parent directory); Main injects it here at
@@ -28,6 +39,7 @@ var embeddedSpecContent string
 
 const (
 	enrollmentVersion       = 29
+	specVersion             = 1
 	gitignoreVersion        = 3
 	gitignoreBegin          = "# agentchute-gitignore v3 begin"
 	gitignoreEnd            = "# agentchute-gitignore v3 end"
@@ -288,20 +300,45 @@ func rejectSymlinkAncestor(path string) error {
 	return nil
 }
 
-// planSpecFile decides what to do with AGENTCHUTE.md. Missing -> write
-// embedded. Recognizable spec (sentinel header found) -> skip. Anything
-// else -> fail: the enrollment block references §5 in the spec, so a
-// non-agentchute AGENTCHUTE.md would silently break the contract.
+// planSpecFile decides what to do with AGENTCHUTE.md: missing -> write
+// embedded; recognizable spec (sentinel header found) -> version-compare-
+// and-replace against specVersion via specMarkerRE, the same treatment
+// planEnrollmentFile already gives CLAUDE.md/AGENTS.md/etc (2026-08-11
+// hook-refresh-reliability follow-up, finding 3 — this file previously
+// skipped unconditionally once recognizable, so it never refreshed on
+// resync no matter how stale, unlike every other templated file). Older,
+// same-version-but-drifted, or pre-marker legacy content -> replace the
+// whole file (recognized AGENTCHUTE.md is wholly agentchute-owned, matching
+// planEnrollmentFile's own "drift replaces at the current version" ruling).
+// Newer -> leave alone: a deliberately future-dated spec, or a binary older
+// than whatever wrote it. Anything that does not even look like an
+// agentchute spec -> fail: the enrollment block references §5 in the spec,
+// so a non-agentchute AGENTCHUTE.md would silently break the contract, and
+// refusing protects it from being clobbered.
 func planSpecFile(root string) (initAction, error) {
 	path := filepath.Join(root, "AGENTCHUTE.md")
 	rel := "AGENTCHUTE.md"
+
+	// codex review on PR #131 [P1]: os.ReadFile/os.WriteFile both follow a
+	// symlink. Without this Lstat guard, a repo-local AGENTCHUTE.md symlinked
+	// to an external recognizable spec would be read AND, on the new
+	// version-compare-and-replace path, WRITTEN through the link, expanding
+	// mutation outside the discovered control repo. Checked before any read
+	// so a dangling symlink is caught too, not just a followable one.
+	if info, statErr := os.Lstat(path); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return initAction{}, fmt.Errorf("%s is a symlink; refusing to read or write through it — replace it with a real file", rel)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return initAction{}, fmt.Errorf("stat AGENTCHUTE.md: %w", statErr)
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return initAction{
 				Target: rel,
-				Action: "write",
+				Action: fmt.Sprintf("create v%d", specVersion),
 				Detail: fmt.Sprintf("new file (%d bytes)", len(embeddedSpecContent)),
 				Apply: func() error {
 					return os.WriteFile(path, []byte(embeddedSpecContent), 0o644)
@@ -310,14 +347,50 @@ func planSpecFile(root string) (initAction, error) {
 		}
 		return initAction{}, fmt.Errorf("read AGENTCHUTE.md: %w", err)
 	}
-	if strings.Contains(string(data), specRecognitionSentinel) {
+	existing := string(data)
+	if !strings.Contains(existing, specRecognitionSentinel) {
+		return initAction{}, fmt.Errorf("%s exists but does not look like an agentchute spec (missing %q header); refusing to overwrite", rel, specRecognitionSentinel)
+	}
+
+	replace := func(action string) initAction {
+		return initAction{
+			Target: rel,
+			Action: action,
+			Detail: fmt.Sprintf("existing file (%d bytes) -> %d bytes", len(data), len(embeddedSpecContent)),
+			Apply: func() error {
+				return os.WriteFile(path, []byte(embeddedSpecContent), 0o644)
+			},
+		}
+	}
+
+	match := specMarkerRE.FindStringSubmatch(existing)
+	if match == nil {
+		return replace(fmt.Sprintf("replace legacy→v%d", specVersion)), nil
+	}
+	diskVersion, err := strconv.Atoi(match[1])
+	if err != nil {
+		return initAction{}, fmt.Errorf("%s has a malformed agentchute-spec marker: %w", rel, err)
+	}
+	if diskVersion > specVersion {
+		return initAction{
+			Target: rel,
+			Action: "skip (warn)",
+			Detail: fmt.Sprintf("file has newer agentchute-spec v%d; leaving alone — upgrade agentchute to manage", diskVersion),
+		}, nil
+	}
+	if diskVersion == specVersion && existing == embeddedSpecContent {
 		return initAction{
 			Target: rel,
 			Action: "skip",
-			Detail: "recognizable agentchute spec already present",
+			Detail: fmt.Sprintf("v%d already current", specVersion),
 		}, nil
 	}
-	return initAction{}, fmt.Errorf("%s exists but does not look like an agentchute spec (missing %q header); refusing to overwrite", rel, specRecognitionSentinel)
+	if diskVersion < specVersion {
+		return replace(fmt.Sprintf("replace v%d→v%d", diskVersion, specVersion)), nil
+	}
+	// diskVersion == specVersion, content differs — replace per codex (same
+	// ruling planEnrollmentFile already follows for its own marked block).
+	return replace(fmt.Sprintf("replace v%d drift", specVersion)), nil
 }
 
 // planEnrollmentFile applies the decision table for wrapper files: missing,
