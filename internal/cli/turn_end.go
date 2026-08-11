@@ -185,6 +185,7 @@ func cmdTurnEnd(args []string) error {
 		emitTurnEndText(status, acked)
 	}
 
+	emitGateBlockedStderr(status)
 	if status.Blocked {
 		return errBlocked
 	}

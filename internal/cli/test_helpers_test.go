@@ -77,6 +77,14 @@ func clearGuardEnv(t *testing.T) {
 	t.Setenv("AGENTCHUTE_GUARD", "")
 }
 
+func captureStdoutStderr(t *testing.T, fn func() error) (stdout, stderr string, err error) {
+	t.Helper()
+	stderr = captureStderr(t, func() {
+		stdout, err = captureStdout(t, fn)
+	})
+	return stdout, stderr, err
+}
+
 // Pull-only (Gate 6c): setTmuxPaneLockObserver was removed with the tmux
 // pane-registration lock it observed. v2.5 plan B5: withFakeTmuxTargets (its
 // last caller, the presence scan's tmux enumeration) is gone too.

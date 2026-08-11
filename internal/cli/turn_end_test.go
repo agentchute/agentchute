@@ -103,6 +103,82 @@ func TestTurnEndArchivesAndClearsLatchEvenWhenGateBlocked(t *testing.T) {
 	})
 }
 
+// TestTurnEndBlockedMirrorsReasonsToStderr is the aws-demo silent-wake-loop
+// regression (2026-08-11): Claude Code's Stop hook surfaces ONLY stderr for an
+// exit-2 hook, and turn-end's block verdict lived entirely on stdout — the
+// blocked session was re-prompted with "No stderr output" and no way to learn
+// why. A blocked turn-end must mirror the gate reasons to stderr in the
+// non-envelope modes, while stdout keeps its existing --json contract.
+func TestTurnEndBlockedMirrorsReasonsToStderr(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
+		mustWriteSeqInbox(t, inboxDir, "codex", 1,
+			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
+
+		out, errOut, err := captureStdoutStderr(t, func() error {
+			return cmdTurnEnd(turnEndArgs("--json"))
+		})
+		if !errors.Is(err, errBlocked) {
+			t.Fatalf("err = %v, want errBlocked", err)
+		}
+		var status gateStatus
+		if jerr := json.Unmarshal([]byte(out), &status); jerr != nil {
+			t.Fatalf("stdout is no longer parseable --json: %v\n%s", jerr, out)
+		}
+		if !status.Blocked {
+			t.Fatalf("status = %+v, want Blocked=true", status)
+		}
+		if !strings.Contains(errOut, "unread") {
+			t.Errorf("stderr = %q, want the unread-mail reason mirrored there (Claude Stop-hook feedback channel)", errOut)
+		}
+	})
+}
+
+// A clear turn-end must keep stderr empty: non-blocking hook stderr would be
+// pure noise on every successful stop.
+func TestTurnEndClearKeepsStderrSilent(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		_, errOut, err := captureStdoutStderr(t, func() error {
+			return cmdTurnEnd(turnEndArgs("--json"))
+		})
+		if err != nil {
+			t.Fatalf("turn-end: %v", err)
+		}
+		if errOut != "" {
+			t.Errorf("stderr = %q, want empty on a clear gate", errOut)
+		}
+	})
+}
+
+// The codex Stop envelope carries the reason inside its stdout JSON; stderr
+// stays untouched there so codex never sees the message twice.
+func TestTurnEndCodexHookStopKeepsStderrSilentOnBlock(t *testing.T) {
+	root := setupBootFixture(t)
+	withCwd(t, root, func() {
+		clearGuardEnv(t)
+		inboxDir := filepath.Join(root, ".agentchute", "loop", "inbox", "claude-code")
+		mustWriteSeqInbox(t, inboxDir, "codex", 1,
+			[]byte("---\nfrom: codex\nto: claude-code\ntask: x\n---\n\nb\n"))
+
+		out, errOut, err := captureStdoutStderr(t, func() error {
+			return cmdTurnEnd(turnEndArgs("--codex-hook", "Stop"))
+		})
+		if err != nil {
+			t.Fatalf("turn-end --codex-hook Stop: %v", err)
+		}
+		if !strings.Contains(out, `"decision"`) {
+			t.Fatalf("stdout = %q, want codex block JSON", out)
+		}
+		if errOut != "" {
+			t.Errorf("stderr = %q, want empty in envelope mode", errOut)
+		}
+	})
+}
+
 // TestTurnEndDoesNotArchiveForeignLatchResidue is the gemini crash case
 // (grok P1): claimed residue exists from a DIFFERENT (dead/foreign) session
 // than the one now running turn-end. That residue must NOT be archived —
