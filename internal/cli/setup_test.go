@@ -882,6 +882,54 @@ func TestSetupResync_RefreshesStaleHookOutsideMembership(t *testing.T) {
 	}
 }
 
+// TestSetupResync_HookCompatRepairRunsAheadOfFailingInit proves the
+// reordering codex's vector 2 review required (2026-08-11 hook-refresh-
+// reliability follow-up): hook-compatibility repair (formerly Phase 2.5,
+// now Phase 0) runs BEFORE cmdInit and the membership/shim writes, not
+// after — so a failure in any of those later, less-critical phases can
+// never prevent the highest-value invariant (a working hook file) from
+// being repaired. Forces a deterministic init failure via an unrecognizable
+// existing AGENTCHUTE.md (planSpecFile's own refusal), then asserts the
+// stale hook was refreshed anyway, despite the overall setup call failing.
+func TestSetupResync_HookCompatRepairRunsAheadOfFailingInit(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	mustWriteStaleHook(t, root, "claude-code")
+	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("not a real spec, no sentinel header here"))
+
+	var setupErr error
+	withCwd(t, root, func() {
+		setupErr = cmdSetup([]string{"--wake", "runner", "--wrappers", "none", "--yes"})
+	})
+
+	if setupErr == nil {
+		t.Fatal("expected cmdInit's unrecognizable-AGENTCHUTE.md refusal to surface as a non-zero error")
+	}
+	if !strings.Contains(setupErr.Error(), "does not look like an agentchute spec") {
+		t.Fatalf("expected the planSpecFile refusal specifically, got: %v", setupErr)
+	}
+
+	canonicalClaude, err := fs.ReadFile(hooksFS, "examples/hooks/claude-code/.claude/settings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := mustRead(t, filepath.Join(root, ".claude", "settings.json"))
+	if string(got) != string(canonicalClaude) {
+		t.Errorf("hook compatibility repair must run before, and survive, a later init failure; hook was not refreshed")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".claude", "settings.json.bak")); err != nil {
+		t.Errorf("expected a backup of the stale hook: %v", err)
+	}
+}
+
 // codex acceptance item 3 / brief acceptance 4: a forced verification
 // failure must propagate through setup as a non-zero error, and must print
 // neither "setup complete" nor reach the destructive runtime reset.
