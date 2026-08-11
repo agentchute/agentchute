@@ -300,6 +300,39 @@ func TestInitFailsOnUnrecognizableAgentchuteMd(t *testing.T) {
 	}
 }
 
+// codex review on PR #131 [P1]: a symlinked AGENTCHUTE.md must never be read
+// or written through — the version-compare-and-replace path would otherwise
+// follow it and mutate whatever it points at, outside the discovered control
+// repo. Errors closed, and the external target is untouched.
+func TestInitRefusesSymlinkedAgentchuteMd(t *testing.T) {
+	root := t.TempDir()
+	outsideDir := t.TempDir()
+	target := filepath.Join(outsideDir, "external-spec.md")
+	targetContent := []byte("# AGENTCHUTE.md\n\nan external file this repo must never touch\n")
+	mustWrite(t, target, targetContent)
+
+	link := filepath.Join(root, "AGENTCHUTE.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := computeInitPlan(root, "agentchute", false)
+	if err == nil {
+		t.Fatal("expected a symlink refusal, got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error should mention the symlink refusal: %v", err)
+	}
+
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(targetContent) {
+		t.Errorf("external symlink target was modified; got %q, want unchanged %q", got, targetContent)
+	}
+}
+
 // 2026-08-11 hook-refresh-reliability follow-up, finding 3: planSpecFile now
 // gets the same version-compare-and-replace treatment planEnrollmentFile
 // already has, instead of skipping unconditionally once recognizable.

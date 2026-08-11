@@ -319,6 +319,20 @@ func planSpecFile(root string) (initAction, error) {
 	path := filepath.Join(root, "AGENTCHUTE.md")
 	rel := "AGENTCHUTE.md"
 
+	// codex review on PR #131 [P1]: os.ReadFile/os.WriteFile both follow a
+	// symlink. Without this Lstat guard, a repo-local AGENTCHUTE.md symlinked
+	// to an external recognizable spec would be read AND, on the new
+	// version-compare-and-replace path, WRITTEN through the link, expanding
+	// mutation outside the discovered control repo. Checked before any read
+	// so a dangling symlink is caught too, not just a followable one.
+	if info, statErr := os.Lstat(path); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return initAction{}, fmt.Errorf("%s is a symlink; refusing to read or write through it — replace it with a real file", rel)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return initAction{}, fmt.Errorf("stat AGENTCHUTE.md: %w", statErr)
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
