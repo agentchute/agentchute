@@ -52,6 +52,8 @@ jobs:
         run: shellcheck -s sh tests/install_test.sh
       - name: shellcheck tests/upgrade_smoke.sh
         run: shellcheck -s sh tests/upgrade_smoke.sh
+      - name: shellcheck tests/upgrade_hook_refresh_smoke.sh
+        run: shellcheck -s sh tests/upgrade_hook_refresh_smoke.sh
       - name: run install_test.sh
         run: sh tests/install_test.sh
 
@@ -69,3 +71,24 @@ jobs:
           check-latest: true
       - name: run upgrade smoke
         run: sh tests/upgrade_smoke.sh
+
+  upgrade-hook-refresh-smoke:
+    name: real-release hook/spec refresh rehearsal
+    # Unlike upgrade-smoke (release/v2.5-only, wrappers=none — it never
+    # installs a hook file, so it can't exercise refresh at all), this job
+    # runs on every PR and main push: it's the CI-level proof, over a real
+    # v1.0.0-tagged binary, that a stale hook and a pre-marker AGENTCHUTE.md
+    # actually refresh across `agentchute setup`/`update` (2026-08-11
+    # hook-refresh-reliability investigation, closing codex's CI-blind-spot
+    # finding).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+          check-latest: true
+      - name: run upgrade hook-refresh smoke
+        run: sh tests/upgrade_hook_refresh_smoke.sh
