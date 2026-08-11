@@ -170,6 +170,7 @@ func renderDispatcherScript(agentchuteBin, shimDir string) string {
 	return fmt.Sprintf(`#!/bin/sh
 # agentchute dispatcher v1
 AGENTCHUTE_BIN=${AGENTCHUTE_BIN:-%s}
+export AGENTCHUTE_BIN
 exec "$AGENTCHUTE_BIN" dispatch --shim-dir %s -- "$@"
 `, shellQuote(agentchuteBin), shellQuote(shimDir))
 }
