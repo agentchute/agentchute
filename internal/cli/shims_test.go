@@ -45,6 +45,9 @@ func TestShimsInstallWritesDispatcher(t *testing.T) {
 	if !strings.Contains(string(data), "AGENTCHUTE_BIN=") {
 		t.Fatalf("dispatcher missing AGENTCHUTE_BIN override:\n%s", data)
 	}
+	if !strings.Contains(string(data), "export AGENTCHUTE_BIN\n") {
+		t.Fatalf("dispatcher does not export AGENTCHUTE_BIN to wrapper children:\n%s", data)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
