@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"crypto/sha256"
+	"debug/buildinfo"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -131,9 +132,12 @@ func cmdDoctor(args []string) error {
 		return errBlocked
 	}
 
+	runningExecutable, _ := os.Executable()
 	opts := doctorOptions{
-		Now:     time.Now().UTC(),
-		PathEnv: os.Getenv("PATH"),
+		Now:               time.Now().UTC(),
+		PathEnv:           os.Getenv("PATH"),
+		RunningExecutable: runningExecutable,
+		RunningVersion:    version,
 	}
 	if gs, err := readSetupGlobalState(); err == nil {
 		opts.GlobalState = &gs
@@ -178,10 +182,13 @@ type doctorReport struct {
 }
 
 type doctorOptions struct {
-	Now         time.Time
-	PathEnv     string
-	GlobalState *setupGlobalState
-	PoolState   *setupPoolState
+	Now               time.Time
+	PathEnv           string
+	GlobalState       *setupGlobalState
+	PoolState         *setupPoolState
+	RunningExecutable string
+	RunningVersion    string
+	ReadBinaryVersion func(string) (string, error)
 }
 
 // runDoctorChecks executes the canonical check sequence and returns a
@@ -193,6 +200,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 		checkProtocolVersions(cfg),
 		checkStaleTempFiles(cfg, opts.Now),
 		checkBinaryOnPath(),
+		checkBinaryIdentity(opts),
 		checkHookFilePresence(cfg, agentID),
 		checkHookContentSanity(cfg),
 		checkWrapperShadowing(cfg, agentID, opts),
@@ -474,6 +482,174 @@ func checkBinaryOnPath() doctorCheck {
 	}
 }
 
+type binaryIdentity struct {
+	label   string
+	path    string
+	version string
+}
+
+// checkBinaryIdentity verifies that the running binary, the generated ac
+// dispatcher's pinned binary, and bare agentchute on PATH report one version.
+// Missing/unreadable sources remain owned by the existing binary_on_path and
+// ac_dispatcher checks; a proven version mismatch is the only new blocker.
+func checkBinaryIdentity(opts doctorOptions) doctorCheck {
+	const name = "binary_identity"
+	if strings.TrimSpace(opts.RunningExecutable) == "" {
+		return doctorCheck{Name: name, Severity: severitySkip, Message: "running executable unavailable; skipping binary version parity"}
+	}
+
+	readVersion := opts.ReadBinaryVersion
+	if readVersion == nil {
+		readVersion = readAgentchuteBuildVersion
+	}
+	runningVersion := normalizeBinaryVersion(opts.RunningVersion)
+	if runningVersion == "" {
+		var err error
+		runningVersion, err = readVersion(opts.RunningExecutable)
+		if err != nil {
+			return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("cannot read running binary version: %v", err)}
+		}
+		runningVersion = normalizeBinaryVersion(runningVersion)
+	}
+
+	identities := []binaryIdentity{{label: "running", path: opts.RunningExecutable, version: runningVersion}}
+	addIdentity := func(label, path string) {
+		if strings.TrimSpace(path) == "" || executableFileProblem(path) != "" {
+			return
+		}
+		candidateVersion := runningVersion
+		if !samePath(path, opts.RunningExecutable) {
+			var err error
+			candidateVersion, err = readVersion(path)
+			if err != nil {
+				return
+			}
+			candidateVersion = normalizeBinaryVersion(candidateVersion)
+		}
+		if candidateVersion != "" {
+			identities = append(identities, binaryIdentity{label: label, path: path, version: candidateVersion})
+		}
+	}
+
+	if target, err := dispatcherBinaryTarget(opts); err == nil {
+		addIdentity("dispatcher", target)
+	}
+	if pathBinary, err := resolveExecutableOnPath("agentchute", opts.PathEnv); err == nil {
+		addIdentity("PATH", pathBinary)
+	}
+
+	parts := make([]string, 0, len(identities))
+	mismatch := false
+	for _, identity := range identities {
+		parts = append(parts, fmt.Sprintf("%s=%s (%s)", identity.label, identity.version, identity.path))
+		if identity.version != runningVersion {
+			mismatch = true
+		}
+	}
+	if mismatch {
+		return doctorCheck{
+			Name:     name,
+			Severity: severityBlocker,
+			Message:  fmt.Sprintf("agentchute binary version mismatch: %s; rerun `agentchute setup` with the intended binary and fix PATH before launching wrappers", strings.Join(parts, ", ")),
+		}
+	}
+	if len(identities) < 2 {
+		return doctorCheck{Name: name, Severity: severitySkip, Message: "only the running agentchute binary version could be inspected; existing path/dispatcher checks own missing sources"}
+	}
+	return doctorCheck{Name: name, Severity: severityOK, Message: fmt.Sprintf("agentchute binary versions agree: %s", strings.Join(parts, ", "))}
+}
+
+func dispatcherBinaryTarget(opts doctorOptions) (string, error) {
+	if opts.GlobalState == nil || strings.TrimSpace(opts.GlobalState.ShimDir) == "" {
+		return "", errors.New("dispatcher shim directory unavailable")
+	}
+	data, err := os.ReadFile(filepath.Join(opts.GlobalState.ShimDir, "ac"))
+	if err != nil {
+		return "", err
+	}
+	const prefix = "AGENTCHUTE_BIN=${AGENTCHUTE_BIN:-"
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, "}") {
+			continue
+		}
+		return unquoteDispatcherValue(strings.TrimSuffix(strings.TrimPrefix(line, prefix), "}"))
+	}
+	return "", errors.New("dispatcher binary assignment not found")
+}
+
+func unquoteDispatcherValue(value string) (string, error) {
+	if len(value) < 2 || value[0] != '\'' || value[len(value)-1] != '\'' {
+		return "", fmt.Errorf("unsupported dispatcher binary quoting %q", value)
+	}
+	const escapedQuote = "'\\''"
+	inner := value[1 : len(value)-1]
+	marked := strings.ReplaceAll(inner, escapedQuote, "\x00")
+	if strings.Contains(marked, "'") {
+		return "", fmt.Errorf("unsupported dispatcher binary quoting %q", value)
+	}
+	return strings.ReplaceAll(marked, "\x00", "'"), nil
+}
+
+func resolveExecutableOnPath(name, pathEnv string) (string, error) {
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if dir == "" {
+			dir = "."
+		}
+		absDir, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		candidate := filepath.Join(absDir, name)
+		if executableFileProblem(candidate) == "" {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found on PATH", name)
+}
+
+func readAgentchuteBuildVersion(path string) (string, error) {
+	info, err := buildinfo.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	for _, setting := range info.Settings {
+		if setting.Key != "-ldflags" {
+			continue
+		}
+		if value := mainVersionFromLDFlags(setting.Value); value != "" {
+			return value, nil
+		}
+	}
+	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version, nil
+	}
+	return "dev", nil
+}
+
+func mainVersionFromLDFlags(flags string) string {
+	fields := strings.Fields(strings.Trim(flags, "\""))
+	for i := 0; i < len(fields); i++ {
+		assignment := ""
+		switch {
+		case fields[i] == "-X" && i+1 < len(fields):
+			i++
+			assignment = fields[i]
+		case strings.HasPrefix(fields[i], "-X="):
+			assignment = strings.TrimPrefix(fields[i], "-X=")
+		}
+		assignment = strings.Trim(assignment, "\"'")
+		if strings.HasPrefix(assignment, "main.version=") {
+			return strings.TrimPrefix(assignment, "main.version=")
+		}
+	}
+	return ""
+}
+
+func normalizeBinaryVersion(value string) string {
+	return strings.TrimPrefix(strings.TrimSpace(value), "v")
+}
+
 // checkWrapperShadowing verifies the single `ac` dispatcher (v0.8.8) resolves
 // from the shim dir ahead of the system `ac` (/usr/sbin/ac, the accounting
 // command). It is OK when `ac` resolves from $shim_dir AND $shim_dir precedes any
@@ -551,11 +727,32 @@ func shimNamesForAgent(agentID string) []string {
 func checkHookFilePresence(cfg *loop.Config, agentID string) doctorCheck {
 	present := []string{}
 	presentSet := map[string]bool{}
+	drifted := []string{}
 	for _, h := range hookWrappers {
 		full := filepath.Join(cfg.ControlRepo, filepath.FromSlash(h.Dest))
-		if _, err := os.Stat(full); err == nil {
-			present = append(present, h.Name)
-			presentSet[h.Name] = true
+		installed, err := os.ReadFile(full)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return doctorCheck{
+				Name:     "hook_file_presence",
+				Severity: severityBlocker,
+				Message:  fmt.Sprintf("installed hook for %s is unreadable at %s: %v", h.Name, full, err),
+			}
+		}
+		present = append(present, h.Name)
+		presentSet[h.Name] = true
+		canonical, err := fs.ReadFile(hooksFS, h.Src)
+		if err != nil {
+			return doctorCheck{
+				Name:     "hook_file_presence",
+				Severity: severityBlocker,
+				Message:  fmt.Sprintf("canonical hook template for %s is unreadable: %v", h.Name, err),
+			}
+		}
+		if !bytes.Equal(installed, canonical) {
+			drifted = append(drifted, h.Name)
 		}
 	}
 	if wrapper, ok := hookWrapperForAgent(agentID); ok {
@@ -566,12 +763,12 @@ func checkHookFilePresence(cfg *loop.Config, agentID string) doctorCheck {
 				Message:  fmt.Sprintf("acting wrapper hook for %s is missing; run `agentchute hooks install --wrapper %s`", agentID, wrapper),
 			}
 		}
-		if drift := actingHookDrift(cfg, wrapper); drift != "" {
-			return doctorCheck{
-				Name:     "hook_file_presence",
-				Severity: severityBlocker,
-				Message:  drift,
-			}
+	}
+	if len(drifted) > 0 {
+		return doctorCheck{
+			Name:     "hook_file_presence",
+			Severity: severityBlocker,
+			Message:  fmt.Sprintf("installed hook template(s) differ from the canonical embed: %s; run `agentchute hooks install --wrapper all --scope repo --force`", strings.Join(drifted, ", ")),
 		}
 	}
 	if len(present) == 0 {
@@ -586,27 +783,6 @@ func checkHookFilePresence(cfg *loop.Config, agentID string) doctorCheck {
 		Severity: severityOK,
 		Message:  fmt.Sprintf("hook templates installed for: %s", strings.Join(present, ", ")),
 	}
-}
-
-func actingHookDrift(cfg *loop.Config, wrapper string) string {
-	for _, h := range hookWrappers {
-		if h.Name != wrapper {
-			continue
-		}
-		full := filepath.Join(cfg.ControlRepo, h.Dest)
-		installed, err := os.ReadFile(full)
-		if err != nil {
-			return fmt.Sprintf("acting wrapper hook for %s is unreadable at %s: %v", wrapper, full, err)
-		}
-		canonical, err := fs.ReadFile(hooksFS, h.Src)
-		if err != nil {
-			return fmt.Sprintf("canonical hook template for %s is unreadable: %v", wrapper, err)
-		}
-		if !bytes.Equal(installed, canonical) {
-			return fmt.Sprintf("acting wrapper hook for %s differs from the canonical template; run `agentchute hooks install --wrapper %s --force`", wrapper, wrapper)
-		}
-	}
-	return ""
 }
 
 // hookWrapperForAgent resolves an agent id to its canonical hookable wrapper.

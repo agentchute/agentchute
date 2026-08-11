@@ -278,13 +278,9 @@ func TestDoctorPermissionsAllowNamingCheckDoesNotBlock(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
-	got := findCheck(t, r, "hook_content_sanity")
+	got := checkHookContentSanity(cfg)
 	if got.Severity != severityOK {
 		t.Errorf("hook_content_sanity severity = %q, want OK (permissions.allow naming `agentchute check` is not a hook invoking it); msg=%q", got.Severity, got.Message)
-	}
-	if r.Blockers != 0 {
-		t.Errorf("Blockers = %d, want 0", r.Blockers)
 	}
 }
 
@@ -311,13 +307,9 @@ func TestDoctorMalformedHookJSONWithPermissionsSubstringDoesNotBlock(t *testing.
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(malformed), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
-	got := findCheck(t, r, "hook_content_sanity")
+	got := checkHookContentSanity(cfg)
 	if got.Severity != severityWarn {
 		t.Errorf("hook_content_sanity severity = %q, want WARN (invalid JSON, not a BLOCKER, and must not scan raw body); msg=%q", got.Severity, got.Message)
-	}
-	if r.Blockers != 0 {
-		t.Errorf("Blockers = %d, want 0 (malformed file must never trip the permissions-substring false positive)", r.Blockers)
 	}
 }
 
@@ -451,13 +443,9 @@ func TestDoctorUnknownSubcmdInPermissionsOnlyPasses(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(hookContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
-	got := findCheck(t, r, "hook_content_sanity")
+	got := checkHookContentSanity(cfg)
 	if got.Severity != severityOK {
 		t.Fatalf("hook_content_sanity severity = %q, want OK (permissions-only mention of an unknown subcommand); msg=%q", got.Severity, got.Message)
-	}
-	if r.Blockers != 0 {
-		t.Errorf("Blockers = %d, want 0", r.Blockers)
 	}
 }
 
@@ -678,6 +666,29 @@ func TestDoctorAsBlocksWhenActingWrapperHookDiverged(t *testing.T) {
 	}
 }
 
+func TestDoctorAsBlocksWhenNonActingInstalledHookDiverged(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	mustWriteCanonicalHook(t, cfg.ControlRepo, "codex")
+	mustWriteCanonicalHook(t, cfg.ControlRepo, "claude-code")
+
+	path := filepath.Join(cfg.ControlRepo, ".claude", "settings.json")
+	canonical := string(mustRead(t, path))
+	diverged := strings.Replace(canonical, "turn-end --json", "gate --before finish --json", 1)
+	if diverged == canonical {
+		t.Fatal("canonical claude-code hook did not contain the expected turn-end command")
+	}
+	mustWrite(t, path, []byte(diverged))
+
+	r := runDoctorChecks(cfg, "codex", doctorOptions{Now: time.Now().UTC()})
+	got := findCheck(t, r, "hook_file_presence")
+	if got.Severity != severityBlocker {
+		t.Fatalf("hook_file_presence severity = %q, want BLOCKER for non-acting claude-code drift; msg=%q", got.Severity, got.Message)
+	}
+	if !strings.Contains(got.Message, "claude-code") || !strings.Contains(got.Message, "--force") {
+		t.Fatalf("message should name claude-code and the forced repair: %q", got.Message)
+	}
+}
+
 // A tmux/herdr-only wake set — including the combined "tmux,herdr" — installs
 // only hookless shims, so a hookable wrapper (codex) relies on its lifecycle
 // hook and shadowing is not applicable. Regression for the pre-fix `wake ==
@@ -726,6 +737,106 @@ func TestDoctorAcDispatcherResolution(t *testing.T) {
 	got = checkWrapperShadowing(cfg, "codex", mkOpts(sysDir))
 	if got.Severity != severityWarn || !strings.Contains(got.Message, "not on PATH") {
 		t.Fatalf("not-on-path case: sev=%q msg=%q, want WARN not-on-PATH", got.Severity, got.Message)
+	}
+}
+
+func TestDoctorBlocksOnBinaryVersionMismatch(t *testing.T) {
+	cfg := newDoctorCfg(t)
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shim")
+	pathDir := filepath.Join(root, "path")
+	runningBin := filepath.Join(root, "running-agentchute")
+	dispatcherBin := filepath.Join(root, "dispatcher-agentchute")
+	pathBin := filepath.Join(pathDir, "agentchute")
+
+	for _, path := range []string{runningBin, dispatcherBin, pathBin} {
+		mustWrite(t, path, []byte("binary fixture"))
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(t, filepath.Join(shimDir, "ac"), []byte(renderDispatcherScript(dispatcherBin, shimDir)))
+
+	readVersion := func(path string) (string, error) {
+		switch {
+		case samePath(path, runningBin), samePath(path, dispatcherBin):
+			return "1.5.3", nil
+		case samePath(path, pathBin):
+			return "1.0.0", nil
+		default:
+			return "", os.ErrNotExist
+		}
+	}
+	r := runDoctorChecks(cfg, "", doctorOptions{
+		Now:               time.Now().UTC(),
+		PathEnv:           pathDir,
+		GlobalState:       &setupGlobalState{Wake: "runner", ShimDir: shimDir},
+		PoolState:         &setupPoolState{Wake: "runner"},
+		RunningExecutable: runningBin,
+		RunningVersion:    "1.5.3",
+		ReadBinaryVersion: readVersion,
+	})
+	got := findCheck(t, r, "binary_identity")
+	if got.Severity != severityBlocker {
+		t.Fatalf("binary_identity severity = %q, want BLOCKER; msg=%q", got.Severity, got.Message)
+	}
+	for _, want := range []string{"running=1.5.3", "dispatcher=1.5.3", "PATH=1.0.0"} {
+		if !strings.Contains(got.Message, want) {
+			t.Fatalf("binary_identity message missing %q: %q", want, got.Message)
+		}
+	}
+}
+
+func TestDoctorBinaryVersionsAgree(t *testing.T) {
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shim")
+	runningBin := filepath.Join(root, "agentchute")
+	mustWrite(t, runningBin, []byte("binary fixture"))
+	if err := os.Chmod(runningBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(shimDir, "ac"), []byte(renderDispatcherScript(runningBin, shimDir)))
+
+	got := checkBinaryIdentity(doctorOptions{
+		PathEnv:           root,
+		GlobalState:       &setupGlobalState{Wake: "runner", ShimDir: shimDir},
+		RunningExecutable: runningBin,
+		RunningVersion:    "1.5.3",
+		ReadBinaryVersion: func(string) (string, error) { return "", errors.New("same binary should reuse the running version") },
+	})
+	if got.Severity != severityOK {
+		t.Fatalf("binary_identity severity = %q, want OK; msg=%q", got.Severity, got.Message)
+	}
+	for _, want := range []string{"running=1.5.3", "dispatcher=1.5.3", "PATH=1.5.3"} {
+		if !strings.Contains(got.Message, want) {
+			t.Fatalf("binary_identity message missing %q: %q", want, got.Message)
+		}
+	}
+}
+
+func TestDispatcherBinaryTargetParsesGeneratedQuoting(t *testing.T) {
+	shimDir := t.TempDir()
+	want := filepath.Join(t.TempDir(), "agentchute's binary")
+	mustWrite(t, filepath.Join(shimDir, "ac"), []byte(renderDispatcherScript(want, shimDir)))
+
+	got, err := dispatcherBinaryTarget(doctorOptions{GlobalState: &setupGlobalState{ShimDir: shimDir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("dispatcher target = %q, want %q", got, want)
+	}
+}
+
+func TestMainVersionFromLDFlags(t *testing.T) {
+	for flags, want := range map[string]string{
+		`-s -w -X main.version=1.5.3`:  "1.5.3",
+		`-s -X=main.version=v1.5.4`:    "v1.5.4",
+		`-s -X other.value=irrelevant`: "",
+	} {
+		if got := mainVersionFromLDFlags(flags); got != want {
+			t.Errorf("mainVersionFromLDFlags(%q) = %q, want %q", flags, got, want)
+		}
 	}
 }
 
@@ -870,6 +981,8 @@ func TestDoctorAGENTCHUTE_BINAcceptsExecutableFile(t *testing.T) {
 
 func TestCmdDoctorJSONShape(t *testing.T) {
 	cfg := newDoctorCfg(t)
+	t.Setenv("AGENTCHUTE_BIN", "")
+	t.Setenv("PATH", t.TempDir())
 	// cmdDoctor calls loop.Discover, which needs AGENTCHUTE.md at the
 	// control repo root. newDoctorCfg only sets up the loop dir; add the
 	// spec file so discovery succeeds.
