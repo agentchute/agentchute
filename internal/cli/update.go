@@ -37,6 +37,15 @@ var updateMaxAsset int64 = 64 << 20 // 64 MiB
 
 var versionTagRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)
 
+// noResyncStaleness names exactly what --no-resync leaves untouched, printed
+// on both the dry-run and apply paths (2026-08-11 hook-refresh-reliability
+// follow-up, finding 5): the prior wording only said "skipped setup re-sync"
+// with no indication of WHAT that leaves stale or for how long, so an
+// operator following the no-saved-state refusal's own suggested escape
+// hatch had no signal that hooks/enrollment/AGENTCHUTE.md would stay frozen
+// at the old version indefinitely.
+const noResyncStaleness = "hooks, enrollment blocks (CLAUDE.md/AGENTS.md/CODEX.md/GEMINI.md/GROK.md), and AGENTCHUTE.md stay at the OLD version until the next resync (`agentchute setup --yes`, or `agentchute update` without --no-resync)"
+
 func updateHTTPClient() *http.Client {
 	return &http.Client{Timeout: 120 * time.Second}
 }
@@ -57,11 +66,16 @@ Updates an existing install in one step: self-updates the binary to the target
 release, then re-runs ` + "`setup`" + ` with this control repo's saved wake mode and
 wrappers so hooks, enrollment blocks, and shims re-sync to the new version.
 
-This invalidates every serve lease after the binary swap. Running supervisors
-fence out and exit on their next tick; registration rows are preserved.
+This invalidates every serve lease once the setup re-sync succeeds (--no-resync:
+immediately after the binary swap instead, since there is no resync to wait
+on). Running supervisors fence out and exit on their next tick; registration
+rows are preserved. A resync failure leaves leases untouched so a still-
+broken hook never forces a fleet-wide restart -- see the printed warning for
+the manual fix command.
 
-Pass --no-resync to skip the setup re-sync. Lease invalidation still happens,
-because a binary-only update must also force running supervisors to restart.
+Pass --no-resync to skip the setup re-sync. Lease invalidation still happens
+immediately, because a binary-only update must also force running supervisors
+to restart.
 
 Flags:
   --version <tag>   release tag to install (default: latest release)
@@ -180,7 +194,8 @@ func cmdUpdate(args []string) error {
 		fmt.Printf("  asset:         %s\n", asset)
 		if noResync {
 			fmt.Println("  re-sync:       skipped (--no-resync)")
-			fmt.Println("  restart:       would invalidate serve leases after the binary swap")
+			fmt.Println("  restart:       would invalidate serve leases immediately after the binary swap")
+			fmt.Printf("  stays stale:   %s\n", noResyncStaleness)
 		} else {
 			fmt.Printf("  re-sync:       %s\n", setupCmd)
 			fmt.Println("  restart:       would invalidate serve leases; registrations stay present")
@@ -219,29 +234,42 @@ func cmdUpdate(args []string) error {
 	syncDir(filepath.Dir(target))
 	fmt.Printf("Updated agentchute %s -> %s (%s)\n", current, targetTag, target)
 
-	invalidated, err := loop.InvalidateAllServeLeases(cfg)
-	if err != nil {
-		return fmt.Errorf("binary updated to %s but serve-lease invalidation failed: %w; rerun `agentchute setup --yes` before relaunching lanes", targetTag, err)
-	}
-	fmt.Printf("Invalidated %d serve lease(s); running supervisors will exit on their next tick.\n", invalidated)
-
 	if noResync {
-		// Binary-only update: hooks/templates stay untouched, but the wire-break
-		// forcing function still fences every running supervisor.
+		// Binary-only update: there is no resync to wait on, so the wire-break
+		// forcing function fences every running supervisor immediately — that
+		// is the whole point of --no-resync's "swap and force a restart"
+		// contract. Hooks/templates stay untouched.
+		invalidated, err := loop.InvalidateAllServeLeases(cfg)
+		if err != nil {
+			return fmt.Errorf("binary updated to %s but serve-lease invalidation failed: %w; rerun `agentchute setup --yes` before relaunching lanes", targetTag, err)
+		}
+		fmt.Printf("Invalidated %d serve lease(s); running supervisors will exit on their next tick.\n", invalidated)
 		fmt.Println("(--no-resync: skipped setup re-sync; registrations preserved)")
+		fmt.Printf("%s.\n", noResyncStaleness)
 		printRestartWarning(targetTag, active, true)
 		return nil
 	}
 
 	// 6. Re-exec the NEW binary's setup so it writes the new version's
-	// templates/hooks/shims, not the old binary's.
+	// templates/hooks/shims, not the old binary's — BEFORE invalidating any
+	// serve lease. A resync failure must never force a fleet-wide restart
+	// into hooks that might still be broken: leaving supervisors running on
+	// the OLD binary is strictly safer than fencing them into an unverified
+	// new one (2026-08-11 hook-refresh-reliability follow-up, codex vector 2).
 	if err := updateRunResync(target, setupArgs, cfg.ControlRepo); err != nil {
 		fmt.Fprintf(os.Stderr, "\nWARNING: binary updated to %s but `setup` re-sync FAILED: %v\n", targetTag, err)
 		fmt.Fprintf(os.Stderr, "Finish the re-sync manually from this repo:\n  %s %s\n", target, setupCmd)
+		fmt.Fprintln(os.Stderr, "Serve leases were NOT invalidated; existing supervisors keep running on the prior binary until the re-sync succeeds.")
 		return errors.New("setup re-sync after update failed (see warning above)")
 	}
 
-	// 7. Final restart warning.
+	// 7. Resync succeeded — only now is it safe to fence every supervisor
+	// into the new binary and hooks.
+	invalidated, err := loop.InvalidateAllServeLeases(cfg)
+	if err != nil {
+		return fmt.Errorf("binary and hooks updated to %s but serve-lease invalidation failed: %w; rerun `agentchute setup --yes` before relaunching lanes", targetTag, err)
+	}
+	fmt.Printf("Invalidated %d serve lease(s); running supervisors will exit on their next tick.\n", invalidated)
 	printRestartWarning(targetTag, active, true)
 	return nil
 }
@@ -557,14 +585,25 @@ func printRestartWarning(tag string, active []string, done bool) {
 	bar := strings.Repeat("=", 70)
 	fmt.Fprintln(os.Stderr, bar)
 	if done {
+		// codex review on PR #130: the pre-resync (done=false) banner below
+		// must not claim supervisors are already fenced or tell the operator
+		// to restart now — under the resync-gated ordering this function
+		// documents, neither is true until invalidation actually runs, which
+		// only happens after a successful resync. Printing it unconditionally
+		// would directly contradict the safety behavior by prompting a
+		// restart into a possibly-incomplete update.
 		fmt.Fprintf(os.Stderr, "agentchute updated to %s; serve leases were invalidated.\n\n", tag)
+		fmt.Fprintln(os.Stderr, "Running supervisors are fenced and will exit with a restart notice on their next tick.")
+		fmt.Fprintln(os.Stderr, "Registration rows stay present. Relaunch each lane with `ac serve <wrapper>`.")
+		if len(active) > 0 {
+			fmt.Fprintf(os.Stderr, "\nRESTART every active agent now (%d): %s\n", len(active), strings.Join(active, ", "))
+		}
 	} else {
-		fmt.Fprintf(os.Stderr, "agentchute is updating to %s; serve leases will be invalidated immediately after the binary swap.\n\n", tag)
-	}
-	fmt.Fprintln(os.Stderr, "Running supervisors are fenced and will exit with a restart notice on their next tick.")
-	fmt.Fprintln(os.Stderr, "Registration rows stay present. Relaunch each lane with `ac serve <wrapper>`.")
-	if len(active) > 0 {
-		fmt.Fprintf(os.Stderr, "\nRESTART every active agent now (%d): %s\n", len(active), strings.Join(active, ", "))
+		fmt.Fprintf(os.Stderr, "agentchute is updating to %s; serve leases will be invalidated once the setup re-sync succeeds.\n\n", tag)
+		fmt.Fprintln(os.Stderr, "Supervisors stay active until then; nothing to restart yet.")
+		if len(active) > 0 {
+			fmt.Fprintf(os.Stderr, "\nActive now (%d), pending the resync outcome: %s\n", len(active), strings.Join(active, ", "))
+		}
 	}
 	fmt.Fprintln(os.Stderr, bar)
 }

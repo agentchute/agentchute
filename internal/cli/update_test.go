@@ -268,6 +268,14 @@ func TestUpdate_NoResyncAllowsBinaryOnlyWhenNoSetupState(t *testing.T) {
 		if !strings.Contains(out, "skipped (--no-resync)") {
 			t.Fatalf("dry-run plan should report re-sync/reset skipped under --no-resync; got:\n%s", out)
 		}
+		// finding 5 (2026-08-11 hook-refresh-reliability follow-up): the
+		// dry-run plan must name exactly what --no-resync leaves stale, not
+		// just that the re-sync was skipped.
+		for _, want := range []string{"hooks", "enrollment blocks", "AGENTCHUTE.md"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("dry-run plan under --no-resync must name %q as staying stale; got:\n%s", want, out)
+			}
+		}
 	})
 }
 
@@ -331,6 +339,7 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 	staleHook := mustRead(t, filepath.Join(root, ".claude", "settings.json"))
 
 	var lease *loop.ServeLease
+	var out string
 	withCwd(t, root, func() {
 		mustExampleRepo(t, root) // deliberately NO saved setup state
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
@@ -341,13 +350,24 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := cmdUpdate([]string{"--version", "v0.5.0", "--no-resync"}); err != nil {
+		out, err = captureStdout(t, func() error {
+			return cmdUpdate([]string{"--version", "v0.5.0", "--no-resync"})
+		})
+		if err != nil {
 			t.Fatalf("--no-resync binary-only update failed: %v", err)
 		}
 	})
 
 	if resyncCalled {
 		t.Fatal("--no-resync must NOT invoke the setup re-sync")
+	}
+	// finding 5 (2026-08-11 hook-refresh-reliability follow-up): the apply
+	// path must name exactly what --no-resync leaves stale too, not just the
+	// dry-run plan.
+	for _, want := range []string{"hooks", "enrollment blocks", "AGENTCHUTE.md"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("apply output under --no-resync must name %q as staying stale; got:\n%s", want, out)
+		}
 	}
 	got, err := os.ReadFile(bin)
 	if err != nil {
@@ -368,7 +388,14 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 	}
 }
 
-func TestUpdateInvalidatesLeaseBeforeSetupResync(t *testing.T) {
+// TestUpdateInvalidatesLeaseOnlyAfterSetupResyncSucceeds proves the reordering
+// codex's vector 2 review required (2026-08-11 hook-refresh-reliability
+// follow-up): lease invalidation must wait until the resync succeeds, not
+// happen immediately after the binary swap. Asserts the lease is still valid
+// (not fenced) WHILE the resync runs, then fenced only after cmdUpdate
+// returns successfully. Formerly named TestUpdateInvalidatesLeaseBeforeSetup-
+// Resync and asserted the opposite ordering; that ordering was the bug.
+func TestUpdateInvalidatesLeaseOnlyAfterSetupResyncSucceeds(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions used by the writable probe")
 	}
@@ -423,8 +450,8 @@ func TestUpdateInvalidatesLeaseBeforeSetupResync(t *testing.T) {
 		}
 		updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
 			resyncCalled = true
-			if err := loop.RenewLease(lease); !errors.Is(err, loop.ErrFenced) {
-				t.Fatalf("lease at setup re-sync = %v, want ErrFenced", err)
+			if err := loop.RenewLease(lease); err != nil {
+				t.Fatalf("lease at setup re-sync = %v, want no error (leases must not be invalidated before the resync succeeds)", err)
 			}
 			return nil
 		}
@@ -434,6 +461,112 @@ func TestUpdateInvalidatesLeaseBeforeSetupResync(t *testing.T) {
 	})
 	if !resyncCalled {
 		t.Fatal("normal update did not invoke setup re-sync")
+	}
+	if err := loop.RenewLease(lease); !errors.Is(err, loop.ErrFenced) {
+		t.Fatalf("lease after a successful update = %v, want ErrFenced", err)
+	}
+}
+
+// TestUpdate_ResyncFailureLeavesLeaseIntact is the failure-mode half of the
+// same reordering: when the resync fails, existing supervisors must keep
+// running on the prior binary rather than being fenced into hooks that might
+// still be broken.
+func TestUpdate_ResyncFailureLeavesLeaseIntact(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions used by the writable probe")
+	}
+	root := t.TempDir()
+	installDir := t.TempDir()
+	bin := filepath.Join(installDir, "agentchute")
+	if err := os.WriteFile(bin, []byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0}, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	asset := fmt.Sprintf("agentchute_0.5.0_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	archive := makeTarGz(t, map[string][]byte{"agentchute": []byte("NEW-BINARY-BYTES")})
+	sum := sha256.Sum256(archive)
+	checksum := hex.EncodeToString(sum[:])
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "checksums.txt"):
+			fmt.Fprintf(w, "%s  %s\n", checksum, asset)
+		case strings.HasSuffix(r.URL.Path, asset):
+			w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	oldBase := updateGitHubBase
+	oldTarget := resolveUpdateTargetForTest
+	oldResync := updateRunResync
+	updateGitHubBase = srv.URL
+	resolveUpdateTargetForTest = bin
+	updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
+		return errors.New("injected resync failure")
+	}
+	t.Cleanup(func() {
+		updateGitHubBase = oldBase
+		resolveUpdateTargetForTest = oldTarget
+		updateRunResync = oldResync
+	})
+
+	var lease *loop.ServeLease
+	var updateErr error
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeSetupPoolState(cfg, "runner", nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		lease, err = loop.AcquireServeLease(cfg, "codex-agentchute")
+		if err != nil {
+			t.Fatal(err)
+		}
+		updateErr = cmdUpdate([]string{"--version", "v0.5.0"})
+	})
+
+	if updateErr == nil {
+		t.Fatal("expected the injected resync failure to surface as a non-zero update error")
+	}
+	if err := loop.RenewLease(lease); err != nil {
+		t.Fatalf("lease after a FAILED resync = %v, want no error — a failed resync must never fence the fleet", err)
+	}
+}
+
+// TestPrintRestartWarningDoneFalseDoesNotClaimFenced is the regression test
+// codex asked for on PR #130's gate: the pre-resync (done=false) banner
+// previously printed "will be invalidated once the setup re-sync succeeds"
+// on its own first line, but then UNCONDITIONALLY continued with "Running
+// supervisors are fenced" and "RESTART every active agent now" — a direct
+// contradiction of the resync-gated ordering (neither is true until
+// invalidation actually runs), and exactly the kind of prompt that would
+// defeat the safety fix by pushing an operator to restart into a possibly-
+// incomplete update. done=true must still say both.
+func TestPrintRestartWarningDoneFalseDoesNotClaimFenced(t *testing.T) {
+	pending := captureStderr(t, func() {
+		printRestartWarning("v0.5.0", []string{"codex-agentchute"}, false)
+	})
+	for _, mustNotContain := range []string{"are fenced", "RESTART every active agent now"} {
+		if strings.Contains(pending, mustNotContain) {
+			t.Errorf("done=false banner must not claim %q before the resync has succeeded:\n%s", mustNotContain, pending)
+		}
+	}
+	if !strings.Contains(pending, "will be invalidated once the setup re-sync succeeds") {
+		t.Errorf("done=false banner missing the resync-gated timing statement:\n%s", pending)
+	}
+
+	done := captureStderr(t, func() {
+		printRestartWarning("v0.5.0", []string{"codex-agentchute"}, true)
+	})
+	for _, mustContain := range []string{"are fenced", "RESTART every active agent now"} {
+		if !strings.Contains(done, mustContain) {
+			t.Errorf("done=true banner missing %q:\n%s", mustContain, done)
+		}
 	}
 }
 
