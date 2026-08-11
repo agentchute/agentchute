@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -381,6 +382,93 @@ func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 	}
 	if lines[1] != strconv.Itoa(os.Getpid()) {
 		t.Fatalf("AGENTCHUTE_RUNNER_PID = %q, want %d", lines[1], os.Getpid())
+	}
+}
+
+func TestServeRefreshesLaunchedWrapperHookBeforeLaunch(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stale bool
+	}{
+		{name: "missing"},
+		{name: "stale", stale: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := setupShortRunFixture(t)
+			launchedPath := filepath.Join(root, "launched")
+			wrapper := filepath.Join(root, "codex")
+			mustWrite(t, wrapper, []byte("#!/bin/sh\nprintf launched > "+shellQuote(launchedPath)+"\n"))
+			if err := os.Chmod(wrapper, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.stale {
+				mustWriteStaleHook(t, root, "codex")
+			}
+
+			withCwd(t, root, func() {
+				if err := cmdServe([]string{
+					"--as", "codex",
+					"--control-repo", root,
+					"--loop-dir", filepath.Join(root, ".agentchute", "loop"),
+					"--interval", "5",
+					"--idle-grace", "100ms",
+					"--", wrapper,
+				}); err != nil {
+					t.Fatalf("cmdServe err = %v", err)
+				}
+			})
+
+			if _, err := os.Stat(launchedPath); err != nil {
+				t.Fatalf("wrapper was not launched: %v", err)
+			}
+			for _, h := range hookWrappers {
+				if h.Name != "codex" {
+					continue
+				}
+				want, err := fs.ReadFile(hooksFS, h.Src)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := os.ReadFile(filepath.Join(root, h.Dest))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatal("launched wrapper hook does not match the executing binary's canonical template")
+				}
+				return
+			}
+			t.Fatal("codex hook descriptor not found")
+		})
+	}
+}
+
+func TestServeDoesNotLaunchWhenWrapperHookCannotBeRefreshed(t *testing.T) {
+	root := setupShortRunFixture(t)
+	launchedPath := filepath.Join(root, "launched")
+	wrapper := filepath.Join(root, "codex")
+	mustWrite(t, wrapper, []byte("#!/bin/sh\nprintf launched > "+shellQuote(launchedPath)+"\n"))
+	if err := os.Chmod(wrapper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustMkdir(t, filepath.Join(root, ".codex", "hooks.json"))
+
+	var serveErr error
+	withCwd(t, root, func() {
+		serveErr = cmdServe([]string{
+			"--as", "codex",
+			"--control-repo", root,
+			"--loop-dir", filepath.Join(root, ".agentchute", "loop"),
+			"--interval", "5",
+			"--idle-grace", "100ms",
+			"--", wrapper,
+		})
+	})
+	if serveErr == nil {
+		t.Fatal("cmdServe succeeded with an unrefreshable wrapper hook")
+	}
+	if _, err := os.Stat(launchedPath); !os.IsNotExist(err) {
+		t.Fatalf("wrapper launched despite hook refresh failure: stat err = %v", err)
 	}
 }
 
