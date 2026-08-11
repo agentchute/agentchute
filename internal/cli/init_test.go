@@ -333,6 +333,69 @@ func TestInitRefusesSymlinkedAgentchuteMd(t *testing.T) {
 	}
 }
 
+// sibling-path-gate-parity follow-up: the same symlink guard proven above for
+// AGENTCHUTE.md must also cover planEnrollmentFile's targets (CLAUDE.md/
+// CODEX.md/GEMINI.md/GROK.md/AGENTS.md) and planGitignore's .gitignore — all
+// three share the identical read-then-maybe-write-through-a-symlink shape.
+func TestInitRefusesSymlinkedEnrollmentFile(t *testing.T) {
+	root := t.TempDir()
+	outsideDir := t.TempDir()
+	target := filepath.Join(outsideDir, "external.md")
+	targetContent := []byte("an external file this repo must never touch\n")
+	mustWrite(t, target, targetContent)
+
+	link := filepath.Join(root, "CLAUDE.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := computeInitPlan(root, "agentchute", false)
+	if err == nil {
+		t.Fatal("expected a symlink refusal, got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error should mention the symlink refusal: %v", err)
+	}
+
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(targetContent) {
+		t.Errorf("external symlink target was modified; got %q, want unchanged %q", got, targetContent)
+	}
+}
+
+func TestInitRefusesSymlinkedGitignore(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	outsideDir := t.TempDir()
+	target := filepath.Join(outsideDir, "external.gitignore")
+	targetContent := []byte("an external file this repo must never touch\n")
+	mustWrite(t, target, targetContent)
+
+	link := filepath.Join(root, ".gitignore")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := computeInitPlan(root, "agentchute", true)
+	if err == nil {
+		t.Fatal("expected a symlink refusal, got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error should mention the symlink refusal: %v", err)
+	}
+
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(targetContent) {
+		t.Errorf("external symlink target was modified; got %q, want unchanged %q", got, targetContent)
+	}
+}
+
 // 2026-08-11 hook-refresh-reliability follow-up, finding 3: planSpecFile now
 // gets the same version-compare-and-replace treatment planEnrollmentFile
 // already has, instead of skipping unconditionally once recognizable.

@@ -315,22 +315,35 @@ func rejectSymlinkAncestor(path string) error {
 // agentchute spec -> fail: the enrollment block references §5 in the spec,
 // so a non-agentchute AGENTCHUTE.md would silently break the contract, and
 // refusing protects it from being clobbered.
+// rejectSymlinkFile refuses a path that is a symlink (dangling or not),
+// before any read/write of it, since os.ReadFile/os.WriteFile both follow a
+// symlink and this package's init planners write their target unconditionally
+// once a plan is applied. Without this, a repo-local file symlinked to
+// something external would be read AND written through the link, expanding
+// mutation outside the discovered control repo (codex review on PR #131 [P1],
+// against planSpecFile; sibling-path-gate-parity follow-up applies the same
+// guard everywhere else in this file with the identical read-then-maybe-write
+// shape: planEnrollmentFile, planGitignore). rel is used only in the message.
+func rejectSymlinkFile(path, rel string) error {
+	info, statErr := os.Lstat(path)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", rel, statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing to read or write through it — replace it with a real file", rel)
+	}
+	return nil
+}
+
 func planSpecFile(root string) (initAction, error) {
 	path := filepath.Join(root, "AGENTCHUTE.md")
 	rel := "AGENTCHUTE.md"
 
-	// codex review on PR #131 [P1]: os.ReadFile/os.WriteFile both follow a
-	// symlink. Without this Lstat guard, a repo-local AGENTCHUTE.md symlinked
-	// to an external recognizable spec would be read AND, on the new
-	// version-compare-and-replace path, WRITTEN through the link, expanding
-	// mutation outside the discovered control repo. Checked before any read
-	// so a dangling symlink is caught too, not just a followable one.
-	if info, statErr := os.Lstat(path); statErr == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return initAction{}, fmt.Errorf("%s is a symlink; refusing to read or write through it — replace it with a real file", rel)
-		}
-	} else if !os.IsNotExist(statErr) {
-		return initAction{}, fmt.Errorf("stat AGENTCHUTE.md: %w", statErr)
+	if err := rejectSymlinkFile(path, rel); err != nil {
+		return initAction{}, err
 	}
 
 	data, err := os.ReadFile(path)
@@ -397,6 +410,10 @@ func planSpecFile(root string) (initAction, error) {
 // no marker, marker-current, marker-older, marker-newer, malformed/multiple.
 func planEnrollmentFile(path, rendered string) (initAction, error) {
 	rel := filepath.Base(path)
+
+	if err := rejectSymlinkFile(path, rel); err != nil {
+		return initAction{}, err
+	}
 
 	existing, err := os.ReadFile(path)
 	if err != nil {
@@ -518,6 +535,10 @@ func planGitignore(root string, inGit bool, stanza string) (initAction, error) {
 			Action: "skip",
 			Detail: "not in a git worktree",
 		}, nil
+	}
+
+	if err := rejectSymlinkFile(path, rel); err != nil {
+		return initAction{}, err
 	}
 
 	existing, err := os.ReadFile(path)
