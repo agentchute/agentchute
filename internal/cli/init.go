@@ -300,21 +300,6 @@ func rejectSymlinkAncestor(path string) error {
 	return nil
 }
 
-// planSpecFile decides what to do with AGENTCHUTE.md: missing -> write
-// embedded; recognizable spec (sentinel header found) -> version-compare-
-// and-replace against specVersion via specMarkerRE, the same treatment
-// planEnrollmentFile already gives CLAUDE.md/AGENTS.md/etc (2026-08-11
-// hook-refresh-reliability follow-up, finding 3 — this file previously
-// skipped unconditionally once recognizable, so it never refreshed on
-// resync no matter how stale, unlike every other templated file). Older,
-// same-version-but-drifted, or pre-marker legacy content -> replace the
-// whole file (recognized AGENTCHUTE.md is wholly agentchute-owned, matching
-// planEnrollmentFile's own "drift replaces at the current version" ruling).
-// Newer -> leave alone: a deliberately future-dated spec, or a binary older
-// than whatever wrote it. Anything that does not even look like an
-// agentchute spec -> fail: the enrollment block references §5 in the spec,
-// so a non-agentchute AGENTCHUTE.md would silently break the contract, and
-// refusing protects it from being clobbered.
 // rejectSymlinkFile refuses a path that is a symlink (dangling or not),
 // before any read/write of it, since os.ReadFile/os.WriteFile both follow a
 // symlink and this package's init planners write their target unconditionally
@@ -338,6 +323,21 @@ func rejectSymlinkFile(path, rel string) error {
 	return nil
 }
 
+// planSpecFile decides what to do with AGENTCHUTE.md: missing -> write
+// embedded; recognizable spec (sentinel header found) -> version-compare-
+// and-replace against specVersion via specMarkerRE, the same treatment
+// planEnrollmentFile already gives CLAUDE.md/AGENTS.md/etc (2026-08-11
+// hook-refresh-reliability follow-up, finding 3 — this file previously
+// skipped unconditionally once recognizable, so it never refreshed on
+// resync no matter how stale, unlike every other templated file). Older,
+// same-version-but-drifted, or pre-marker legacy content -> replace the
+// whole file (recognized AGENTCHUTE.md is wholly agentchute-owned, matching
+// planEnrollmentFile's own "drift replaces at the current version" ruling).
+// Newer -> leave alone: a deliberately future-dated spec, or a binary older
+// than whatever wrote it. Anything that does not even look like an
+// agentchute spec -> fail: the enrollment block references §5 in the spec,
+// so a non-agentchute AGENTCHUTE.md would silently break the contract, and
+// refusing protects it from being clobbered.
 func planSpecFile(root string) (initAction, error) {
 	path := filepath.Join(root, "AGENTCHUTE.md")
 	rel := "AGENTCHUTE.md"
