@@ -4,6 +4,24 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.5.4 (2026-08-11) — feedback you can act on, upgrades that finish the job
+
+**Stop-hook feedback**
+- A blocked `turn-end`/`gate` now mirrors its one-line verdict to stderr in the text and `--json` modes, so wrappers whose hook feedback channel is stderr (Claude Code) surface the actual reason instead of a content-free re-prompt loop. Clear gates and the codex Stop envelope still write nothing to stderr ([#124](https://github.com/agentchute/agentchute/pull/124)). Reported from the field by the aws-demo fleet.
+
+**Install/upgrade reliability** — a same-day investigation by two independent lanes reproduced every root cause below empirically before any fix was written.
+- `install.sh` resolves setup disposition BEFORE downloading or swapping the binary, and refuses a non-interactive upgrade-in-place that would silently skip setup (the dominant cause of stale hooks after `curl | sh` upgrades); it also warns when the `agentchute` PATH resolves is not the binary it just installed ([#128](https://github.com/agentchute/agentchute/pull/128)).
+- `agentchute update` repairs hook compatibility ahead of the failure-prone setup phases and no longer invalidates serve leases until the resync succeeds; both `--no-resync` output paths now name exactly what stays stale ([#130](https://github.com/agentchute/agentchute/pull/130)).
+- `AGENTCHUTE.md` carries a version marker and auto-refreshes on resync like every other templated file; doctor's spec-freshness remediation text now recommends a command that actually works ([#131](https://github.com/agentchute/agentchute/pull/131)).
+- The `ac` dispatcher exports `AGENTCHUTE_BIN`, so hook children resolve the dispatcher-selected binary instead of whatever older copy PATH finds first ([#126](https://github.com/agentchute/agentchute/pull/126)).
+- `serve` refreshes and verifies the launched wrapper's hook before starting it, self-healing each control repo without a global registry; a failed refresh prevents the launch ([#129](https://github.com/agentchute/agentchute/pull/129)).
+- `doctor` exact-compares every installed hook against the canonical template (previously only the acting wrapper's) and blocks when the dispatcher target, PATH resolution, and running executable disagree on version ([#127](https://github.com/agentchute/agentchute/pull/127)).
+- The init planners refuse a symlinked `AGENTCHUTE.md`, enrollment file, or `.gitignore` instead of writing through the link to a file outside the control repo ([#132](https://github.com/agentchute/agentchute/pull/132)).
+- CI rehearses a real v1.0.0-to-current `agentchute update` — stale hook and pre-marker spec included — on every PR and main push, closing the blind spot where no CI job exercised hook refresh across a real version boundary ([#133](https://github.com/agentchute/agentchute/pull/133)).
+
+**Docs**
+- `CLAUDE.md` records the standing response-style brevity protocol ([#125](https://github.com/agentchute/agentchute/pull/125)).
+
 ## v1.5.3 (2026-07-31) — smoother turns, narrower authority
 
 **Operator-facing coordination**
