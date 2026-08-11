@@ -243,6 +243,46 @@ func installOneHook(w hookWrapper, scopeRoot string, dryRun, force bool) error {
 	return nil
 }
 
+// refreshWrapperHook creates or refreshes the launched wrapper's repo hook and
+// verifies exact parity with this binary before the wrapper starts. This makes
+// each discovered control repo self-healing without a global repo registry.
+func refreshWrapperHook(root, wrapper string) error {
+	var target *hookWrapper
+	for i := range hookWrappers {
+		if hookWrappers[i].Name == wrapper {
+			target = &hookWrappers[i]
+			break
+		}
+	}
+	if target == nil {
+		return nil
+	}
+
+	want, err := fs.ReadFile(hooksFS, target.Src)
+	if err != nil {
+		return fmt.Errorf("read embedded template for %s: %w", target.Name, err)
+	}
+	dest := filepath.Join(root, target.Dest)
+	got, err := os.ReadFile(dest)
+	if err == nil && bytes.Equal(got, want) {
+		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", dest, err)
+	}
+	if err := installOneHook(*target, root, false, true); err != nil {
+		return err
+	}
+	got, err = os.ReadFile(dest)
+	if err != nil {
+		return fmt.Errorf("read refreshed %s: %w", dest, err)
+	}
+	if !bytes.Equal(got, want) {
+		return fmt.Errorf("%s does not match the canonical %s template after refresh", dest, target.Name)
+	}
+	return nil
+}
+
 // refreshHookCompatibility keeps every ALREADY-INSTALLED hookWrappers file
 // under root working with this binary, independent of which wrappers are
 // selected for membership in the current setup/update run: the v1.5.0

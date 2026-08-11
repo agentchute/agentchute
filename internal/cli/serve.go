@@ -119,11 +119,13 @@ func cmdServe(args []string) error {
 		return runUsage(fmt.Errorf("missing wrapper command after --"))
 	}
 	opts.Vendor = strings.TrimSpace(opts.Vendor)
+	launchedWrapper := ""
 	if spec, ok := wrapperSpecForName(filepath.Base(opts.WrapperArgs[0])); ok {
 		if opts.Vendor == "" {
 			opts.Vendor = spec.Vendor
 		}
 		opts.Guarded = spec.Guarded
+		launchedWrapper = spec.AgentID
 	}
 
 	cwd, err := os.Getwd()
@@ -153,6 +155,9 @@ func cmdServe(args []string) error {
 	}
 	if err := loop.ValidateAgentID(opts.Vendor); err != nil {
 		return fmt.Errorf("--vendor: %w", err)
+	}
+	if err := refreshWrapperHook(cfg.ControlRepo, launchedWrapper); err != nil {
+		return fmt.Errorf("serve: refresh %s hook: %w", launchedWrapper, err)
 	}
 	return runWrapper(cfg, opts, cwd)
 }
