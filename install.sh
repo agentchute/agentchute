@@ -291,6 +291,25 @@ path_expr_for_profile() {
 	esac
 }
 
+# warn_path_shadow reports (non-fatal) when the agentchute this process's OWN
+# PATH resolves to is not the binary just installed at target — e.g. an older
+# copy from a different install method (a package manager, an earlier --to)
+# sits before it on PATH. install.sh always writes to a fixed target with no
+# awareness of any other agentchute already on PATH; unlike `agentchute
+# update`, which self-corrects because it replaces whatever binary is
+# actually running, install.sh has no such feedback loop. Hooks and doctor
+# both invoke the bare `agentchute` (via ${AGENTCHUTE_BIN:-agentchute}), so a
+# shadowed old binary keeps running silently until PATH order changes (2026-
+# 08-11 hook-refresh-reliability investigation, finding 6).
+warn_path_shadow() {
+	target="$1"
+	resolved=$(command -v agentchute 2>/dev/null || true)
+	if [ -n "$resolved" ] && [ "$resolved" != "$target" ]; then
+		warn "agentchute on PATH resolves to $resolved, not the just-installed $target"
+		warn "  hooks and doctor use whichever copy PATH resolves; remove or reorder the other install so they see the new version"
+	fi
+}
+
 # warn_path_missing prints a friendly add-to-PATH hint if install_dir isn't on
 # $PATH. No mutation.
 warn_path_missing() {
@@ -488,6 +507,21 @@ EOF
 		fi
 	fi
 
+	# Resolve do_setup from auto NOW, before any download or mutation, using
+	# the have_tty probe already taken above. do_setup_was_auto distinguishes
+	# "environment decided" from an explicit --setup/--no-setup /
+	# AGENTCHUTE_SETUP, which the upgrade-in-place gate below must never
+	# second-guess.
+	do_setup_was_auto=0
+	if [ "$do_setup" = "auto" ]; then
+		do_setup_was_auto=1
+		if [ "$have_tty" = "1" ]; then
+			do_setup=1
+		else
+			do_setup=0
+		fi
+	fi
+
 	probe_deps
 	sha_cmd=$(pick_sha256)
 
@@ -520,6 +554,27 @@ EOF
 	# unwritable existing dir). Mutation (mkdir) happens later.
 	validate_install_dir "$install_dir" "$is_custom"
 
+	# An existing binary at the target IS the "upgrade-in-place" signal: a
+	# fresh install has nothing to leave stale. When the environment (not the
+	# operator) decided to skip setup, refuse BEFORE downloading or swapping
+	# anything rather than silently binary-only-upgrading and printing a hint
+	# nothing captures stderr for. An explicit --setup/--no-setup/
+	# AGENTCHUTE_SETUP is untouched: that is deliberate operator intent, not
+	# an environmental accident (2026-08-11 hook-refresh-reliability
+	# investigation, finding 1 — install.sh's do_setup=auto silently resolving
+	# to skip in any non-interactive context, e.g. CI, cron, or an agent's own
+	# shell tool, left hooks/enrollment/AGENTCHUTE.md on the old version with
+	# only a stderr hint as the signal).
+	upgrade_in_place=0
+	[ -x "$install_dir/agentchute" ] && upgrade_in_place=1
+	if [ "$do_setup_was_auto" = "1" ] && [ "$do_setup" = "0" ] && [ "$upgrade_in_place" = "1" ] && [ "$dry_run" != "1" ]; then
+		err "refusing to upgrade $install_dir/agentchute non-interactively: no controlling terminal, so setup would not run and hooks, enrollment blocks, and AGENTCHUTE.md would stay at the OLD version after the binary swap.
+  re-run with one of:
+    sh install.sh --setup     # force setup to run now
+    sh install.sh --no-setup  # explicitly accept binary-only; refresh later with: agentchute setup
+    sh install.sh              # from an interactive terminal"
+	fi
+
 	# Show the plan in a tab-aligned summary (gemini's "indifferent-but-informative" voice).
 	cat <<EOF
 agentchute install
@@ -547,6 +602,11 @@ EOF
 			info "--fresh would, after installing the new binary, run (DESTRUCTIVE):"
 			info "  agentchute setup --reset --wipe-state --shim-dir ${shim_dir:-${HOME:-}/.agentchute/bin} --wrappers $setup_wrappers --wake $setup_wake$fresh_yes"
 			info "  (wipes loop runtime state after stopping local processes; refuses a live bus)"
+		fi
+		if [ "$do_setup_was_auto" = "1" ] && [ "$do_setup" = "0" ] && [ "$upgrade_in_place" = "1" ]; then
+			info ""
+			info "note: this looks like a non-interactive upgrade over an existing install ($install_dir/agentchute exists, no controlling terminal)."
+			info "a real run would refuse here unless --setup or --no-setup is passed explicitly."
 		fi
 		return 0
 	fi
@@ -592,20 +652,13 @@ EOF
 	info "Security: this verified release checksums; piping the installer still trusts this GitHub repository."
 
 	ensure_path_available "$install_dir" "binary"
+	warn_path_shadow "$install_dir/agentchute"
 
 	if [ -z "$shim_dir" ]; then
 		[ -n "${HOME:-}" ] || err "HOME unset; set AGENTCHUTE_SHIM_DIR explicitly for the ac dispatcher"
 		shim_dir="${HOME}/.agentchute/bin"
 	fi
 	is_valid_install_dir "$shim_dir" || err "invalid shim dir: $shim_dir (must not contain quotes, dollar signs, backticks, or backslashes)"
-
-	if [ "$do_setup" = "auto" ]; then
-		if ( : </dev/tty ) 2>/dev/null; then
-			do_setup=1
-		else
-			do_setup=0
-		fi
-	fi
 
 	if [ "$do_setup" = "1" ]; then
 		if [ "$fresh" = "1" ]; then
