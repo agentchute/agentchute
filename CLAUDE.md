@@ -61,7 +61,7 @@ Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGEN
 
 **Worktrees**: fresh scratch/dev work → `EnterWorktree(name=...)` + `ExitWorktree(action="remove")` (native, session-tracked cleanup). Pinned-SHA gate-review checkouts (reviewing a specific PR head) → native cleanup does NOT fire for a manually-added worktree entered via `path`; use `git worktree add .tmp/worktrees/review-<pr> <sha>` and remove it with `git worktree remove` in the same turn.
 
-**Response style**: `AGENTS.md` §7 (terse, lead with the answer, no filler/self-celebration, no YAGNI) applies to every response — restated here because this file loads every session and §7 doesn't. If a reply drifts long, that's the rule to re-check first.
+**Response style**: `AGENTS.md` §7 (terse, lead with the answer, no filler/self-celebration, no YAGNI) applies to every response — restated here because this file loads every session and §7 doesn't. If a reply drifts long, that's the rule to re-check first. Brevity protocol (Alex, 2026-08-11, standing): very simple language, very short messages, save words like your life depends on it. Status updates are a few lines: what happened, what Alex must do. No context dumps, no history, no rationale unless asked.
 
 If something else genuinely Claude-Code-specific comes up (a tool sandbox quirk, a path-mapping detail, an integration that other CLIs don't have), it goes here as a short addendum and explicitly defers to `AGENTS.md` for everything else.
 
