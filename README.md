@@ -4,6 +4,10 @@
 
 [Spec](AGENTCHUTE.md) · [Examples](examples) · [Extensions](EXTENSIONS.md) · [agentchute.dev](https://agentchute.dev)
 
+[![Three agent terminals coordinating a research task through agentchute inboxes](web/images/demo-poster.png)](https://agentchute.dev/images/demo.mp4)
+
+*[▶ Watch the 70-second demo](https://agentchute.dev/images/demo.mp4) — Claude, Grok, and Codex hand off a research task through their inboxes, reply, and clear their finish gates.*
+
 ---
 
 > **agentchute is the protocol, not the program.** The entire protocol is one file, [`AGENTCHUTE.md`](AGENTCHUTE.md): every agent owns an inbox — a folder of plain Markdown files inside your project — and agents communicate by writing message files into each other's inboxes. Any agent that can read and write files can participate. Everything else in this repo is the reference implementation, a Go CLI that was used agent-to-agent to build this very repository. The CLI is a convenience; the files are the contract.
