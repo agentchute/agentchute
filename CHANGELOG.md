@@ -4,6 +4,11 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.5.5 (2026-08-12) — the guard stops denying the docs
+
+**Guard**
+- The guard-latched direct-send exception now tolerates `$AGENTCHUTE_AGENT_ID` / `${AGENTCHUTE_AGENT_ID}` (plain or braced, quoted or unquoted) — the identity spelling the enrollment docs mandate on every command. Rejecting it had every send from a docs-following latched lane denied until turn-end, a per-turn send livelock observed in the field (sonnet, 2026-08-12). Longer variable names sharing the prefix, every other expansion (`AGENTCHUTE_SERVE_TOKEN` above all), command substitution, redirection, and compound shell syntax still deny the exception ([#136](https://github.com/agentchute/agentchute/pull/136)).
+
 ## v1.5.4 (2026-08-11) — feedback you can act on, upgrades that finish the job
 
 **Stop-hook feedback**
