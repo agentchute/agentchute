@@ -131,23 +131,33 @@ func cmdUpdate(args []string) error {
 		if storedWake == "" {
 			return fmt.Errorf("saved setup state is missing the wake mode; run `agentchute setup` to re-establish before updating, or pass --no-resync to swap only the binary")
 		}
-		// An empty wrapper list is the valid `--wrappers none` mode, not missing state.
+		// An explicit `--wrappers none` choice is recorded as a non-nil empty
+		// list (`"wrappers": []`, see resolveSetupWrappers) and is replayed
+		// as-is — hook files may legitimately exist outside membership via
+		// `hooks install --scope repo`, so file presence must never override
+		// a recorded choice. Only a nil list (JSON null: state predating
+		// explicit-none recording, 2026-08-12) is repairable bookkeeping:
+		// adopt the installed hook set and record it HERE, not in the resync
+		// — the already-up-to-date path below exits before any resync runs,
+		// and the recording must hold there too. A pre-2026-08-12 pool that
+		// chose none also reads as null; if it hand-installed hooks it gets
+		// adopted once — the NOTE names the revert, and its next setup run
+		// re-records in the distinguishable form.
 		wrappersArg = "none"
 		if w := compactStrings(pool.Wrappers); len(w) > 0 {
 			wrappersArg = strings.Join(w, ",")
-		} else if present := installedHookWrappers(cfg.ControlRepo); len(present) > 0 {
-			// Empty recorded membership alongside installed hook files can
-			// only mean the state predates wrapper recording: applySetup
-			// removes hooks for wrappers DROPPED from the recorded list, so
-			// a deliberate `--wrappers none` from a recorded state leaves no
-			// hook files behind. Adopt the installed set so this resync
-			// re-records membership itself instead of replaying `none` and
-			// telling the operator to run setup again afterwards
-			// (2026-08-12; supersedes the wrappersUnrecordedWarning NOTE
-			// from update-fix-v2, which prescribed exactly this as a manual
-			// follow-up command).
-			wrappersArg = strings.Join(present, ",")
-			fmt.Fprintf(os.Stderr, "NOTE: saved setup state records no wrapper membership; adopting it from the installed hook file(s): %s. The re-sync records this membership; no further command needed.\n", wrappersArg)
+		} else if pool.Wrappers == nil {
+			if present := installedHookWrappers(cfg.ControlRepo); len(present) > 0 {
+				wrappersArg = strings.Join(present, ",")
+				if dryRun {
+					fmt.Fprintf(os.Stderr, "NOTE: saved setup state records no wrapper membership; would adopt and record it from the installed hook file(s): %s.\n", wrappersArg)
+				} else {
+					if err := writeSetupPoolState(cfg, storedWake, present, pool.StaleAfter); err != nil {
+						return fmt.Errorf("record adopted wrapper membership: %w", err)
+					}
+					fmt.Fprintf(os.Stderr, "NOTE: saved setup state recorded no wrapper membership; recorded it from the installed hook file(s): %s (revert with `agentchute setup --wrappers <list|none>`).\n", wrappersArg)
+				}
+			}
 		}
 		// Global state carries install-wide knobs (shim dir, profile) so the re-sync
 		// replays them faithfully instead of reverting to defaults.

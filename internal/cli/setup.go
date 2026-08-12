@@ -396,7 +396,13 @@ func resolveSetupWrappers(raw, shimDir string) ([]string, map[string]string, err
 		return detectSetupWrappers(shimDir), detectSetupWrapperPaths(shimDir), nil
 	}
 	if raw == "none" {
-		return nil, detectSetupWrapperPaths(shimDir), nil
+		// Non-nil empty: an explicit `--wrappers none` choice records as
+		// `"wrappers": []` in setup.json, distinguishable from the nil
+		// (JSON null) of state that predates wrapper recording. update's
+		// membership adoption keys on that distinction (internal/cli/
+		// update.go): null + installed hook files is repairable bookkeeping,
+		// [] is a deliberate choice it must never override.
+		return []string{}, detectSetupWrapperPaths(shimDir), nil
 	}
 	seen := map[string]bool{}
 	var wrappers []string

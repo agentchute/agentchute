@@ -768,13 +768,12 @@ func TestInstalledHookWrappers(t *testing.T) {
 	}
 }
 
-// 2026-08-12: saved state with no recorded wrapper membership alongside
-// installed hook files can only predate wrapper recording (applySetup removes
-// hooks for wrappers dropped from the RECORDED list, so a recorded
-// `--wrappers none` leaves no hook files behind). update must adopt the
-// installed set so its own resync re-records membership — not replay
-// `--wrappers none` and prescribe `setup --wrappers <list>` as a manual
-// follow-up, which is what update-fix-v2's wrappersUnrecordedWarning did.
+// 2026-08-12: nil recorded membership (JSON null — state predating wrapper
+// recording) alongside installed hook files is repairable bookkeeping: update
+// adopts the installed set and records it itself, instead of replaying
+// `--wrappers none` and prescribing `setup --wrappers <list>` as a manual
+// follow-up (update-fix-v2's wrappersUnrecordedWarning). A dry-run shows the
+// adoption in the plan but must not write state.
 func TestCmdUpdateAdoptsInstalledHookMembership(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
@@ -798,13 +797,51 @@ func TestCmdUpdateAdoptsInstalledHookMembership(t *testing.T) {
 			t.Fatalf("re-sync plan should adopt the installed membership; got:\n%s", stdout)
 		}
 		if strings.Contains(stdout, "--wrappers none") {
-			t.Fatalf("re-sync plan must not replay `--wrappers none` past installed hooks; got:\n%s", stdout)
+			t.Fatalf("re-sync plan must not replay `--wrappers none` past an unrecorded membership; got:\n%s", stdout)
 		}
-		if !strings.Contains(stderr, "adopting") {
-			t.Fatalf("stderr should note the adoption; got:\n%s", stderr)
+		if !strings.Contains(stderr, "would adopt") {
+			t.Fatalf("dry-run stderr should note the pending adoption; got:\n%s", stderr)
 		}
-		if strings.Contains(stderr, "setup --wrappers <list>") {
+		if strings.Contains(stderr, "setup --wrappers <list>`") {
 			t.Fatalf("stderr must not prescribe a manual setup follow-up; got:\n%s", stderr)
+		}
+		state, err := readSetupPoolState(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Wrappers != nil {
+			t.Fatalf("dry-run must not record membership; got %v", state.Wrappers)
+		}
+	})
+}
+
+// codex FIX vector 1 (2026-08-12): hook files can legitimately exist outside
+// membership (`hooks install --scope repo` writes no setup state), so a
+// RECORDED `--wrappers none` — non-nil empty, `"wrappers": []` — must never
+// be overridden by file presence. Only nil (null) membership is adopted.
+func TestCmdUpdateExplicitNoneNotAdopted(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		mustWriteCanonicalHook(t, root, "claude-code")
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeSetupPoolState(cfg, "runner", []string{}, "1h"); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, err := captureStdoutStderr(t, func() error {
+			return cmdUpdate([]string{"--version", "v0.5.0", "--dry-run"})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(stdout, "--wrappers none") {
+			t.Fatalf("recorded explicit none must replay `--wrappers none`; got:\n%s", stdout)
+		}
+		if strings.Contains(stderr, "adopt") {
+			t.Fatalf("recorded explicit none must not be adopted over; got stderr:\n%s", stderr)
 		}
 	})
 }
@@ -843,6 +880,9 @@ func TestCmdUpdateAlreadyUpToDate(t *testing.T) {
 	root := t.TempDir()
 	withCwd(t, root, func() {
 		mustExampleRepo(t, root)
+		// codex FIX vector 2: adoption must be recorded even on this path —
+		// the early exit returns before any resync could ever record it.
+		mustWriteCanonicalHook(t, root, "claude-code")
 		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 		if err != nil {
 			t.Fatal(err)
@@ -859,6 +899,16 @@ func TestCmdUpdateAlreadyUpToDate(t *testing.T) {
 		}
 		if strings.Contains(out, "Invalidated") {
 			t.Fatalf("a no-op update must not invalidate serve leases; got:\n%s", out)
+		}
+		state, err := readSetupPoolState(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(state.Wrappers, ","); got != "claude-code" {
+			t.Fatalf("adopted membership must be recorded despite the early exit; got %q", got)
+		}
+		if state.StaleAfter != "1h" {
+			t.Fatalf("recording adoption must preserve stale_after; got %q", state.StaleAfter)
 		}
 
 		// Explicit --version of the current release still attempts the full

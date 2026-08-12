@@ -389,6 +389,19 @@ func TestSetupStaleAfterRoundTripsThroughPoolState(t *testing.T) {
 	if got := loop.StaleAfter(cfg); got != 45*time.Minute {
 		t.Fatalf("loop.StaleAfter(cfg) = %v, want 45m", got)
 	}
+	// 2026-08-12: an explicit `--wrappers none` records as non-nil empty
+	// (`"wrappers": []`), distinguishable from the null of state predating
+	// wrapper recording — update's membership adoption keys on this.
+	if pool.Wrappers == nil || len(pool.Wrappers) != 0 {
+		t.Fatalf("explicit none must record a non-nil empty wrapper list; got %#v", pool.Wrappers)
+	}
+	rawState, err := os.ReadFile(filepath.Join(cfg.LoopDir, "state", "setup.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rawState), `"wrappers": []`) {
+		t.Fatalf("setup.json must serialize explicit none as []; got:\n%s", rawState)
+	}
 
 	// Resync without --stale-after: the prior value must survive, not revert
 	// to the 1h default.
