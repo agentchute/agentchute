@@ -122,6 +122,8 @@ func cmdUpdate(args []string) error {
 
 	var setupArgs []string
 	var storedWake, wrappersArg string
+	var adoptedWrappers []string // non-empty: membership adoption pending (recorded after target/tag validation)
+	var adoptedStaleAfter string
 	if !noResync {
 		pool, err := readSetupPoolState(cfg)
 		if err != nil {
@@ -131,32 +133,29 @@ func cmdUpdate(args []string) error {
 		if storedWake == "" {
 			return fmt.Errorf("saved setup state is missing the wake mode; run `agentchute setup` to re-establish before updating, or pass --no-resync to swap only the binary")
 		}
-		// An explicit `--wrappers none` choice is recorded as a non-nil empty
-		// list (`"wrappers": []`, see resolveSetupWrappers) and is replayed
-		// as-is — hook files may legitimately exist outside membership via
-		// `hooks install --scope repo`, so file presence must never override
-		// a recorded choice. Only a nil list (JSON null: state predating
-		// explicit-none recording, 2026-08-12) is repairable bookkeeping:
-		// adopt the installed hook set and record it HERE, not in the resync
-		// — the already-up-to-date path below exits before any resync runs,
-		// and the recording must hold there too. A pre-2026-08-12 pool that
-		// chose none also reads as null; if it hand-installed hooks it gets
-		// adopted once — the NOTE names the revert, and its next setup run
-		// re-records in the distinguishable form.
+		// A recorded wrapper list — including the explicit `--wrappers none`
+		// choice, a non-nil empty `"wrappers": []` (every current setup run
+		// records non-nil, see resolveSetupWrappers/detectSetupWrappers) —
+		// is replayed as-is: hook files may legitimately exist outside
+		// membership via `hooks install --scope repo`, so file presence must
+		// never override a recorded choice. Only a nil list (JSON null:
+		// state written before non-nil recording, 2026-08-12) is repairable
+		// bookkeeping: adopt the installed hook set. The state write happens
+		// AFTER target/tag validation below — update must not mutate
+		// setup.json on a run that then fails those checks — but before the
+		// already-up-to-date early exit, which returns before any resync
+		// could record it. A pre-2026-08-12 pool that chose none also reads
+		// as null; if it hand-installed hooks it gets adopted once — the
+		// NOTE names the revert, and its next setup run re-records in the
+		// distinguishable form.
 		wrappersArg = "none"
 		if w := compactStrings(pool.Wrappers); len(w) > 0 {
 			wrappersArg = strings.Join(w, ",")
 		} else if pool.Wrappers == nil {
 			if present := installedHookWrappers(cfg.ControlRepo); len(present) > 0 {
 				wrappersArg = strings.Join(present, ",")
-				if dryRun {
-					fmt.Fprintf(os.Stderr, "NOTE: saved setup state records no wrapper membership; would adopt and record it from the installed hook file(s): %s.\n", wrappersArg)
-				} else {
-					if err := writeSetupPoolState(cfg, storedWake, present, pool.StaleAfter); err != nil {
-						return fmt.Errorf("record adopted wrapper membership: %w", err)
-					}
-					fmt.Fprintf(os.Stderr, "NOTE: saved setup state recorded no wrapper membership; recorded it from the installed hook file(s): %s (revert with `agentchute setup --wrappers <list|none>`).\n", wrappersArg)
-				}
+				adoptedWrappers = present
+				adoptedStaleAfter = pool.StaleAfter
 			}
 		}
 		// Global state carries install-wide knobs (shim dir, profile) so the re-sync
@@ -200,6 +199,21 @@ func cmdUpdate(args []string) error {
 	if !versionTagRE.MatchString(targetTag) {
 		return fmt.Errorf("invalid version tag %q (expected vMAJOR.MINOR.PATCH)", targetTag)
 	}
+
+	// Target and tag are valid — now perform the pending membership adoption
+	// (see the comment at the detection site above). Before the dry-run print
+	// and the already-up-to-date early exit, both of which return early.
+	if len(adoptedWrappers) > 0 {
+		if dryRun {
+			fmt.Fprintf(os.Stderr, "NOTE: saved setup state records no wrapper membership; would adopt and record it from the installed hook file(s): %s.\n", wrappersArg)
+		} else {
+			if err := writeSetupPoolState(cfg, storedWake, adoptedWrappers, adoptedStaleAfter); err != nil {
+				return fmt.Errorf("record adopted wrapper membership: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "NOTE: saved setup state recorded no wrapper membership; recorded it from the installed hook file(s): %s (revert with `agentchute setup --wrappers <list|none>`).\n", wrappersArg)
+		}
+	}
+
 	current := "v" + version // ldflag-injected; "vdev" for local builds
 	bare := strings.TrimPrefix(targetTag, "v")
 	asset := fmt.Sprintf("agentchute_%s_%s_%s.tar.gz", bare, runtime.GOOS, runtime.GOARCH)

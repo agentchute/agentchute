@@ -359,6 +359,56 @@ func TestSetupInvalidatesServeLeasesAndPreservesRegistrations(t *testing.T) {
 // C9: --stale-after round-trips through the pool's state/setup.json, and a
 // resync (no --stale-after passed) preserves the prior value rather than
 // silently reverting it to the 1h default.
+// codex re-gate blocker 1 (2026-08-12): `--wrappers all` with zero wrappers
+// detected on PATH must also record a non-nil empty list — null must stay
+// legacy-only, or a later update would wrongly adopt an out-of-membership
+// hook file as membership.
+func TestSetupAllZeroDetectedRecordsEmptyNotNull(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, filepath.Join(root, ".git"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin:/bin") // no wrappers detectable
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
+
+	withCwd(t, root, func() {
+		if err := cmdSetup([]string{"--wake", "runner", "--wrappers", "all", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := readSetupPoolState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.Wrappers == nil || len(pool.Wrappers) != 0 {
+		t.Fatalf("zero-detected `--wrappers all` must record a non-nil empty list; got %#v", pool.Wrappers)
+	}
+
+	// And update must not adopt an out-of-membership hook file over it.
+	mustWriteCanonicalHook(t, root, "claude-code")
+	withCwd(t, root, func() {
+		stdout, stderr, err := captureStdoutStderr(t, func() error {
+			return cmdUpdate([]string{"--version", "v0.5.0", "--dry-run"})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(stdout, "--wrappers none") {
+			t.Fatalf("recorded empty membership must replay `--wrappers none`; got:\n%s", stdout)
+		}
+		if strings.Contains(stderr, "adopt") {
+			t.Fatalf("recorded empty membership must not be adopted over; got stderr:\n%s", stderr)
+		}
+	})
+}
+
 func TestSetupStaleAfterRoundTripsThroughPoolState(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, filepath.Join(root, ".git"))

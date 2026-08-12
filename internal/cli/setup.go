@@ -427,7 +427,12 @@ func resolveSetupWrappers(raw, shimDir string) ([]string, map[string]string, err
 
 func detectSetupWrappers(shimDir string) []string {
 	paths := detectSetupWrapperPaths(shimDir)
-	var wrappers []string
+	// Non-nil even when zero are detected: every CURRENT setup run must
+	// record a non-nil wrapper list (`"wrappers": []`, not null), so nil
+	// stays legacy-only and update's membership adoption never fires on
+	// state this binary wrote (codex re-gate on the [] vs null split:
+	// `--wrappers all` with nothing on PATH used to record null here).
+	wrappers := []string{}
 	for _, w := range setupWrappers {
 		if paths[w.Name] != "" {
 			wrappers = append(wrappers, w.Name)

@@ -815,6 +815,35 @@ func TestCmdUpdateAdoptsInstalledHookMembership(t *testing.T) {
 	})
 }
 
+// codex re-gate blocker 2 (2026-08-12): the adoption's state write is
+// deferred until target resolution and tag validation succeed — a run that
+// fails those checks must not mutate setup.json.
+func TestCmdUpdateAdoptionDeferredUntilValidation(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		mustWriteCanonicalHook(t, root, "claude-code")
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeSetupPoolState(cfg, "runner", nil, "1h"); err != nil {
+			t.Fatal(err)
+		}
+		err = cmdUpdate([]string{"--version", "not-a-tag"})
+		if err == nil || !strings.Contains(err.Error(), "invalid version tag") {
+			t.Fatalf("want invalid-tag error, got %v", err)
+		}
+		state, err := readSetupPoolState(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Wrappers != nil {
+			t.Fatalf("failed update must not record membership; got %v", state.Wrappers)
+		}
+	})
+}
+
 // codex FIX vector 1 (2026-08-12): hook files can legitimately exist outside
 // membership (`hooks install --scope repo` writes no setup state), so a
 // RECORDED `--wrappers none` — non-nil empty, `"wrappers": []` — must never
