@@ -4,6 +4,12 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.5.6 (2026-08-12) — update needs no follow-up
+
+**Update**
+- `agentchute update` self-heals wrapper-membership bookkeeping: saved state that predates non-nil wrapper-list recording (`"wrappers": null`) with hook files installed gets membership adopted from those files and recorded directly in `setup.json` — on an applying update with the resync enabled, after target/tag validation succeeds and before the already-up-to-date exit (dry-run only prints what it would adopt; `--no-resync` never reads or writes this state) — replacing the NOTE that prescribed a manual `agentchute setup --wrappers <list>` follow-up. Every current setup run now records a non-nil wrapper list (explicit `--wrappers none` and a zero-detection `--wrappers all` both record `[]`), and such a recorded choice is never overridden by hook files installed outside membership via `hooks install`; a pre-v1.5.6 pool that chose none still reads as null and, with hand-installed hooks, is adopted once — the NOTE names the revert ([#138](https://github.com/agentchute/agentchute/pull/138)).
+- The one long silent network phase announces itself (`Downloading <tag> (<asset>)...`), and an ambient `agentchute update` already on the latest release reports "already up to date" and stops — no silent same-version re-download, no fleet fence for a no-op. An explicit `--version <current>` still forces the full reinstall ([#138](https://github.com/agentchute/agentchute/pull/138)).
+
 ## v1.5.5 (2026-08-12) — the guard stops denying the docs
 
 **Guard**
