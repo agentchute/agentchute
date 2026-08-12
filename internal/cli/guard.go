@@ -295,6 +295,38 @@ func guardDirectSendInvocation(toolCmd string) (candidate, inert bool) {
 // an unquoted heredoc (`<<EOF` instead of `<<'EOF'`) let the composing shell
 // evaluate literal backticks and dollar-parens in the message prose before
 // the body was ever sent, silently blanking text with no visible error.
+// guardIdentityEnvRefLen reports the length of a `$AGENTCHUTE_AGENT_ID` or
+// `${AGENTCHUTE_AGENT_ID}` reference starting at s[0] (which must be '$'), or
+// 0 if s starts with anything else — including a LONGER variable name that
+// merely begins with the identity var's name. This is the one parameter
+// expansion the inert-send exception tolerates, because the enrollment docs
+// mandate exactly this spelling on every command (`--as/--from
+// "$AGENTCHUTE_AGENT_ID"`): rejecting it made the guard deny the send form
+// the docs themselves teach, re-creating the livelock the direct-send
+// exception exists to prevent (sonnet, report-v2 session, 2026-08-12).
+// Downstream-interpretation check (this file's standing question): the
+// executing shell expands it to the serve-pinned agent id — public roster
+// text carried in every envelope header, never a secret — and POSIX expansion
+// does not re-parse the result for operators, so the expanded value can only
+// ever be argument data to the one send. Everything else `$`-shaped,
+// AGENTCHUTE_SERVE_TOKEN above all, stays rejected.
+func guardIdentityEnvRefLen(s string) int {
+	const name = "AGENTCHUTE_AGENT_ID"
+	if strings.HasPrefix(s, "${"+name+"}") {
+		return len(name) + 3
+	}
+	if !strings.HasPrefix(s, "$"+name) {
+		return 0
+	}
+	rest := s[len(name)+1:]
+	if rest != "" {
+		if c := rest[0]; c == '_' || ('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') {
+			return 0
+		}
+	}
+	return len(name) + 1
+}
+
 func guardInertShellWords(cmd string) ([]string, bool) {
 	words := make([]string, 0, 4)
 	var word strings.Builder
@@ -323,6 +355,11 @@ func guardInertShellWords(cmd string) ([]string, bool) {
 			return reject()
 		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '(':
 			return reject()
+		case c == '$' && guardIdentityEnvRefLen(cmd[i:]) > 0:
+			n := guardIdentityEnvRefLen(cmd[i:])
+			inWord = true
+			word.WriteString(cmd[i : i+n])
+			i += n
 		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '\'':
 			inWord = true
 			i += 2
@@ -369,7 +406,16 @@ func guardInertShellWords(cmd string) ([]string, bool) {
 					i++
 					break
 				}
-				if cmd[i] == '`' || cmd[i] == '$' {
+				if cmd[i] == '$' {
+					n := guardIdentityEnvRefLen(cmd[i:])
+					if n == 0 {
+						return reject()
+					}
+					word.WriteString(cmd[i : i+n])
+					i += n
+					continue
+				}
+				if cmd[i] == '`' {
 					return reject()
 				}
 				if cmd[i] == '\\' {
