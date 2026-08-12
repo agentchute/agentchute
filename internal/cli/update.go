@@ -135,6 +135,19 @@ func cmdUpdate(args []string) error {
 		wrappersArg = "none"
 		if w := compactStrings(pool.Wrappers); len(w) > 0 {
 			wrappersArg = strings.Join(w, ",")
+		} else if present := installedHookWrappers(cfg.ControlRepo); len(present) > 0 {
+			// Empty recorded membership alongside installed hook files can
+			// only mean the state predates wrapper recording: applySetup
+			// removes hooks for wrappers DROPPED from the recorded list, so
+			// a deliberate `--wrappers none` from a recorded state leaves no
+			// hook files behind. Adopt the installed set so this resync
+			// re-records membership itself instead of replaying `none` and
+			// telling the operator to run setup again afterwards
+			// (2026-08-12; supersedes the wrappersUnrecordedWarning NOTE
+			// from update-fix-v2, which prescribed exactly this as a manual
+			// follow-up command).
+			wrappersArg = strings.Join(present, ",")
+			fmt.Fprintf(os.Stderr, "NOTE: saved setup state records no wrapper membership; adopting it from the installed hook file(s): %s. The re-sync records this membership; no further command needed.\n", wrappersArg)
 		}
 		// Global state carries install-wide knobs (shim dir, profile) so the re-sync
 		// replays them faithfully instead of reverting to defaults.
@@ -155,9 +168,6 @@ func cmdUpdate(args []string) error {
 		} else if p := strings.TrimSpace(global.Profile); p != "" {
 			setupArgs = append(setupArgs, "--profile", p)
 		}
-		if w := wrappersUnrecordedWarning(cfg.ControlRepo, wrappersArg); w != "" {
-			fmt.Fprintln(os.Stderr, w)
-		}
 	}
 
 	// 2. Resolve the real binary we will replace — refuse a shim BEFORE any
@@ -170,7 +180,8 @@ func cmdUpdate(args []string) error {
 
 	// 3. Resolve the target version.
 	targetTag = strings.TrimSpace(targetTag)
-	if targetTag == "" {
+	explicitTag := targetTag != ""
+	if !explicitTag {
 		targetTag, err = resolveLatestVersion()
 		if err != nil {
 			return fmt.Errorf("resolve latest release: %w", err)
@@ -205,6 +216,19 @@ func cmdUpdate(args []string) error {
 		return nil
 	}
 
+	// Already at the resolved latest: nothing to download, swap, or restart —
+	// say so and stop instead of silently re-downloading the same release
+	// (2026-08-12: a same-version rerun looked like a hang). Only for the
+	// ambient no---version form: an explicit `--version <current>` still runs
+	// the full reinstall, which is also the escape hatch when a prior update
+	// swapped the binary but its resync failed (that failure path prints the
+	// manual resync command too).
+	if !explicitTag && targetTag == current {
+		fmt.Printf("agentchute is already up to date (%s); nothing to do.\n", current)
+		fmt.Printf("(force a reinstall + resync with `agentchute update --version %s`)\n", current)
+		return nil
+	}
+
 	// Apply path only: confirm the install dir is writable before downloading.
 	if err := ensureWritableDir(target); err != nil {
 		return err
@@ -216,7 +240,10 @@ func cmdUpdate(args []string) error {
 
 	// 4. Download + verify + extract into a temp file in the SAME directory as
 	// the target (so the final swap is an atomic same-filesystem rename). Any
-	// failure here leaves the installed binary untouched.
+	// failure here leaves the installed binary untouched. Announce it first:
+	// this is the one long network phase, and with no output it reads as a
+	// hang (2026-08-12).
+	fmt.Printf("Downloading %s (%s)...\n", targetTag, asset)
 	tmpBin, err := downloadVerifyExtract(targetTag, asset, target)
 	if err != nil {
 		return err
@@ -287,37 +314,20 @@ var updateRunResync = func(target string, setupArgs []string, controlRepo string
 	return setup.Run()
 }
 
-// wrappersUnrecordedWarning reports the note to print when a resync will
-// replay `setup --wrappers none` while wrapper hook files exist on disk:
-// the saved state has no recorded wrapper membership for them. Empty means
-// nothing to note. The replay itself is deliberately untouched: an empty
-// recorded wrapper list is the valid `--wrappers none` mode and update
-// cannot distinguish "chose none" from "state predates wrapper recording".
-//
-// update-fix-v2 (docs/decisions/agentchute-update-fix-v2.md) narrowed this
-// from a hook-safety WARNING to a membership-recording NOTE: applySetup's
-// compatibility phase (internal/cli/setup.go, refreshHookCompatibility +
-// verifyHookCompatibility) now refreshes every already-installed hook file
-// on every resync regardless of recorded membership, so an unrecorded
-// wrapper list no longer strands a stale hook template — it only means the
-// pool's membership bookkeeping is out of date. (Historically named
-// hookRefreshSkipWarning; renamed off "skip" once the resync stopped
-// skipping anything.)
-func wrappersUnrecordedWarning(controlRepo, wrappersArg string) string {
-	if wrappersArg != "none" {
-		return ""
-	}
+// installedHookWrappers reports the wrappers whose hook files exist on disk in
+// this control repo. cmdUpdate uses it to adopt wrapper membership when the
+// saved state predates wrapper recording (see the adoption note there); it is
+// the detection half of what was wrappersUnrecordedWarning before update
+// started re-recording membership itself instead of printing a manual
+// `setup --wrappers <list>` follow-up.
+func installedHookWrappers(controlRepo string) []string {
 	var present []string
 	for _, h := range hookWrappers {
 		if _, err := os.Stat(filepath.Join(controlRepo, filepath.FromSlash(h.Dest))); err == nil {
 			present = append(present, h.Name)
 		}
 	}
-	if len(present) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("NOTE: saved setup state records no wrapper membership, though installed hook file(s) exist for: %s (their compatibility refreshes automatically on this resync regardless). Re-record actual membership with `agentchute setup --wrappers <list>` so wrapper-scoped behavior (install/removal, shims, doctor) stays accurate.",
-		strings.Join(present, ", "))
+	return present
 }
 
 // resolveUpdateTargetForTest, when non-empty, overrides the running-binary

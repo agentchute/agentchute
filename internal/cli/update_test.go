@@ -756,36 +756,121 @@ func TestFetchChecksumRejectsNonHex(t *testing.T) {
 	}
 }
 
-// update-fix-v2 (docs/decisions/agentchute-update-fix-v2.md) amends the
-// v1.5.0 cutover fix (docs/decisions/agentchute-v150-cutover-incident-and-
-// fix.md): applySetup's compatibility phase now refreshes every installed
-// hook file regardless of recorded membership, so a pool whose saved state
-// records no wrappers is no longer a hook-safety problem — only a
-// membership-recording gap. wrappersUnrecordedWarning (renamed from
-// hookRefreshSkipWarning) must say so: no claim that hooks will not
-// refresh, no `hooks install` fix prescription.
-func TestWrappersUnrecordedWarning(t *testing.T) {
+func TestInstalledHookWrappers(t *testing.T) {
 	repo := t.TempDir()
-	if got := wrappersUnrecordedWarning(repo, "none"); got != "" {
-		t.Fatalf("no hook files installed: want empty warning, got %q", got)
+	if got := installedHookWrappers(repo); len(got) != 0 {
+		t.Fatalf("no hook files installed: want none, got %v", got)
 	}
 	mustWriteCanonicalHook(t, repo, "claude-code")
 	mustWriteCanonicalHook(t, repo, "codex")
-	got := wrappersUnrecordedWarning(repo, "none")
-	for _, want := range []string{"claude-code", "codex", "setup --wrappers"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("warning %q missing %q", got, want)
+	if got := strings.Join(installedHookWrappers(repo), ","); got != "claude-code,codex" {
+		t.Fatalf("installed = %q, want claude-code,codex (and no wrapper without a hook file)", got)
+	}
+}
+
+// 2026-08-12: saved state with no recorded wrapper membership alongside
+// installed hook files can only predate wrapper recording (applySetup removes
+// hooks for wrappers dropped from the RECORDED list, so a recorded
+// `--wrappers none` leaves no hook files behind). update must adopt the
+// installed set so its own resync re-records membership — not replay
+// `--wrappers none` and prescribe `setup --wrappers <list>` as a manual
+// follow-up, which is what update-fix-v2's wrappersUnrecordedWarning did.
+func TestCmdUpdateAdoptsInstalledHookMembership(t *testing.T) {
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		mustWriteCanonicalHook(t, root, "claude-code")
+		mustWriteCanonicalHook(t, root, "codex")
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	for _, mustNotContain := range []string{"will NOT refresh", "hooks install --wrapper all --scope repo --force"} {
-		if strings.Contains(got, mustNotContain) {
-			t.Fatalf("warning %q must no longer claim hooks are unsafe or prescribe `hooks install` as the fix (that repair now happens automatically): found %q", got, mustNotContain)
+		if err := writeSetupPoolState(cfg, "runner", nil, "1h"); err != nil {
+			t.Fatal(err)
 		}
+		stdout, stderr, err := captureStdoutStderr(t, func() error {
+			return cmdUpdate([]string{"--version", "v0.5.0", "--dry-run"})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(stdout, "--wrappers claude-code,codex") {
+			t.Fatalf("re-sync plan should adopt the installed membership; got:\n%s", stdout)
+		}
+		if strings.Contains(stdout, "--wrappers none") {
+			t.Fatalf("re-sync plan must not replay `--wrappers none` past installed hooks; got:\n%s", stdout)
+		}
+		if !strings.Contains(stderr, "adopting") {
+			t.Fatalf("stderr should note the adoption; got:\n%s", stderr)
+		}
+		if strings.Contains(stderr, "setup --wrappers <list>") {
+			t.Fatalf("stderr must not prescribe a manual setup follow-up; got:\n%s", stderr)
+		}
+	})
+}
+
+// 2026-08-12: a no---version update while already on the latest release must
+// say so and stop — not silently re-download the same asset (which reads as a
+// hang) or fence the fleet for a no-op. An explicit `--version <current>`
+// still runs the full reinstall (the escape hatch for a binary-swapped-but-
+// resync-failed prior update).
+func TestCmdUpdateAlreadyUpToDate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+			http.Redirect(w, r, "/agentchute/agentchute/releases/tag/v1.2.3", http.StatusFound)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	oldBase := updateGitHubBase
+	updateGitHubBase = srv.URL
+	oldVersion := version
+	version = "1.2.3"
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "agentchute")
+	if err := os.WriteFile(bin, []byte{0x7f, 'E', 'L', 'F'}, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(got, "gemini-cli") {
-		t.Fatalf("warning names a wrapper with no installed hook file: %q", got)
-	}
-	if got := wrappersUnrecordedWarning(repo, "claude-code,codex"); got != "" {
-		t.Fatalf("recorded wrappers: want empty warning, got %q", got)
-	}
+	oldTarget := resolveUpdateTargetForTest
+	resolveUpdateTargetForTest = bin
+	defer func() {
+		updateGitHubBase = oldBase
+		version = oldVersion
+		resolveUpdateTargetForTest = oldTarget
+	}()
+
+	root := t.TempDir()
+	withCwd(t, root, func() {
+		mustExampleRepo(t, root)
+		cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeSetupPoolState(cfg, "runner", nil, "1h"); err != nil {
+			t.Fatal(err)
+		}
+		out, err := captureStdout(t, func() error { return cmdUpdate(nil) })
+		if err != nil {
+			t.Fatalf("same-version ambient update must be a clean no-op: %v", err)
+		}
+		if !strings.Contains(out, "already up to date") {
+			t.Fatalf("want an already-up-to-date report; got:\n%s", out)
+		}
+		if strings.Contains(out, "Invalidated") {
+			t.Fatalf("a no-op update must not invalidate serve leases; got:\n%s", out)
+		}
+
+		// Explicit --version of the current release still attempts the full
+		// reinstall (and announces the download before the network phase).
+		out, err = captureStdout(t, func() error {
+			return cmdUpdate([]string{"--version", "v1.2.3"})
+		})
+		if err == nil {
+			t.Fatal("explicit same-version reinstall should have attempted (and failed) the download against a 404 server")
+		}
+		if !strings.Contains(out, "Downloading v1.2.3") {
+			t.Fatalf("apply path should announce the download; got:\n%s", out)
+		}
+	})
 }
