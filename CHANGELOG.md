@@ -4,6 +4,19 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.5.7 (2026-08-13) — a reply that fits, a cue that says when
+
+**Send**
+- `agentchute send --body-file <path>` reads the body verbatim from a file that the binary opens itself. While the §15 guard latch is held, every file-backed body form `send` had — `< file`, a pipe, `--body "$(cat file)"` — uses redirection, a pipe, or command substitution, and the inert-direct-send exception denies all three; `--body-file` is the file-backed form that carries no shell syntax at all. So a lane that had just claimed mail could not send the reply it had composed in a file that turn. Lanes parked the reply "for next turn" and never got one — a pull-only bus never wakes an empty inbox. Mutually exclusive with `--body` by flag presence (an explicit `--body ""` still conflicts rather than silently losing to the file), never falls through to stdin, and errors on a missing, unreadable, or directory path before any preflight or delivery. `guard.go` is unchanged, proven by new guard rows rather than assumed ([#141](https://github.com/agentchute/agentchute/pull/141)).
+- `--body-file` refuses a path resolving inside the loop's `state/` tree, since `state/<id>/serve.claim` holds the live serve token and the flag is a direct file-to-inbox path (the guard is mail-integrity-only and never blocked ordinary reads like `cat`). Containment is decided by directory identity (`os.SameFile` up the parent chain), not by comparing path strings: `filepath.Rel` matches spelling case-sensitively, so a case-insensitive filesystem opened `STATE/<id>/serve.claim` while the compare missed. `inbox/`, `archive/`, and `agents/` stay readable — they are wire-protocol-public to every peer. A bound on an obvious foot-gun, not a security boundary ([#141](https://github.com/agentchute/agentchute/pull/141)).
+
+**Wake cue**
+- The wake cue carries a compact age (`45m`, `31h`, `3d`) on every entry, and a `[stale]` marker on the entries past the threshold — in text, `--json`, and hook-context output — and defaults its staleness threshold to `check`'s existing 24h instead of applying one only when `--stale-after` was passed (which no installed hook template does). A lane read a 31-hour-old message off the cue as a live instruction and broadcast a false alarm to the fleet; the cue had shown a raw RFC3339 timestamp and left the reader to do date arithmetic it demonstrably does not do. `--stale-after` still overrides; `--stale-after 0s` disables ([#140](https://github.com/agentchute/agentchute/pull/140)).
+- `check`'s old-mail banner names the sender and states the norm. It rendered "this message is 1 days old" for that 31-hour message — ungrammatical and misleadingly coarse; hour-scale mail now renders in hours ([#140](https://github.com/agentchute/agentchute/pull/140)).
+
+**Enrollment**
+- Enrollment prose moved to marker v30 (the latched-reply guidance sits inside the marked block). A normal `agentchute update` already re-stamps the control repo it runs in — it re-execs `setup` there with that repo's saved settings — so no follow-up is needed for that repo. Run `agentchute setup --wake runner --wrappers all --yes` yourself in any OTHER control repo, and in any repo where you passed `--no-resync` or the resync failed.
+
 ## v1.5.6 (2026-08-12) — update needs no follow-up
 
 **Update**
