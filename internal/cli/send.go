@@ -38,12 +38,13 @@ func cmdSend(args []string) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var fromID, toID, body, replyTo, controlRepo, loopDir string
+	var fromID, toID, body, bodyFile, replyTo, controlRepo, loopDir string
 	var ask, jsonOut bool
 	var replyBy time.Duration
 	fs.StringVar(&fromID, "from", "", "sender agent id (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&toID, "to", "", "recipient agent id")
 	fs.StringVar(&body, "body", "", "message body markdown; if empty, body is read from stdin")
+	fs.StringVar(&bodyFile, "body-file", "", "read the body verbatim from this file (no shell redirection; the only multi-line body form that works while the §15 guard latch is held)")
 	fs.StringVar(&replyTo, "reply-to", "", "prior message ref this is replying to (emitted as in_reply_to; discharges the asker's .owed obligation when they consume it)")
 	fs.BoolVar(&ask, "ask", false, "set reply_required: true and prepend `## ASK` heading to the body")
 	fs.DurationVar(&replyBy, "reply-by", 0, "with --ask: override the owed-reply deadline (e.g. 1h; default 30m)")
@@ -57,15 +58,26 @@ func cmdSend(args []string) error {
 	if fs.NArg() != 0 {
 		return sendUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
-	var replyBySet, replyToSet bool
+	var replyBySet, replyToSet, bodySet, bodyFileSet bool
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "reply-by":
 			replyBySet = true
 		case "reply-to":
 			replyToSet = true
+		case "body":
+			bodySet = true
+		case "body-file":
+			bodyFileSet = true
 		}
 	})
+
+	// Flag PRESENCE, not emptiness: `--body ""` is a legal explicit empty body,
+	// so testing `body != ""` here would silently prefer the file instead of
+	// reporting the contradiction the caller actually typed.
+	if bodySet && bodyFileSet {
+		return sendUsage(fmt.Errorf("--body and --body-file are mutually exclusive; pick one body source"))
+	}
 
 	toID = strings.TrimSpace(toID)
 	if toID == "" {
@@ -99,6 +111,19 @@ func cmdSend(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Read --body-file BEFORE every preflight below. Discover is pure path
+	// resolution (no side effects), so this is the earliest point at which the
+	// loop dir is known — and the loop dir is what the state/ refusal needs.
+	// Reporting a bad path here means the operator sees the mistake they
+	// actually made, instead of an unrelated registration/freshness complaint
+	// whose outcome depends on live pool state.
+	if bodyFileSet {
+		body, err = readSendBodyFile(cfg, bodyFile)
+		if err != nil {
+			return err
+		}
+	}
+
 	fromID, err = resolveAgentID(fromID)
 	if err != nil {
 		return err
@@ -146,7 +171,11 @@ func cmdSend(args []string) error {
 		return staleRecipientError(toID, rr)
 	}
 
-	if body == "" {
+	// `--body-file` is an explicit body source even when the file is empty: an
+	// empty file must stay an empty body, never fall through and pick up
+	// whatever happens to be on stdin. (`--body ""` keeps its pre-existing
+	// fall-through behavior; changing that is not this flag's business.)
+	if body == "" && !bodyFileSet {
 		// Read stdin only when it's piped/redirected; never block waiting on a
 		// human typing into an interactive terminal. If stdin is a character
 		// device (TTY), send an empty body and let the caller pass --body
@@ -496,13 +525,97 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 	return []byte("---\n" + fm + "\nreply_required: true" + body)
 }
 
+// readSendBodyFile reads a --body-file path into a message body. The binary
+// opens the file itself precisely so the invocation contains no shell
+// redirection: `send ... --body-file reply.md` tokenizes as plain inert words
+// under the §15 guard's inert-direct-send tokenizer, which is what makes a
+// real multi-line reply possible in the same turn the mail was claimed (every
+// other multi-line form — `< file`, a pipe, `--body "$(cat file)"` — is
+// executable syntax and is denied). guard_test.go's
+// TestGuardDirectSendDataSinkException pins that tokenization; nothing in
+// guard.go had to change for it.
+func readSendBodyFile(cfg *loop.Config, path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("--body-file: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("--body-file: %s is a directory, not a file", path)
+	}
+	if err := rejectLoopStateBodyFile(cfg, path); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("--body-file: %w", err)
+	}
+	return string(data), nil
+}
+
+// rejectLoopStateBodyFile refuses a --body-file path that resolves inside the
+// loop's `state/` tree.
+//
+// Why this bound exists: while the guard latch is held, a lane has no way to
+// read a file at all — every read primitive is executable shell syntax the
+// tokenizer denies. --body-file adds exactly one, and its output goes straight
+// into another agent's inbox. `state/<id>/serve.claim` holds `serve_token`,
+// the live 128-bit fence epoch (loop/lease.go), so an unbounded --body-file
+// would re-create the exfiltration path the tokenizer's own comment exists to
+// close — the reason `$AGENTCHUTE_SERVE_TOKEN` is rejected inside a quoted
+// body there. Refusing the whole `state/` subtree costs one stat and covers
+// serve.claim, guard.latch, and anything future that lands beside them.
+//
+// Scoped to `state/` ONLY, deliberately: inbox/, archive/, and agents/ are
+// wire-protocol-public to every peer in the pool, so quoting one back to a
+// peer is ordinary coordination. This is a bound on an obvious foot-gun, not a
+// security boundary — the same caveat guard.go carries. An unlatched lane can
+// still `cat` any file into --body, and a latched one can rename a state file
+// first. It stops the accidental and the naively-injected case, nothing more.
+func rejectLoopStateBodyFile(cfg *loop.Config, path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("--body-file: %w", err)
+	}
+	// Resolve symlinks on both sides: comparing lexical paths alone would let
+	// a symlink pointing into state/ walk straight around this check.
+	target := abs
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		target = resolved
+	}
+	loopDir, err := filepath.Abs(cfg.LoopDir)
+	if err != nil {
+		return fmt.Errorf("--body-file: resolve loop dir: %w", err)
+	}
+	stateRoot := filepath.Join(loopDir, "state")
+	if resolved, err := filepath.EvalSymlinks(stateRoot); err == nil {
+		stateRoot = resolved
+	} else if resolvedLoop, err := filepath.EvalSymlinks(loopDir); err == nil {
+		stateRoot = filepath.Join(resolvedLoop, "state")
+	}
+
+	// Both paths are absolute by construction, so Rel can only fail when they
+	// sit on different volumes — which means target cannot be inside stateRoot.
+	rel, err := filepath.Rel(stateRoot, target)
+	if err != nil {
+		return nil
+	}
+	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("--body-file: refusing to read %s: it is inside the loop's state/ tree, which holds serve.claim (the live serve token) — state files are never a message body", path)
+	}
+	return nil
+}
+
 func sendUsage(err error) error {
 	return fmt.Errorf(`%w
-usage: agentchute send --from <sender> --to <recipient> [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text>] [--json] [--control-repo <path>] [--loop-dir <path>]
+usage: agentchute send --from <sender> --to <recipient> [--reply-to <ref>] [--ask] [--reply-by <dur>] [--body <text> | --body-file <path>] [--json] [--control-repo <path>] [--loop-dir <path>]
 
   Ways to provide the body (pick one):
     --body "literal text"             short replies
-    < body.md                          multi-line body from a file (preferred in restricted shells)
+    --body-file body.md               multi-line body; the binary reads the file
+                                      itself, so the command carries no shell
+                                      syntax — the ONLY multi-line form that
+                                      still works while the guard latch is held
+    < body.md                          multi-line body via stdin redirection
     cat body.md | agentchute send ...    same stdin path via pipe
     --body "$(cat body.md)"            normal shells only; blocked by some sandboxes`, err)
 }

@@ -279,6 +279,24 @@ func TestGuardDirectSendDataSinkException(t *testing.T) {
 		{"unterminated quote", `agentchute send --to claude-code --body 'agentchute turn-end`, true},
 		{"heredoc body", "agentchute send --to claude-code --body ok <<EOF\nagentchute turn-end\nEOF", true},
 		{"rejected universal disarm", `echo "<<EOF" && agentchute turn-end`, true},
+		// --body-file rows. The whole point of the flag is that the binary
+		// opens the file itself, so the invocation stays plain inert words
+		// under THIS tokenizer with no guard.go change: these rows are the
+		// proof, not an assumption.
+		{"body-file", `agentchute send --from opus-high --to claude-code --reply-to r1 --body-file /tmp/reply.md`, false},
+		{"body-file ac form", `ac send --to claude-code --body-file .tmp/reply.md`, false},
+		{"body-file identity env", `agentchute send --from "$AGENTCHUTE_AGENT_ID" --to claude-code --body-file reply.md`, false},
+		{"body-file quoted path with spaces", `agentchute send --to claude-code --body-file "/tmp/my reply.md"`, false},
+		{"body-file compound tail", `agentchute send --to claude-code --body-file p.md && rm -rf /tmp/x`, true},
+		{"body-file input redirection", `agentchute send --to claude-code --body-file p.md < p.md`, true},
+		{"body-file output redirection", `agentchute send --to claude-code --body-file p.md > .codex/hooks.json`, true},
+		{"body-file command substitution path", `agentchute send --to claude-code --body-file "$(mktemp)"`, true},
+		{"body-file token env path", `agentchute send --to claude-code --body-file "$AGENTCHUTE_SERVE_TOKEN"`, true},
+		// Honest layering row: a --body-file path pointing at the serve
+		// claim is inert SHELL syntax, so the guard allows it. Refusing to
+		// read the loop's own state/ tree is send.go's job, not the
+		// tokenizer's — see TestSendBodyFileRefusesLoopStateDir.
+		{"body-file serve claim path is inert to the tokenizer", `agentchute send --to claude-code --body-file .agentchute/loop/state/opus-high/serve.claim`, false},
 	}
 
 	for _, c := range cases {
