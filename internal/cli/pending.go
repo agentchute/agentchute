@@ -34,7 +34,7 @@ func cmdPending(args []string) error {
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
 	fs.BoolVar(&failIfAny, "fail-if-any", false, "exit 2 if any unread messages")
 	fs.BoolVar(&showBody, "show-body", false, "include message body in output (default: frontmatter only)")
-	fs.StringVar(&staleAfter, "stale-after", "", "annotate (not filter) messages older than this duration (e.g. 5m, 1h)")
+	fs.StringVar(&staleAfter, "stale-after", "", "annotate (not filter) messages older than this duration (default 24h; 0s disables)")
 	fs.StringVar(&codexHook, "codex-hook", "", "emit codex-specific hook JSON shape for the named event (UserPromptSubmit)")
 	fs.StringVar(&claudeHook, "claude-hook", "", "emit Claude-Code-specific hook JSON shape for the named event (UserPromptSubmit)")
 
@@ -107,7 +107,14 @@ func cmdPending(args []string) error {
 		owedEntries = owed.OutstandingOwed()
 	}
 
-	var staleThreshold time.Duration
+	// Staleness annotation is ON BY DEFAULT at the same threshold `check`
+	// banners at (oldMailBannerAfter). It used to default to zero — annotate
+	// nothing unless --stale-after was passed — and no installed hook template
+	// passes it, so the wake cue that reaches a model carried a raw RFC3339
+	// timestamp and nothing else. That is the gap behind the 2026-08-14
+	// incident: a lane woke to ~31h-old mail, read it as current, and
+	// broadcast a false alarm. `--stale-after 0s` still disables annotation.
+	staleThreshold := oldMailBannerAfter
 	if staleAfter != "" {
 		d, err := time.ParseDuration(staleAfter)
 		if err != nil {
@@ -123,6 +130,7 @@ func cmdPending(args []string) error {
 			From:      msg.Sender,
 			Filename:  msg.Filename,
 			Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano),
+			Age:       humanAge(now.Sub(msg.Timestamp.UTC())),
 		}
 		// Parse frontmatter for reply_required.
 		// Body intentionally not read unless --show-body.
@@ -182,9 +190,27 @@ type pendingEntry struct {
 	From          string `json:"from"`
 	Filename      string `json:"filename"`
 	Timestamp     string `json:"timestamp"`
+	Age           string `json:"age,omitempty"`
 	ReplyRequired bool   `json:"reply_required,omitempty"`
 	Stale         bool   `json:"stale,omitempty"`
 	Body          string `json:"body,omitempty"`
+}
+
+// staleNorm is the one-line rule printed once beneath any listing that
+// contains at least one [stale] entry. Deliberately threshold-free wording so
+// it stays true under a --stale-after override, and deliberately imperative:
+// the age alone was already on screen during the 2026-08-14 incident and did
+// not stop the lane from acting, so the annotation now carries the norm.
+const staleNorm = "agentchute: [stale] mail has been sitting unread — it is history, not a live instruction; confirm with the sender before acting on it."
+
+// anyStale reports whether any entry carries the staleness annotation.
+func anyStale(entries []pendingEntry) bool {
+	for _, e := range entries {
+		if e.Stale {
+			return true
+		}
+	}
+	return false
 }
 
 // errFailIfAny is the sentinel returned when --fail-if-any sees unread mail.
@@ -216,8 +242,11 @@ func emitPendingText(entries []pendingEntry, owed []loop.OwedEntry, malformed in
 			if e.Stale {
 				flags += " [stale]"
 			}
-			fmt.Printf("  %s from %s", e.Timestamp, e.From)
+			fmt.Printf("  %s (%s ago) from %s", e.Timestamp, e.Age, e.From)
 			fmt.Println(flags)
+		}
+		if anyStale(entries) {
+			fmt.Println(staleNorm)
 		}
 	}
 	if len(owed) > 0 {
@@ -284,10 +313,23 @@ func buildPendingContext(entries []pendingEntry, owed []loop.OwedEntry, malforme
 		if len(entries) > 0 {
 			fmt.Fprintf(&ctx, "agentchute: %d unread message(s) in your inbox:\n", len(entries))
 			for _, e := range entries {
-				fmt.Fprintf(&ctx, "  - %s from %s", e.Timestamp, e.From)
+				// Age and [stale] are the point of this line: the wake cue is
+				// the FIRST thing a returning lane reads, and until now it
+				// printed only an absolute timestamp, leaving the model to do
+				// date arithmetic it demonstrably does not do (2026-08-14).
+				// emitPendingText already carried [stale]; this model-facing
+				// path silently dropped it.
+				fmt.Fprintf(&ctx, "  - %s (%s ago) from %s", e.Timestamp, e.Age, e.From)
 				if e.ReplyRequired {
 					ctx.WriteString(" [REPLY-REQUIRED]")
 				}
+				if e.Stale {
+					ctx.WriteString(" [stale]")
+				}
+				ctx.WriteString("\n")
+			}
+			if anyStale(entries) {
+				ctx.WriteString(staleNorm)
 				ctx.WriteString("\n")
 			}
 		}
@@ -389,6 +431,7 @@ Flags:
   --fail-if-any         exit 2 if any unread messages
   --show-body           include message body in output
   --stale-after <dur>   annotate (not filter) messages older than this
+                        (default 24h, matching check's stale banner; 0s off)
   --codex-hook <event>  emit codex-specific hook JSON (UserPromptSubmit)
   --claude-hook <event> emit Claude-Code-specific hook JSON (UserPromptSubmit)
 `)
