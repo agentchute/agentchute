@@ -4,6 +4,19 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.5.7 (2026-08-13) — a reply that fits, a cue that says when
+
+**Send**
+- `agentchute send --body-file <path>` reads the body verbatim from a file that the binary opens itself. While the §15 guard latch is held, the inert-direct-send exception allows only a single-line `--body "literal"`; every multi-line form send had (`< file`, a pipe, `--body "$(cat file)"`) is executable shell syntax and is denied, so a lane that had just claimed mail could not send a real reply in that turn. Lanes parked the reply "for next turn" and never got one — a pull-only bus never wakes an empty inbox. Mutually exclusive with `--body` by flag presence (an explicit `--body ""` still conflicts rather than silently losing to the file), never falls through to stdin, and errors on a missing, unreadable, or directory path before any preflight or delivery. `guard.go` is unchanged, proven by new guard rows rather than assumed ([#141](https://github.com/agentchute/agentchute/pull/141)).
+- `--body-file` refuses a path resolving inside the loop's `state/` tree, since `state/<id>/serve.claim` holds the live serve token and the flag is the only file-read primitive a latched lane has. Containment is decided by directory identity (`os.SameFile` up the parent chain), not by comparing path strings: `filepath.Rel` matches spelling case-sensitively, so a case-insensitive filesystem opened `STATE/<id>/serve.claim` while the compare missed. `inbox/`, `archive/`, and `agents/` stay readable — they are wire-protocol-public to every peer. A bound on an obvious foot-gun, not a security boundary ([#141](https://github.com/agentchute/agentchute/pull/141)).
+
+**Wake cue**
+- The wake cue carries a compact age (`45m`, `31h`, `3d`) and a `[stale]` marker on every entry — in text, `--json`, and hook-context output — and defaults its staleness threshold to `check`'s existing 24h instead of applying one only when `--stale-after` was passed (which no installed hook template does). A lane read a 31-hour-old message off the cue as a live instruction and broadcast a false alarm to the fleet; the cue had shown a raw RFC3339 timestamp and left the reader to do date arithmetic it demonstrably does not do. `--stale-after` still overrides; `--stale-after 0s` disables ([#140](https://github.com/agentchute/agentchute/pull/140)).
+- `check`'s old-mail banner names the sender and states the norm. It rendered "this message is 1 days old" for that 31-hour message — ungrammatical and misleadingly coarse; hour-scale mail now renders in hours ([#140](https://github.com/agentchute/agentchute/pull/140)).
+
+**Enrollment**
+- Enrollment prose moved to marker v30 (the latched-reply guidance sits inside the marked block). Re-run `agentchute setup --wake runner --wrappers all --yes` in each control repo to re-stamp the tracked wrapper instructions.
+
 ## v1.5.6 (2026-08-12) — update needs no follow-up
 
 **Update**
