@@ -46,8 +46,8 @@ func TestPreparePoolPlanFreshTarget(t *testing.T) {
 		t.Fatalf("WrapperActions count = %d, want 5", len(tp.WrapperActions))
 	}
 	for _, w := range tp.WrapperActions {
-		if w.Action != "create v29" {
-			t.Errorf("wrapper %s action = %q, want 'create v29'", filepath.Base(w.Target), w.Action)
+		if w.Action != "create v30" {
+			t.Errorf("wrapper %s action = %q, want 'create v30'", filepath.Base(w.Target), w.Action)
 		}
 	}
 	if tp.GitignoreAction != nil {
