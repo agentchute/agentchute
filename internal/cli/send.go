@@ -569,40 +569,52 @@ func readSendBodyFile(cfg *loop.Config, path string) (string, error) {
 // wire-protocol-public to every peer in the pool, so quoting one back to a
 // peer is ordinary coordination. This is a bound on an obvious foot-gun, not a
 // security boundary — the same caveat guard.go carries. An unlatched lane can
-// still `cat` any file into --body, and a latched one can rename a state file
-// first. It stops the accidental and the naively-injected case, nothing more.
+// still `cat` any file into --body; a latched one can rename a state file, or
+// hard-link it outside the tree, first. It stops the accidental and the
+// naively-injected case, nothing more.
+//
+// Containment is decided by DIRECTORY IDENTITY (os.SameFile up the target's
+// parent chain), not by comparing path strings. Path comparison was the first
+// implementation and it was too narrow: filepath.Rel matches spelling
+// case-SENSITIVELY, while a case-insensitive filesystem — APFS on macOS, the
+// default — happily opens `STATE/<id>/serve.claim` as `state/<id>/serve.claim`.
+// os.Stat on the uppercase alias succeeded, the string compare missed, and the
+// live serve token went out as a message body (codex review on PR #141,
+// reproduced against e995648). Inode identity has no spelling to alias, and it
+// folds in the symlink and `..` cases for free.
 func rejectLoopStateBodyFile(cfg *loop.Config, path string) error {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return fmt.Errorf("--body-file: %w", err)
-	}
-	// Resolve symlinks on both sides: comparing lexical paths alone would let
-	// a symlink pointing into state/ walk straight around this check.
-	target := abs
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		target = resolved
-	}
 	loopDir, err := filepath.Abs(cfg.LoopDir)
 	if err != nil {
 		return fmt.Errorf("--body-file: resolve loop dir: %w", err)
 	}
-	stateRoot := filepath.Join(loopDir, "state")
-	if resolved, err := filepath.EvalSymlinks(stateRoot); err == nil {
-		stateRoot = resolved
-	} else if resolvedLoop, err := filepath.EvalSymlinks(loopDir); err == nil {
-		stateRoot = filepath.Join(resolvedLoop, "state")
-	}
-
-	// Both paths are absolute by construction, so Rel can only fail when they
-	// sit on different volumes — which means target cannot be inside stateRoot.
-	rel, err := filepath.Rel(stateRoot, target)
+	stateInfo, err := os.Stat(filepath.Join(loopDir, "state"))
 	if err != nil {
+		// No state/ tree on disk means no state file can be read out of one.
 		return nil
 	}
-	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("--body-file: refusing to read %s: it is inside the loop's state/ tree, which holds serve.claim (the live serve token) — state files are never a message body", path)
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("--body-file: %w", err)
 	}
-	return nil
+	// Resolve the target itself before walking: a symlink sitting OUTSIDE
+	// state/ but pointing into it has a parent chain that never reaches
+	// state/, so the walk alone would miss it. (Symlinked parent dirs need no
+	// special handling — os.Stat below follows them.)
+	target := abs
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		target = resolved
+	}
+	for dir := filepath.Dir(target); ; {
+		if info, err := os.Stat(dir); err == nil && os.SameFile(info, stateInfo) {
+			return fmt.Errorf("--body-file: refusing to read %s: it is inside the loop's state/ tree, which holds serve.claim (the live serve token) — state files are never a message body", path)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir { // filesystem root: the walk is done.
+			return nil
+		}
+		dir = parent
+	}
 }
 
 func sendUsage(err error) error {

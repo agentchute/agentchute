@@ -230,6 +230,37 @@ func TestSendBodyFileRefusesLoopStateDir(t *testing.T) {
 	})
 }
 
+// Case-alias regression (codex review on PR #141, reproduced against e995648):
+// the first implementation compared path STRINGS, and filepath.Rel matches
+// spelling case-sensitively. On a case-insensitive filesystem — APFS on macOS,
+// the default — os.Stat opens `STATE/<id>/serve.claim` happily while the string
+// compare misses, so the live serve token went out as a message body. The fix
+// compares directory identity (os.SameFile), which has no spelling to alias.
+func TestSendBodyFileRefusesCaseAliasedStateDir(t *testing.T) {
+	root, cfg := setupSendFixture(t)
+	withCwd(t, root, func() {
+		stateDir := cfg.AgentStateDir("claude-code")
+		mustMkdir(t, stateDir)
+		claim := filepath.Join(stateDir, "serve.claim")
+		mustWrite(t, claim, []byte(`{"id":"claude-code","serve_token":"deadbeef"}`))
+
+		// Uppercase the "state" path component only.
+		aliased := filepath.Join(cfg.LoopDir, "STATE", "claude-code", "serve.claim")
+		if _, err := os.Stat(aliased); err != nil {
+			t.Skip("case-sensitive filesystem: the uppercase alias does not resolve, so there is nothing to bypass")
+		}
+
+		err := cmdSend([]string{"--from", "claude-code", "--to", "codex", "--body-file", aliased})
+		if err == nil {
+			t.Fatal("expected --body-file to refuse a case-aliased path into the loop state/ tree")
+		}
+		if !strings.Contains(err.Error(), "state") {
+			t.Errorf("refusal should name the state tree, got: %v", err)
+		}
+		assertNothingDelivered(t, cfg)
+	})
+}
+
 // The refusal is scoped to state/ ONLY: inbox, archive, and the agents/
 // registry are wire-protocol-public to every peer in the pool, so quoting one
 // back to a peer is ordinary coordination, not exfiltration. A blanket
