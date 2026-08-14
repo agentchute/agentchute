@@ -528,14 +528,18 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 // readSendBodyFile reads a --body-file path into a message body. The binary
 // opens the file itself precisely so the invocation contains no shell
 // redirection: `send ... --body-file reply.md` tokenizes as plain inert words
-// under the §15 guard's inert-direct-send tokenizer, which is what makes a
-// FILE-BACKED body possible in the same turn the mail was claimed: every other
-// file-backed form — `< file`, a pipe, `--body "$(cat file)"` — reaches the
-// file through redirection, a pipe, or command substitution, and the tokenizer
-// denies all three. Multi-line as such was never impossible (the tokenizer's
-// ANSI-C branch accepts `--body $'a\nb'`, an escaped-newline literal); what was
-// impossible was sending a body you had composed in a file, which is how anyone
-// actually writes a long reply. guard_test.go's
+// under the §15 guard's inert-direct-send tokenizer. What it adds is a DIRECT,
+// one-command file-backed body: the other documented one-command file-backed
+// forms — `< file`, a pipe, `--body "$(cat file)"` — reach the file through
+// redirection, a pipe, or command substitution, and the tokenizer denies all
+// three.
+//
+// Claim it narrowly. Neither a multi-line body nor a file-composed one was ever
+// strictly impossible while latched: the tokenizer's ANSI-C branch accepts
+// `--body $'a\nb'`, so a lane could `cat` its draft and re-emit the bytes by
+// hand as an escaped-newline literal. What was missing was an inert one-command
+// form that takes the file itself — which is the difference between a reply
+// anyone actually sends and one nobody does. guard_test.go's
 // TestGuardDirectSendDataSinkException pins that tokenization; nothing in
 // guard.go had to change for it.
 func readSendBodyFile(cfg *loop.Config, path string) (string, error) {
@@ -559,12 +563,16 @@ func readSendBodyFile(cfg *loop.Config, path string) (string, error) {
 // rejectLoopStateBodyFile refuses a --body-file path that resolves inside the
 // loop's `state/` tree.
 //
-// Why this bound exists: --body-file is a DIRECT file-to-inbox path — the
-// binary reads the file and the bytes land in another agent's inbox with no
-// step in between where anyone looks at them. The guard is mail-integrity-only
-// and never blocked ordinary reads (`cat` is not on its deny list), so this is
-// not the only way a latched lane can read a file; it is the only way a file's
-// contents reach a peer without passing through the shell the guard inspects.
+// Why this bound exists: --body-file is the BUILT-IN direct file-to-inbox
+// path — agentchute reads the bytes itself, so they never appear in
+// guard-inspected command text. No exclusivity is claimed and none holds: the
+// guard is mail-integrity-only (`cat` was never on its deny list), and it
+// inspects tool command text rather than every process, so a permitted helper
+// — `python3 helper.py reply.md` — can read a file and exec `send` with argv
+// just the same. That is the alias-around limitation guard.go already
+// documents. This bound simply declines to build the shortest version of that
+// path into the tool itself.
+//
 // `state/<id>/serve.claim` holds `serve_token`, the live 128-bit fence epoch
 // (loop/lease.go), so an unbounded --body-file would re-create the
 // exfiltration path the tokenizer's own comment exists to close — the reason
