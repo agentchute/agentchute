@@ -15,6 +15,10 @@ import (
 // oldMailBannerAfter is the age threshold (v2.5 plan A3, C18) past which
 // `check` announces a message's age above its body. Decision §4: the tool
 // surfaces age loudly, the reader judges relevance — no expiry, no auto-action.
+//
+// It is also `pending`'s DEFAULT staleness threshold, so the wake cue and the
+// consume banner agree on what "stale" means; `pending --stale-after` overrides
+// it (and `--stale-after 0s` disables the annotation entirely).
 const oldMailBannerAfter = 24 * time.Hour
 
 // messageAge returns how long ago msg was sent, relative to now. The lister
@@ -22,6 +26,26 @@ const oldMailBannerAfter = 24 * time.Hour
 // and from file mtime for legacy seq messages.
 func messageAge(msg loop.Message, now time.Time) time.Duration {
 	return now.Sub(msg.Timestamp)
+}
+
+// humanAge renders d as a compact age for operator- and model-facing output:
+// "45m", "31h", "3d". It exists because the original C18 banner rendered every
+// age in whole days via int(age.Hours()/24), so a 31h-old message — exactly
+// the age of the mail that triggered the 2026-08-14 stale-mail incident — read
+// as "1 days old": both ungrammatical and misleadingly coarse. Sub-minute and
+// negative ages (peers on different clocks writing the same shared loop dir)
+// render as "0m" rather than a nonsense negative.
+func humanAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "0m"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func cmdCheck(args []string) error {
@@ -323,7 +347,8 @@ func displayConsumedReadOnly(agentID string, msg loop.Message, content []byte, n
 // sanitizeControlBytes — only the message body needs that treatment.
 func printConsumedBody(msg loop.Message, content []byte, redelivered bool, now time.Time) {
 	if age := messageAge(msg, now); age > oldMailBannerAfter {
-		fmt.Printf("[!] this message is %d days old (sent %s)\n", int(age.Hours()/24), msg.Timestamp.UTC().Format("2006-01-02"))
+		fmt.Printf("[!] STALE: sent %s, %s ago — this is history, not a live instruction; confirm with %s before acting on it.\n",
+			msg.Timestamp.UTC().Format("2006-01-02"), humanAge(age), msg.Sender)
 	}
 	if redelivered {
 		fmt.Printf("---- %s [REDELIVERED — uncommitted from a prior turn; `agentchute ack` to commit] ----\n", msg.Filename)

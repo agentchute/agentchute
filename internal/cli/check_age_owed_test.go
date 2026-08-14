@@ -29,13 +29,71 @@ func TestCheckPrintsAgeBannerOnOldMail(t *testing.T) {
 		}
 		out = o
 	})
-	bannerIdx := strings.Index(out, "[!] this message is 3 days old")
+	bannerIdx := strings.Index(out, "[!] STALE: sent ")
 	headerIdx := strings.Index(out, "----")
 	if bannerIdx == -1 {
 		t.Fatalf("output missing the age banner; got:\n%s", out)
 	}
 	if headerIdx == -1 || bannerIdx >= headerIdx {
 		t.Fatalf("age banner did not print above the ---- header (banner@%d, header@%d); got:\n%s", bannerIdx, headerIdx, out)
+	}
+	// The banner must carry a compact age and NAME THE SENDER, so the reader
+	// knows both how old the mail is and who to confirm with. The pre-2026-08-14
+	// wording ("this message is 3 days old") did neither usefully — it stated an
+	// age and stopped, and the lane acted on the mail anyway.
+	if !strings.Contains(out, "3d ago") {
+		t.Fatalf("banner missing the compact age %q; got:\n%s", "3d ago", out)
+	}
+	if !strings.Contains(out, "confirm with bob before acting on it") {
+		t.Fatalf("banner does not name the sender to confirm with; got:\n%s", out)
+	}
+}
+
+// TestCheckBannerRendersHoursNotWholeDays pins the regression the 2026-08-14
+// incident exposed in the banner's own wording: the triggering message was
+// ~31h old, and int(age.Hours()/24) rendered that as the ungrammatical and
+// misleadingly coarse "1 days old". Hour-scale mail must read in hours.
+func TestCheckBannerRendersHoursNotWholeDays(t *testing.T) {
+	root, cfg := setupConsumeFixture(t)
+	mustWriteAgedInbox(t, cfg.AgentInboxDir("alice"), "bob", 1, []byte("---\nfrom: bob\n---\n\nhi\n"), 31*time.Hour)
+
+	var out string
+	withCwd(t, root, func() {
+		o, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "alice"}) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = o
+	})
+	if !strings.Contains(out, "31h ago") {
+		t.Fatalf("31h-old mail did not render in hours; got:\n%s", out)
+	}
+	if strings.Contains(out, "1 days") || strings.Contains(out, "1d ago") {
+		t.Fatalf("31h-old mail rendered as whole days; got:\n%s", out)
+	}
+}
+
+// TestHumanAge pins the unit boundaries directly, including the negative-age
+// case a shared loop dir can produce when two peers' clocks disagree.
+func TestHumanAge(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want string
+	}{
+		{-5 * time.Hour, "0m"},
+		{30 * time.Second, "0m"},
+		{time.Minute, "1m"},
+		{45 * time.Minute, "45m"},
+		{time.Hour, "1h"},
+		{31 * time.Hour, "31h"},
+		{47*time.Hour + 59*time.Minute, "47h"},
+		{48 * time.Hour, "2d"},
+		{3 * 24 * time.Hour, "3d"},
+	}
+	for _, c := range cases {
+		if got := humanAge(c.in); got != c.want {
+			t.Errorf("humanAge(%s) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -53,7 +111,7 @@ func TestCheckNoBannerOnFreshMail(t *testing.T) {
 		}
 		out = o
 	})
-	if strings.Contains(out, "days old") {
+	if strings.Contains(out, "[!] STALE") {
 		t.Fatalf("fresh mail printed an age banner; got:\n%s", out)
 	}
 }
@@ -75,7 +133,7 @@ func TestCheckNoBannerJustUnderThreshold(t *testing.T) {
 		}
 		out = o
 	})
-	if strings.Contains(out, "days old") || strings.Contains(out, "[!]") {
+	if strings.Contains(out, "[!] STALE") || strings.Contains(out, "[!]") {
 		t.Fatalf("23h-old mail (under the 24h threshold) printed an age banner; got:\n%s", out)
 	}
 }
@@ -111,7 +169,7 @@ func TestCheckBannerOnRedeliveryPath(t *testing.T) {
 	if !strings.Contains(out, "REDELIVERED") {
 		t.Fatalf("expected the redelivery banner to fire; got:\n%s", out)
 	}
-	if !strings.Contains(out, "[!] this message is 3 days old") {
+	if !strings.Contains(out, "[!] STALE: sent ") {
 		t.Fatalf("redelivered residue missing the age banner; got:\n%s", out)
 	}
 }
@@ -130,7 +188,7 @@ func TestCheckBannerOnNoArchivePath(t *testing.T) {
 		}
 		out = o
 	})
-	if !strings.Contains(out, "[!] this message is 3 days old") {
+	if !strings.Contains(out, "[!] STALE: sent ") {
 		t.Fatalf("--no-archive display missing the age banner; got:\n%s", out)
 	}
 }
