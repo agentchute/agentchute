@@ -111,8 +111,11 @@ Ground rules for every M1 item:
      nor a type, so populations 1–2 miss it. For each such field, grep every
      `internal/cli/*_test.go` for **two spellings** before the item may be
      called done: receiver-qualified uses (`rt.<field>`, `runtime.<field>`,
-     …) **and** keyed struct-literal fields (`<field>:`). A struct literal
-     setting a field by key is how M1's bug was written. A comment-only
+     …) **and** keyed struct-literal fields (`<field>:`). A test that
+     builds the struct by key is invisible to a receiver-qualified grep —
+     `newPollTestRuntime` is the example. (The production-side omission
+     that caused M1's leak is a different class, covered by the
+     constructor guard, not by this grep.) A comment-only
      hit needs nothing; a **code** hit needs an alias, an adapter, a
      preserved field, or a named exception.
 
@@ -2338,7 +2341,7 @@ verbatim, and `identity` outside a joined checkout is byte-identical to today.
 **WI-4.10 — the CLIENT half of the W vectors.** *(S7 — these could not run in
 M3.)*
 
-(a) The two W vectors whose client-side behavior M3 had no client to test.
+(a) The three W vectors whose client-side behavior M3 had no client to test.
 
 (b) §9.3 (W1, W2, W6); §4.5.2, §4.5.3.
 
