@@ -36,7 +36,7 @@ The protocol is a small set of implementation-agnostic primitives. Conforming im
 
 The reference CLI maps these primitives onto local filesystem choices on a shared filesystem:
 - **Inbox medium**: `.md` files under a fixed loop directory (`.agentchute/loop/inbox/<id>/`).
-- **Transport**: unique-temp + atomic `link()`-no-clobber (`EEXIST` = a collision — the sender retries under a fresh identity; delivery is at-most-once).
+- **Transport**: unique-temp + atomic `link()`-no-clobber (`EEXIST` = a collision — the sender retries under a fresh identity; delivery is at-most-once); or, for a remote lane, framed operations over SSH to the pool host (the hub); the substrate is unchanged.
 - **Wake**: none on the wire. A loopless wrapper is supervised by `agentchute serve`, which injects `[agentchute] check inbox` into the child's PTY when its OWN inbox poll sees new mail. The runner is local to the agent it supervises; it is not a sender-reachable endpoint.
 
 These are reference choices, not protocol requirements. Conforming implementations can swap the inbox medium and transport (see [`EXTENSIONS.md`](EXTENSIONS.md) and the alternate `log` binding in [`conformance/`](conformance/)) as long as no-overwrite per-recipient delivery and the applicable conformance vectors (see the executable-spec note above) hold.
@@ -46,28 +46,28 @@ These are reference choices, not protocol requirements. Conforming implementatio
 ### In scope
 - **Pull-only inbox coordination** through per-recipient inboxes (§6).
 - **Per-agent supervision.** A loopless wrapper runs under `agentchute serve` (PTY supervisor) for inbox polling and `check inbox` injection. No sender-side wake.
-- **Small shared-FS pool.** 2 to ~10 agents sharing a filesystem — **single-host is the supported, CI-tested configuration** ("Tested targets" below); a pool spanning hosts over a shared network mount is a real deployment shape some pools use — this project's own pool has run that way at points in its history, though its current live pool is single-host — riding fail-closed compatibility behavior rather than a verified guarantee. Beyond ~10 agents, routing/role-election would be required regardless of host count (a future protocol major; a non-goal today, §12).
+- **Small shared-FS pool.** 2 to ~10 agents sharing one filesystem pool — **single-host, and a hub pool (one pool host + SSH remote lanes, §13), are the supported, CI-tested configurations** ("Tested targets" below). A pool spanning hosts over a shared network mount is inherited compatibility, not a newly-endorsed target. Beyond ~10 agents, routing/role-election would be required regardless of host count (a future protocol major; a non-goal today, §12).
 - **Substrate-defined pool locator.** _Reference CLI: a repo containing `AGENTCHUTE.md` and a `.agentchute/loop` directory._
 - **Free-form messages with optional structured envelope** (§6.4).
 - **Registration presence with freshness** (§9) and **asker-owned reply obligations** (§6.6).
 
 ### Out of scope
-See **§12 Non-goals**. Exclusions: non-filesystem transports in the reference CLI, sender-side wake / push presence, durable audit trails, capability-based routing, and cryptographic signing.
+See **§12 Non-goals**. Exclusions: non-filesystem **state substrates** in the reference CLI (the hub's SSH channel is a transport for operations, not a second substrate), sender-side wake / push presence, durable audit trails, capability-based routing, and cryptographic signing.
 
 ### Tested targets and assumptions
 
 The reference implementation makes specific assumptions about its runtime environment.
 
-**Single-host is the supported and CI-tested configuration.** Every lock (`flock`), lease, and fence in this spec is verified against one shared local filesystem under one kernel's advisory locking — that is what CI exercises, and it is the configuration to target for a new deployment.
+**Single-host, and a hub pool (one pool host + SSH remote lanes), are the supported and CI-tested configurations.** Every lock (`flock`), lease, and fence in this spec executes on **one** kernel — the pool host's. Locally that is the machine the agents share; remotely it is the hub. That is what CI exercises. A new multi-host deployment should join remotes to a hub (§13), not share the loop directory over a network mount.
 
-**Cross-host operation is real but unverified — not unsupported.** Some pools run the loop directory on a shared network mount across more than one host; this project's own pool has been one of them at points in its history (a second host's registration has appeared and aged out under the lazy sweep, §9, within this program's own timeline), even though its current live pool happens to be colocated. The reference CLI does not refuse cross-host operation, and specific paths are deliberately host-aware for safety rather than by oversight: the serve lease's reclaim rule falls back to freshness/timeout alone when the holder is on another host, since a pid can't be proven cross-host (§5.4), and `agentchute setup --wipe-state` refuses to wipe a bus a foreign host's fresh serve claim still owns. These exist so a pool that is ALREADY cross-host fails CLOSED — refuses a destructive action, or degrades to a slower reclaim — rather than silently corrupting shared state. They are compatibility and safety behavior, not a claim that cross-host correctness has been verified under concurrent writes, network-filesystem mount-cache edge cases, or clock skew beyond the NTP-loose assumption already stated (§5.4). Earlier drafts of this spec offered specific mount-flag guidance (`actimeo`, `noac`, `lookupcache`) for this case; that guidance is removed, not replaced — it was never CI-verified, and no decision in this program's history tested it. **If your pool already spans hosts**, keep doing so on the fail-closed behavior above — nothing here asks you to colocate before upgrading — but treat cross-host as inherited compatibility, not a newly-endorsed target; a fresh deployment should default to single-host, and a pool considering going cross-host for the first time should not expect the same tested guarantees single-host gets.
+**A network-mounted loop directory across hosts is inherited compatibility, one notch further deprecated.** Some pools run that way; this project's own pool has been one of them at points in its history (a second host's registration has appeared and aged out under the lazy sweep, §9), even though its current live pool happens to be colocated. The reference CLI does not refuse that shape, and two paths stay deliberately host-aware so an already-cross-host pool fails CLOSED rather than silently corrupting shared state: the serve lease's reclaim rule falls back to freshness/timeout alone when the holder is on another host, since a pid can't be proven cross-host (§5.4), and `agentchute setup --wipe-state` refuses to wipe a bus a foreign host's fresh serve claim still owns. They are compatibility and safety behavior, not a claim that mount-based cross-host correctness has been verified under concurrent writes, network-filesystem mount-cache edge cases, or clock skew beyond the NTP-loose assumption already stated (§5.4). Earlier drafts of this spec offered specific mount-flag guidance (`actimeo`, `noac`, `lookupcache`) for this case; that guidance is removed, not replaced — it was never CI-verified. **If your pool already spans hosts on a shared mount**, keep doing so on the fail-closed behavior above — nothing here asks you to colocate or migrate before upgrading — but a fresh deployment should default to single-host or a hub, and a pool considering a mount-based cross-host move for the first time should not expect the same tested guarantees.
 
 | Axis | Tested Configuration | Real, Unverified | Out of Scope |
 | :--- | :--- | :--- | :--- |
 | **Operating System** | macOS, Linux (CI verified) | — | Native Windows (WSL required for run) |
-| **Filesystem Layout** | Single-host shared directory (tested local disk) | Network-mounted loop directory shared across hosts (fail-closed safety only; no correctness guarantee) | Multi-disk, non-POSIX layouts |
+| **Filesystem Layout** | Single-host shared directory (tested local disk); hub pool (one pool host + SSH remote lanes, §13) | Network-mounted loop directory shared across hosts (fail-closed safety only; no correctness guarantee; new multi-host deployments should use a hub) | Multi-disk, non-POSIX layouts |
 | **PTY / Supervision** | Unix-like PTY (SIGWINCH propagation, best-effort) | — | Non-PTY shell wrappers, raw Windows Cmd/PowerShell PTY emulation |
-| **Security Model** | Cooperative local trust (POSIX file permissions) | — | Cryptographic signing, transport encryption, host-isolation bypass |
+| **Security Model** | Cooperative local trust (POSIX file permissions); remote lanes add per-key SSH pinning (§13.9, §15) | — | Cryptographic signing of message bodies, host-isolation bypass |
 
 ### Concurrency and Access
 agentchute is **concurrency-agnostic**: it neither enforces nor prevents simultaneous work. The expected default is linear (one agent at a time per task). Agents MUST have read/write access to their configured inbox medium. **One live process owns an id at a time** — the reference CLI enforces this with a serve lease + fencing token (§5.4).
@@ -85,6 +85,9 @@ Coordination state lives under a fixed dotdir at the repo root:
     inbox/<agent-id>/.claimed/     # phase-1 CLAIMED, not-yet-committed messages
     archive/                       # consumed (committed) messages (gitignored; caller-managed, §6.3)
     malformed/                     # quarantined files (gitignored; caller-managed, §6.3)
+    state/                         # pool-wide non-runtime scaffold (gitignored)
+      setup.json                   # pool settings; preserved across --wipe-state
+      pool.id                      # durable pool identity (12 lowercase hex + LF); preserved across --wipe-state (§13.9)
     state/<agent-id>/              # owner-private runtime state (gitignored)
       owed.json                    # asker-owned reply obligations — sole reply mechanism (§6.6)
       send.floor                   # durable per-sender monotonic timestamp floor (§6.1)
@@ -94,20 +97,35 @@ Coordination state lives under a fixed dotdir at the repo root:
 
 The namespace is fixed at `.agentchute/loop` (no vendor-namespaced dotdir). `AGENTCHUTE.md` is the only file that MUST be tracked. There is no separate presence directory: a registration row under `agents/` (public, one per agent) IS the presence record (§9). `state/<id>/` is owner-private — peers never read another agent's state dir.
 
+**`setup --reset --wipe-state` preservation.** Wipe deletes runtime loop state (inbox/archive/`.claimed`/malformed/scratch/`state/<id>/` contents) and preserves non-runtime scaffold. Two `state/` files are preserved, named in all three places the wipe surface reports them — the wipe plan, the post-wipe rescan, and the dry-run/preserved output:
+
+- `state/setup.json` — pool settings (already preserved).
+- `state/pool.id` — the pool's durable identity. Wiping it would remint a new identity on the next `hub authorize` and silently invalidate every existing key binding for that pool. A post-wipe rescan must not flag it as a leftover.
+
+Any other `state/` survivor is still flagged by the rescan. Behavior of the `pool.id` exemption lands with `hub authorize`; this paragraph is the contract the implementer and this spec agree on.
+
 ## 4. Discovery (filesystem reference implementation)
 
 The reference CLI resolves two distinct paths:
 
 ### 4.1 Control repo cascade
-1. **`--control-repo <path>` flag.**
+1. **`--control-repo <path-or-url>` flag.**
 2. **`AGENTCHUTE_CONTROL_REPO` env var.**
-3. **`.agentchute-control-repo` pointer file.** Walk from cwd up to root. Nearer pointer wins. This is the reference mechanism for worktree or sibling-folder participants that share one central control repo.
+3. **`.agentchute-control-repo` pointer file.** Walk from cwd up to root. Nearer pointer wins. This is the reference mechanism for worktree or sibling-folder participants that share one central control repo, and for a remote lane that has joined a hub.
 4. **Cwd walk.** Walk up to root looking for `AGENTCHUTE.md` + the fixed `.agentchute/loop` directory.
+
+Each of arms 1–3 also accepts an `ssh://` locator (a remote lane's pointer at a hub):
+
+```
+ssh://[user@]host[:port]/absolute/path/to/control-repo
+```
+
+`user` and `host` match `[A-Za-z0-9._-]+` and must not begin with `-`; `port` is 1–65535 or omitted (ssh default); the path is absolute on the hub. The `ssh://` prefix is recognized **before** local-directory checks. Remoteness is discovered from this locator — there is no `--hub` / `--remote` flag. An `ssh://` locator combined with an explicit `--loop-dir` / `AGENTCHUTE_LOOP_DIR` is a hard error (one authority for where local state lives). The local state for a joined hub lives under `~/.agentchute/hub/<hub-id>/` (shadow loop dir, keys, known_hosts); mail never does.
 
 ### 4.2 Loop dir cascade
 1. **`--loop-dir <path>` flag.**
 2. **`AGENTCHUTE_LOOP_DIR` env var.**
-3. **Auto-discover.** The fixed `.agentchute/loop` directory under the control repo root.
+3. **Auto-discover.** The fixed `.agentchute/loop` directory under the control repo root (local), or the per-hub shadow loop dir (remote; derived from the `ssh://` locator, never supplied as a second authority).
 
 ## 5. Registration
 
@@ -136,11 +154,15 @@ Implementations MUST refuse active operations (consume/send/gate) if the agent's
 ### 5.4 Id-uniqueness — the serve lease + fencing token
 The reference CLI's per-sender monotonic timestamp floor (§6.1) and its unconditional `last_seen` heartbeat (§9) are only sound if **one live process owns an id at a time**; a second live writer under the same id would break monotonicity for that sender and could resurrect a stale-looking row out from under a legitimate sweep. The reference CLI enforces this with a decentralized shared-FS lease, not a central allocator:
 
-- The runner acquires a **serve lease** at launch — a `state/<id>/serve.claim` carrying `{id, host, pid, serve_token, started_at, last_seen}`, committed via `link()`-no-clobber. A **fresh** valid claim makes a second launch of the same id **fail closed**.
-- A **stale** claim is reclaimable only via the liveness rule: stale past the lease timeout, **plus** a same-host pid-proof failure when the holder is same-host (a frozen-but-alive process keeps its id); cross-host reclaim uses freshness/timeout only (pid is not provable across hosts).
+- The runner acquires a **serve lease** at launch — a `state/<id>/serve.claim` carrying `{id, host, pid, serve_token, started_at, last_seen, boot_ref}`, committed via `link()`-no-clobber. A **fresh** valid claim makes a second launch of the same id **fail closed**. For a remote lane the lease holder is the **hub-side session process** (its own hub pid sits in the claim); channel loss releases the lease token-checked. Pid-proof is therefore same-host again — the session and the claim live on the hub.
+- A **stale** claim is reclaimable only via the liveness rule: stale past the lease timeout, **plus** a same-host pid-proof failure when the holder is same-host (a frozen-but-alive process keeps its id); cross-host reclaim uses freshness/timeout only (pid is not provable across hosts). The same-host pid-proof gains **boot-reference corroboration**: the claim records a per-boot identifier (`boot_ref`) at acquire, and a stale claim whose recorded ref **differs** from this host's current one is provably dead whatever its pid says (a recycled pid after a reboot). Three properties bound this — the one behavioral amendment to existing lease semantics, and it also applies to local pools:
+  - the comparison is **equality only, never ordering** — refs are never compared for age or parsed;
+  - the reference has **no wall-clock component**, so a clock step cannot forge a difference (Linux: `/proc/sys/kernel/random/boot_id`; Darwin: `kern.bootsessionuuid`; anything else: empty);
+  - the reference is **host-scoped** — `/proc/sys/kernel/random/boot_id` and `kern.bootsessionuuid` change on a host **reboot** and on nothing else, so a container/VM restart, a service restart, or a namespace re-create on a host that did **not** reboot leaves the ref identical and the claim behaves exactly as today. A restart without a reboot is unchanged from today. This fixes the post-reboot wedge; it does **not** solve pid reuse in general, and the manual remediation (inspect the pid; delete the claim if it is unrelated) remains the answer everywhere else.
+  An **absent ref means unchanged, pre-existing behavior** (a claim written by a pre-upgrade binary, or a host whose ref is unreadable). Freshness is still checked first: a not-yet-stale claim is refused before any pid or boot reasoning.
 - The **fencing token** (`serve_token`, a 128-bit random epoch) is the load-bearing part: every heartbeat, every mint of a new timestamp identity, and every registration write from `serve` verifies it. A zombie/paused holder that resumes after its lease was reclaimed fails the token check and stops — so it cannot create a dup-writer even though launch was guarded. The runner passes its token to the child via `AGENTCHUTE_SERVE_TOKEN`, so a fenced (reclaimed) child's `send` fails closed too.
 
-This makes "give each process its own id" an enforced, fenced invariant rather than a convention. (Operational assumption: clocks are NTP-loose with `lease-timeout ≫ heartbeat + max-skew`. Severe skew degrades to premature/delayed reclaim. The lease state typically lives on the same single-host filesystem as the inboxes — the CI-tested configuration, §2 — but the cross-host reclaim branch above is real, shipped behavior, not dead code: some pools run the loop directory on a shared network mount across more than one host, and this project's own pool has too, at points in its history. That path is fail-closed compatibility, not a verified guarantee — see §2's "Tested targets" for the honest boundary between the two.)
+This makes "give each process its own id" an enforced, fenced invariant rather than a convention. (Operational assumption: clocks are NTP-loose with `lease-timeout ≫ heartbeat + max-skew`. Severe skew degrades to premature/delayed reclaim. The lease state typically lives on the same single-host filesystem as the inboxes — the CI-tested configuration, §2 — but the cross-host reclaim branch above is real, shipped behavior, not dead code: some pools run the loop directory on a shared network mount across more than one host, and this project's own pool has too, at points in its history. That path is fail-closed compatibility, not a verified guarantee — see §2's "Tested targets" for the honest boundary between the two. A new multi-host deployment should use a hub, §13.)
 
 ## 6. Messaging
 
@@ -245,7 +267,7 @@ Identity is pool-scoped: `(pool_locator, agent_id)`. A physical process particip
 There is **no wake on the wire** and no sender-side poke. Discovery is recipient-side polling; the only question is what drives a given wrapper's poll.
 
 - **Native-loop wrappers** poll their own inbox on their own cadence (or at lifecycle boundaries via hooks).
-- **Loopless wrappers** run under the **runner** — `agentchute serve -- <wrapper>` — a per-agent PTY supervisor. It launches the child under a PTY, acquires the serve lease (§5.4), polls the agent's OWN inbox each tick, advances the registration's `last_seen` via its lease-gated heartbeat (§9), and injects `[agentchute] check inbox` into the child's PTY when new mail appears (respecting an idle/injection window so it doesn't interrupt mid-turn). It uses per-vendor submit bytes (e.g. bracketed-paste + enhanced-enter for codex) so the cue actually submits.
+- **Loopless wrappers** run under the **runner** — `agentchute serve -- <wrapper>` — a per-agent PTY supervisor. It launches the child under a PTY, acquires the serve lease (§5.4), polls the agent's OWN inbox each tick, advances the registration's `last_seen` via its lease-gated heartbeat (§9), and injects `[agentchute] check inbox` into the child's PTY when new mail appears (respecting an idle/injection window so it doesn't interrupt mid-turn). It uses per-vendor submit bytes (e.g. bracketed-paste + enhanced-enter for codex) so the cue actually submits. For a **remote lane** the runner's poll **is** the tick over the hub channel (§13); injection is unchanged and local — the child, the PTY, and the cue never leave the joining machine.
 
 The leading bracket in the injected cue is machine metadata; the model-facing instruction is `check inbox`. `setup --wake` installs the runner path only; the former tmux/herdr wake adapters and the runner receive-socket were removed in the pull-only redesign.
 
@@ -302,13 +324,162 @@ A well-formed canonical filename (either grammar, §6.1) is never quarantined; o
 Quarantine happens **pre-claim** (`check` validates before it claims, §6.3 step 2): a quarantined item is never claimed and never archived, so it never counts as **consumed**. It has no effect on the sender's monotonic floor (§6.1) either way — the floor is the sender's OWN durable per-sender state, not something a reader advances by claiming or quarantining a message, so a malformed item simply never touches it. It is never silently dropped: it persists as a file under `.agentchute/loop/malformed/` until an operator or agent inspects it. This is surfaced proactively, not just documented — `doctor`/`pending`/`boot` report the malformed count with a `check`-to-quarantine hint, and `gate` (including `--before finish`) blocks on any unquarantined malformed file until `check` runs.
 
 ## 12. Non-goals
-- No non-filesystem transport in the reference CLI.
+- No non-filesystem **state substrate** in the reference CLI; the hub's SSH channel forwards *operations* to the one filesystem pool and is part of the reference implementation (§13). Sync/replication of loop state remains excluded.
 - No sender-side wake / push presence / reachability cache.
 - No durable/authenticated audit trail (archive is gitignored; default off).
 - No capability-based routing.
 - No protocol-level signing or auth.
 - No coordinator/router agents and no cross-agent liveness tracking.
-- No handshake or dynamic version negotiation beyond the static registration `v:` field.
+- No *dynamic capability* negotiation beyond the versioned hub handshake (§13.3) and the static registration `v:` field.
+
+## 13. Hub wire & lifecycle (reference implementation)
+
+The hub is today's pool: plain files under `.agentchute/loop/`, every CI-tested invariant (`flock`, `link()`-no-clobber, rename claim, serve lease + fencing token) executing on the hub's kernel exactly as it does now. The network moves the **operation** to where the state lives; it never moves, syncs, or replicates the state. After this section, when this text and `proposal/ssh-hub/DESIGN.md` disagree, this text wins.
+
+### 13.1 Name and carriage
+
+Protocol name: **`agentchute-hub`**, version **1** (integer). The name appears in the client's SSH exec request, the `hello` frame, and error text.
+
+Carriage is a **forced-command pseudo-subsystem**, not an sshd `Subsystem` directive. The client requests exec of the literal string `agentchute-hub`; the hub's `authorized_keys` forced command ignores it and runs `agentchute hub session …`. The client's request is preserved in `SSH_ORIGINAL_COMMAND` for audit. One carriage path only.
+
+### 13.2 Framing
+
+Newline-delimited JSON control frames + raw body trailers, both directions.
+
+- A frame is one UTF-8 JSON object on one line, LF-terminated. Max frame line: **64 KiB** (`E_TOO_LARGE` past it).
+- A frame that carries a payload declares `"body_len": N` (bytes); exactly N raw bytes follow the frame's LF, then the next frame begins. Max body: **4 MiB**. Bodies are byte-exact message content — no base64, no re-encoding.
+- Client requests carry a client-assigned monotonically increasing integer `"id"`; responses echo it as `"re"`. **One request in flight per session, strictly serial** — concurrency comes from opening more one-shot sessions, never from interleaving frames.
+- Unknown JSON fields are ignored (mirror of §6.5). An unknown `"t"` gets `{"t":"error","code":"E_UNSUPPORTED",…}` and the session stays up. A *framing* violation (non-JSON line, `body_len` mismatch, oversize) gets an error frame and the session closes — there is no resynchronization. Violation-closes-session applies to **received** frames only: the hub never composes an oversized line, so a session can never be killed by the size of its own response — in particular never *after* a commit.
+- Hub→client `note` frames may precede a response. **`level` is one of exactly two values, and the level IS the stream**: `warn` → the client's **stderr**, rendered `warning: <msg>`; `info` → the client's **stdout**, rendered `<msg>` with no prefix. `msg` never carries its own level prefix — the renderer adds it. A third level is a spec change, never an implementer's choice. Both arms are load-bearing: `warn` carries today's stderr warnings (quarantine); `info` carries `check`'s in-stream stdout status lines (empty-inbox, limit, CLAIMED-not-yet-archived) so they stay in production order rather than being re-derived from the terminal `check-ok` after later `owed-item` events.
+
+### 13.3 Handshake
+
+Mandatory first exchange on every session, both channel and one-shot:
+
+```
+C: {"t":"hello","id":1,"proto":"agentchute-hub","v":1,"min_v":1,"agent":"codex","bin":"1.7.0"}
+H: {"t":"hello-ok","re":1,"v":1,"agent":"codex","pool":"/home/alex/code/agentchute",
+    "pool12":"9c4e12ab77f0","writable":true,"hub_bin":"1.7.0",
+    "hub_time":"2026-08-14T21:05:03.123456Z"}
+```
+
+- Version selection: hub computes `use = min(hub_max, client v)`; if `use < client min_v` or `use < hub_min` → `{"t":"error","code":"E_VERSION","msg":"hub speaks agentchute-hub v1; client requires ≥2"}` and close. v1 is the only version at ship; the negotiation exists so v2 can ship without a flag day. Fleet rule stated in the error text: **the hub upgrades first.**
+- Identity: `hello.agent` is the client's resolved id; the hub compares it to the key's pinned `--agent`. Mismatch → `{"t":"error","code":"E_IDENTITY","msg":"key is authorized as \"codex\"; you are acting as \"grok\""}` and close. Past this point **no frame carries an actor field** — every op executes as the pinned id.
+- Pool: `hello-ok` reports `pool` (normalized path, for display) and `pool12` (read from the pool's own `state/pool.id` at session start — never an argv echo). At join the client records both; on every later session it hard-fails unless `hello-ok.pool12` equals the recorded value — the **client-emitted** arm of `E_POOL_MISMATCH`. The hub emits the same code at session start when `state/pool.id` is absent or ≠ the forced command's `--pool-id`.
+- `hub_time`: the client computes `offset = hub_time − local_now` once per session and applies it to *display-only* age math. Protocol state never uses the client clock.
+
+### 13.4 Vocabulary
+
+Complete v1. Client→hub: `hello`, `send`, `check`, `ack`, `register`, `status`, `gate`, `pending`, `clean-owed`, `lease-acquire`, `tick`, `lease-release`. Hub→client: `hello-ok`, `send-ok`, `msg`, `owed-item`, `check-ok`, `ack-item`, `ack-ok`, `register-ok`, `status-ok`, `gate-ok`, `pending-ok`, `clean-owed-ok`, `lease-ok`, `tick-ok`, `release-ok`, `note`, `error`.
+
+Event-stream frames interleave in production order. Unbounded lists never ride inside one control frame: `check`/`pending` stream as `msg` (a pending `msg` omits `body_len` unless the request set `show_body`); `ack` results as `ack-item`; owed entries as `owed-item`; notes — both `warn` and `info` — as `note`. Terminal `*-ok` frames carry counts for those streams, never arrays of the streamed items; fixed-small lists may ride inline.
+
+`tick-ok.warnings` is `[]string` and is **always present** — `[]` when the tick was clean, never omitted. A missing field is a malformed response, not a defaulted empty. The fenced case is the tick's only hard error; every other step failure rides in `warnings`.
+
+`send` — normative shape; `committed` is present:
+
+```
+C: {"t":"send","id":2,"to":"claude-code","ask":true,"reply_by_s":3600,
+    "serve_token":"9f2c…32hex","body_len":184}
+   <184 raw bytes>
+H: {"t":"send-ok","re":2,
+    "filename":"20260814T210503123456Z_from-codex_r4b1d….md",
+    "ref":"to-claude-code_from-codex_20260814T210503123456Z_r4b1d…",
+    "committed":true,"durability_note":"","owed_note":""}
+```
+
+**`committed` is mandatory on every `send-ok`.** `committed:true` means the recipient-side `link()` succeeded, so the message IS delivered and must never be resent — including `committed:true` with a non-empty `durability_note` (linked, dir-sync failed) and/or a non-empty `owed_note` (delivered, asker-side reply-obligation record failed). A `send-ok` without `committed` is a **malformed** response, not a defaulted `false`.
+
+**`durability_note` and `owed_note` are mandatory on every `send-ok`**, each a string, always present — `""` when that arm is clean; omission of either field is a **malformed** response, not a defaulted empty (the same rule `tick-ok.warnings` follows). They are independent: both may be non-empty on the same send, because a dir-sync failure and an owed-record failure are two distinct facts. A non-empty `owed_note` is not a delivery failure. Nothing may treat it as grounds to resend.
+
+A remote send terminates as `send-ok` or `error`. Those are two shapes: `error` means nothing was delivered; `send-ok` means delivery committed (`committed` is the discriminator). An owed-record failure cannot ride as `error` — that frame would lose the committed response and drive spool/retry on an already-delivered send.
+
+### 13.5 Ambiguous send — fail closed, never replay
+
+The ambiguity window opens when the first byte of the `send` frame is handed to the ssh child's stdin, and closes when `send-ok` or an `error` frame for that `id` is read.
+
+- **Before the window** (connect, hello, preflight error frame): the send provably did not happen. The CLI spools the body and prints the retry command. Retrying is safe.
+- **Inside the window** (channel drops, ssh exits, response deadline expires with no frame): the outcome is **unknown**. The CLI spools the body, exits 1 with `E_SEND_UNKNOWN`, and **never retries automatically**. There is no delivery-side dedup (§6.2: at-most-once, no idempotency key); a blind replay would be a duplicate message.
+- A `send-ok` with non-empty `durability_note` and/or non-empty `owed_note` is still a committed delivery: report, do not resend. Neither field is a delivery failure.
+
+### 13.6 Disconnect after claim
+
+Claiming happens hub-side (rename into `.claimed/`) **before** the bytes stream back. If the connection dies mid-stream, the mail is claimed-but-undisplayed — the existing two-phase crash window: the next `check` lists `.claimed` residue and re-displays it with the REDELIVERED banner. At-least-once for the work, unchanged.
+
+### 13.7 Remote turn-end order
+
+The guard latch **never crosses the wire**. In remote mode it is a local file under the shadow loop dir. Remote `turn-end` order:
+
+0. **best-effort** wire `register` — a failure is reported and does **not** abort steps 1–3;
+1. wire `ack` commits hub-side;
+2. local `ClearGuardLatch`;
+3. wire `gate` for the finish verdict.
+
+The latch clears only after the commit is confirmed. If the hub is unreachable at step 1, `turn-end` fails, the latch stays armed, and the claimed mail stays in the hub's `.claimed/`.
+
+### 13.8 Timeouts, deadlines, cadence
+
+| timer | value | enforced where |
+|---|---|---|
+| TCP connect | 5 s | client, `-o ConnectTimeout=5` |
+| hello → hello-ok | 10 s | client (kills ssh child on expiry); hub kills session if no `hello` within 10 s of start |
+| one-shot response deadline | 30 s per request | client (covers a 4 MiB body on a slow link) |
+| channel tick interval | 5 s | client serve loop |
+| tick response deadline | 10 s | client; expiry ⇒ kill ssh child ⇒ fence path |
+| transport dead-peer kill | ~10–15 s | ssh itself, `ServerAliveInterval=5 ×2` (channel) |
+| hub session read deadline | 20 s (channel, = 3 missed ticks + margin); 30 s idle (one-shot) | hub |
+| hub session write deadline | 30 s per response | hub |
+| one-shot session max lifetime | 10 min | hub |
+| mux master linger | 60 s | `-o ControlPersist=60s` |
+| serve lease timeout | **10 s — unchanged** | hub |
+| heartbeat / registration refresh | every tick (5 s) — unchanged cadence | hub session |
+| sweep throttle | 10 min — unchanged | hub session |
+| lease reclaim protection | stale ≥10 s **and** (hub-pid dead **or** the claim's recorded `boot_ref` differs from this host's current one) | hub |
+
+### 13.9 Identity pinning
+
+One authorized key = one agent id. The `authorized_keys` line **is** the mapping — no side database.
+
+```
+restrict,command="/usr/local/bin/agentchute hub session --agent <id> --pool <abs> --pool-id <pool12>" ssh-ed25519 … agentchute:<id>:<pool12>
+```
+
+- `restrict` + forced command: no shell, no PTY, no forwarding. The client's exec request is discarded. The wire carries **no actor field**. A `--as`/`--from` mismatch is rejected at hello (`E_IDENTITY`), never silently rewritten.
+- `state/pool.id` is the pool's durable identity: one regular, non-symlink, 0600 file whose entire content matches `^[0-9a-f]{12}\n$`. `hello-ok.pool12` always carries the value **read from that file**, never an argv echo.
+- A compromised remote key can act fully as that one id (send, claim/ack its inbox, hold its serve lease, read the roster) and poison peers with message content. It cannot get a shell, act as another id, read another agent's `state/` or mail, or tamper with pool state outside the protocol. Co-tenants on the hub itself remain under §15 cooperative trust; bodies remain untrusted data.
+
+### 13.10 Error-code registry
+
+Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable":false}`
+
+| code | emitter | meaning |
+|---|---|---|
+| `E_VERSION` | hub | protocol version mismatch (handshake) |
+| `E_IDENTITY` | hub | `hello.agent` ≠ pinned key id (handshake) |
+| `E_POOL_NOT_FOUND` | hub | forced command's `--pool` invalid hub-side (session start) |
+| `E_NOT_REGISTERED` | hub | actor has no registration row — two exact texts, selected client-side by call site |
+| `E_RECIPIENT_UNKNOWN` | hub | no row for `to` |
+| `E_RECIPIENT_UNREADABLE` | hub | row exists, unparseable |
+| `E_RECIPIENT_STALE` | hub | preflight stale |
+| `E_RECIPIENT_RACING` | hub | fresh-then-stale under lock |
+| `E_FENCED` | hub | serve token check failed |
+| `E_LEASE_HELD` | hub | fresh lease owns the id |
+| `E_HUB_IO` | hub | hub filesystem error |
+| `E_MALFORMED_FRAME` | hub | framing violation (session closes) |
+| `E_TOO_LARGE` | hub | frame >64 KiB or body >4 MiB |
+| `E_UNSUPPORTED` | hub | unknown `t` (session survives) |
+| `E_ORDER` | hub | request out of order (session survives) |
+| `E_POOL_ID_INVALID` | hub | `state/pool.id` fails the regular-0600 / `[0-9a-f]{12}`+LF contract (session start) |
+| `E_POOL_MISMATCH` | **both** | this key is not serving the pool it is supposed to serve |
+
+**`E_POOL_MISMATCH` is emitted by both sides**, deliberately one code with two emitters and two exact texts — not client-only:
+
+- **Hub-emitted, at session start:** `hub session` re-reads `state/pool.id` from the actual `--pool` and refuses when that value is absent or ≠ `--pool-id`. Exact text: `hub: this key is authorized for pool id 9c4e12ab77f0, but /home/alex/code/agentchute on the hub reports pool id 41d2c8ab0917 (or has no state/pool.id at all). The authorized_keys line's --pool was edited without its --pool-id, or the pool directory was replaced. On the hub, re-run: agentchute hub authorize --agent codex --replace-key --pool <the pool this key should serve> --key "<key>".`
+- **Client-emitted, after `hello-ok`:** the client compares `hello-ok.pool12` against the value recorded in `config.json` at join and fails closed on inequality. Exact text: `hub: this key now serves pool /home/alex/other-pool (id 41d2…) on the hub, but this machine joined pool id 9c4e12ab77f0 (/home/alex/code/agentchute). The key line was re-pointed or the hub moved the pool. Re-join if the move is intended (agentchute hub join <url> --as codex), or re-authorize the key with the right --pool on the hub.`
+
+The two arms are ordered and non-overlapping: the hub arm runs before `hello-ok` exists; the client arm only on a `hello-ok` the hub arm already let through.
+
+Client-side only (never on the wire): `E_CONNECT`, `E_UNAUTHORIZED`, `E_HOSTKEY_CHANGED`, `E_CHANNEL_LOST`, `E_SEND_UNKNOWN`, `E_HELLO_TIMEOUT`, `E_HUB_NO_BINARY`, `E_NOT_JOINED`, `E_NO_SSH`. (`E_POOL_MISMATCH` is **not** in this list.)
 
 ## 14. Namespace
 State lives under the fixed `.agentchute/loop` directory. `AGENTCHUTE.md` is shared; reference-implementation notes live in `.agentchute/loop/README.md`. (Earlier drafts used a vendor-namespaced `.<vendor>/loop/` dotdir and a `.rehumanlabs/` legacy namespace; both are gone — the namespace is now fixed. `reHuman Labs` remains the maker's credit in `README.md`; that's brand, not a namespace.)
@@ -316,6 +487,8 @@ State lives under the fixed `.agentchute/loop` directory. `AGENTCHUTE.md` is sha
 ## 15. Security Considerations
 
 agentchute operates under a **cooperative trust** model (as framed in `README.md` and `SECURITY.md`, which this section absorbs into the spec): the coordination channel is plain files on a shared filesystem with no cryptographic signing, so spoofing, tampering, and deletion of messages by co-tenant processes are out of scope — if you don't trust a peer's operator, don't run it on your machine.
+
+**Remote lanes add per-key pinning, not a new trust model for the hub itself.** One authorized key = one agent id (`restrict` + forced command, §13.9). Remote sender identity is transport-enforced: a `--as`/`--from` mismatch cannot pass the handshake, and no wire frame carries an actor field. Cooperative trust still governs co-tenants on the hub host — any process running as the hub UNIX user can still impersonate anyone by writing files, exactly as today. Bodies remain untrusted data.
 
 Multi-agent systems face a second, distinct threat the operator-trust framing does not cover: **indirect prompt injection via a compromised peer**. A trusted peer whose context has been poisoned — by a hostile repository file, a fetched web page, an upstream message — can relay malicious instructions, and the recipient's harness presents that text with the implicit authority of the coordination channel.
 

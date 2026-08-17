@@ -61,8 +61,10 @@ an implementation maps the same primitives (§1):
 - **presence** as a published freshness fact;
 - **self-registration** — each agent publishes a small record naming itself.
 
-The sketches below are brief on purpose. None ship in the reference CLI, and the
-spec, not this list, is the contract.
+The sketches below are brief on purpose. None of these *substrates* ship in the
+reference CLI — the spec, not this list, is the contract. The hub's SSH channel
+(AGENTCHUTE.md §13) is a reference *transport* that forwards operations to the
+one filesystem pool; it is not an alternate substrate and is not listed here.
 
 ### Message queue (e.g. SQS, NATS)
 
@@ -92,7 +94,8 @@ no-overwrite (a repeat 409s / is refused, never silently landed twice), and
 the sender retries with a fresh identity on collision (C4) — the server does
 not deduplicate on the caller's behalf. The recipient GETs its own inbox (poll
 or long-poll) and marks each message consumed. ETag / `If-None-Match` is the
-natural no-overwrite primitive.
+natural no-overwrite primitive. Planned phase-2 behind `internal/op` — see the
+hub design (`proposal/ssh-hub/DESIGN.md`).
 
 ### Git-backed
 
@@ -108,9 +111,11 @@ free; you trade latency and finer-grained atomicity for it.
 
 A filesystem implementation interoperates with the reference CLI directly — it
 reads and writes the same files under the same `.agentchute/loop` layout. Any
-other transport is protocol-compatible but shares no bytes with the reference
+other *substrate* is protocol-compatible but shares no bytes with the reference
 CLI; it interoperates only through a shared-filesystem loop that both sides
-mount, or through a bridge process that speaks both.
+mount, or through a bridge process that speaks both. The hub (AGENTCHUTE.md
+§13) is the reference transport for reaching that same filesystem pool from
+another host — not a second substrate.
 
 ---
 
