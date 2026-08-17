@@ -206,6 +206,38 @@ func TestWipeStatePreservesSetupJSON(t *testing.T) {
 	mustNotExist(t, filepath.Join(cfg.LoopDir, "state", "claude-code"))
 }
 
+func TestWipeStatePreservesPoolIdentity(t *testing.T) {
+	root, cfg := newWipeTestRepo(t)
+	poolID := filepath.Join(cfg.LoopDir, "state", "pool.id")
+	mustWrite(t, poolID, []byte("9c4e12ab77f0\n"))
+	if err := os.Chmod(poolID, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(cfg.LoopDir, "state", "codex", "runner.json")
+	mustWrite(t, other, []byte("runtime"))
+
+	plan, err := computeWipePlan(cfg, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	printWipePlan(&output, plan)
+	if !strings.Contains(output.String(), "preserved: pool.id") {
+		t.Fatalf("wipe plan did not list pool.id as preserved:\n%s", output.String())
+	}
+	if err := executeWipePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	mustExist(t, poolID)
+	mustNotExist(t, filepath.Join(cfg.LoopDir, "state", "codex"))
+	if leftovers := rescanWipeLeftovers(cfg.LoopDir); len(leftovers) != 0 {
+		t.Fatalf("post-wipe leftovers: %v", leftovers)
+	}
+	if _, _, actual, err := validateHubPool(root, "9c4e12ab77f0", "codex"); err != nil || actual != "9c4e12ab77f0" {
+		t.Fatalf("hub session pool validation after wipe = %q, %v", actual, err)
+	}
+}
+
 // ---------- legacy namespace allowlist ----------
 
 func writeLegacyLoop(t *testing.T, root, dotdir string, sentinel bool) string {

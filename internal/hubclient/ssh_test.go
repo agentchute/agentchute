@@ -93,19 +93,20 @@ func TestBuildSSHInvocationControlPathFallbacks(t *testing.T) {
 
 func TestClassifySSHFailureCodes(t *testing.T) {
 	exit127 := exec.Command("sh", "-c", "exit 127").Run()
-	remote := &loop.RemoteConfig{User: "alex", Host: "hub.example", Port: 22}
+	remote := &loop.RemoteConfig{User: "alex", Host: "hub.tail1234.ts.net", Port: 22}
 	tests := []struct {
 		name    string
 		stage   string
 		stderr  string
 		waitErr error
 		want    string
+		wantMsg string
 	}{
-		{name: "changed host key", stage: "connect", stderr: "REMOTE HOST IDENTIFICATION HAS CHANGED", want: "E_HOSTKEY_CHANGED"},
-		{name: "authentication refused", stage: "connect", stderr: "Permission denied (publickey).", want: "E_UNAUTHORIZED"},
-		{name: "remote binary absent", stage: "connect", waitErr: exit127, want: "E_HUB_NO_BINARY"},
-		{name: "hello timeout", stage: "hello-timeout", want: "E_HELLO_TIMEOUT"},
-		{name: "connect failed", stage: "connect", want: "E_CONNECT"},
+		{name: "changed host key", stage: "connect", stderr: "REMOTE HOST IDENTIFICATION HAS CHANGED", want: "E_HOSTKEY_CHANGED", wantMsg: "hub: HOST KEY CHANGED for hub.tail1234.ts.net — refusing to connect. If the hub was reinstalled, confirm with its operator, then run: agentchute hub join --reset-hostkey. If not, treat this as a possible interception."},
+		{name: "authentication refused", stage: "connect", stderr: "Permission denied (publickey).", want: "E_UNAUTHORIZED", wantMsg: "hub: hub refused this key for alex@hub.tail1234.ts.net. Either it was never authorized or it was revoked."},
+		{name: "remote binary absent", stage: "connect", waitErr: exit127, want: "E_HUB_NO_BINARY", wantMsg: "hub: connected, but the hub could not run agentchute (remote exit 127 — command not found at /usr/local/bin/agentchute). Reinstall agentchute on the hub, or re-authorize this key so its line points at the current binary path."},
+		{name: "hello timeout", stage: "hello-timeout", want: "E_HELLO_TIMEOUT", wantMsg: "hub: connected but no protocol answer in 10s. The hub-side agentchute may be hung or broken; on the hub run: agentchute doctor"},
+		{name: "connect failed", stage: "connect", want: "E_CONNECT", wantMsg: "hub: cannot reach hub.tail1234.ts.net:22 (connect failed after 5s). Check network/VPN/tailnet, then retry; `agentchute doctor` runs this same probe. (If this machine should no longer be joined to this hub, delete .agentchute-control-repo.)"},
 		{name: "established channel lost", stage: "operation", want: "E_CHANNEL_LOST"},
 	}
 	for _, tt := range tests {
@@ -124,6 +125,9 @@ func TestClassifySSHFailureCodes(t *testing.T) {
 			if code := ErrorCode(got); code != tt.want {
 				t.Fatalf("code = %q, want %q (error %v)", code, tt.want, got)
 			}
+			if tt.wantMsg != "" && got.Error() != tt.wantMsg {
+				t.Fatalf("message = %q, want %q", got.Error(), tt.wantMsg)
+			}
 		})
 	}
 }
@@ -133,6 +137,10 @@ func TestStartSSHMissingBinary(t *testing.T) {
 	_, err := startSSH(context.Background(), SSHInvocation{})
 	if code := ErrorCode(err); code != "E_NO_SSH" {
 		t.Fatalf("code = %q, want E_NO_SSH (error %v)", code, err)
+	}
+	want := "hub: the `ssh` binary was not found on this machine. Install the OpenSSH client (macOS: preinstalled — check PATH; Debian/Ubuntu: apt install openssh-client), then retry."
+	if err.Error() != want {
+		t.Fatalf("message = %q, want %q", err, want)
 	}
 }
 
@@ -171,8 +179,8 @@ func TestUnauthorizedIncludesReadyToPasteAuthorization(t *testing.T) {
 		cancel: func() {}, waitCh: waitCh, closeDone: make(chan struct{}),
 	}
 	got := classifySSHFailure(remote, "codex", "connect", errors.New("transport failed"), transport)
-	want := "Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent codex --pool /remote/pool --key \"" + pubkey + "\""
-	if ErrorCode(got) != "E_UNAUTHORIZED" || !strings.Contains(got.Error(), want) {
-		t.Fatalf("unauthorized error = %q, want complete authorization command %q", got, want)
+	want := "hub: hub refused this key for alex@hub.example. Either it was never authorized or it was revoked. Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent codex --pool /remote/pool --key \"" + pubkey + "\""
+	if ErrorCode(got) != "E_UNAUTHORIZED" || got.Error() != want {
+		t.Fatalf("unauthorized error = %q, want %q", got, want)
 	}
 }

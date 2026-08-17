@@ -15,11 +15,12 @@ const maxHubConfigBytes = 64 << 10
 var ErrHubConfigNotFound = errors.New("hub config not found")
 
 type HubConfig struct {
-	URL      string            `json:"url"`
-	JoinedAs []string          `json:"joined_as"`
-	Names    map[string]string `json:"names"`
-	Pool     string            `json:"pool"`
-	Pool12   string            `json:"pool12"`
+	URL                string            `json:"url"`
+	JoinedAs           []string          `json:"joined_as"`
+	Names              map[string]string `json:"names"`
+	Pool               string            `json:"pool"`
+	Pool12             string            `json:"pool12"`
+	HostKeyFingerprint string            `json:"host_key_fingerprint,omitempty"`
 }
 
 func ReadHubConfig(hubID string) (*HubConfig, error) {

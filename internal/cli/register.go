@@ -134,7 +134,7 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 	}, nil
 }
 
-func openRemoteOneShot(cfg *loop.Config, agentID string) (*hubclient.OneShot, error) {
+var openRemoteOneShot = func(cfg *loop.Config, agentID string) (*hubclient.OneShot, error) {
 	session, err := hubclient.OpenOneShot(context.Background(), cfg.Remote, agentID, version)
 	if err != nil {
 		if hubclient.ErrorCode(err) == "E_CONNECT" {

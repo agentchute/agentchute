@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
 	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 	runnerpty "github.com/agentchute/agentchute/internal/runner/pty"
@@ -73,6 +76,8 @@ type runnerOptions struct {
 	ShimName        string // ac-* launcher shim that started this lane (provenance).
 	Guarded         bool   // wrapper's hooks can clear the guard latch (v2.5 A7/C22); serve exports AGENTCHUTE_GUARD=1 only when true.
 	VendorProvided  bool
+	Relaunch        bool
+	RelaunchSet     bool
 }
 
 func cmdServe(args []string) error {
@@ -91,12 +96,16 @@ func cmdServe(args []string) error {
 	fs.DurationVar(&idleGrace, "idle-grace", defaultRunnerIdleGrace, "quiet period before a wrapper is considered idle")
 	fs.DurationVar(&busyGrace, "busy-grace", defaultRunnerBusyGrace, "busy period before after-grace sends Ctrl-C")
 	fs.StringVar(&opts.ShimName, "shim-name", "", "ac-* launcher shim that started this lane (provenance; set by the shim)")
+	fs.BoolVar(&opts.Relaunch, "relaunch", false, "relaunch a remote lane after channel loss (default true for remote lanes)")
 	if err := fs.Parse(args); err != nil {
 		return runUsage(err)
 	}
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "vendor" {
+		switch f.Name {
+		case "vendor":
 			opts.VendorProvided = true
+		case "relaunch":
+			opts.RelaunchSet = true
 		}
 	})
 
@@ -148,6 +157,12 @@ func cmdServe(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if opts.RelaunchSet && cfg.Remote == nil {
+		return fmt.Errorf("--relaunch is only valid for a remote serve")
+	}
+	if cfg.Remote != nil && !opts.RelaunchSet {
+		opts.Relaunch = true
 	}
 	fallbackID := ""
 	if launchedWrapper != "" {
@@ -232,7 +247,22 @@ Flags:
   --busy-grace <duration>    grace before Ctrl-C in after-grace mode (default 30s)
   --control-repo <p>         control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>             loop dir path (or $AGENTCHUTE_LOOP_DIR)
+  --relaunch[=true|false]    relaunch after remote channel loss (remote default true)
 `)
+}
+
+type runnerChannel interface {
+	Tick(op.TickReq) (op.TickResp, error)
+	ReleaseLease() error
+	Token() string
+}
+
+type remoteServeChannel interface {
+	runnerChannel
+	AcquireLease(op.LeaseReq) (op.LeaseResp, error)
+	Register(op.RegisterReq) (op.RegisterResp, error)
+	Warnings() []string
+	Close() error
 }
 
 type runnerRuntime struct {
@@ -258,7 +288,10 @@ type runnerRuntime struct {
 	// very first tick due immediately. One handle in place of the three fields
 	// those facts used to occupy — the same shape the hub session and the
 	// remote serve channel inherit.
-	channel *op.Channel
+	channel runnerChannel
+	// channelErr carries the one terminal remote tick error to the supervisor.
+	// Local ticks preserve their historical log-and-continue behavior.
+	channelErr chan error
 
 	mu                 sync.Mutex
 	ptmxMu             sync.Mutex
@@ -269,6 +302,7 @@ type runnerRuntime struct {
 	injectedThisPeriod bool // true once a cue has SUCCEEDED for the current pending period (A2/C16-C17, review fix)
 	lastInjection      time.Time
 	lastPoll           time.Time
+	lastTickPending    bool
 	lastOutputUnixNano atomic.Int64
 	lastInputUnixNano  atomic.Int64
 
@@ -390,20 +424,30 @@ func restoreRunnerTerminal(restoreTerminal func() error, diag *runnerDiagnostics
 // runner test builds its runtime through newPollTestRuntime, which set the field
 // (codex, PR #148 gate). A constructor taking the lease once makes the pair
 // impossible to desynchronize and the field impossible to omit.
-func newRunnerRuntime(cfg *loop.Config, opts runnerOptions, cwd string, lease *loop.ServeLease, tmpl loop.Registration) *runnerRuntime {
+func newRunnerRuntime(cfg *loop.Config, opts runnerOptions, cwd string, lease *loop.ServeLease, tmpl loop.Registration, remote ...runnerChannel) *runnerRuntime {
+	var channel runnerChannel
+	if len(remote) > 0 {
+		channel = remote[0]
+	} else {
+		channel = op.NewChannel(cfg, op.Context{ActorID: opts.AgentID}, op.ChannelOpts{Lease: lease, HeartbeatTemplate: &tmpl})
+	}
 	return &runnerRuntime{
-		cfg:     cfg,
-		opts:    opts,
-		cwd:     cwd,
-		started: time.Now().UTC(),
-		lease:   lease,
-		channel: op.NewChannel(cfg, op.Context{ActorID: opts.AgentID}, op.ChannelOpts{Lease: lease, HeartbeatTemplate: &tmpl}),
-		wakeCh:  make(chan bool, 1),
-		stopCh:  make(chan struct{}),
+		cfg:        cfg,
+		opts:       opts,
+		cwd:        cwd,
+		started:    time.Now().UTC(),
+		lease:      lease,
+		channel:    channel,
+		channelErr: make(chan error, 1),
+		wakeCh:     make(chan bool, 1),
+		stopCh:     make(chan struct{}),
 	}
 }
 
 func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
+	if cfg.Remote != nil {
+		return runRemoteWrapper(cfg, opts, cwd)
+	}
 	stateDir := cfg.AgentStateDir(opts.AgentID)
 	if err := loop.EnsurePrivateDir(stateDir); err != nil {
 		return err
@@ -487,7 +531,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		// Release the serve lease last. ErrFenced => we were already reclaimed
 		// (another serve owns the id); releasing would be a no-op and must not
 		// delete the new owner's claim, so it is not an error to report.
-		if err := loop.ReleaseLease(rt.lease); err != nil && !errors.Is(err, loop.ErrFenced) {
+		if err := rt.channel.ReleaseLease(); err != nil && !errors.Is(err, loop.ErrFenced) {
 			rt.logf("agentchute serve: release serve lease: %v\n", err)
 		}
 	}()
@@ -506,6 +550,191 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		return fmt.Errorf("wrapper exited: %w", err)
 	}
 	return nil
+}
+
+var openRemoteServeChannel = func(cfg *loop.Config, agentID string) (remoteServeChannel, error) {
+	channel, err := hubclient.OpenChannel(context.Background(), cfg.Remote, agentID, version)
+	if err != nil {
+		if hubclient.ErrorCode(err) == "E_CONNECT" {
+			_ = hubclient.RecordConnectFailure(cfg.Remote, time.Now().UTC())
+		}
+		return nil, err
+	}
+	_ = hubclient.ClearConnectFailure(cfg.Remote)
+	return channel, nil
+}
+
+var relaunchSleep = time.Sleep
+
+var runRemoteWrapperAttempt = runRemoteWrapperOnce
+
+type remoteRunResult struct {
+	err     error
+	started bool
+}
+
+func runRemoteWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
+	backoff := time.Second
+	fencedRetry := false
+	for attempt := 1; ; attempt++ {
+		result := runRemoteWrapperAttempt(cfg, opts, cwd)
+		if result.err == nil {
+			return nil
+		}
+		code := hubclient.ErrorCode(result.err)
+		if result.started {
+			fencedRetry = false
+			backoff = time.Second
+		}
+		if !opts.Relaunch {
+			if code == "E_CHANNEL_LOST" {
+				return fmt.Errorf("%s", hubChannelLostMessage(os.Args))
+			}
+			return result.err
+		}
+
+		switch code {
+		case "E_FENCED":
+			if fencedRetry {
+				return result.err
+			}
+			fencedRetry = true
+		case "E_LEASE_HELD":
+			if fencedRetry {
+				return result.err
+			}
+			return result.err
+		case "E_CONNECT", "E_CHANNEL_LOST":
+			// Transport loss is the supervised relaunch path.
+		case "E_IDENTITY", "E_VERSION", "E_POOL_MISMATCH", "E_HOSTKEY_CHANGED":
+			return result.err
+		default:
+			return result.err
+		}
+
+		delay := jitterRelaunch(backoff)
+		line := fmt.Sprintf("agentchute serve: remote relaunch attempt %d in %s after %s", attempt, delay.Round(time.Millisecond), code)
+		fmt.Fprintln(os.Stderr, line)
+		diag := newRunnerDiagnostics(cfg, opts.AgentID)
+		diag.logf("%s\n", line)
+		diag.close()
+		relaunchSleep(delay)
+		if backoff < 60*time.Second {
+			backoff *= 2
+			if backoff > 60*time.Second {
+				backoff = 60 * time.Second
+			}
+		}
+	}
+}
+
+func jitterRelaunch(base time.Duration) time.Duration {
+	return time.Duration(float64(base) * (0.8 + rand.Float64()*0.4))
+}
+
+func runRemoteWrapperOnce(cfg *loop.Config, opts runnerOptions, cwd string) remoteRunResult {
+	stateDir := cfg.AgentStateDir(opts.AgentID)
+	if err := loop.EnsurePrivateDir(stateDir); err != nil {
+		return remoteRunResult{err: err}
+	}
+	channel, err := openRemoteServeChannel(cfg, opts.AgentID)
+	if err != nil {
+		return remoteRunResult{err: err}
+	}
+	release := true
+	defer func() {
+		if release {
+			_ = channel.ReleaseLease()
+		}
+	}()
+	for _, warning := range channel.Warnings() {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
+	if _, err := channel.AcquireLease(op.LeaseReq{}); err != nil {
+		_ = channel.Close()
+		return remoteRunResult{err: err}
+	}
+	var vendor *string
+	if opts.VendorProvided {
+		value := opts.Vendor
+		vendor = &value
+	}
+	if _, err := channel.Register(op.RegisterReq{
+		Vendor: vendor, Host: localHostname(), WorkingRepos: []string{cfg.ControlRepo},
+	}); err != nil {
+		return remoteRunResult{err: err}
+	}
+
+	cmd := exec.Command(opts.WrapperArgs[0], opts.WrapperArgs[1:]...)
+	cmd.Dir = cwd
+	cmd.Env = runnerChildEnv(cfg, opts, channel.Token())
+	ptmx, err := runnerpty.StartInheritSize(cmd, os.Stdin)
+	if err != nil {
+		return remoteRunResult{err: fmt.Errorf("start wrapper under PTY: %w", err)}
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	restoreTerminal, rawEnabled, err := runnerMakeRaw(os.Stdin)
+	if err != nil {
+		_ = ptmx.Close()
+		_ = cmd.Process.Kill()
+		<-done
+		_ = saveRunnerOfflineState(cfg, opts.AgentID, cmd.Process.Pid, time.Now().UTC())
+		return remoteRunResult{err: fmt.Errorf("set stdin raw mode: %w", err), started: true}
+	}
+	diag := newRunnerDiagnostics(cfg, opts.AgentID)
+	defer diag.close()
+	if rawEnabled {
+		defer restoreRunnerTerminal(restoreTerminal, diag, os.Stderr)
+	} else {
+		defer diag.printBufferedFatal(os.Stderr)
+	}
+
+	rt := newRunnerRuntime(cfg, opts, cwd, nil, loop.Registration{}, channel)
+	rt.childPID = cmd.Process.Pid
+	rt.cmd = cmd
+	rt.ptmx = ptmx
+	rt.done = done
+	rt.diag = diag
+	nowUnix := time.Now().UnixNano()
+	rt.lastOutputUnixNano.Store(nowUnix)
+	rt.lastInputUnixNano.Store(nowUnix)
+	if err := rt.saveState(); err != nil {
+		rt.logf("agentchute serve: write runner state: %v\n", err)
+	}
+
+	defer func() {
+		rt.stopLoops()
+		rt.pollWG.Wait()
+		rt.closePTY()
+		_ = rt.saveStateWithStatus("offline")
+		if err := rt.channel.ReleaseLease(); err != nil && hubclient.ErrorCode(err) != "E_FENCED" {
+			rt.logf("agentchute serve: release remote serve lease: %v\n", err)
+		}
+		release = false
+	}()
+
+	rt.pollWG.Add(1)
+	go rt.pollLoop()
+	go rt.injectLoop()
+	go rt.copyPTYOutput()
+	go rt.copyInput()
+	go rt.resizeLoop()
+	go rt.shutdownSignalLoop()
+
+	select {
+	case err := <-done:
+		rt.stopLoops()
+		if err != nil && !rt.shutdownRequested.Load() {
+			return remoteRunResult{err: fmt.Errorf("wrapper exited: %w", err), started: true}
+		}
+		return remoteRunResult{started: true}
+	case channelErr := <-rt.channelErr:
+		rt.requestShutdown(syscall.SIGTERM)
+		<-done
+		return remoteRunResult{err: channelErr, started: true}
+	}
 }
 
 // localHostname returns the current host's name, trimmed. Best-effort: an
@@ -657,6 +886,14 @@ func (r *runnerRuntime) pollOnce() {
 	// runner has always done.
 	tick, err := r.channel.Tick(op.TickReq{})
 	if err != nil {
+		if r.cfg.Remote != nil {
+			select {
+			case r.channelErr <- err:
+			default:
+			}
+			r.requestShutdown(syscall.SIGTERM)
+			return
+		}
 		if errors.Is(err, op.ErrFenced) {
 			r.bufferFatalf("serve: this agentchute binary was fenced out (update or identity reclaim). Restart this lane: ac serve <wrapper>\n")
 			r.requestShutdown(syscall.SIGTERM)
@@ -683,6 +920,7 @@ func (r *runnerRuntime) pollOnce() {
 	// enqueueWake itself guards that.
 	pending := tick.Pending > 0 || tick.Skipped > 0
 	r.mu.Lock()
+	r.lastTickPending = pending
 	if !pending {
 		r.injectedThisPeriod = false
 	}
@@ -780,6 +1018,11 @@ func (r *runnerRuntime) injectIfPending() {
 // pending) to preserve the safe failure direction: an extra spurious cue is
 // acceptable, a suppressed real one is not.
 func (r *runnerRuntime) hasPendingInboxMail() bool {
+	if r.cfg.Remote != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.lastTickPending
+	}
 	return op.HasPendingInboxMail(r.cfg, r.opts.AgentID)
 }
 

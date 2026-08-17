@@ -170,6 +170,9 @@ func TestHubSessionChannelHappyPathAndOrder(t *testing.T) {
 	if order.Code != "E_ORDER" {
 		t.Fatalf("early tick code = %s", order.Code)
 	}
+	if order.Msg != hubOrderError().Error() {
+		t.Fatalf("early tick message = %q", order.Msg)
+	}
 
 	vendor := "openai"
 	if err := s.writer.Write(hubwire.Register{RequestBase: hubwire.RequestBase{T: "register", ID: 4}, Vendor: &vendor, Host: "m5"}, nil); err != nil {
@@ -755,7 +758,7 @@ func TestValidateHubPoolDoesNotConsultDiscoveryEnvironment(t *testing.T) {
 	pool, _ := newHubPool(t)
 	t.Setenv("AGENTCHUTE_CONTROL_REPO", filepath.Join(t.TempDir(), "wrong"))
 	t.Setenv("AGENTCHUTE_LOOP_DIR", filepath.Join(t.TempDir(), "wrong-loop"))
-	got, cfg, id, err := validateHubPool(pool, fixturePoolID)
+	got, cfg, id, err := validateHubPool(pool, fixturePoolID, "codex")
 	resolvedPool, resolveErr := filepath.EvalSymlinks(pool)
 	if resolveErr != nil {
 		t.Fatal(resolveErr)

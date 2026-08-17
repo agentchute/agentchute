@@ -72,7 +72,7 @@ func cmdStatus(args []string) error {
 	}
 	if err != nil {
 		if errors.Is(err, op.ErrNotRegistered) {
-			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
+			return hubAgentNotRegisteredError(agentID)
 		}
 		return err
 	}

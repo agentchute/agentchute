@@ -12,6 +12,8 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
+var selfCheckNow = func() time.Time { return time.Now().UTC() }
+
 // cmdSelfCheck is the active, hook-safe "I am alive" operation. Unlike
 // pending, it intentionally writes registration state: last_seen and
 // host are reconciled with the current process environment. It never archives
@@ -69,7 +71,7 @@ func cmdSelfCheck(args []string) error {
 		return err
 	}
 
-	now := time.Now().UTC()
+	now := selfCheckNow()
 	if cfg.Remote != nil && remoteHookCached(cfg) {
 		fmt.Fprintln(os.Stderr, "hub unreachable; skipping (will retry next event)")
 		return nil

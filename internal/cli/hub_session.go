@@ -70,6 +70,8 @@ type hubSessionOptions struct {
 	// afterAcquire is an invocation-scoped failure-injection hook used to prove
 	// panic cleanup. It is nil in production and never shared across sessions.
 	afterAcquire func()
+	// now is an invocation-scoped test clock. It is nil in production.
+	now func() time.Time
 }
 
 type hubSessionTiming struct {
@@ -110,12 +112,17 @@ type hubSession struct {
 	lastID       int64
 	mode         string
 	afterAcquire func()
+	now          func() time.Time
 	oneShotTimer *time.Timer
 }
 
 func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hubSessionOptions) (returnErr error) {
 	timing := opts.Timing.withDefaults()
-	s := &hubSession{transport: transport, reader: hubwire.NewReader(transport), writer: hubwire.NewWriter(transport), timing: timing, afterAcquire: opts.afterAcquire}
+	now := opts.now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	s := &hubSession{transport: transport, reader: hubwire.NewReader(transport), writer: hubwire.NewWriter(transport), timing: timing, afterAcquire: opts.afterAcquire, now: now}
 	defer func() {
 		if s.channel != nil {
 			if err := s.channel.ReleaseLease(); err != nil && !errors.Is(err, op.ErrFenced) && returnErr == nil {
@@ -128,7 +135,7 @@ func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hu
 		}
 	}()
 
-	pool, cfg, pool12, err := validateHubPool(opts.Pool, opts.PoolID)
+	pool, cfg, pool12, err := validateHubPool(opts.Pool, opts.PoolID, opts.Agent)
 	if err != nil {
 		_ = s.writeError(0, err)
 		return nil
@@ -179,6 +186,16 @@ func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hu
 		HubBin:      opts.HubBin,
 	})
 	if err != nil {
+		switch hubwire.CodeFor(err) {
+		case hubwire.CodeVersion:
+			clientVersion := hello.MinV
+			if clientVersion == 0 {
+				clientVersion = hello.V
+			}
+			err = hubVersionError(hubwire.Version, clientVersion)
+		case hubwire.CodeIdentity:
+			err = hubIdentityError(opts.Agent, hello.Agent)
+		}
 		_ = s.writeError(hello.ID, err)
 		return nil
 	}
@@ -314,7 +331,7 @@ func (s *hubSession) dispatch(raw hubwire.RawFrame) (bool, error) {
 		if s.mode == "channel" {
 			resp, err = s.channel.RegisterWithPrecommitValidation(opReq, validateResponse)
 		} else {
-			resp, err = op.RegisterWithPrecommitValidation(s.cfg, s.ctx, opReq, time.Now().UTC(), validateResponse)
+			resp, err = op.RegisterWithPrecommitValidation(s.cfg, s.ctx, opReq, s.now(), validateResponse)
 		}
 		if err != nil {
 			return s.mode != "channel", s.writeError(raw.ID, err)
@@ -449,7 +466,7 @@ func (s *hubSession) unsupported(re int64, t string) error {
 }
 
 func (s *hubSession) writeError(re int64, err error) error {
-	return s.write(hubwire.NewError(re, err), nil)
+	return s.write(hubwire.NewError(re, hubSessionCatalogError(s.cfg, s.ctx.ActorID, err)), nil)
 }
 
 func (s *hubSession) write(frame any, body []byte) error {
@@ -477,10 +494,10 @@ func (s *hubSession) setWriteDeadline() error {
 
 var poolIDPattern = regexp.MustCompile(`^[0-9a-f]{12}\n$`)
 
-func validateHubPool(poolArg, expectedID string) (string, *loop.Config, string, error) {
+func validateHubPool(poolArg, expectedID, agentID string) (string, *loop.Config, string, error) {
 	abs, err := filepath.Abs(poolArg)
 	if err != nil {
-		return "", nil, "", &hubwire.ProtocolError{Code: hubwire.CodePoolNotFound, Msg: fmt.Sprintf("hub: the authorized pool path %s no longer resolves on the hub", poolArg)}
+		return "", nil, "", hubPoolNotFoundError(poolArg, agentID)
 	}
 	pool := filepath.Clean(abs)
 	if resolved, err := filepath.EvalSymlinks(pool); err == nil {
@@ -490,13 +507,13 @@ func validateHubPool(poolArg, expectedID string) (string, *loop.Config, string, 
 	loopDir := filepath.Join(pool, ".agentchute", "loop")
 	loopInfo, loopErr := os.Stat(loopDir)
 	if specErr != nil || loopErr != nil || !spec.Mode().IsRegular() || !loopInfo.IsDir() {
-		return "", nil, "", &hubwire.ProtocolError{Code: hubwire.CodePoolNotFound, Msg: fmt.Sprintf("hub: the authorized pool path %s no longer resolves on the hub", poolArg)}
+		return "", nil, "", hubPoolNotFoundError(poolArg, agentID)
 	}
 	cfg := &loop.Config{ControlRepo: pool, LoopDir: loopDir, Vendor: "agentchute", ControlRepoOrigin: "hub", LoopDirOrigin: "hub"}
 	identityPath := filepath.Join(loopDir, "state", "pool.id")
 	data, err := loop.ReadFileLimit(identityPath, 64)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil, "", poolMismatch(pool, expectedID, "<absent>")
+		return "", nil, "", hubPoolMismatchError(pool, expectedID, "<absent>", agentID)
 	}
 	if err != nil {
 		return "", nil, "", invalidPoolID(identityPath)
@@ -507,15 +524,11 @@ func validateHubPool(poolArg, expectedID string) (string, *loop.Config, string, 
 	}
 	actual := string(data[:12])
 	if actual != expectedID {
-		return "", nil, "", poolMismatch(pool, expectedID, actual)
+		return "", nil, "", hubPoolMismatchError(pool, expectedID, actual, agentID)
 	}
 	return pool, cfg, actual, nil
 }
 
 func invalidPoolID(path string) error {
 	return &hubwire.ProtocolError{Code: hubwire.CodePoolIDInvalid, Msg: fmt.Sprintf("hub: %s is not a valid pool identity (must be a regular 0600 file containing exactly 12 lowercase hex characters)", path)}
-}
-
-func poolMismatch(pool, expected, actual string) error {
-	return &hubwire.ProtocolError{Code: hubwire.CodePoolMismatch, Msg: fmt.Sprintf("hub: this key is authorized for pool id %s, but %s on the hub reports pool id %s (or has no state/pool.id at all)", expected, pool, actual)}
 }

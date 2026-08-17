@@ -332,7 +332,7 @@ func renderSendPreflightError(from, to string, err error) error {
 	}
 	switch {
 	case errors.Is(err, op.ErrNotRegistered):
-		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", from, from)
+		return hubSenderNotRegisteredError(from)
 	case errors.Is(err, op.ErrRecipientUnknown):
 		return unknownRecipientError(to, err)
 	case errors.Is(err, op.ErrRecipientUnreadable):
@@ -503,7 +503,7 @@ func preserveRemoteSendBody(cfg *loop.Config, from, to, body string, now time.Ti
 	if spoolErr != nil {
 		return fmt.Errorf("%w; body preservation failed: %v", cause, spoolErr)
 	}
-	retryCommand := sendRetryCommandBodyFile(from, to, spoolPath, retry)
+	retryCommand := sendRetryCommandBodyFile(to, spoolPath, retry)
 	if hubclient.ErrorCode(cause) == "E_SEND_UNKNOWN" {
 		return fmt.Errorf("hub: connection lost after the send was transmitted — DELIVERY UNKNOWN. Do NOT resend blindly: a copy may already be in %s's inbox (check `agentchute status`, or ask them). Body preserved at %s; if you confirm it did not arrive, retry with: %s", to, spoolPath, retryCommand)
 	}
@@ -565,8 +565,8 @@ func sendRetryCommand(from, to, spoolPath string, opts sendRetryOptions) string 
 	return strings.Join(parts, " ") + " < " + shellQuote(spoolPath)
 }
 
-func sendRetryCommandBodyFile(from, to, spoolPath string, opts sendRetryOptions) string {
-	parts := []string{"agentchute", "send", "--to", to, "--from", from}
+func sendRetryCommandBodyFile(to, spoolPath string, opts sendRetryOptions) string {
+	parts := []string{"agentchute", "send", "--to", to}
 	if opts.Ask {
 		parts = append(parts, "--ask")
 	}

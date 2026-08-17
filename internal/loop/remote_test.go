@@ -89,13 +89,17 @@ func TestDiscoverRemoteNotJoinedAndExplicitLoopRefusal(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cwd := t.TempDir()
 	url := "ssh://host.example/remote/pool"
-	_, err := Discover(DiscoverOpts{Cwd: cwd, ControlRepoFlag: url})
-	if !errors.Is(err, ErrRemoteNotJoined) {
-		t.Fatalf("unjoined error = %v, want ErrRemoteNotJoined", err)
-	}
 	remote, err := ParseRemoteURL(url)
 	if err != nil {
 		t.Fatal(err)
+	}
+	_, err = Discover(DiscoverOpts{Cwd: cwd, ControlRepoFlag: url})
+	if !errors.Is(err, ErrRemoteNotJoined) {
+		t.Fatalf("unjoined error = %v, want ErrRemoteNotJoined", err)
+	}
+	want := "hub: .agentchute-control-repo points at ssh://host.example/remote/pool, but this machine never joined that hub (no ~/.agentchute/hub/" + remote.HubID + "/config.json). If this machine IS the hub, a joined machine probably committed its pointer file — delete .agentchute-control-repo here (and `git rm` it if tracked). If this machine should be joined, run: agentchute hub join <that-url> --as <id>"
+	if err.Error() != want {
+		t.Fatalf("unjoined error = %q, want %q", err, want)
 	}
 	mustWrite(t, remote.ConfigPath, []byte("{}\n"))
 	_, err = Discover(DiscoverOpts{Cwd: cwd, ControlRepoFlag: url, EnvLoopDir: "/tmp/loop"})

@@ -2,10 +2,14 @@ package loop
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 )
+
+// ErrRunnerStateAgentMismatch means runner.json belongs to a different lane.
+var ErrRunnerStateAgentMismatch = errors.New("runner state agent_id mismatch")
 
 // RunnerState is local diagnostic/recovery state for `agentchute serve`.
 // Registration last_seen remains the liveness source of truth.
@@ -47,7 +51,9 @@ func SaveRunnerState(cfg *Config, st RunnerState) error {
 	return atomicWriteFile(cfg.RunnerStatePath(st.AgentID), data)
 }
 
-// LoadRunnerState reads state/<agent>/runner.json.
+// LoadRunnerState reads state/<agent>/runner.json. An agent-id mismatch returns
+// the decoded state with ErrRunnerStateAgentMismatch so callers can identify
+// the file's actual owner without parsing error text.
 func LoadRunnerState(cfg *Config, agentID string) (*RunnerState, error) {
 	if err := ValidateAgentID(agentID); err != nil {
 		return nil, err
@@ -61,7 +67,7 @@ func LoadRunnerState(cfg *Config, agentID string) (*RunnerState, error) {
 		return nil, err
 	}
 	if st.AgentID != agentID {
-		return nil, fmt.Errorf("runner state reports agent_id=%q, expected %q", st.AgentID, agentID)
+		return &st, fmt.Errorf("runner state reports agent_id=%q, expected %q: %w", st.AgentID, agentID, ErrRunnerStateAgentMismatch)
 	}
 	return &st, nil
 }

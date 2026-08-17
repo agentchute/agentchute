@@ -13,9 +13,13 @@ import (
 
 func cmdHub(args []string) error {
 	if len(args) == 0 {
-		return hubUsage(fmt.Errorf("expected hub subcommand: session"))
+		return hubUsage(fmt.Errorf("expected hub subcommand: join, authorize, or session"))
 	}
 	switch args[0] {
+	case "join":
+		return cmdHubJoin(args[1:])
+	case "authorize":
+		return cmdHubAuthorize(args[1:])
 	case "session":
 		return cmdHubSession(args[1:])
 	case "-h", "--help", "help":
@@ -54,7 +58,7 @@ func cmdHubSession(args []string) error {
 }
 
 func hubUsage(err error) error {
-	return fmt.Errorf("%w\n\nUsage:\n  agentchute hub session --agent <id> --pool <absolute-path> --pool-id <12-hex>", err)
+	return fmt.Errorf("%w\n\nUsage:\n  agentchute hub join ssh://[user@]host[:port]/abs/path/to/pool (--name <local-name> | --as <agent-id>)\n  agentchute hub authorize [flags]\n  agentchute hub session --agent <id> --pool <absolute-path> --pool-id <12-hex>", err)
 }
 
 func hubSessionUsage(err error) error {
