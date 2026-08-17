@@ -159,7 +159,16 @@ func refuseLiveHubMigration(root, oldDir string, cfg *hubclient.HubConfig) error
 	loopCfg := &loop.Config{ControlRepo: root, LoopDir: shadow}
 	for _, agentID := range cfg.JoinedAs {
 		state, err := loop.LoadRunnerState(loopCfg, agentID)
-		if err != nil || !setupLocalHost(state.Host) || state.RunnerPID <= 0 || !setupProcessAlive(state.RunnerPID) {
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if errors.Is(err, loop.ErrRunnerStateAgentMismatch) {
+			return fmt.Errorf("hub join: lane %q's runner state at %s reports a different agent_id (%v), so this join cannot prove the lane is stopped. Confirm the lane is stopped, then move the file to the matching lane's state directory or remove it if it is stale before re-running", agentID, loopCfg.RunnerStatePath(agentID), err)
+		}
+		if err != nil {
+			return fmt.Errorf("hub join: lane %q's runner state at %s could not be read or decoded (%v), so this join cannot prove the lane is stopped. Confirm the lane is stopped, then repair the JSON or remove the corrupt file before re-running", agentID, loopCfg.RunnerStatePath(agentID), err)
+		}
+		if !setupLocalHost(state.Host) || state.RunnerPID <= 0 || !setupProcessAlive(state.RunnerPID) {
 			continue
 		}
 		cmdline := setupProcessCommandLine(state.RunnerPID)

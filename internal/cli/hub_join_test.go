@@ -27,6 +27,7 @@ func setupHubJoinTest(t *testing.T) (string, *loop.RemoteConfig) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// These package-level seams require serial tests; do not call t.Parallel in this file.
 	originalProbe := hubJoinProbe
 	originalAuthorize := hubJoinAutoAuthorize
 	originalInstall := hubJoinInstallShims
@@ -431,6 +432,76 @@ func TestHubJoinMigrationRefusesAttributedLiveLane(t *testing.T) {
 		err = cmdHubJoin([]string{newRemote.URL, "--name", "codex"})
 	})
 	if err == nil || !strings.Contains(err.Error(), "is still running against the old URL") {
+		t.Fatalf("migration error = %v", err)
+	}
+	if _, statErr := os.Stat(oldRemote.HubDir); statErr != nil {
+		t.Fatalf("old hub dir changed after refusal: %v", statErr)
+	}
+	if _, statErr := os.Stat(newRemote.HubDir); !os.IsNotExist(statErr) {
+		t.Fatalf("new hub dir exists after refusal: %v", statErr)
+	}
+}
+
+func TestHubJoinMigrationRefusesUnreadableRunnerState(t *testing.T) {
+	root, oldRemote := setupHubJoinTest(t)
+	hubJoinProbe = func(_ *loop.RemoteConfig, agentID, _ string) (hubwire.HelloOK, []string, error) {
+		return successfulHubHello(agentID), nil, nil
+	}
+	hubJoinAutoAuthorize = func(*loop.RemoteConfig, string, string, bool) error { return nil }
+	if err := runHubJoin(root, oldRemote, hubJoinOptions{URL: oldRemote.URL, Name: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	loopCfg := &loop.Config{ControlRepo: root, LoopDir: oldRemote.ShadowLoopDir}
+	runnerPath := loopCfg.RunnerStatePath("codex-tiny")
+	if err := os.MkdirAll(filepath.Dir(runnerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runnerPath, []byte("{truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newRemote, err := loop.ParseRemoteURL("ssh://alex@hub-corrupt-alias.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root, func() {
+		err = cmdHubJoin([]string{newRemote.URL, "--name", "codex"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "repair the JSON or remove the corrupt file") {
+		t.Fatalf("migration error = %v", err)
+	}
+	if _, statErr := os.Stat(oldRemote.HubDir); statErr != nil {
+		t.Fatalf("old hub dir changed after refusal: %v", statErr)
+	}
+	if _, statErr := os.Stat(newRemote.HubDir); !os.IsNotExist(statErr) {
+		t.Fatalf("new hub dir exists after refusal: %v", statErr)
+	}
+}
+
+func TestHubJoinMigrationRefusesMismatchedRunnerState(t *testing.T) {
+	root, oldRemote := setupHubJoinTest(t)
+	hubJoinProbe = func(_ *loop.RemoteConfig, agentID, _ string) (hubwire.HelloOK, []string, error) {
+		return successfulHubHello(agentID), nil, nil
+	}
+	hubJoinAutoAuthorize = func(*loop.RemoteConfig, string, string, bool) error { return nil }
+	if err := runHubJoin(root, oldRemote, hubJoinOptions{URL: oldRemote.URL, Name: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	loopCfg := &loop.Config{ControlRepo: root, LoopDir: oldRemote.ShadowLoopDir}
+	runnerPath := loopCfg.RunnerStatePath("codex-tiny")
+	if err := os.MkdirAll(filepath.Dir(runnerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runnerPath, []byte(`{"agent_id":"other-lane"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newRemote, err := loop.ParseRemoteURL("ssh://alex@hub-mismatch-alias.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root, func() {
+		err = cmdHubJoin([]string{newRemote.URL, "--name", "codex"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "move the file to the matching lane's state directory") {
 		t.Fatalf("migration error = %v", err)
 	}
 	if _, statErr := os.Stat(oldRemote.HubDir); statErr != nil {
