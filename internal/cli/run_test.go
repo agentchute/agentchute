@@ -13,9 +13,47 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
 	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 )
+
+type fakeRemoteServeChannel struct {
+	token      string
+	calls      []string
+	registerFn func(op.RegisterReq) error
+	tickFn     func() (op.TickResp, error)
+}
+
+func (f *fakeRemoteServeChannel) AcquireLease(op.LeaseReq) (op.LeaseResp, error) {
+	f.calls = append(f.calls, "lease-acquire")
+	return op.LeaseResp{Token: f.token}, nil
+}
+
+func (f *fakeRemoteServeChannel) Register(req op.RegisterReq) (op.RegisterResp, error) {
+	f.calls = append(f.calls, "register")
+	if f.registerFn != nil {
+		return op.RegisterResp{}, f.registerFn(req)
+	}
+	return op.RegisterResp{}, nil
+}
+
+func (f *fakeRemoteServeChannel) Tick(op.TickReq) (op.TickResp, error) {
+	f.calls = append(f.calls, "tick")
+	if f.tickFn != nil {
+		return f.tickFn()
+	}
+	return op.TickResp{}, nil
+}
+
+func (f *fakeRemoteServeChannel) ReleaseLease() error {
+	f.calls = append(f.calls, "lease-release")
+	return nil
+}
+
+func (f *fakeRemoteServeChannel) Close() error       { return nil }
+func (f *fakeRemoteServeChannel) Token() string      { return f.token }
+func (f *fakeRemoteServeChannel) Warnings() []string { return nil }
 
 // Simple-again Gate 6b (pull-only): the runner RECEIVE socket was removed.
 // TestRunInjectsPromptOnSocketWake (socket poke -> inject), TestRunnerSocketReachableRequiresPingAck,
@@ -324,6 +362,148 @@ func TestRunnerChildEnvRemotePreservesLocatorAndOmitsLoopDir(t *testing.T) {
 	if len(controlRepos) != 1 || controlRepos[0] != cfg.Remote.URL {
 		t.Fatalf("remote child control repo = %v, want only %q", controlRepos, cfg.Remote.URL)
 	}
+}
+
+func TestRemoteRunnerRegistersBeforeChildAndStopsChildOnChannelDrop(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "child-env")
+	terminated := filepath.Join(root, "terminated")
+	cfg := &loop.Config{
+		ControlRepo: root,
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Remote:      &loop.RemoteConfig{URL: "ssh://hub.example/pool", Host: "hub.example", Port: 22},
+	}
+	fake := &fakeRemoteServeChannel{token: "remote-token"}
+	fake.registerFn = func(req op.RegisterReq) error {
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("child ran before register completed: stat err = %v", err)
+		}
+		return nil
+	}
+	fake.tickFn = func() (op.TickResp, error) {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(marker); err == nil {
+				return op.TickResp{}, &hubclient.Error{Code: "E_CHANNEL_LOST", Msg: "test channel drop"}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return op.TickResp{}, errors.New("child did not start")
+	}
+	originalOpen := openRemoteServeChannel
+	openRemoteServeChannel = func(*loop.Config, string) (remoteServeChannel, error) {
+		fake.calls = append(fake.calls, "hello")
+		return fake, nil
+	}
+	t.Cleanup(func() { openRemoteServeChannel = originalOpen })
+
+	script := "trap 'printf terminated > " + terminated + "; exit 0' TERM; " +
+		"printf '%s|%s|%s' \"$AGENTCHUTE_CONTROL_REPO\" \"${AGENTCHUTE_LOOP_DIR-unset}\" \"$AGENTCHUTE_SERVE_TOKEN\" > " + marker + "; " +
+		"while :; do sleep 1; done"
+	result := runRemoteWrapperOnce(cfg, runnerOptions{
+		AgentID: "remote-test", Vendor: "test", VendorProvided: true,
+		IntervalSeconds: 5, InterruptPolicy: interruptAfterIdle,
+		Prompt: defaultRunnerPrompt, IdleGrace: time.Millisecond, BusyGrace: time.Second,
+		WrapperArgs: []string{"/bin/sh", "-c", script},
+	}, root)
+	if got := hubclient.ErrorCode(result.err); got != "E_CHANNEL_LOST" {
+		t.Fatalf("run error = %q (%v), want E_CHANNEL_LOST", got, result.err)
+	}
+	if !result.started {
+		t.Fatal("remote run did not report a started child")
+	}
+	if got, err := os.ReadFile(marker); err != nil {
+		t.Fatal(err)
+	} else if want := cfg.Remote.URL + "|unset|remote-token"; string(got) != want {
+		t.Fatalf("child env = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(terminated); err != nil {
+		t.Fatalf("child did not handle SIGTERM before the runner returned: %v", err)
+	}
+	if got, want := strings.Join(fake.calls, ","), "hello,lease-acquire,register,tick,lease-release"; got != want {
+		t.Fatalf("remote lifecycle order = %s, want %s", got, want)
+	}
+}
+
+func TestRemoteRunnerTickPendingCuesChild(t *testing.T) {
+	root := t.TempDir()
+	received := filepath.Join(root, "received")
+	cfg := &loop.Config{
+		ControlRepo: root,
+		LoopDir:     filepath.Join(root, ".agentchute", "loop"),
+		Remote:      &loop.RemoteConfig{URL: "ssh://hub.example/pool", Host: "hub.example", Port: 22},
+	}
+	fake := &fakeRemoteServeChannel{token: "remote-token"}
+	fake.tickFn = func() (op.TickResp, error) {
+		return op.TickResp{Pending: 1}, nil
+	}
+	originalOpen := openRemoteServeChannel
+	openRemoteServeChannel = func(*loop.Config, string) (remoteServeChannel, error) { return fake, nil }
+	t.Cleanup(func() { openRemoteServeChannel = originalOpen })
+
+	script := "IFS= read -r line; printf '%s' \"$line\" > " + received
+	result := runRemoteWrapperOnce(cfg, runnerOptions{
+		AgentID: "remote-test", Vendor: "test", VendorProvided: true,
+		IntervalSeconds: 5, InterruptPolicy: interruptAfterIdle,
+		Prompt: "remote cue", IdleGrace: time.Millisecond, BusyGrace: time.Second,
+		WrapperArgs: []string{"/bin/sh", "-c", script},
+	}, root)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	got, err := os.ReadFile(received)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "remote cue") {
+		t.Fatalf("child received %q, want remote cue", got)
+	}
+}
+
+func TestRemoteRelaunchRetriesTransportAndFencedOnce(t *testing.T) {
+	cfg := &loop.Config{ControlRepo: t.TempDir(), LoopDir: filepath.Join(t.TempDir(), "loop"), Remote: &loop.RemoteConfig{URL: "ssh://hub.example/pool"}}
+	originalAttempt := runRemoteWrapperAttempt
+	originalSleep := relaunchSleep
+	t.Cleanup(func() {
+		runRemoteWrapperAttempt = originalAttempt
+		relaunchSleep = originalSleep
+	})
+	relaunchSleep = func(time.Duration) {}
+
+	t.Run("transport loss retries until success", func(t *testing.T) {
+		calls := 0
+		runRemoteWrapperAttempt = func(*loop.Config, runnerOptions, string) remoteRunResult {
+			calls++
+			if calls < 3 {
+				return remoteRunResult{err: &hubclient.Error{Code: "E_CONNECT", Msg: "offline"}}
+			}
+			return remoteRunResult{}
+		}
+		if err := runRemoteWrapper(cfg, runnerOptions{AgentID: "remote-test", Relaunch: true}, cfg.ControlRepo); err != nil {
+			t.Fatal(err)
+		}
+		if calls != 3 {
+			t.Fatalf("attempts = %d, want 3", calls)
+		}
+	})
+
+	t.Run("fenced gets one attempt then lease-held stops", func(t *testing.T) {
+		calls := 0
+		runRemoteWrapperAttempt = func(*loop.Config, runnerOptions, string) remoteRunResult {
+			calls++
+			if calls == 1 {
+				return remoteRunResult{err: &hubclient.Error{Code: "E_FENCED", Msg: "fenced"}, started: true}
+			}
+			return remoteRunResult{err: &hubclient.Error{Code: "E_LEASE_HELD", Msg: "held"}}
+		}
+		err := runRemoteWrapper(cfg, runnerOptions{AgentID: "remote-test", Relaunch: true}, cfg.ControlRepo)
+		if got := hubclient.ErrorCode(err); got != "E_LEASE_HELD" {
+			t.Fatalf("error = %q (%v), want E_LEASE_HELD", got, err)
+		}
+		if calls != 2 {
+			t.Fatalf("attempts = %d, want 2", calls)
+		}
+	})
 }
 
 // TestRunnerChildEnvStripsInheritedGuardBit is the v2.5 A7/C22 guard-enablement
