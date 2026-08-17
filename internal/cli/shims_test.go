@@ -6,7 +6,45 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/agentchute/agentchute/internal/loop"
 )
+
+func TestBuildShimRunArgsLocalAndRemote(t *testing.T) {
+	spec, ok := wrapperSpecForName("ac-codex")
+	if !ok {
+		t.Fatal("missing codex wrapper spec")
+	}
+	wrapperArgs := []string{"/usr/bin/codex", "resume"}
+	local := &loop.Config{ControlRepo: "/repo", LoopDir: "/repo/.agentchute/loop"}
+	got := buildShimRunArgs("/bin/agentchute", spec, local, "reviewer", wrapperArgs)
+	want := []string{
+		"/bin/agentchute", "serve", "--vendor", "openai",
+		"--control-repo", "/repo", "--loop-dir", "/repo/.agentchute/loop",
+		"--shim-name", spec.Name, "--", "/usr/bin/codex", "resume",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("local runArgs =\n  %v\nwant\n  %v", got, want)
+	}
+
+	remote := &loop.Config{
+		ControlRepo: "/local/repo",
+		LoopDir:     "/home/me/.agentchute/hub/abc/.agentchute/loop",
+		Remote:      &loop.RemoteConfig{URL: "ssh://user@hub.example/remote/pool"},
+	}
+	got = buildShimRunArgs("/bin/agentchute", spec, remote, "reviewer", wrapperArgs)
+	want = []string{
+		"/bin/agentchute", "serve", "--vendor", "openai",
+		"--control-repo", remote.Remote.URL,
+		"--shim-name", spec.Name, "--", "/usr/bin/codex", "resume",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("remote runArgs =\n  %v\nwant\n  %v", got, want)
+	}
+	if stringSliceContains(got, "--loop-dir") {
+		t.Fatalf("remote runArgs contains --loop-dir: %v", got)
+	}
+}
 
 // legacyShimScript renders a pre-dispatcher per-wrapper `ac-*`/same-name shim
 // (the format the removed production renderShimScript emitted). Kept as a

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
 	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 )
@@ -88,6 +89,8 @@ func cmdTurnEnd(args []string) error {
 			opts.HostProvided = true
 		case "bio":
 			opts.BioProvided = true
+		case "vendor":
+			opts.VendorProvided = true
 		}
 	})
 
@@ -154,6 +157,9 @@ func cmdTurnEnd(args []string) error {
 	if archive {
 		acked, _, err = ackClaimed(cfg, agentID)
 		if err != nil {
+			if cfg.Remote != nil && hubclient.ErrorCode(err) == "E_CONNECT" {
+				return fmt.Errorf("turn-end: could not reach the hub to commit claimed mail (connect failed after 5s). Nothing is lost: the claim is held on the hub and the guard latch stays armed; turn-end retries at the next turn boundary. If this persists, check the network and run agentchute doctor")
+			}
 			return err
 		}
 	}
@@ -167,7 +173,17 @@ func cmdTurnEnd(args []string) error {
 	}
 
 	// STEP 3.
-	status, err := op.Gate(cfg, op.Context{ActorID: agentID}, op.GateReq{Phase: gatePhaseFinish})
+	gateReq := op.GateReq{Phase: gatePhaseFinish}
+	var status op.GateResp
+	if cfg.Remote != nil {
+		gateSession, openErr := openRemoteOneShot(cfg, agentID)
+		if openErr != nil {
+			return openErr
+		}
+		status, err = gateSession.Gate(gateReq)
+	} else {
+		status, err = op.Gate(cfg, op.Context{ActorID: agentID}, gateReq)
+	}
 	if err != nil {
 		return err
 	}

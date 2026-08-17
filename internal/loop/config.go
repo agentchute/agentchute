@@ -36,6 +36,7 @@ type Config struct {
 	ControlRepo string // absolute repo root containing AGENTCHUTE.md
 	LoopDir     string // absolute .<vendor>/loop directory
 	Vendor      string // vendor namespace, without leading dot
+	Remote      *RemoteConfig
 
 	// ControlRepoOrigin records which step of the discovery cascade resolved
 	// ControlRepo, for visibility in `status` and `register` output. Values:
@@ -72,9 +73,24 @@ type DiscoverOpts struct {
 // First hit wins. The resulting Config records which step won via
 // ControlRepoOrigin for visibility.
 func Discover(opts DiscoverOpts) (*Config, error) {
-	controlRepo, origin, shadowed, err := discoverControlRepo(opts)
+	controlRepo, origin, shadowed, remote, err := discoverControlRepo(opts)
 	if err != nil {
 		return nil, err
+	}
+	if remote != nil {
+		vendor, err := vendorFromLoopDir(remote.ShadowLoopDir)
+		if err != nil {
+			return nil, err
+		}
+		return &Config{
+			ControlRepo:       controlRepo,
+			LoopDir:           remote.ShadowLoopDir,
+			Vendor:            vendor,
+			Remote:            remote,
+			ControlRepoOrigin: origin,
+			LoopDirOrigin:     "remote",
+			ShadowedPointers:  shadowed,
+		}, nil
 	}
 
 	loopDir, loopOrigin, err := discoverLoopDir(controlRepo, opts)
@@ -205,23 +221,37 @@ func (c *Config) EnsureRunnerSocketDir(socketPath string) error {
 	return ensurePrivateDir(dir)
 }
 
-func discoverControlRepo(opts DiscoverOpts) (controlRepo, origin string, shadowed []string, err error) {
+// EnsureOwnedSocketDir creates a private per-user directory and verifies its
+// ownership before it is used for Unix-domain sockets in a shared temp root.
+func EnsureOwnedSocketDir(dir string) error {
+	return ensureOwnedRunnerSocketDir(dir)
+}
+
+func discoverControlRepo(opts DiscoverOpts) (controlRepo, origin string, shadowed []string, remote *RemoteConfig, err error) {
 	// 1. Explicit --control-repo flag wins.
 	if strings.TrimSpace(opts.ControlRepoFlag) != "" {
+		if isRemoteLocator(opts.ControlRepoFlag) {
+			repo, remote, err := discoverRemoteControlRepo(opts.ControlRepoFlag, opts)
+			return repo, "flag", nil, remote, err
+		}
 		repo, err := validateExplicitControlRepo(opts.ControlRepoFlag)
 		if err != nil {
-			return "", "", nil, err
+			return "", "", nil, nil, err
 		}
-		return repo, "flag", nil, nil
+		return repo, "flag", nil, nil, nil
 	}
 
 	// 2. AGENTCHUTE_CONTROL_REPO env var.
 	if strings.TrimSpace(opts.EnvControlRepo) != "" {
+		if isRemoteLocator(opts.EnvControlRepo) {
+			repo, remote, err := discoverRemoteControlRepo(opts.EnvControlRepo, opts)
+			return repo, "env", nil, remote, err
+		}
 		repo, err := validateExplicitControlRepo(opts.EnvControlRepo)
 		if err != nil {
-			return "", "", nil, err
+			return "", "", nil, nil, err
 		}
-		return repo, "env", nil, nil
+		return repo, "env", nil, nil, nil
 	}
 
 	// 3. .agentchute-control-repo pointer file (cwd or ancestor).
@@ -230,18 +260,22 @@ func discoverControlRepo(opts DiscoverOpts) (controlRepo, origin string, shadowe
 		if perr != nil {
 			// Pointer discovery errors (malformed pointer, broken target) are
 			// hard errors — the operator put a pointer there on purpose.
-			return "", "", nil, fmt.Errorf("pointer file discovery: %w", perr)
+			return "", "", nil, nil, fmt.Errorf("pointer file discovery: %w", perr)
 		}
 		if ptr != nil {
+			if isRemoteLocator(ptr.ResolvedTarget) {
+				repo, remote, err := discoverRemoteControlRepo(ptr.ResolvedTarget, opts)
+				return repo, "pointer:" + ptr.PointerFilePath, ptr.Shadowed, remote, err
+			}
 			if !fileExists(filepath.Join(ptr.ResolvedTarget, specFileName)) {
-				return "", "", nil, fmt.Errorf("pointer %s -> %q: target does not contain %s",
+				return "", "", nil, nil, fmt.Errorf("pointer %s -> %q: target does not contain %s",
 					ptr.PointerFilePath, ptr.ResolvedTarget, specFileName)
 			}
 			if !hasFixedLoopDir(ptr.ResolvedTarget) {
-				return "", "", nil, fmt.Errorf("pointer %s -> %q: target has no %s/%s directory",
+				return "", "", nil, nil, fmt.Errorf("pointer %s -> %q: target has no %s/%s directory",
 					ptr.PointerFilePath, ptr.ResolvedTarget, fixedDotDir, loopDirName)
 			}
-			return ptr.ResolvedTarget, "pointer:" + ptr.PointerFilePath, ptr.Shadowed, nil
+			return ptr.ResolvedTarget, "pointer:" + ptr.PointerFilePath, ptr.Shadowed, nil, nil
 		}
 	}
 
@@ -249,13 +283,49 @@ func discoverControlRepo(opts DiscoverOpts) (controlRepo, origin string, shadowe
 	if opts.Cwd != "" {
 		if repo, err := findControlRepo(opts.Cwd); err == nil {
 			if hasFixedLoopDir(repo) {
-				return repo, "cwd", nil, nil
+				return repo, "cwd", nil, nil, nil
 			}
 		}
 	}
 
-	return "", "", nil, fmt.Errorf("%w: no --control-repo flag, no AGENTCHUTE_CONTROL_REPO env, no %s pointer in cwd ancestors, and no AGENTCHUTE.md + %s/%s dir found walking up from %q",
+	return "", "", nil, nil, fmt.Errorf("%w: no --control-repo flag, no AGENTCHUTE_CONTROL_REPO env, no %s pointer in cwd ancestors, and no AGENTCHUTE.md + %s/%s dir found walking up from %q",
 		ErrNoControlRepo, PointerFileName, fixedDotDir, loopDirName, opts.Cwd)
+}
+
+func discoverRemoteControlRepo(raw string, opts DiscoverOpts) (string, *RemoteConfig, error) {
+	if strings.TrimSpace(opts.LoopDirFlag) != "" || strings.TrimSpace(opts.EnvLoopDir) != "" {
+		return "", nil, fmt.Errorf("ssh control repo cannot be combined with --loop-dir or AGENTCHUTE_LOOP_DIR")
+	}
+	remote, err := ParseRemoteURL(raw)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := RequireRemoteJoin(remote); err != nil {
+		return "", nil, err
+	}
+	localRepo, err := remoteLocalControlRepo(opts.Cwd)
+	if err != nil {
+		return "", nil, err
+	}
+	return localRepo, remote, nil
+}
+
+func remoteLocalControlRepo(cwd string) (string, error) {
+	if strings.TrimSpace(cwd) == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve cwd for remote control repo: %w", err)
+		}
+	}
+	if repo, err := findControlRepo(cwd); err == nil {
+		return repo, nil
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("resolve cwd for remote control repo: %w", err)
+	}
+	return abs, nil
 }
 
 // validateExplicitControlRepo checks that a flag- or env-provided control

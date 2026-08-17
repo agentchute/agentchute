@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
 	"github.com/agentchute/agentchute/internal/hubwire"
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // SessionFactory is the transport-neutral W harness contract. M3 supplies a
@@ -20,8 +22,143 @@ type SessionFactory interface {
 
 type Session interface {
 	io.ReadWriteCloser
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
 	ForceDisconnect() error
 	Wait(context.Context) error
+}
+
+// AssertWireClientVectors drives the three vectors whose invariant terminates
+// on the client side. The factory is the same transport-neutral contract used
+// by AssertWireVectors, so M6 can rerun these assertions over sshd unchanged.
+func AssertWireClientVectors(t *testing.T, vectors []Vector, build FactoryBuilder) {
+	t.Helper()
+	for _, vector := range vectors {
+		vector := vector
+		if vector.ID != "W1" && vector.ID != "W2" && vector.ID != "W6" {
+			continue
+		}
+		t.Run(vector.ID+"/client", func(t *testing.T) {
+			factory := build(t)
+			switch vector.ID {
+			case "W1":
+				assertW1Client(t, factory)
+			case "W2":
+				assertW2Client(t, factory)
+			case "W6":
+				assertW6Client(t, factory)
+			}
+		})
+	}
+}
+
+func openClient(t *testing.T, factory SessionFactory, agent string) (*hubclient.OneShot, Session) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	transport, err := factory.Open(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = transport.Close() })
+	remote := &loop.RemoteConfig{Host: "in-process", Port: 22}
+	client, err := hubclient.OpenOneShotTransport(transport, remote, agent, "spectest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client, transport
+}
+
+func assertW1Client(t *testing.T, f SessionFactory) {
+	if err := f.State().Deliver("grok", "codex", "claimed"); err != nil {
+		t.Fatal(err)
+	}
+	client, transport := openClient(t, f, "codex")
+	_, err := client.Check(op.ClaimReq{}, func(ev op.Event) error {
+		if ev.Message != nil {
+			return transport.ForceDisconnect()
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("disconnect after first message returned nil error")
+	}
+	if n, err := f.State().ClaimedCount("codex"); err != nil || n != 1 {
+		t.Fatalf("claimed residue = %d, %v", n, err)
+	}
+	client2, _ := openClient(t, f, "codex")
+	redelivered := false
+	sum, err := client2.Check(op.ClaimReq{}, func(ev op.Event) error {
+		if ev.Message != nil {
+			redelivered = ev.Message.Redelivered
+		}
+		return nil
+	})
+	if err != nil || !redelivered || sum.Redelivered != 1 {
+		t.Fatalf("redelivery = %v, summary=%+v, err=%v", redelivered, sum, err)
+	}
+}
+
+type disconnectAfterCommit struct {
+	Session
+	state  StateProbe
+	agent  string
+	writes int
+}
+
+func (d *disconnectAfterCommit) Write(p []byte) (int, error) {
+	n, err := d.Session.Write(p)
+	d.writes++
+	if d.writes == 2 {
+		go func() {
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				if count, countErr := d.state.InboxCount(d.agent); countErr == nil && count == 1 {
+					_ = d.ForceDisconnect()
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}()
+	}
+	return n, err
+}
+
+func assertW2Client(t *testing.T, f SessionFactory) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	raw, err := f.Open(ctx, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &disconnectAfterCommit{Session: raw, state: f.State(), agent: "grok"}
+	client, err := hubclient.OpenOneShotTransport(transport, &loop.RemoteConfig{Host: "in-process", Port: 22}, "codex", "spectest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Send(op.SendReq{To: "grok", Content: loop.ComposeMessage("codex", "", "once")})
+	if hubclient.ErrorCode(err) != "E_SEND_UNKNOWN" {
+		t.Fatalf("send error = %v (%s), want E_SEND_UNKNOWN", err, hubclient.ErrorCode(err))
+	}
+	if n, err := f.State().InboxCount("grok"); err != nil || n != 1 {
+		t.Fatalf("delivery count = %d, %v", n, err)
+	}
+}
+
+func assertW6Client(t *testing.T, f SessionFactory) {
+	if err := f.State().Deliver("grok", "codex", "held"); err != nil {
+		t.Fatal(err)
+	}
+	restore, err := f.State().StageUnreadableClaim("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restore() })
+	client, _ := openClient(t, f, "codex")
+	_, err = client.Check(op.ClaimReq{}, func(op.Event) error { return nil })
+	if hubclient.ErrorCode(err) != "E_HUB_IO" || !hubclient.ClaimedHeld(err) {
+		t.Fatalf("check error = %v code=%s claimed_held=%v", err, hubclient.ErrorCode(err), hubclient.ClaimedHeld(err))
+	}
 }
 
 type StateProbe interface {

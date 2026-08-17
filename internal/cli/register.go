@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
 	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 )
@@ -39,9 +41,12 @@ type registerOpts struct {
 	Bio             string
 	WorkingRepos    []string
 	ServeToken      string
+	Announce        bool
+	Sweep           bool
 
-	HostProvided bool
-	BioProvided  bool
+	HostProvided   bool
+	BioProvided    bool
+	VendorProvided bool
 }
 
 // registerResult is performRegister's outcome.
@@ -59,6 +64,8 @@ type registerResult struct {
 	ExistingFound bool   // true if a prior registration file existed before this call.
 	ResolvedHost  string // post-merge host actually written
 	Warnings      []string
+	Announce      *op.AnnounceView
+	Pending       int
 }
 
 // performRegister writes / refreshes a registration through the seam.
@@ -84,22 +91,34 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 	}
 
 	vendor := opts.Vendor
+	var vendorPtr *string
+	if cfg.Remote == nil || opts.VendorProvided {
+		vendorPtr = &vendor
+	}
 	req := op.RegisterReq{
-		Vendor:       &vendor,
+		Vendor:       vendorPtr,
 		Host:         host,
 		WorkingRepos: opts.WorkingRepos,
 		ServeToken:   opts.ServeToken,
-		// Announce and Sweep stay false on every local path: cmdRegister keeps
-		// its own AnnounceEnrollment call and cmdBoot its own sweep, so nothing
-		// local changes. Both fields exist for the wire, where a remote lane's
-		// fan-out and hygiene must run against the HUB's pool.
+		Announce:     opts.Announce,
+		Sweep:        opts.Sweep,
 	}
 	if opts.BioProvided {
 		bio := opts.Bio
 		req.Bio = &bio
 	}
 
-	resp, err := op.Register(cfg, op.Context{ActorID: opts.AgentID}, req, now)
+	var resp op.RegisterResp
+	var err error
+	if cfg.Remote != nil {
+		session, openErr := openRemoteOneShot(cfg, opts.AgentID)
+		if openErr != nil {
+			return nil, openErr
+		}
+		resp, err = session.Register(req)
+	} else {
+		resp, err = op.Register(cfg, op.Context{ActorID: opts.AgentID}, req, now)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +129,40 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		ExistingFound: resp.ExistingFound,
 		ResolvedHost:  resp.ResolvedHost,
 		Warnings:      resp.Warnings,
+		Announce:      resp.Announce,
+		Pending:       resp.Pending,
 	}, nil
+}
+
+func openRemoteOneShot(cfg *loop.Config, agentID string) (*hubclient.OneShot, error) {
+	session, err := hubclient.OpenOneShot(context.Background(), cfg.Remote, agentID, version)
+	if err != nil {
+		if hubclient.ErrorCode(err) == "E_CONNECT" {
+			_ = hubclient.RecordConnectFailure(cfg.Remote, time.Now().UTC())
+		}
+		return nil, err
+	}
+	_ = hubclient.ClearConnectFailure(cfg.Remote)
+	for _, warning := range session.Warnings() {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
+	return session, nil
+}
+
+func remoteHookCached(cfg *loop.Config) bool {
+	if cfg == nil || cfg.Remote == nil {
+		return false
+	}
+	cached, _, err := hubclient.ConnectFailureCached(cfg.Remote, time.Now().UTC())
+	return err == nil && cached
+}
+
+func degradeRemoteHook(err error) bool {
+	if hubclient.ErrorCode(err) != "E_CONNECT" {
+		return false
+	}
+	fmt.Fprintln(os.Stderr, "hub unreachable; skipping (will retry next event)")
+	return true
 }
 
 func cmdRegister(args []string) error {
@@ -148,6 +200,8 @@ func cmdRegister(args []string) error {
 			opts.HostProvided = true
 		case "bio":
 			opts.BioProvided = true
+		case "vendor":
+			opts.VendorProvided = true
 		}
 	})
 
@@ -170,22 +224,25 @@ func cmdRegister(args []string) error {
 		return err
 	}
 
-	agentID, err = resolveAgentID(agentID)
+	agentID, err = resolveAgentID(agentID, cfg)
 	if err != nil {
 		return err
 	}
 	opts.AgentID = agentID
-	opts.Vendor = resolveAgentVendor(vendor, agentID, cfg)
+	if cfg.Remote != nil {
+		opts.Vendor = strings.TrimSpace(vendor)
+		opts.Announce = announce
+	} else {
+		opts.Vendor = resolveAgentVendor(vendor, agentID, cfg)
+	}
 
 	now := time.Now().UTC()
 	result, err := performRegister(cfg, opts, now)
 	if err != nil {
 		return err
 	}
-	reg := result.Reg
-
 	fmt.Printf("Registered %s\n", agentID)
-	fmt.Printf("  vendor:        %s\n", opts.Vendor)
+	fmt.Printf("  vendor:        %s\n", result.Reg.Vendor)
 	fmt.Printf("  host:          %s\n", result.ResolvedHost)
 	fmt.Printf("  control_repo:  %s%s\n", cfg.ControlRepo, formatOriginSuffix(cfg.ControlRepoOrigin))
 	fmt.Printf("  loop_dir:      %s%s\n", cfg.LoopDir, formatOriginSuffix(cfg.LoopDirOrigin))
@@ -197,8 +254,18 @@ func cmdRegister(args []string) error {
 	}
 
 	if announce {
-		ar, err := loop.AnnounceEnrollment(cfg, reg)
-		if err != nil {
+		if cfg.Remote != nil {
+			if result.Announce != nil {
+				for _, w := range result.Announce.Warnings {
+					fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+				}
+				if result.Announce.Total == 0 {
+					fmt.Println("  announce:      no peers to announce to")
+				} else {
+					fmt.Printf("  announce:      sent to %d of %d peer(s)\n", result.Announce.Sent, result.Announce.Total)
+				}
+			}
+		} else if ar, err := loop.AnnounceEnrollment(cfg, result.Reg); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: announce failed: %v\n", err)
 		} else {
 			for _, w := range ar.Warnings {

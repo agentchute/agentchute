@@ -115,6 +115,9 @@ func ResolvePointerTarget(pointerDir, raw string) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("pointer target is empty")
 	}
+	if isRemoteLocator(raw) {
+		return raw, nil
+	}
 	if !filepath.IsAbs(raw) {
 		raw = filepath.Join(pointerDir, raw)
 	}

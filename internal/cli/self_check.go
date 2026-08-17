@@ -49,6 +49,8 @@ func cmdSelfCheck(args []string) error {
 			opts.HostProvided = true
 		case "bio":
 			opts.BioProvided = true
+		case "vendor":
+			opts.VendorProvided = true
 		}
 	})
 
@@ -68,14 +70,21 @@ func cmdSelfCheck(args []string) error {
 	}
 
 	now := time.Now().UTC()
+	if cfg.Remote != nil && remoteHookCached(cfg) {
+		fmt.Fprintln(os.Stderr, "hub unreachable; skipping (will retry next event)")
+		return nil
+	}
 	agentID, result, err := selfRepairRegistration(cfg, &opts, agentID, vendor, now)
 	if err != nil {
+		if cfg.Remote != nil && degradeRemoteHook(err) {
+			return nil
+		}
 		return err
 	}
 
 	status := selfCheckStatus{
 		Agent:    agentID,
-		Vendor:   opts.Vendor,
+		Vendor:   result.Reg.Vendor,
 		Host:     result.ResolvedHost,
 		LastSeen: result.Reg.LastSeen.UTC().Format(time.RFC3339),
 		Warnings: result.Warnings,
@@ -115,7 +124,7 @@ func cmdSelfCheck(args []string) error {
 // determined at all) returns "" — that is the one case nothing downstream can
 // proceed on.
 func selfRepairRegistration(cfg *loop.Config, opts *registerOpts, agentIDFlag, vendorFlag string, now time.Time) (string, *registerResult, error) {
-	agentID, err := resolveAgentID(agentIDFlag)
+	agentID, err := resolveAgentID(agentIDFlag, cfg)
 	if err != nil {
 		return "", nil, err
 	}
@@ -123,7 +132,11 @@ func selfRepairRegistration(cfg *loop.Config, opts *registerOpts, agentIDFlag, v
 		return "", nil, err
 	}
 	opts.AgentID = agentID
-	opts.Vendor = resolveAgentVendor(vendorFlag, agentID, cfg)
+	if cfg.Remote != nil {
+		opts.Vendor = strings.TrimSpace(vendorFlag)
+	} else {
+		opts.Vendor = resolveAgentVendor(vendorFlag, agentID, cfg)
+	}
 
 	result, err := performRegister(cfg, *opts, now)
 	if err != nil {

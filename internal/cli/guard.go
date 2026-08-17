@@ -172,22 +172,6 @@ func evaluateGuardInvocation(agentIDFlag, controlRepo, loopDir, toolCmd string) 
 		return guardDecision{Allowed: true}
 	}
 
-	id := strings.TrimSpace(agentIDFlag)
-	if id == "" {
-		id = strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID"))
-	}
-	if id == "" {
-		// Cannot resolve whose latch to check. Guard is armed (a serve session
-		// is active) but the id this process would need is missing — a
-		// misconfiguration, not a signal to block. Fail open (hint only, no
-		// stdout noise that would corrupt hook JSON parsing).
-		fmt.Fprintln(os.Stderr, "agentchute guard: AGENTCHUTE_AGENT_ID not set; cannot resolve guard latch, allowing (hint: guard only applies inside an `ac serve` session)")
-		return guardDecision{Allowed: true}
-	}
-	if err := loop.ValidateAgentID(id); err != nil {
-		return guardDecision{Allowed: true}
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return guardDecision{Allowed: true}
@@ -200,6 +184,16 @@ func evaluateGuardInvocation(agentIDFlag, controlRepo, loopDir, toolCmd string) 
 		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
 	})
 	if err != nil {
+		return guardDecision{Allowed: true}
+	}
+	id, err := resolveAgentID(agentIDFlag, cfg)
+	if err != nil {
+		if strings.TrimSpace(agentIDFlag) == "" && strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID")) == "" {
+			// Cannot resolve whose latch to check. Guard is armed (a serve
+			// session is active) but identity is missing. Fail open (hint only,
+			// no stdout noise that would corrupt hook JSON parsing).
+			fmt.Fprintln(os.Stderr, "agentchute guard: AGENTCHUTE_AGENT_ID not set; cannot resolve guard latch, allowing (hint: guard only applies inside an `ac serve` session)")
+		}
 		return guardDecision{Allowed: true}
 	}
 

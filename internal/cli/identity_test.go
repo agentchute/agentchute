@@ -16,13 +16,13 @@ func TestResolveAgentIDRejectsTraversal(t *testing.T) {
 		".hidden",
 		"-leading-dash",
 	} {
-		if got, err := resolveAgentID(bad); err == nil {
+		if got, err := resolveAgentID(bad, nil); err == nil {
 			t.Errorf("resolveAgentID(--as=%q) = %q, want error", bad, got)
 		}
 	}
 
 	t.Setenv("AGENTCHUTE_AGENT_ID", "../../etc/passwd")
-	if got, err := resolveAgentID(""); err == nil {
+	if got, err := resolveAgentID("", nil); err == nil {
 		t.Errorf("resolveAgentID(env=../../etc/passwd) = %q, want error", got)
 	}
 }
@@ -30,7 +30,7 @@ func TestResolveAgentIDRejectsTraversal(t *testing.T) {
 func TestResolveAgentIDExplicitOnly(t *testing.T) {
 	t.Run("flag wins", func(t *testing.T) {
 		t.Setenv("AGENTCHUTE_AGENT_ID", "env-id")
-		got, err := resolveAgentID("explicit-id")
+		got, err := resolveAgentID("explicit-id", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -41,7 +41,7 @@ func TestResolveAgentIDExplicitOnly(t *testing.T) {
 
 	t.Run("env fallback", func(t *testing.T) {
 		t.Setenv("AGENTCHUTE_AGENT_ID", "env-id")
-		got, err := resolveAgentID("")
+		got, err := resolveAgentID("", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -52,7 +52,7 @@ func TestResolveAgentIDExplicitOnly(t *testing.T) {
 
 	t.Run("missing has exact fix hint", func(t *testing.T) {
 		t.Setenv("AGENTCHUTE_AGENT_ID", "")
-		_, err := resolveAgentID("")
+		_, err := resolveAgentID("", nil)
 		if err == nil {
 			t.Fatal("missing identity returned nil error")
 		}
