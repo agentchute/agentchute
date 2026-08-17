@@ -3227,12 +3227,23 @@ checklist. WI-6.6 lands in the same PR that satisfies these steps.
     latest=$(gh release view --repo agentchute/agentchute --json tagName --jq .tagName)
     refs=$(rg -o --no-filename 'https://[^" <]+' web/*.html |
       rg 'raw\.githubusercontent\.com/agentchute/agentchute/[^/]+/AGENTCHUTE\.md|github\.com/agentchute/agentchute/(blob/[^/]+/AGENTCHUTE\.md|tree/[^/]+/conformance)' || true)
-    test -n "$refs"
+    test -n "$refs" || {
+      printf 'no current-page versioned spec/conformance references found\n' >&2
+      exit 1
+    }
     bad=$(printf '%s\n' "$refs" | grep -Fv "/$latest/" || true)
-    test -z "$bad"
+    test -z "$bad" || {
+      printf 'current-page references do not match release\n' >&2
+      printf 'release: %s\n' "$latest" >&2
+      printf '%s\n' "$bad" >&2
+      exit 1
+    }
 
     anchors=$(rg -o --no-filename 'https://github\.com/agentchute/agentchute/blob/[^/]+/AGENTCHUTE\.md#[^" <]+' web --glob '*.html' || true)
-    test -n "$anchors"
+    test -n "$anchors" || {
+      printf 'no versioned spec anchors found\n' >&2
+      exit 1
+    }
     printf '%s\n' "$anchors" |
     while IFS= read -r url; do
       tagged=${url#*blob/}
