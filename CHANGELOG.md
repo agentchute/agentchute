@@ -4,7 +4,7 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
-## v1.6.0 (2026-08-17) — a seam, and nothing else
+## Unreleased — operation seam
 
 **Internal refactor only: no behavior change, no new command or flag, and no hub capability claimed or shipped. Nothing to do on any lane — no cutover, no forced update.** Protocol v2.5, registration wire `v: 3`, and the enrollment marker are unchanged; every command's text, `--json`, and exit codes are byte-identical to v1.5.7.
 
