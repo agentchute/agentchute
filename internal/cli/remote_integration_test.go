@@ -87,9 +87,7 @@ func newWI57Harness(t *testing.T, agent, vendor string) *wi57Harness {
 	writeWI57Registration(t, cfg, agent, vendor, "fixture-host", now)
 
 	originalOpen := openRemoteOneShot
-	originalHubNow := hubSessionNow
 	originalSelfCheckNow := selfCheckNow
-	hubSessionNow = func() time.Time { return now }
 	selfCheckNow = func() time.Time { return now }
 	h := &wi57Harness{pool: pool, cfg: cfg, remote: remote, root: root, agent: agent, now: now}
 	openRemoteOneShot = func(discovered *loop.Config, actor string) (*hubclient.OneShot, error) {
@@ -97,7 +95,10 @@ func newWI57Harness(t *testing.T, agent, vendor string) *wi57Harness {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
-			done <- ServeHubSession(ctx, server, HubSessionConfig{Agent: actor, Pool: pool, PoolID: fixturePoolID, HubBin: "test"})
+			done <- serveHubSession(ctx, server, hubSessionOptions{
+				Agent: actor, Pool: pool, PoolID: fixturePoolID, HubBin: "test",
+				now: func() time.Time { return now },
+			})
 		}()
 		recordingClient := &wi57RecordingConn{Conn: client, onRegister: func(req hubwire.Register) {
 			h.regs = append(h.regs, req)
@@ -124,7 +125,6 @@ func newWI57Harness(t *testing.T, agent, vendor string) *wi57Harness {
 	}
 	t.Cleanup(func() {
 		openRemoteOneShot = originalOpen
-		hubSessionNow = originalHubNow
 		selfCheckNow = originalSelfCheckNow
 	})
 	return h

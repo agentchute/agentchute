@@ -26,8 +26,6 @@ type HubSessionTransport interface {
 
 type hubSessionTransport = HubSessionTransport
 
-var hubSessionNow = func() time.Time { return time.Now().UTC() }
-
 // HubSessionConfig is the forced-command identity pinned by authorized_keys.
 // It intentionally contains no discovery inputs or client-selected actor.
 type HubSessionConfig struct {
@@ -72,6 +70,8 @@ type hubSessionOptions struct {
 	// afterAcquire is an invocation-scoped failure-injection hook used to prove
 	// panic cleanup. It is nil in production and never shared across sessions.
 	afterAcquire func()
+	// now is an invocation-scoped test clock. It is nil in production.
+	now func() time.Time
 }
 
 type hubSessionTiming struct {
@@ -112,12 +112,17 @@ type hubSession struct {
 	lastID       int64
 	mode         string
 	afterAcquire func()
+	now          func() time.Time
 	oneShotTimer *time.Timer
 }
 
 func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hubSessionOptions) (returnErr error) {
 	timing := opts.Timing.withDefaults()
-	s := &hubSession{transport: transport, reader: hubwire.NewReader(transport), writer: hubwire.NewWriter(transport), timing: timing, afterAcquire: opts.afterAcquire}
+	now := opts.now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	s := &hubSession{transport: transport, reader: hubwire.NewReader(transport), writer: hubwire.NewWriter(transport), timing: timing, afterAcquire: opts.afterAcquire, now: now}
 	defer func() {
 		if s.channel != nil {
 			if err := s.channel.ReleaseLease(); err != nil && !errors.Is(err, op.ErrFenced) && returnErr == nil {
@@ -326,7 +331,7 @@ func (s *hubSession) dispatch(raw hubwire.RawFrame) (bool, error) {
 		if s.mode == "channel" {
 			resp, err = s.channel.RegisterWithPrecommitValidation(opReq, validateResponse)
 		} else {
-			resp, err = op.RegisterWithPrecommitValidation(s.cfg, s.ctx, opReq, hubSessionNow(), validateResponse)
+			resp, err = op.RegisterWithPrecommitValidation(s.cfg, s.ctx, opReq, s.now(), validateResponse)
 		}
 		if err != nil {
 			return s.mode != "channel", s.writeError(raw.ID, err)
