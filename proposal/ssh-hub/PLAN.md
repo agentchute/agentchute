@@ -1172,10 +1172,14 @@ Full vocabulary exactly as §4.4 (no `ping`/`poll`/`pending-item`). Plus:
   and must not drive resend. `op.Send` returns a nil error once delivery
   commits. DESIGN §3.1 / §4.4.1 now match AGENTCHUTE.md §13 (this erratum
   closed the carve-out).
-- **Error-path `claimed_held`** (#152 item 2): a machine-readable boolean
-  on the error frame (exact name/placement is this merge's codec proposal).
-  A `note` frame will **not** do — arming a latch must never depend on
-  parsing display text. M3 frames it; M4 arms from it.
+- **Error-path `claimed_held`** (#152 item 2, placement now pinned): a
+  top-level optional boolean on the terminal `error` frame, encoded only
+  as `true` and omitted otherwise, set when `Claim` returns an error with
+  `ClaimSummary.Redelivered > 0`. M3 frames it; M4 arms the local latch on
+  `true`. **`check-ok.redelivered` is unchanged** — `check-ok` is only
+  emitted on a nil error, where residue found equals residue delivered. A
+  `note` frame will **not** do — arming a latch must never depend on
+  parsing display text.
 - **`tick-ok.warnings` is `[]string`, always present** (F3), `[]` when empty,
   never omitted.
 - **`note.level` is one of exactly `"warn"` / `"info"`** (WI-1.1).
@@ -1253,8 +1257,12 @@ seed corpus under `internal/hubwire/testdata/fuzz/`.
 ordinary test** in the normal (non-fuzzing) run — so it lands in CI's existing
 `go` job with no CI change at all. Typed-event-stream tests: a `check` over many
 maximum-size (4 MiB) messages with a peak-memory assertion (≤1 body held); a
-`check` producing many interleaved `note`/`owed-item` frames with order
-preserved end-to-end; a `pending` with many owed entries and one 4 MiB
+`check` producing many interleaved `note`/`owed-item` frames with
+**frame-level production order** preserved (M3 does **not** assert
+rendered `warn`→stderr / `info`→stdout — that golden is WI-4.5, because
+production remote rendering first lands there; a test-only renderer
+would prove no production behavior, the same trap as a green W2 in M3
+claiming client behavior); a `pending` with many owed entries and one 4 MiB
 `show_body` body as a trailer; transport failure injected **after the first
 emitted item** AND **after a mid-stream `note`** (claim durable, no partial
 frame, clean abort, no note silently lost before the failure point).
@@ -1324,14 +1332,15 @@ citation): add `"hub"`, and keep it out of `ac` help per §7.3.
   cascade is never called: a stray `AGENTCHUTE_CONTROL_REPO`/`AGENTCHUTE_LOOP_DIR`
   in the hub user's rc-sourced environment would otherwise outrank the pinned
   pool (`config.go:218-225` env arm, `config.go:299-329` loop-dir arms).
-- **At startup, before any op and before `hello-ok`**, in this order: validate
-  `state/pool.id` against the J1 contract (regular, non-symlink, 0600, content
-  exactly `^[0-9a-f]{12}\n$`, read through `loop.ReadFileLimit`,
-  `registration.go:34-48`, with a 64-byte cap) → `E_POOL_ID_INVALID` on
-  failure; then compare it to `--pool-id` → **`E_POOL_MISMATCH` (hub arm)** when
-  absent or unequal. Both are `error` frames followed by close.
-- `SSH_ORIGINAL_COMMAND` is logged for audit **only after** C0/C1 control-byte
-  stripping via the shipped `sanitizeControlBytes` (`check.go:374-388`).
+- **At startup, before any op and before `hello-ok`**, in this order: if
+  `--pool` is invalid (does not resolve to a pool) → **`E_POOL_NOT_FOUND`**
+  (`error` frame, close) — this branch is owned here and is pinned
+  **before** J1 validation; then validate `state/pool.id` against the J1
+  contract (regular, non-symlink, 0600, content exactly `^[0-9a-f]{12}\n$`,
+  read through `loop.ReadFileLimit`, `registration.go:34-48`, with a
+  64-byte cap) → `E_POOL_ID_INVALID` on failure; then compare it to
+  `--pool-id` → **`E_POOL_MISMATCH` (hub arm)** when absent or unequal.
+  Those last two are `error` frames followed by close.
 - **The `status` dispatch is where both budgets bind (T1a)**: it passes the
   op an emitter that writes each `warn` note as a `note` frame (so the
   lenient-read warnings stream and never ride inline, WI-1.4(d)), then hands
@@ -1352,14 +1361,15 @@ citation): add `"hub"`, and keep it out of `ac` help per §7.3.
   EOF, read-deadline expiry, `SIGTERM`/`SIGHUP`, a framing violation, and a
   panic recovery.
 
-(e) In-process session tests over the fake transport: `E_ORDER`; `pool.id`
+(e) In-process session tests over the fake transport: `E_ORDER`; invalid
+`--pool` at session start (`E_POOL_NOT_FOUND`, before J1); `pool.id`
 absent / mismatched (`E_POOL_MISMATCH` hub arm, before `hello-ok`);
 `E_POOL_ID_INVALID` (the J1 malformed set); **release-on-EOF asserted for every
 one of the five exit paths above** (the claim file is gone, or belongs to the
 successor).
 
-(f) Done-when: a fake-transport client completes hello → register →
-lease-acquire → tick → lease-release against a temp pool with a fixture
+(f) Done-when: a fake-transport client completes hello → lease-acquire →
+register → tick → lease-release against a temp pool with a fixture
 `pool.id`, and every exit path releases.
 
 (g) ~400 LOC + ~200 test.
@@ -1471,6 +1481,12 @@ identical after repeated `RenewLease`.
 changed; `git diff` on `internal/loop` limited to `lease.go` + the three new
 files.
 
+**Deferred, not in this item (and not in M3):** #152 items 5 and 6 — the
+collision-retry seam and the failing-sweep seam. WI-3.4(f) already restricts
+the entire `internal/loop` delta to `lease.go` plus the three boot-ref
+files; widening the one loop-touching item mid-merge is not worth two
+declared coverage gaps. They get their own item **after M6**.
+
 (g) ~160 LOC.
 
 **WI-3.5 — conformance L vectors + the HUB-SIDE half of the W vectors.**
@@ -1495,12 +1511,15 @@ root `go test ./...` never enters it; `tools/test.sh` never enters it; only
   have to duplicate the assertions — the one thing that item forbids. So:
   - NEW `internal/spectest/vectors.go` — a stdlib-only loader.
   - NEW `internal/spectest/lease.go` and `internal/spectest/wire.go` — the
-    **exported, transport-parameterized** assertion helpers. The codec half
-    takes the transport as an `io.ReadWriter`; the lease half takes a small
-    seam interface the in-process and sshd drivers both satisfy. Signature
-    shape: `func AssertW1(t *testing.T, rw io.ReadWriter, v Vector)` and
-    siblings — `testing` is an ordinary stdlib import and is legal in a
-    non-test file.
+    **exported, transport-parameterized** assertion helpers. W1 cannot be
+    expressed as `AssertW1(t *testing.T, rw io.ReadWriter, v Vector)` —
+    it needs a disconnect, a second session, and hub-state inspection,
+    none of which `io.ReadWriter` exposes. Pin a **session-factory
+    interface** (open, forced disconnect/close, state probe) shared by
+    the `net.Pipe` driver and M6's SSH driver. **codex proposes the
+    exact interface in its M3 PR**, since it implements both drivers.
+    Do not invent the signature in this plan. `testing` is an ordinary
+    stdlib import and is legal in a non-test file.
   - NEW `internal/spectest/lease_test.go` / `wire_test.go` — **thin drivers
     only**: they load the vectors and call the exported helpers over
     `net.Pipe`, and hold no assertion logic of their own. WI-6.4 passes the
@@ -1561,7 +1580,8 @@ review's canary for this item.
 
 L1–L4 as §9.3 states them, driven in-process against the seam.
 
-(f) Done-when: L1–L4 plus the four hub-side W assertions green under
+(f) Done-when: L1–L4 plus the **five hub-side W assertions across four
+bullets** (W1-hub, W2-hub, W3-hub, and the combined W4/W5) green under
 `tools/test.sh`; `git diff` shows both `go.mod` files unchanged.
 
 (g) ~350 LOC.
@@ -1569,9 +1589,11 @@ L1–L4 as §9.3 states them, driven in-process against the seam.
 **WI-3.6 — replace `op.SendTsMessageWithCommit` with a non-global seam.**
 
 (a) The exported mutable package var is a CLI test seam and is wrong for a
-long-lived hub session (process-global write shared across sessions). Replace
-it with a non-global seam (injected dependency, or an unexported var plus a
-test helper).
+long-lived hub session (process-global write shared across sessions).
+**Pinned shape:** a dependency-parameterized internal helper in production
+`op.Send`; a dependency-parameterized helper in `cmdSend` for the two
+existing CLI tests; the hub session calls the production path directly.
+No exported mutable var, no session-shared test mutation.
 
 (b) #150 / #152 item 4; recorded at M1 gate `ac0b6eb` and deferred because
 changing it there would have edited tests outside M1's closed exception
@@ -1588,8 +1610,9 @@ exported var (must be named up front):
 `internal/op/helpers_test.go`, and `internal/loop/floor_test.go` are the
 loop function, not this var.
 
-(d) After this item, no exported mutable send-delivery var remains on the
-hub session path.
+(d) After this item, no exported mutable send-delivery var remains. The
+hub session calls the production helper; CLI tests inject via the
+cmdSend-parameterized helper only.
 
 (f) Done-when: those three test files retarget the new seam; `tools/test.sh`
 green; `grep SendTsMessageWithCommit internal/op/*.go` shows no exported
@@ -1825,7 +1848,10 @@ case, and all three ControlPath branches are asserted.
 **WI-4.5 — one-shot routing + remote turn-end order.** *(P2, part a.)*
 
 (a) Route the CLI verbs over one-shot sessions with the §4.5.1 semantics, and
-implement the remote `turn-end` ordering.
+implement the remote `turn-end` ordering. This item also owns the
+**rendered `warn`/`info` golden** (DESIGN §10.2 moved here): production
+remote rendering first lands here, so M3 only proved frame level and
+production order.
 
 (b) §4.5.1 (read-after-hello), §6.6 (remote turn-end order and the E1 arming
 point), §3.5 (the `Announce` bullet — the view, the three facts it renders, and
