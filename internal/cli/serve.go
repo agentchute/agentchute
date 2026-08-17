@@ -363,6 +363,30 @@ func restoreRunnerTerminal(restoreTerminal func() error, diag *runnerDiagnostics
 	diag.printBufferedFatal(stderr)
 }
 
+// newRunnerRuntime builds the runner's live state from ONE lease value.
+//
+// The lease has to reach two places — the runtime's own handle, which the
+// shutdown path releases, and the op.Channel that ADOPTS it for the tick — and
+// they were two independent lines in a struct literal. One of them went missing
+// in the seam extraction, so every clean exit released nothing and left
+// serve.claim on disk: the lane looked live to the whole pool and the next
+// `serve` for that id refused to start. The suite stayed green because every
+// runner test builds its runtime through newPollTestRuntime, which set the field
+// (codex, PR #148 gate). A constructor taking the lease once makes the pair
+// impossible to desynchronize and the field impossible to omit.
+func newRunnerRuntime(cfg *loop.Config, opts runnerOptions, cwd string, lease *loop.ServeLease, tmpl loop.Registration) *runnerRuntime {
+	return &runnerRuntime{
+		cfg:     cfg,
+		opts:    opts,
+		cwd:     cwd,
+		started: time.Now().UTC(),
+		lease:   lease,
+		channel: op.NewChannel(cfg, op.Context{ActorID: opts.AgentID}, op.ChannelOpts{Lease: lease, HeartbeatTemplate: &tmpl}),
+		wakeCh:  make(chan bool, 1),
+		stopCh:  make(chan struct{}),
+	}
+}
+
 func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	stateDir := cfg.AgentStateDir(opts.AgentID)
 	if err := loop.EnsurePrivateDir(stateDir); err != nil {
@@ -419,22 +443,12 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		defer diag.printBufferedFatal(os.Stderr)
 	}
 
-	tmpl := heartbeatTemplate(cfg, opts)
-	rt := &runnerRuntime{
-		cfg:      cfg,
-		opts:     opts,
-		cwd:      cwd,
-		started:  time.Now().UTC(),
-		childPID: cmd.Process.Pid,
-		cmd:      cmd,
-		ptmx:     ptmx,
-		lease:    lease,
-		done:     done,
-		diag:     diag,
-		channel:  op.NewChannel(cfg, op.Context{ActorID: opts.AgentID}, op.ChannelOpts{Lease: lease, HeartbeatTemplate: &tmpl}),
-		wakeCh:   make(chan bool, 1),
-		stopCh:   make(chan struct{}),
-	}
+	rt := newRunnerRuntime(cfg, opts, cwd, lease, heartbeatTemplate(cfg, opts))
+	rt.childPID = cmd.Process.Pid
+	rt.cmd = cmd
+	rt.ptmx = ptmx
+	rt.done = done
+	rt.diag = diag
 	nowUnix := time.Now().UnixNano()
 	rt.lastOutputUnixNano.Store(nowUnix)
 	rt.lastInputUnixNano.Store(nowUnix)
