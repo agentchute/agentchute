@@ -56,6 +56,7 @@ type ServeClaim struct {
 	ID         string    `json:"id"`
 	Host       string    `json:"host"`
 	PID        int       `json:"pid"`
+	BootRef    string    `json:"boot_ref,omitempty"`
 	ServeToken string    `json:"serve_token"` // the FENCE epoch (128-bit crypto/rand hex).
 	StartedAt  time.Time `json:"started_at"`
 	LastSeen   time.Time `json:"last_seen"`
@@ -86,6 +87,10 @@ var mintServeToken = func() (string, error) {
 	}
 	return hex.EncodeToString(b[:]), nil
 }
+
+// readBootRef is injectable so reclaim behavior is deterministic in tests.
+// Production implementations are platform-specific and return "" on failure.
+var readBootRef = platformBootRef
 
 // afterReclaimWriteHook, when non-nil, is invoked AFTER a stale-reclaim writes
 // its claim, still INSIDE withAgentLock. Test-only: lets a test observe the
@@ -156,40 +161,50 @@ func AcquireServeLease(cfg *Config, id string) (*ServeLease, error) {
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	claim := &ServeClaim{
-		ID:         id,
-		Host:       host,
-		PID:        os.Getpid(),
-		ServeToken: token,
-		StartedAt:  now,
-		LastSeen:   now,
-	}
 
 	stateDir := cfg.AgentStateDir(id)
 	if err := ensurePrivateDir(stateDir); err != nil {
 		return nil, err
 	}
-	data, err := marshalClaim(claim)
-	if err != nil {
-		return nil, err
-	}
-
-	tempFile, err := os.CreateTemp(stateDir, tempFilePrefix+"*")
-	if err != nil {
-		return nil, err
-	}
-	tempPath := tempFile.Name()
-	defer func() { _ = os.Remove(tempPath) }()
-	if err := writeAndSyncOpenFile(tempFile, data); err != nil {
-		return nil, err
-	}
 	path := claimPath(cfg, id)
+	var tempPath string
+	defer func() {
+		if tempPath != "" {
+			_ = os.Remove(tempPath)
+		}
+	}()
 
 	// withAgentLock is NON-reentrant (filelock_unix.go): nothing in this closure
 	// may call a function that itself takes withAgentLock(cfg,id).
 	var lease *ServeLease
 	lockErr := withAgentLock(cfg, id, func() error {
+		// The boot reference is sampled inside the same critical section as the
+		// stale-claim decision. A reboot boundary can therefore never be observed
+		// on one side of the decision but recorded on the other.
+		bootRef := readBootRef()
+		now := time.Now().UTC()
+		claim := &ServeClaim{
+			ID:         id,
+			Host:       host,
+			PID:        os.Getpid(),
+			BootRef:    bootRef,
+			ServeToken: token,
+			StartedAt:  now,
+			LastSeen:   now,
+		}
+		data, err := marshalClaim(claim)
+		if err != nil {
+			return err
+		}
+		tempFile, err := os.CreateTemp(stateDir, tempFilePrefix+"*")
+		if err != nil {
+			return err
+		}
+		tempPath = tempFile.Name()
+		if err := writeAndSyncOpenFile(tempFile, data); err != nil {
+			return err
+		}
+
 		// Fresh-acquire attempt, now INSIDE the lock: link-no-clobber a unique
 		// temp inode into place. No claim exists yet in the common case, so
 		// this succeeds immediately.
@@ -233,13 +248,11 @@ func AcquireServeLease(cfg *Config, id string) (*ServeLease, error) {
 		// (d) Stale + same-host + pid alive: a frozen-but-alive process keeps its
 		// id (don't steal a live lane).
 		//
-		// LIMITATION (FIX 4 / §6b deferred to Gate 6): pidAlive is pid-ONLY
-		// liveness and is vulnerable to OS PID REUSE — a recycled pid number can
-		// read as "alive" and wrongly protect a dead lane (or, conversely, mask a
-		// distinct live process). §6b's full "pid/socket proof" — corroborate the
-		// pid with the process start-time or the runner socket — is deferred to
-		// Gate 6, when serve owns the socket. No behavior change here.
-		if existing.Host == host && pidAlive(existing.PID) {
+		// A differing, non-empty per-boot reference proves the recorded process
+		// belonged to a prior boot even when its pid has since been recycled. An
+		// absent or matching reference preserves the pid-only fail-closed rule.
+		if existing.Host == host && pidAlive(existing.PID) &&
+			(existing.BootRef == "" || bootRef == "" || existing.BootRef == bootRef) {
 			return ErrLeaseHeld
 		}
 		// (e) Stale + reclaimable: rename over the stale claim. Under the lock no

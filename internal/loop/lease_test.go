@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,178 @@ func withPidAlive(t *testing.T, fn func(int) bool) {
 	prev := pidAlive
 	pidAlive = fn
 	t.Cleanup(func() { pidAlive = prev })
+}
+
+func withBootRef(t *testing.T, ref string) {
+	t.Helper()
+	prev := readBootRef
+	readBootRef = func() string { return ref }
+	t.Cleanup(func() { readBootRef = prev })
+}
+
+func staleLiveClaim(t *testing.T, cfg *Config, bootRef string) {
+	t.Helper()
+	host, _ := os.Hostname()
+	writeClaim(t, cfg, &ServeClaim{
+		ID:         "alice",
+		Host:       host,
+		PID:        4242,
+		BootRef:    bootRef,
+		ServeToken: "old",
+		StartedAt:  time.Now().Add(-time.Hour).UTC(),
+		LastSeen:   time.Now().Add(-time.Hour).UTC(),
+	})
+	withPidAlive(t, func(int) bool { return true })
+}
+
+func TestAcquireServeLeaseBootReferenceRules(t *testing.T) {
+	tests := []struct {
+		name     string
+		stored   string
+		current  string
+		wantHeld bool
+	}{
+		{name: "different reclaims recycled pid", stored: "old-boot", current: "new-boot"},
+		{name: "matching refuses", stored: "same-boot", current: "same-boot", wantHeld: true},
+		{name: "pre-upgrade absent refuses", current: "new-boot", wantHeld: true},
+		{name: "current unreadable refuses", stored: "old-boot", wantHeld: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newLeaseTestConfig(t)
+			staleLiveClaim(t, cfg, tc.stored)
+			withBootRef(t, tc.current)
+			lease, err := AcquireServeLease(cfg, "alice")
+			if tc.wantHeld {
+				if err != ErrLeaseHeld {
+					t.Fatalf("err = %v, want ErrLeaseHeld", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("reclaim: %v", err)
+			}
+			if lease.Token == "old" {
+				t.Fatal("reclaim kept the stale token")
+			}
+		})
+	}
+}
+
+func TestAcquireServeLeaseFreshnessPrecedesBootReference(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	host, _ := os.Hostname()
+	writeClaim(t, cfg, &ServeClaim{
+		ID: "alice", Host: host, PID: 4242, BootRef: "old-boot", ServeToken: "old",
+		StartedAt: time.Now().UTC(), LastSeen: time.Now().UTC(),
+	})
+	withPidAlive(t, func(int) bool { return true })
+	withBootRef(t, "new-boot")
+	if _, err := AcquireServeLease(cfg, "alice"); err != ErrLeaseHeld {
+		t.Fatalf("fresh differing-ref err = %v, want ErrLeaseHeld", err)
+	}
+}
+
+func TestClockStepsDoNotStealLiveLease(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	withBootRef(t, "same-boot")
+	lease, err := AcquireServeLease(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, _ := os.Hostname()
+	withPidAlive(t, func(int) bool { return true })
+	for _, lastSeen := range []time.Time{
+		time.Now().UTC().Add(-24 * time.Hour),
+		time.Now().UTC().Add(24 * time.Hour),
+	} {
+		claim, err := readClaim(claimPath(cfg, "alice"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		claim.Host = host
+		claim.PID = 4242
+		claim.LastSeen = lastSeen
+		writeClaim(t, cfg, claim)
+		before, err := os.ReadFile(claimPath(cfg, "alice"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := AcquireServeLease(cfg, "alice"); err != ErrLeaseHeld {
+			t.Fatalf("last_seen %s: err = %v, want ErrLeaseHeld", lastSeen, err)
+		}
+		afterBytes, err := os.ReadFile(claimPath(cfg, "alice"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(afterBytes) != string(before) {
+			t.Fatal("failed clock-step acquire changed the claim bytes")
+		}
+		after, err := readClaim(claimPath(cfg, "alice"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.ServeToken != lease.Token {
+			t.Fatalf("clock step changed token %q to %q", lease.Token, after.ServeToken)
+		}
+	}
+}
+
+func TestRenewLeaseDropsUnknownClaimKey(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	withBootRef(t, "this-boot")
+	lease, err := AcquireServeLease(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := claimPath(cfg, "alice")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(b, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["future_key"] = "accepted-on-read"
+	b, _ = json.MarshalIndent(fields, "", "  ")
+	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readClaim(path); err != nil {
+		t.Fatalf("unknown claim key did not parse: %v", err)
+	}
+	if err := RenewLease(lease); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(after), "future_key") {
+		t.Fatal("unknown claim key survived the typed renew rewrite")
+	}
+}
+
+func TestRenewLeasePreservesBootReference(t *testing.T) {
+	cfg := newLeaseTestConfig(t)
+	withBootRef(t, "this-boot")
+	lease, err := AcquireServeLease(cfg, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := RenewLease(lease); err != nil {
+			t.Fatal(err)
+		}
+		claim, err := readClaim(claimPath(cfg, "alice"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if claim.BootRef != "this-boot" {
+			t.Fatalf("renew %d boot_ref = %q", i, claim.BootRef)
+		}
+	}
 }
 
 func TestAcquireServeLeaseFreshClaimFailsClosed(t *testing.T) {

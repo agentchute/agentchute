@@ -227,26 +227,25 @@ func TestSendPartialSuccessOnOwedFailure(t *testing.T) {
 
 func TestSendPostLinkSyncFailureIsPartialSuccess(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	originalSend := op.SendTsMessageWithCommit
-	op.SendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, serveToken string) (loop.TsID, bool, error) {
-		id, committed, err := originalSend(cfg, from, to, content, serveToken)
+	send := func(cfg *loop.Config, ctx op.Context, req op.SendReq) (op.SendResp, error) {
+		resp, err := op.Send(cfg, ctx, req)
 		if err != nil {
-			return id, committed, err
+			return resp, err
 		}
-		return id, true, errors.New("forced post-link sync failure")
+		resp.DurabilityNote = "forced post-link sync failure"
+		return resp, nil
 	}
-	defer func() { op.SendTsMessageWithCommit = originalSend }()
 
 	var stdout string
 	var sendErr error
 	stderr := captureStderr(t, func() {
 		withCwd(t, root, func() {
 			stdout, sendErr = captureStdout(t, func() error {
-				return cmdSend([]string{
+				return cmdSendWithOp([]string{
 					"--from", "claude-code", "--to", "codex",
 					"--ask", "--reply-by", "45m",
 					"--body", "linked before sync failed",
-				})
+				}, send)
 			})
 		})
 	})

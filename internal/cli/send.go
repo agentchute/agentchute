@@ -34,6 +34,12 @@ var sendStdin = os.Stdin
 //     asker-owned only.
 //   - --json:       structured output (filename, path).
 func cmdSend(args []string) error {
+	return cmdSendWithOp(args, op.Send)
+}
+
+type sendOperation func(*loop.Config, op.Context, op.SendReq) (op.SendResp, error)
+
+func cmdSendWithOp(args []string, send sendOperation) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
@@ -212,7 +218,7 @@ func cmdSend(args []string) error {
 	// so a write from a fenced (reclaimed) agent fails closed (MintSendStamp's
 	// VerifyFence -> ErrFenced). Empty env (no serve lease) => intentionally
 	// unfenced.
-	resp, sendErr := op.Send(cfg, actor, op.SendReq{
+	resp, sendErr := send(cfg, actor, op.SendReq{
 		To:         toID,
 		Content:    content,
 		Ask:        ask,

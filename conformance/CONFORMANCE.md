@@ -14,6 +14,14 @@ Four deliverables in one package:
 
 Pure stdlib, no dependencies.
 
+## Lease and hub-wire vectors
+
+`vectors/lease.json` and `vectors/wire.json` extend the executable contract
+with lease/fencing and session-lifecycle cases. Their reference drivers live in
+the root module under `internal/spectest`, because the standalone conformance
+module cannot import the reference implementation's `internal/*` packages.
+Other bindings should drive the same JSON through their own harness.
+
 ## Run
 
 ```sh

@@ -1,0 +1,11 @@
+{
+  "schema": "agentchute-wire-vectors-v1",
+  "vectors": [
+    {"id":"W1","kind":"disconnect_after_claim","name":"disconnect after claim leaves residue that redelivers"},
+    {"id":"W2","kind":"disconnect_after_send","name":"response loss after send leaves exactly one delivery"},
+    {"id":"W3","kind":"reclaim_during_send","name":"reclaim before the send fence check writes nothing"},
+    {"id":"W4","kind":"identity_mismatch","name":"identity mismatch closes during hello"},
+    {"id":"W5","kind":"version_mismatch","name":"version mismatch closes during hello"},
+    {"id":"W6","kind":"unreadable_claimed_residue","name":"unreadable claimed residue reports claimed_held"}
+  ]
+}

@@ -86,13 +86,11 @@ func TestSendClassifiesUnderLockStaleAsRacing(t *testing.T) {
 	enroll(t, cfg, "claude-code")
 	enroll(t, cfg, "codex")
 
-	original := SendTsMessageWithCommit
-	SendTsMessageWithCommit = func(*loop.Config, string, string, []byte, string) (loop.TsID, bool, error) {
+	deliver := func(*loop.Config, string, string, []byte, string) (loop.TsID, bool, error) {
 		return loop.TsID{}, false, &loop.ErrRecipientStale{To: "codex", Age: 90 * time.Second, Threshold: time.Hour}
 	}
-	defer func() { SendTsMessageWithCommit = original }()
 
-	resp, err := Send(cfg, Context{ActorID: "claude-code"}, SendReq{To: "codex", Content: []byte("body")})
+	resp, err := sendWithDelivery(cfg, Context{ActorID: "claude-code"}, SendReq{To: "codex", Content: []byte("body")}, deliver)
 	if !errors.Is(err, ErrRecipientRacing) {
 		t.Fatalf("err = %v, want ErrRecipientRacing", err)
 	}
@@ -189,17 +187,15 @@ func TestSendPartialSuccessReportsDurabilityNote(t *testing.T) {
 	enroll(t, cfg, "claude-code")
 	enroll(t, cfg, "codex")
 
-	original := SendTsMessageWithCommit
-	SendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, token string) (loop.TsID, bool, error) {
-		id, committed, err := original(cfg, from, to, content, token)
+	deliver := func(cfg *loop.Config, from, to string, content []byte, token string) (loop.TsID, bool, error) {
+		id, committed, err := loop.SendTsMessageWithCommit(cfg, from, to, content, token)
 		if err != nil {
 			return id, committed, err
 		}
 		return id, true, errors.New("forced post-link sync failure")
 	}
-	defer func() { SendTsMessageWithCommit = original }()
 
-	resp, err := Send(cfg, Context{ActorID: "claude-code"}, SendReq{To: "codex", Content: []byte("body")})
+	resp, err := sendWithDelivery(cfg, Context{ActorID: "claude-code"}, SendReq{To: "codex", Content: []byte("body")}, deliver)
 	if err != nil {
 		t.Fatalf("partial success returned an error: %v", err)
 	}
@@ -269,15 +265,13 @@ func TestSendReportsDurabilityAndOwedFailuresIndependently(t *testing.T) {
 	enroll(t, cfg, "claude-code")
 	enroll(t, cfg, "codex")
 
-	original := SendTsMessageWithCommit
-	SendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, token string) (loop.TsID, bool, error) {
-		id, committed, err := original(cfg, from, to, content, token)
+	deliver := func(cfg *loop.Config, from, to string, content []byte, token string) (loop.TsID, bool, error) {
+		id, committed, err := loop.SendTsMessageWithCommit(cfg, from, to, content, token)
 		if err != nil {
 			return id, committed, err
 		}
 		return id, true, errors.New("forced post-link sync failure")
 	}
-	defer func() { SendTsMessageWithCommit = original }()
 
 	if err := os.MkdirAll(cfg.AgentStateDir("claude-code"), 0o700); err != nil {
 		t.Fatal(err)
@@ -286,11 +280,11 @@ func TestSendReportsDurabilityAndOwedFailuresIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := Send(cfg, Context{ActorID: "claude-code"}, SendReq{
+	resp, err := sendWithDelivery(cfg, Context{ActorID: "claude-code"}, SendReq{
 		To:      "codex",
 		Content: loop.ComposeMessage("claude-code", "", "hi"),
 		Ask:     true,
-	})
+	}, deliver)
 	if err != nil {
 		t.Fatalf("a committed delivery must not return an error: %v", err)
 	}

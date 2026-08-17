@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"t\":\"send\",\"id\":2,\"body_len\":4}\nabc")
