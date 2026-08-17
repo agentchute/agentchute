@@ -3,7 +3,6 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -60,7 +59,7 @@ func withHubLocks(hubIDs []string, fn func() error) error {
 			}
 			if time.Now().After(deadline) {
 				f.Close()
-				return fmt.Errorf("hub join: another agentchute hub join/rotate is already running for this hub (lock %s). Wait for it to finish and re-run", displayHomePath(lockPath))
+				return hubJoinBusyError(lockPath)
 			}
 			time.Sleep(hubLockRetryInterval)
 		}

@@ -382,7 +382,7 @@ func readHubPoolID(path string) (string, error) {
 }
 
 func invalidHubAuthorizePoolID(path string) error {
-	return fmt.Errorf("hub authorize: %s is not a valid pool identity (must be a regular 0600 file containing exactly 12 lowercase hex characters). Nothing was written to authorized_keys. Inspect the file; if it is corrupt, delete it and re-run authorize to mint a fresh identity (existing key lines for this pool will then need re-authorizing)", path)
+	return fmt.Errorf("hub authorize: %s is not a valid pool identity (must be a regular 0600 file containing exactly 12 lowercase hex characters). Nothing was written to authorized_keys. Inspect the file; if it is corrupt, delete it and re-run authorize to mint a fresh identity (existing key lines for this pool will then need re-authorizing).", path)
 }
 
 func resolveHubAuthorizeExecutable() (string, error) {
@@ -409,7 +409,7 @@ func resolveHubAuthorizeExecutable() (string, error) {
 }
 
 func unsafeHubAuthorizePath(kind, path string) error {
-	return fmt.Errorf("hub authorize: %s path contains characters outside the safe set [A-Za-z0-9._/+-] (spaces, quotes, and shell metacharacters are refused rather than escaped): %q. Move or symlink the %s to a plain path and re-run", kind, path, kind)
+	return fmt.Errorf("hub authorize: %s path contains characters outside the safe set [A-Za-z0-9._/+-] (spaces, quotes, and shell metacharacters are refused rather than escaped): %q. Move or symlink the %s to a plain path and re-run.", kind, path, kind)
 }
 
 func parseHubPublicKey(value string) (hubPublicKey, error) {

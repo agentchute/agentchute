@@ -122,6 +122,11 @@ func runHubJoin(root string, remote *loop.RemoteConfig, opts hubJoinOptions) err
 	if existing.Names == nil {
 		existing.Names = map[string]string{}
 	}
+	if envID := strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID")); envID != "" {
+		if mapped, ok := existing.Names[envID]; ok && mapped != envID {
+			fmt.Fprintln(os.Stderr, hubLocalNameWarning(envID, mapped))
+		}
+	}
 	agentID, localName, err := resolveHubJoinIdentity(existing, opts)
 	if err != nil {
 		return err
@@ -200,7 +205,7 @@ func resolveHubJoinIdentity(cfg *hubclient.HubConfig, opts hubJoinOptions) (agen
 	raw := strings.TrimSpace(opts.Name)
 	spec, ok := wrapperForToken(raw)
 	if !ok {
-		return "", "", fmt.Errorf("hub join: --name %s does not name a wrapper this machine can launch (known: claude, codex, gemini, grok). --name is the LOCAL name you launch the lane with (ac serve <name>), so it must be a wrapper token — a lane named %q would have no launch form at all. For an arbitrary pool id, use --as instead and launch with an explicit wrapper: agentchute hub join <url> --as work-tiny, then ac --as work-tiny serve claude", raw, raw)
+		return "", "", hubJoinNameError(raw)
 	}
 	localName = spec.AgentID
 	if mapped := cfg.Names[localName]; mapped != "" {
@@ -334,7 +339,7 @@ func finishHubJoinKey(remote *loop.RemoteConfig, agentID string, state *hubKeySt
 func probeHubJoinKey(remote *loop.RemoteConfig, agentID, keyPath string) (hubwire.HelloOK, []string, error) {
 	hello, warnings, err := hubJoinProbe(remote, agentID, keyPath)
 	if err == nil && hello.Agent != agentID {
-		return hubwire.HelloOK{}, warnings, &hubclient.Error{Code: "E_IDENTITY", Msg: fmt.Sprintf("hub: this key is authorized as %q but you are acting as %q", hello.Agent, agentID)}
+		return hubwire.HelloOK{}, warnings, &hubclient.Error{Code: "E_IDENTITY", Msg: hubIdentityError(hello.Agent, agentID).Error()}
 	}
 	return hello, warnings, err
 }

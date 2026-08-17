@@ -162,6 +162,10 @@ func cmdDoctor(args []string) error {
 	} else {
 		report = runDoctorChecks(cfg, agentID, opts)
 	}
+	if warning := doctorControlRepoEnvWarning(cwd); warning != "" {
+		report.Checks = append(report.Checks, doctorCheck{Name: "hub_control_repo_env", Severity: severityWarn, Message: warning})
+		report.Warnings++
+	}
 
 	if jsonOut {
 		if err := emitDoctorJSON(report); err != nil {
@@ -174,6 +178,18 @@ func cmdDoctor(args []string) error {
 		return errBlocked
 	}
 	return nil
+}
+
+func doctorControlRepoEnvWarning(cwd string) string {
+	envRepo := strings.TrimSpace(os.Getenv("AGENTCHUTE_CONTROL_REPO"))
+	if envRepo == "" {
+		return ""
+	}
+	pointer, err := loop.DiscoverPointer(cwd)
+	if err != nil || pointer == nil || pointer.ResolvedTarget == envRepo {
+		return ""
+	}
+	return fmt.Sprintf("AGENTCHUTE_CONTROL_REPO=%q overrides the pointer %s -> %s. Unset it before using this checkout, or commands will target the environment-selected pool instead of the joined hub", envRepo, pointer.PointerFilePath, pointer.ResolvedTarget)
 }
 
 func runRemoteDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doctorReport {
@@ -192,24 +208,31 @@ func runRemoteDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doct
 		add(doctorCheck{Name: "hub_config", Severity: severityBlocker, Message: err.Error()})
 		return report
 	}
-	joined := strings.Join(hubCfg.JoinedAs, ", ")
-	add(doctorCheck{Name: "hub_config", Severity: severityOK, Message: fmt.Sprintf("%s, joined as %s", hubCfg.URL, joined)})
 	if agentID == "" && len(hubCfg.JoinedAs) > 0 {
 		agentID = hubCfg.JoinedAs[0]
 		report.Agent = agentID
 	}
+	joined := strings.Join(hubCfg.JoinedAs, ", ")
+	localName := ""
+	for name, mapped := range hubCfg.Names {
+		if mapped == agentID {
+			localName = fmt.Sprintf(" [local name: %s]", name)
+			break
+		}
+	}
+	add(doctorCheck{Name: "hub_config", Severity: severityOK, Message: fmt.Sprintf("%s, joined as %s%s", hubCfg.URL, joined, localName)})
 	key := filepath.Join(cfg.Remote.HubDir, "keys", agentID+"_ed25519")
 	keyInfo, keyErr := os.Lstat(key)
 	if keyErr != nil {
-		add(doctorCheck{Name: "hub_key", Severity: severityBlocker, Message: fmt.Sprintf("key unavailable at %s: %v", key, keyErr)})
+		add(doctorCheck{Name: "hub_key", Severity: severityBlocker, Message: fmt.Sprintf("key unavailable at %s: %v. Re-run hub join to recreate or select the active key", displayHomePath(key), keyErr)})
 	} else if keyInfo.Mode()&os.ModeSymlink == 0 {
-		add(doctorCheck{Name: "hub_key", Severity: severityBlocker, Message: fmt.Sprintf("%s is not the active-key symlink", key)})
+		add(doctorCheck{Name: "hub_key", Severity: severityBlocker, Message: fmt.Sprintf("%s is not the active-key symlink; move it aside and re-run hub join", displayHomePath(key))})
 	} else if target, err := filepath.EvalSymlinks(key); err != nil {
 		add(doctorCheck{Name: "hub_key", Severity: severityBlocker, Message: fmt.Sprintf("active key target invalid: %v", err)})
 	} else if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o600 {
 		add(doctorCheck{Name: "hub_key", Severity: severityBlocker, Message: fmt.Sprintf("active key target must be a 0600 file: %s", target)})
 	} else {
-		add(doctorCheck{Name: "hub_key", Severity: severityOK, Message: fmt.Sprintf("%s -> %s, 0600", key, filepath.Base(target))})
+		add(doctorCheck{Name: "hub_key", Severity: severityOK, Message: fmt.Sprintf("%s -> %s, 0600", displayHomePath(key), filepath.Base(target))})
 	}
 	if cached, age, err := hubclient.ConnectFailureCached(cfg.Remote, now); err == nil && cached {
 		add(doctorCheck{Name: "hub_negative_cache", Severity: severityWarn, Message: fmt.Sprintf("hooks are suppressing repeat connects after E_CONNECT %s ago", age.Round(time.Second))})
@@ -230,23 +253,23 @@ func runRemoteDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doct
 	}
 	hello := session.Hello()
 	_ = session.Close()
-	add(doctorCheck{Name: "hub_connect", Severity: severityOK, Message: fmt.Sprintf("rtt %s", time.Since(started).Round(time.Millisecond))})
+	add(doctorCheck{Name: "hub_connect", Severity: severityOK, Message: fmt.Sprintf("rtt %s, host key %s", time.Since(started).Round(time.Millisecond), hubCfg.HostKeyFingerprint)})
 	if hello.Agent != agentID {
-		add(doctorCheck{Name: "hub_identity", Severity: severityBlocker, Message: fmt.Sprintf("key pinned to %s, acting as %s", hello.Agent, agentID)})
+		add(doctorCheck{Name: "hub_identity", Severity: severityBlocker, Message: "E_IDENTITY: " + hubIdentityError(hello.Agent, agentID).Error()})
 	} else {
 		add(doctorCheck{Name: "hub_identity", Severity: severityOK, Message: fmt.Sprintf("key pinned to %s; protocol %s v%d; hub binary %s", hello.Agent, hubwire.Protocol, hello.V, hello.HubBin)})
 	}
 	if hello.Pool != hubCfg.Pool || hello.Pool12 != hubCfg.Pool12 {
-		add(doctorCheck{Name: "hub_pool", Severity: severityBlocker, Message: fmt.Sprintf("E_POOL_MISMATCH: joined %s/%s, hub reports %s/%s", hubCfg.Pool, hubCfg.Pool12, hello.Pool, hello.Pool12)})
+		add(doctorCheck{Name: "hub_pool", Severity: severityBlocker, Message: "E_POOL_MISMATCH: " + hubClientPoolMismatchMessage(hello.Pool, hello.Pool12, hubCfg.Pool12, hubCfg.Pool, agentID)})
 	} else if !hello.Writable {
-		add(doctorCheck{Name: "hub_pool", Severity: severityBlocker, Message: "hub pool is not writable"})
+		add(doctorCheck{Name: "hub_pool", Severity: severityBlocker, Message: fmt.Sprintf("hub pool is not writable. On the hub, check that the SSH login user owns %s and its .agentchute/loop tree, then re-run doctor", hello.Pool)})
 	} else {
 		offset := hello.HubTime.Sub(time.Now().UTC()).Round(100 * time.Millisecond)
 		add(doctorCheck{Name: "hub_pool", Severity: severityOK, Message: fmt.Sprintf("writable; hub time offset %s", offset)})
 	}
 	if envID := strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID")); envID != "" {
 		if mapped, ok := hubCfg.Names[envID]; ok && mapped != envID {
-			add(doctorCheck{Name: "hub_identity_env", Severity: severityWarn, Message: fmt.Sprintf("AGENTCHUTE_AGENT_ID=%s is a local name on this machine; every command resolves it to %q (this hub's names map). Unset it, or export the full id, if that is not what you want.", envID, mapped)})
+			add(doctorCheck{Name: "hub_identity_env", Severity: severityWarn, Message: strings.TrimPrefix(hubLocalNameWarning(envID, mapped), "warning: ")})
 		}
 	}
 	return report
@@ -295,6 +318,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 		checkHookFilePresence(cfg, agentID),
 		checkHookContentSanity(cfg),
 		checkWrapperShadowing(cfg, agentID, opts),
+		checkHubAuthorizedKeysAudit(),
 	}
 	if agentID != "" {
 		checks = append(checks,

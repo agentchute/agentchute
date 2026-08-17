@@ -588,7 +588,7 @@ func runRemoteWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		}
 		if !opts.Relaunch {
 			if code == "E_CHANNEL_LOST" {
-				return fmt.Errorf("hub: channel to the hub was lost; the wrapper was stopped (fenced). Relaunch with: %s. (This lane was started with --relaunch=false; the default relaunches automatically, §6.7.)", strings.Join(os.Args, " "))
+				return fmt.Errorf("%s", hubChannelLostMessage(os.Args))
 			}
 			return result.err
 		}

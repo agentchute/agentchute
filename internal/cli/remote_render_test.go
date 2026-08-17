@@ -77,6 +77,10 @@ func TestRemoteSendUnknownSpoolsOutsideShadowWithBodyFileRetry(t *testing.T) {
 	if strings.HasPrefix(spool, cfg.LoopDir+string(filepath.Separator)) {
 		t.Fatalf("spool %s is inside shadow %s", spool, cfg.LoopDir)
 	}
+	want := fmt.Sprintf("hub: connection lost after the send was transmitted — DELIVERY UNKNOWN. Do NOT resend blindly: a copy may already be in claude-code's inbox (check `agentchute status`, or ask them). Body preserved at %s; if you confirm it did not arrive, retry with: agentchute send --to claude-code --body-file %s", spool, shellQuote(spool))
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
 	data, readErr := os.ReadFile(spool)
 	if readErr != nil || string(data) != "body" {
 		t.Fatalf("spool body = %q, err=%v", data, readErr)

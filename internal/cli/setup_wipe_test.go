@@ -233,7 +233,7 @@ func TestWipeStatePreservesPoolIdentity(t *testing.T) {
 	if leftovers := rescanWipeLeftovers(cfg.LoopDir); len(leftovers) != 0 {
 		t.Fatalf("post-wipe leftovers: %v", leftovers)
 	}
-	if _, _, actual, err := validateHubPool(root, "9c4e12ab77f0"); err != nil || actual != "9c4e12ab77f0" {
+	if _, _, actual, err := validateHubPool(root, "9c4e12ab77f0", "codex"); err != nil || actual != "9c4e12ab77f0" {
 		t.Fatalf("hub session pool validation after wipe = %q, %v", actual, err)
 	}
 }

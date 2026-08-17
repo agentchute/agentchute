@@ -102,7 +102,7 @@ func scanHubKeyVersions(keysDir, agentID string) ([]hubKeyVersion, error) {
 		}
 		suffix := strings.TrimPrefix(name, prefix)
 		if !hubKeyVersionRE.MatchString(suffix) {
-			return nil, fmt.Errorf("hub join: keys/%s is not a valid key version (expected .v<N>, N a positive decimal integer). Move it out of the keys directory and re-run", name)
+			return nil, hubJoinKeyVersionError(name)
 		}
 		n, err := strconv.Atoi(suffix)
 		if err != nil {

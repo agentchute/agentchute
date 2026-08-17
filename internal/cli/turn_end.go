@@ -158,7 +158,7 @@ func cmdTurnEnd(args []string) error {
 		acked, _, err = ackClaimed(cfg, agentID)
 		if err != nil {
 			if cfg.Remote != nil && hubclient.ErrorCode(err) == "E_CONNECT" {
-				return fmt.Errorf("turn-end: could not reach the hub to commit claimed mail (connect failed after 5s). Nothing is lost: the claim is held on the hub and the guard latch stays armed; turn-end retries at the next turn boundary. If this persists, check the network and run agentchute doctor")
+				return hubTurnEndConnectError()
 			}
 			return err
 		}
