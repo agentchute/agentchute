@@ -19,33 +19,39 @@ under §"Revision log (plan round 3)".
 
 ---
 
-## 1. Overview — six merges, two releases
+## 1. Overview — six merges, one release
 
 Per DESIGN.md §11 (M1–M6) and §9 (ordering, C6):
 
 ```
-M1 seam ──tag v1.6.0──▶ M2 spec ──▶ M3 codec+session+vectors ──▶ M4 client ──▶ M5 channel+join ──▶ M6 sshd matrix+CI+docs ──tag v1.7.0──▶ fleet rollout
+M1 seam ──▶ M2 spec ──▶ M3 codec+session+vectors ──▶ M4 client ──▶ M5 channel+join ──▶ M6 sshd matrix+CI+docs ──tag v1.6.0──▶ fleet rollout
 ```
+
+(M1 is merged at `7d08654`. M2 is merged at `1431657`. #154 (published spec
+off `main`) is the remaining hold in front of any later merge that would
+publish more hub capability.)
 
 - **M1** (operation seam, **2,000–2,500 LOC** — re-priced from 1,500 because
   every wrapped helper MOVES into `internal/op` rather than being called
-  in place, B1/X2) is an invisible refactor; **v1.6.0 tags immediately after it
-  and BEFORE M2** — the spec must never describe a capability no release has
-  (C6).
+  in place, B1/X2) is an invisible refactor. **No standalone tag.** It is
+  already on `main`.
 - **M2** (spec, ~380 LOC prose) lands before any hub code (Working rule 1).
-  After M2, on any disagreement the spec wins over DESIGN.md.
+  After M2, on any disagreement the spec wins over DESIGN.md. This erratum
+  aligns DESIGN with the authorized `owed_note` shape, so that field no
+  longer needs a carve-out.
 - **M3 → M4 → M5** are strictly sequential (each consumes the previous
-  layer). **No tag anywhere in M2–M5.**
-- **M6** gates **v1.7.0**: the real-sshd integration matrix green on
-  ubuntu-latest AND macos-latest, and every conformance L/W vector green
-  (§9.3: L + the hub-side W halves land in M3, the client-side W halves in M4,
-  the sshd-backed W runs in M6). No tag while any of those is red.
-- **45 work items, ≈ 10,700 LOC incl. tests.**
+  layer). **No tag anywhere in M1–M5.**
+- **M6** gates **v1.6.0** (the single release; semver minor over v1.5.7):
+  the real-sshd integration matrix green on ubuntu-latest AND macos-latest,
+  and every conformance L/W vector green (§9.3: L + the hub-side W halves
+  land in M3, the client-side W halves in M4, the sshd-backed W runs in
+  M6). No tag while any of those is red.
+- **Work items, ≈ 10,700 LOC incl. tests.** (WI-1.9 is spent; WI-3.6 is
+  added; WI-6.6 is the single release-notes item.)
 
 Merge mechanics: every merge is one PR from an isolated worktree branch,
-gated per §3 (implementer + primary reviewer + codex always). claude-code
-(integrator) performs the merge/tag/release steps and owns the two
-release-notes items (WI-1.9, WI-6.6) only.
+gated per §3. claude-code (integrator) performs the merge/tag/release
+steps and owns WI-6.6 only (WI-1.9 is spent).
 
 ---
 
@@ -72,7 +78,7 @@ Format per item: **(a)** goal / **(b)** DESIGN.md pointers / **(c)** files /
    **(c)** file list is the authority; if two items you were about to start
    share a file, run them in numeric order instead.
 
-### M1 — operation seam (`internal/op`), then tag v1.6.0
+### M1 — operation seam (`internal/op`) (merged; no standalone tag)
 
 Ground rules for every M1 item:
 
@@ -91,24 +97,38 @@ Ground rules for every M1 item:
   WI-1.4), `performRegister`/`registerOpts`/`registerResult` (adapter,
   WI-1.6), `printStatus` (signature preserved, WI-1.4),
   `refuseLiveRunnerCollision` (signature preserved, WI-1.7).
-- **Move-set rule (R1, widened by T2) — binding on every item in EVERY merge,
-  and the reason the list above is trustworthy.** The rule covers two
-  populations, and round 3 only ran it over the first:
+- **Move-set rule (R1, widened by T2, field population added by #150) —
+  binding on every item in EVERY merge, and the reason the list above is
+  trustworthy.** The rule covers three populations:
   1. every identifier an item **removes** from package `cli` — a type, a
      function, a struct field;
   2. every identifier an item **re-signatures** in package `cli` — same name,
      same package, different parameters or results. A test that calls it
      stops compiling just as surely as if it had moved, and no alias can
      bridge a changed signature.
+  3. **every struct field** an item **collapses, removes, or re-signatures**.
+     A field reached through a receiver (`rt.lease`) is neither a function
+     nor a type, so populations 1–2 miss it. For each such field, grep every
+     `internal/cli/*_test.go` for receiver-qualified uses
+     (`rt.<field>`, `runtime.<field>`, …) before the item may be called
+     done. A comment-only hit needs nothing; a **code** hit needs an alias,
+     an adapter, a preserved field, or a named exception.
 
-  For each such identifier the item does ONE of two things before it may be
-  called done: leave a thin alias/adapter in `cli` (or preserve the
-  signature), or name the test file and its hunks — in the M1 table above for
-  an M1 item, or in the item's own (c) file list and (f) acceptance for a
-  later merge. The check is mechanical and is part of the item's done-when:
-  run `grep -n '\b<identifier>\b' internal/cli/*_test.go` for each moved OR
-  re-signatured identifier; a comment-only hit needs nothing, a **code** hit
-  needs an alias, an adapter, a preserved signature, or a named exception.
+  For each identifier in populations 1–2 the item does ONE of two things
+  before it may be called done: leave a thin alias/adapter in `cli` (or
+  preserve the signature), or name the test file and its hunks — in the M1
+  table above for an M1 item, or in the item's own (c) file list and (f)
+  acceptance for a later merge. The check is mechanical and is part of the
+  item's done-when: run `grep -n '\b<identifier>\b' internal/cli/*_test.go`
+  for each moved OR re-signatured identifier; a comment-only hit needs
+  nothing, a **code** hit needs an alias, an adapter, a preserved
+  signature, or a named exception.
+
+  **M1 is already clean under the field population.** Its three touched
+  fields are `regTemplate` (1 hit, `run_test.go:505`, named exception row
+  3), `lastSweep` (2 hits, both comments), and `lease` (1 hit,
+  `b1_convergence_test.go:67`, the adapter). There is no fourth. **Re-run
+  the field check for M3–M6 only**; do not re-open M1.
 
   Run over both populations at `1244ae4`, the check yields exactly: the three
   M1 exceptions in the table above, the four M1 aliases/adapters, and — from
@@ -955,8 +975,9 @@ than aspirational.
 
 (g) ~300 LOC (tests).
 
-**WI-1.9 — v1.6.0 release notes + CHANGELOG. (Integrator-owned; lands in the
-M1 PR, before the tag.)**
+**WI-1.9 — v1.6.0 release notes + CHANGELOG. (SPENT — merged with M1.
+`docs/releases/v1.6.0.md` and the CHANGELOG Unreleased section are on
+`main` and FROZEN until WI-6.6. Do not re-open.)**
 
 (a) The tag literally cannot release without this file: `release.yaml:110` runs
 `test -s "docs/releases/${tag}.md"` and `release.yaml:168` passes it as
@@ -975,7 +996,7 @@ head; `tools/fact-sweep.sh` PASS (CHANGELOG.md is check 3's surface).
 
 (g) ~40 LOC prose.
 
-→ **Integrator: tag v1.6.0** (checklist §5.1).
+→ **Spent.** No tag after M1. See WI-6.6 / checklist §5.
 
 ### M2 — spec merge (prose only; no Go changes)
 
@@ -1145,6 +1166,16 @@ Full vocabulary exactly as §4.4 (no `ping`/`poll`/`pending-item`). Plus:
 - **`send-ok.committed` is MANDATORY** (F11): decode it as `*bool` and treat
   absence as `E_MALFORMED_FRAME` — never as a defaulted `false`. This is the
   field the never-replay rule is written against.
+- **`send-ok.owed_note` and `send-ok.durability_note` are mandatory
+  strings**, `""` when clean, never omitted (absence is `E_MALFORMED_FRAME`).
+  They are independent. A non-empty `owed_note` is not a delivery failure
+  and must not drive resend. `op.Send` returns a nil error once delivery
+  commits. DESIGN §3.1 / §4.4.1 now match AGENTCHUTE.md §13 (this erratum
+  closed the carve-out).
+- **Error-path `claimed_held`** (#152 item 2): a machine-readable boolean
+  on the error frame (exact name/placement is this merge's codec proposal).
+  A `note` frame will **not** do — arming a latch must never depend on
+  parsing display text. M3 frames it; M4 arms from it.
 - **`tick-ok.warnings` is `[]string`, always present** (F3), `[]` when empty,
   never omitted.
 - **`note.level` is one of exactly `"warn"` / `"info"`** (WI-1.1).
@@ -1535,6 +1566,37 @@ L1–L4 as §9.3 states them, driven in-process against the seam.
 
 (g) ~350 LOC.
 
+**WI-3.6 — replace `op.SendTsMessageWithCommit` with a non-global seam.**
+
+(a) The exported mutable package var is a CLI test seam and is wrong for a
+long-lived hub session (process-global write shared across sessions). Replace
+it with a non-global seam (injected dependency, or an unexported var plus a
+test helper).
+
+(b) #150 / #152 item 4; recorded at M1 gate `ac0b6eb` and deferred because
+changing it there would have edited tests outside M1's closed exception
+table. M3 already touches `op.Send`.
+
+(c) MODIFY `internal/op/send.go`. Test files that currently reassign the
+exported var (must be named up front):
+
+- `internal/cli/send_a5_test.go` (set/restore around `:230-238`)
+- `internal/cli/send_b3_test.go` (set/restore around `:138-147`)
+- `internal/op/send_test.go` (three set/restore sites)
+
+`loop.SendTsMessageWithCommit` call sites in `internal/op/claim_test.go`,
+`internal/op/helpers_test.go`, and `internal/loop/floor_test.go` are the
+loop function, not this var.
+
+(d) After this item, no exported mutable send-delivery var remains on the
+hub session path.
+
+(f) Done-when: those three test files retarget the new seam; `tools/test.sh`
+green; `grep SendTsMessageWithCommit internal/op/*.go` shows no exported
+`var` declaration.
+
+(g) (no new LOC estimate — existing M3 envelope.)
+
 ### M4 — client transport + remote discovery
 
 **WI-4.1 — `config.json` format + read/write helper.** *(S5 — nothing else in
@@ -1698,7 +1760,7 @@ They cannot land in one merge — the predicate has no caller until `hub join`
 exists (M5) — so the interlock is enforced by review instead, and this is
 binding: WI-5.3c's gate ask must re-verify this item's argv goldens at the M5
 head SHA, and the M6 rows "launcher preserves remoteness" **and** "migration
-attribution, normal lane" must both be green before v1.7.0. A reviewer of
+attribution, normal lane" must both be green before v1.6.0. A reviewer of
 either item must check the other.
 
 (g) ~120 LOC.
@@ -2708,7 +2770,7 @@ SessionStart (D6).
 
 (g) ~250 LOC (tests).
 
-### M6 — real-sshd matrix + CI + docs → tag v1.7.0
+### M6 — real-sshd matrix + CI + docs → tag v1.6.0
 
 **WI-6.1 — sshd harness + the test wrapper script.**
 
@@ -2915,28 +2977,37 @@ per page.**
 
 (g) ~220 LOC prose/markup.
 
-**WI-6.6 — v1.7.0 release notes + CHANGELOG. (Integrator-owned; lands in the
-M6 PR, before the tag.)**
+**WI-6.6 — v1.6.0 release notes + CHANGELOG. (Integrator-owned; lands in the
+M6 PR, before the tag. The single remaining release-notes item — WI-1.9
+is spent.)**
 
 (a) The tag cannot release without the notes file (`release.yaml:110` runs
 `test -s "docs/releases/${tag}.md"`; `:168` uses it as `--notes-file`).
+Non-empty is the **only** check — a present-but-wrong file ships silently.
 
-(c) NEW `docs/releases/v1.7.0.md`; MODIFY `CHANGELOG.md` (a new
-`## v1.7.0 (<date>) — <headline>` section in the shape v1.5.7 uses).
+(c) MODIFY `docs/releases/v1.6.0.md` (already on `main`, frozen until this
+item) and `CHANGELOG.md` (`## Unreleased — operation seam` becomes the
+dated `## v1.6.0` entry). **Do not create `docs/releases/v1.7.0.md`.**
 
-(d) The notes MUST carry the rollout order: **the hub upgrades first**, then the
-remotes; plus the note that a hub `agentchute update` fences every live lane
-once (§8 row 24) and that default-on relaunch brings them back under the new
-binary automatically. They must also restate the P8 rule for lanes: a remote
-that updated ahead of its hub gets `E_VERSION` and must **wait** — re-running
-`hub join` is not the fix.
+(d) **Replace the top matter** of `docs/releases/v1.6.0.md` — do not merely
+append. The existing in-progress / seam-scoped text disclaims the capability
+this release ships (the hub). WI-6.6 appends the hub section **and** rewrites
+the top matter so the published notes do not say "no hub capability" /
+"nothing to do on any lane". The notes MUST also carry the rollout order:
+**the hub upgrades first**, then the remotes; plus the note that a hub
+`agentchute update` fences every live lane once (§8 row 24) and that
+default-on relaunch brings them back under the new binary automatically.
+They must also restate the P8 rule for lanes: a remote that updated ahead
+of its hub gets `E_VERSION` and must **wait** — re-running `hub join` is
+not the fix.
 
-(f) Done-when: `docs/releases/v1.7.0.md` exists and is non-empty at the M6 PR
-head; `tools/fact-sweep.sh` PASS.
+(f) Done-when: `docs/releases/v1.6.0.md` exists, is non-empty, and no longer
+disclaims the hub; `tools/fact-sweep.sh` PASS; checklist §5 tag-time
+re-measure and #156 URL checks both run in this same PR.
 
 (g) ~60 LOC prose.
 
-→ **Integrator: tag v1.7.0** (checklist §5.2).
+→ **Integrator: tag v1.6.0** (checklist §5).
 
 ---
 
@@ -2960,6 +3031,8 @@ head; `tools/fact-sweep.sh` PASS.
 4. **Spec-first ordering.** M2 merges before any M3+ code. After M2 the spec
    text is authoritative over DESIGN.md; an M3+ implementer who finds a
    spec/DESIGN conflict **stops and files it** — never silently follows either.
+   This erratum aligned DESIGN §3.1 / §4.4.1 with AGENTCHUTE.md §13 on
+   `owed_note`; that field no longer has a precedence carve-out.
 5. **Ritual per PR = `tools/test.sh`, and nothing else** (X7 — the round-1 rule
    listed `gofmt`, `go vet`, `tools/test.sh`, `go build` as if they were four
    things). `tools/test.sh` **IS** gofmt + `go vet` + `go test` + `go build`
@@ -2992,71 +3065,61 @@ head; `tools/fact-sweep.sh` PASS.
     hooks/templates/spec mean a zero-`.go`-diff is not a zero-behavior-change.
     WI-2.4 is the item where this bites (marker-versioned enrollment prose +
     `templates_drift_test.go` / `assets_test.go`).
+12. **Gate asks pin the reviewer's surface.** A gate ask MUST pin the delta
+    to the named surface of the reviewer it is addressed to — files and
+    hunks — not just the merge's overall base..head. An ask that hands a
+    reviewer the whole merge and says the slice is somewhere inside is
+    **malformed**; the correct response is `NEEDS-INFO`, not a degraded
+    skim. Surfaces are in §4.
 
 ---
 
 ## 4. Lane assignments
 
 The roster is DYNAMIC — the integrator confirms it via `agentchute status` at
-execution start (this plan does not run it). Planned against today's roster;
-pairings satisfy E2 (implementer + primary reviewer) with codex always the
-second, mandatory gate. Per §2 rule 1, **one lane owns each merge**; a named
-specialist item is handed over inside that merge and the owner integrates.
+execution start (this plan does not run it). **Budget reshuffle (Alex,
+2026-08-17):** implementation moved off the claude lanes. Stated cost: **codex
+implementing M3–M6 means codex is no longer the mandatory second gate on
+those merges**, so opus-xhigh's single deep pass has to be the hard one.
 
-| merge | merge owner (implementer) | specialist hand-off inside the merge | primary reviewer | second gate |
+Per §2 rule 1, **one lane owns each merge**; a named specialist item is
+handed over inside that merge and the owner integrates.
+
+| merge | merge owner (implementer) | specialist hand-off inside the merge | reviewer (every remaining merge) | deep pass (one, named surface) |
 |---|---|---|---|---|
-| M1 | opus-high | — | opus-xhigh (seam/design-sensitive) | codex |
-| M2 | **grok** (trial lane — see note below) | — | **opus-xhigh** (spec is design-sensitive; wrote the design) | codex — spec gate |
-| M3 | opus-high | **WI-3.4** (the sole `internal/loop` change) → opus-xhigh | opus-xhigh (security surface: parser, pinning, deadlines) | codex — conservative lane (wire schema) |
-| M4 | opus-high | — | opus-xhigh (§6.8 contract + resolver precedence) | codex |
-| M5 | opus-high | **WI-5.3b** (key lifecycle + recovery classifier) and **WI-5.3c** (migration state machine) → opus-xhigh | opus-xhigh + grok persona-walk (§7 quickstarts, every §7.5 text) | codex — conservative lane (install surface) |
-| M6 | opus-high | — | grok (walks the matrix vs §10.3 row-for-row) | codex — conservative lane (Actions YAML) |
+| M1 | opus-high (done) | — | opus-xhigh | — (spent) |
+| M2 | grok (done) | — | opus-xhigh + codex | — (spent) |
+| M3 | **codex** | **WI-3.4** (the sole `internal/loop` change) → opus-xhigh | **grok** (incl. codec round-trip tests) | **opus-xhigh**: §4.4.3 producer rules FIRST (`status-ok` two budgets vs the encoded line, prefix-only truncation, never-emit-over-64-KiB, streaming that never materializes an unbounded slice); security surface (forced-command pinning, `--as`/`--from`, `pool.id` J1) rides along. Not the codec round-trips. |
+| M4 | **codex** | — | **grok** | **opus-xhigh**: §6.8 contract + resolver precedence |
+| M5 | **codex** | **WI-5.3b** (key lifecycle + recovery classifier) and **WI-5.3c** (migration state machine) → opus-xhigh | **grok** (persona-walk §7 quickstarts and every §7.5 text) | **opus-xhigh**: §7.2 versioned keypairs, symlink-as-only-pointer, join/rotate/migrate lock, migration renaming directories out from under it |
+| M6 | **codex** | — | **grok** (walks the matrix vs §10.3 row-for-row) | **opus-xhigh**: conformance **vectors only** — not CI wiring, not the sshd matrix |
 
-**Integrator-owned items** (claude-code, not the merge owner): **WI-1.9** and
-**WI-6.6** — the release notes and CHANGELOG entries, each landing inside its
-merge's PR because the tag's release job hard-fails without the notes file.
+**Integrator-owned items** (claude-code, not the merge owner): **WI-6.6**
+only (WI-1.9 is spent). Lands inside the M6 PR because the tag's release job
+hard-fails without the notes file.
 
 claude-code is otherwise integrator ONLY — merges, tags, releases, fleet
 cutover, cross-lane sync. Never implementation.
 
-**grok's read-only restriction is lifted for M2 only** (Alex, 2026-08-17). M2
-was chosen for the trial because it is the cheapest merge to fix: prose only,
-zero Go, nothing that can break a running fleet, and codex still gates it. grok
-stays read-only on M1 and M3–M6 (persona-walk reviewer on M5 and M6). Whether
-the restriction lifts further is decided after opus-xhigh reports on how the M2
-output held up.
+**opus-high** finished M1 and takes no further implementation. **grok**
+reviews every remaining merge and authors prose/docs (M2 trial lifted the
+read-only restriction for that class of work).
 
 Cross-merge review obligation (B4/B5): the M5 gate ask must re-verify WI-4.3's
 argv goldens at the M5 head SHA (see WI-4.3 and WI-5.3c).
 
 ---
 
-## 5. Release / rollout checklists
+## 5. Release / rollout checklist — v1.6.0 (after M6; the only tag)
 
-### 5.1 v1.6.0 (after M1, before M2)
-
-1. `tools/fact-sweep.sh` clean; `tools/test.sh` green on main.
-2. **`docs/releases/v1.6.0.md` exists and is non-empty** (WI-1.9) — the release
-   job runs `test -s` on it (`release.yaml:110`) and would fail *after* the tag
-   is pushed.
-3. `gh pr checks` green on the M1 PR **before** SHIP (embedded-asset rule).
-4. Verify the PR's `headRefOid` == the SHIP'd SHA; squash per convention
-   (unstage loop state; no stray `.agentchute/` files in the squash).
-5. Annotated tag via `-F <notes-file>`; push with the explicit
-   `refs/tags/v1.6.0`.
-6. The release pipeline is external: a `v*` tag → smoke-gated goreleaser (the
-   stub-codex gotcha applies — check the smoke logs, not just the tag).
-7. Release notes state explicitly: internal refactor, no behavior change, no hub
-   capability claimed.
-8. Fleet update per the normal cadence — no forced cutover, the change is
-   invisible.
-
-### 5.2 v1.7.0 (after M6)
+The standalone post-M1 tag is cancelled. This is the **only** release
+checklist. WI-6.6 lands in the same PR that satisfies these steps.
 
 1. All L vectors, all W vectors (in-process **and** sshd-backed), and the full
    sshd matrix green on ubuntu + macos in CI — hard gate, no exceptions (§9.3
    timing rule).
-2. **`docs/releases/v1.7.0.md` + the CHANGELOG entry present** (WI-6.6).
+2. **`docs/releases/v1.6.0.md` + the CHANGELOG entry present** (WI-6.6), with
+   top matter **replaced** so the published notes do not disclaim the hub.
 3. `tools/fact-sweep.sh` over docs + spec; the §7.1/§7.2 quickstarts walked
    verbatim once on a real second machine (grok persona-walk or operator).
    **Containment, mandatory (P5): that walkthrough runs against a SCRATCH POOL,
@@ -3065,14 +3128,49 @@ argv goldens at the M5 head SHA (see WI-4.3 and WI-5.3c).
    `hub authorize`, all of which mutate pool and machine state; the destructive-
    test env-guard rule (§3.3) applies to a human walkthrough exactly as it
    applies to a test.
-4. Steps 3–6 of §5.1 verbatim, for `v1.7.0`.
-5. Rollout order: **hub upgrades first** (the handshake's own rule), then the
+4. `gh pr checks` green on the M6 PR **before** SHIP (embedded-asset rule).
+5. Verify the PR's `headRefOid` == the SHIP'd SHA; squash per convention
+   (unstage loop state; no stray `.agentchute/` files in the squash).
+6. Annotated tag via `-F <notes-file>`; push with the explicit
+   `refs/tags/v1.6.0`.
+7. The release pipeline is external: a `v*` tag → smoke-gated goreleaser (the
+   stub-codex gotcha applies — check the smoke logs, not just the tag).
+8. Rollout order: **hub upgrades first** (the handshake's own rule), then the
    remotes. Note in the release notes that a hub `agentchute update` fences every
    live lane once (§8 row 24 — default-on relaunch brings lanes back under the
    new binary automatically), and that a remote which updated ahead of its hub
    must WAIT rather than re-join (P8).
-6. agentchute.dev auto-deploys from main (Cloudflare Pages) — confirm
+9. agentchute.dev auto-deploys from main (Cloudflare Pages) — confirm
    `hub.html` and the three edited navs render post-merge.
+10. **Tag-time re-measure (same PR as WI-6.6).** Immediately before tagging,
+    re-measure every published count in `docs/releases/v1.6.0.md` and
+    `CHANGELOG.md` against the tree at the **exact head being tagged**, with
+    the method stated in the note (`go test -count=1 -json ./...`, pass
+    events, subtests included), and correct them in that PR. Also re-verify
+    any other tag-relative phrasing ("reproducible on this tag", version
+    interop claims, "nothing to do on any lane").
+11. **Published spec/conformance URLs (#156 handoff; blocks release
+    completion and rollout).** After the GitHub Release exists and before
+    declaring the release complete:
+    - Update every spec/conformance URL in current root pages (`web/*.html`)
+      to the just-published release tag. Preserve dated `web/blog/` URLs at
+      their contemporaneous release tags.
+    - Reject any `main` spec or conformance target under `web/`.
+    - Reject a current-page tag that differs from `gh release view --json
+      tagName --jq .tagName`.
+    - Validate every versioned spec fragment against the rendered Contents
+      API HTML.
+
+    ```sh
+    test -z "$(rg -n 'github\.com/agentchute/agentchute/blob/main/AGENTCHUTE\.md|raw\.githubusercontent\.com/agentchute/agentchute/main/AGENTCHUTE\.md|github\.com/agentchute/agentchute/tree/main/conformance' web --glob '*.html' || true)"
+
+    latest=$(gh release view --repo agentchute/agentchute --json tagName --jq .tagName)
+    refs=$(rg -o --no-filename 'https://[^" <]+' web/*.html |
+      rg 'raw\.githubusercontent\.com/agentchute/agentchute/[^/]+/AGENTCHUTE\.md|github\.com/agentchute/agentchute/(blob/[^/]+/AGENTCHUTE\.md|tree/[^/]+/conformance)')
+    test -n "$refs"
+    bad=$(printf '%s\n' "$refs" | grep -Fv "/$latest/" || true)
+    test -z "$bad"
+    ```
 
 ---
 
@@ -3124,7 +3222,7 @@ argv goldens at the M5 head SHA (see WI-4.3 and WI-5.3c).
    internal-driving adapter there fails to compile; the drivers go in
    `internal/spectest` and the vectors travel as shared JSON data. Both `go.mod`
    files must come out of every merge byte-identical.
-8. **Conformance gating discipline.** The v1.7.0 tag waits for the sshd-backed W
+8. **Conformance gating discipline.** The v1.6.0 tag waits for the sshd-backed W
    runs (M6), not just the in-process ones — the §9.3 timing rule exists because
    vectors-after-release was a review finding (C7). Note the split introduced by
    S7: hub-side halves are M3, client halves are M4, sshd re-runs are M6.
@@ -3206,9 +3304,11 @@ argv goldens at the M5 head SHA (see WI-4.3 and WI-5.3c).
 - **Doc/web artifacts** (WI-6.5) — DESIGN says "a README/docs section"; this
   plan names `README.md`, `docs/hub.md`, `web/hub.html`, the three nav edits, and
   the sitemap entry, because `web/` has no nav partial and no build step.
-- **Release-notes items** (WI-1.9, WI-6.6) — `docs/releases/<tag>.md` is a hard
-  release-job gate (`release.yaml:110,168`), so the notes are work items, not
-  checklist prose.
+- **Release-notes items** (WI-1.9 spent; WI-6.6 is the single remaining
+  item and **replaces** the top matter of `docs/releases/v1.6.0.md`) —
+  `docs/releases/<tag>.md` is a hard release-job gate
+  (`release.yaml:110,168`), so the notes are work items, not checklist
+  prose.
 
 Corrections this revision made to round-1 anchors, all re-verified at `1244ae4`:
 `check.go` "(inbox empty)" is `:201` (not 198), reached-limit `:207` (not 210),
