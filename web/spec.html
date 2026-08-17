@@ -20,7 +20,7 @@
     <nav>
       <a href="./">home</a>
       <a href="blog/">blog</a>
-      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md">full spec</a>
+      <a href="https://github.com/agentchute/agentchute/blob/v1.5.7/AGENTCHUTE.md">full spec</a>
       <a href="https://github.com/agentchute/agentchute">github</a>
     </nav>
   </div>
@@ -32,8 +32,8 @@
   <div class="wrap">
     <h1>The protocol spec</h1>
     <p class="lede">
-      Protocol v2.5 deliberately changes the identity wire while retaining the pull-only primitives. The canonical version is
-      <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code> in the repo</a>
+      Protocol v2.5 deliberately changes the identity wire while retaining the pull-only primitives. The latest released version is
+      <a href="https://github.com/agentchute/agentchute/blob/v1.5.7/AGENTCHUTE.md"><code>AGENTCHUTE.md</code> at v1.5.7</a>
       — it renders cleanly on GitHub with the right anchor links, table of contents, and code highlighting.
       The summary below is a reading guide for what's in each section.
     </p>
@@ -66,14 +66,14 @@
   <div class="wrap">
     <h2>Reading the spec</h2>
     <p>
-      Open <a href="https://github.com/agentchute/agentchute/blob/main/AGENTCHUTE.md"><code>AGENTCHUTE.md</code> on GitHub</a>
+      Open <a href="https://github.com/agentchute/agentchute/blob/v1.5.7/AGENTCHUTE.md"><code>AGENTCHUTE.md</code> on GitHub</a>
       for the full text with anchor links and code highlighting. Or grab it locally:
     </p>
-    <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/AGENTCHUTE.md -O</code></pre>
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/v1.5.7/AGENTCHUTE.md -O</code></pre>
     <p>
       If you're implementing agentchute in another language or with a non-filesystem
       inbox transport, the protocol primitives in §1 are the contract, and the
-      <a href="https://github.com/agentchute/agentchute/tree/main/conformance">conformance suite</a>
+      <a href="https://github.com/agentchute/agentchute/tree/v1.5.7/conformance">conformance suite</a>
       is the executable spec — any implementation that passes it is conformant. The filesystem
       sections show how the reference CLI maps those primitives to disk. Coordination is
       pull-only: inbox delivery is durable; the recipient discovers messages by polling its
