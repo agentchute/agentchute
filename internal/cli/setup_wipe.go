@@ -292,9 +292,9 @@ func wipeAgentsCategory(loopDir string) (wipeCategory, error) {
 	return cat, nil
 }
 
-// wipeStateCategory targets every state/ entry EXCEPT setup.json (the pool setup
+// wipeStateCategory targets every state/ entry EXCEPT setup.json and pool.id (the pool setup
 // state applySetup writes; deleting it would break future `agentchute update`/
-// resync).
+// resync; pool.id is the durable identity pinned by hub authorized keys).
 func wipeStateCategory(loopDir string) (wipeCategory, error) {
 	dir := filepath.Join(loopDir, "state")
 	entries, err := wipeReadDir(dir)
@@ -304,7 +304,7 @@ func wipeStateCategory(loopDir string) (wipeCategory, error) {
 	cat := wipeCategory{Name: "state", Parent: dir}
 	for _, e := range entries {
 		name := e.Name()
-		if name == "setup.json" {
+		if name == "setup.json" || name == "pool.id" {
 			cat.Preserved = append(cat.Preserved, name)
 			continue
 		}
@@ -526,7 +526,7 @@ func rescanWipeLeftovers(loopDir string) []string {
 	}
 	stateEntries, _ := os.ReadDir(filepath.Join(loopDir, "state"))
 	for _, e := range stateEntries {
-		if e.Name() == "setup.json" {
+		if e.Name() == "setup.json" || e.Name() == "pool.id" {
 			continue
 		}
 		leftovers = append(leftovers, filepath.Join("state", e.Name()))

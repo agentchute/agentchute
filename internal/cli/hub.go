@@ -18,6 +18,8 @@ func cmdHub(args []string) error {
 	switch args[0] {
 	case "join":
 		return cmdHubJoin(args[1:])
+	case "authorize":
+		return cmdHubAuthorize(args[1:])
 	case "session":
 		return cmdHubSession(args[1:])
 	case "-h", "--help", "help":
