@@ -158,9 +158,12 @@ type Status struct{ RequestBase }
 
 type StatusOK struct {
 	ResponseBase
-	Agents    []op.StatusAgent `json:"agents"`
-	Truncated bool             `json:"truncated"`
-	Now       time.Time        `json:"now"`
+	Agents []op.StatusAgent `json:"agents"`
+	// Truncated must remain present when false: EncodeStatus measures candidates
+	// with false, whose encoding is one byte longer than true. Omitting false
+	// would make the wire budget optimistic at the 64 KiB boundary.
+	Truncated bool      `json:"truncated"`
+	Now       time.Time `json:"now"`
 }
 
 type Gate struct {
