@@ -3006,7 +3006,7 @@ specialist item is handed over inside that merge and the owner integrates.
 | merge | merge owner (implementer) | specialist hand-off inside the merge | primary reviewer | second gate |
 |---|---|---|---|---|
 | M1 | opus-high | — | opus-xhigh (seam/design-sensitive) | codex |
-| M2 | opus-xhigh (spec prose is design work) | — | grok (persona-walk readability) | codex |
+| M2 | **grok** (trial lane — see note below) | — | **opus-xhigh** (spec is design-sensitive; wrote the design) | codex — spec gate |
 | M3 | opus-high | **WI-3.4** (the sole `internal/loop` change) → opus-xhigh | opus-xhigh (security surface: parser, pinning, deadlines) | codex — conservative lane (wire schema) |
 | M4 | opus-high | — | opus-xhigh (§6.8 contract + resolver precedence) | codex |
 | M5 | opus-high | **WI-5.3b** (key lifecycle + recovery classifier) and **WI-5.3c** (migration state machine) → opus-xhigh | opus-xhigh + grok persona-walk (§7 quickstarts, every §7.5 text) | codex — conservative lane (install surface) |
@@ -3017,8 +3017,14 @@ specialist item is handed over inside that merge and the owner integrates.
 merge's PR because the tag's release job hard-fails without the notes file.
 
 claude-code is otherwise integrator ONLY — merges, tags, releases, fleet
-cutover, cross-lane sync. Never implementation. grok is a read-only
-reviewer/persona-walker per the standing roster rule.
+cutover, cross-lane sync. Never implementation.
+
+**grok's read-only restriction is lifted for M2 only** (Alex, 2026-08-17). M2
+was chosen for the trial because it is the cheapest merge to fix: prose only,
+zero Go, nothing that can break a running fleet, and codex still gates it. grok
+stays read-only on M1 and M3–M6 (persona-walk reviewer on M5 and M6). Whether
+the restriction lifts further is decided after opus-xhigh reports on how the M2
+output held up.
 
 Cross-merge review obligation (B4/B5): the M5 gate ask must re-verify WI-4.3's
 argv goldens at the M5 head SHA (see WI-4.3 and WI-5.3c).
