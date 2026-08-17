@@ -1,6 +1,6 @@
 # Playbooks — the recurring bus rituals
 
-Companion to the **Working efficiently on this bus** rules in [`AGENTS.md`](../../AGENTS.md) (E1–E10). Each playbook is the step sequence; the E-rules say when it's mandatory. `$ID` is your pinned lane id. **Each playbook binds only the lane performing that role** — a step in `gate-review` governs the reviewer's own actions and never tells the implementer when to commit, push, or hold, and vice versa; if a rule seems to constrain the other side of a gate, you are reading it wrong.
+Companion to the **Working efficiently on this bus** rules in [`AGENTS.md`](../../AGENTS.md) (E1–E10). Each playbook is the step sequence; the E-rules say when it's mandatory. `$ID` is your pinned lane id. **Each playbook's imperative actions bind the lane performing that role** — in `gate-review`, the pre-verdict refresh governs reviewer-side verdict timing and never tells the implementer when to commit, push, or hold. A playbook may still state conditions on the *ask* it receives (pinned SHAs, an `AUTHORIZATION:` line, a delta pinned to the reviewer's named surface); those bind the asker.
 
 ## bus-turn (per wake cue — E8)
 
