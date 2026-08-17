@@ -385,10 +385,14 @@ C: {"t":"send","id":2,"to":"claude-code","ask":true,"reply_by_s":3600,
 H: {"t":"send-ok","re":2,
     "filename":"20260814T210503123456Z_from-codex_r4b1d….md",
     "ref":"to-claude-code_from-codex_20260814T210503123456Z_r4b1d…",
-    "committed":true,"durability_note":""}
+    "committed":true,"durability_note":"","owed_note":""}
 ```
 
-**`committed` is mandatory on every `send-ok`.** `committed:true` means the recipient-side `link()` succeeded, so the message IS delivered and must never be resent — including `committed:true` with a non-empty `durability_note` (linked, dir-sync failed). A `send-ok` without the field is a **malformed** response, not a defaulted `false`.
+**`committed` is mandatory on every `send-ok`.** `committed:true` means the recipient-side `link()` succeeded, so the message IS delivered and must never be resent — including `committed:true` with a non-empty `durability_note` (linked, dir-sync failed) and/or a non-empty `owed_note` (delivered, asker-side reply-obligation record failed). A `send-ok` without `committed` is a **malformed** response, not a defaulted `false`.
+
+**`durability_note` and `owed_note` are mandatory on every `send-ok`**, each a string, always present — `""` when that arm is clean; omission of either field is a **malformed** response, not a defaulted empty (the same rule `tick-ok.warnings` follows). They are independent: both may be non-empty on the same send, because a dir-sync failure and an owed-record failure are two distinct facts. A non-empty `owed_note` is not a delivery failure. Nothing may treat it as grounds to resend.
+
+A remote send terminates as `send-ok` or `error`. Those are two shapes: `error` means nothing was delivered; `send-ok` means delivery committed (`committed` is the discriminator). An owed-record failure cannot ride as `error` — that frame would lose the committed response and drive spool/retry on an already-delivered send.
 
 ### 13.5 Ambiguous send — fail closed, never replay
 
@@ -396,7 +400,7 @@ The ambiguity window opens when the first byte of the `send` frame is handed to 
 
 - **Before the window** (connect, hello, preflight error frame): the send provably did not happen. The CLI spools the body and prints the retry command. Retrying is safe.
 - **Inside the window** (channel drops, ssh exits, response deadline expires with no frame): the outcome is **unknown**. The CLI spools the body, exits 1 with `E_SEND_UNKNOWN`, and **never retries automatically**. There is no delivery-side dedup (§6.2: at-most-once, no idempotency key); a blind replay would be a duplicate message.
-- A `send-ok` with non-empty `durability_note` is linked-but-dir-sync-failed partial success: report, do not resend.
+- A `send-ok` with non-empty `durability_note` and/or non-empty `owed_note` is still a committed delivery: report, do not resend. Neither field is a delivery failure.
 
 ### 13.6 Disconnect after claim
 
