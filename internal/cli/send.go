@@ -226,10 +226,12 @@ func cmdSend(args []string) error {
 		ReplyTo:    replyTo,
 		ReplyToSet: replyToSet,
 	}
-	// A populated response means the message IS in the recipient's inbox; an
-	// error beside it is the owed-bookkeeping failure below, never a delivery
-	// failure. Nothing delivered => spool the body and classify.
-	if resp.Filename == "" {
+	// Committed means the message IS in the recipient's inbox; an error beside
+	// it is the owed-bookkeeping failure below, never a delivery failure. This
+	// is the same predicate the wire's never-auto-replay rule uses (§4.4.1), so
+	// local and remote decide "do not resend" off one field. Nothing delivered
+	// => spool the body and classify.
+	if !resp.Committed {
 		return preserveSendBody(cfg, fromID, toID, rawBody, now, retry, sendErr)
 	}
 	// The on-wire identity is (to,from,timestamp,suffix) (v2.5 plan B7): `to`

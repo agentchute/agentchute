@@ -19,8 +19,13 @@ const loopPkg = "github.com/agentchute/agentchute/internal/loop"
 //
 // Implemented with go/parser over the package's own files — stdlib only, no new
 // dependency and no build-system assumptions.
+//
+// Mutation-tested rather than assumed: adding a BLANK import of another
+// internal package to internal/op fails this test with the right message. The
+// blank form is the one that actually exercises the parser, since a normal
+// unused import fails at compile time and never reaches the test.
 func TestOpImportsOnlyStdlibAndLoop(t *testing.T) {
-	for file, imports := range packageImports(t, ".") {
+	for file, imports := range packageImports(t, ".", true) {
 		for _, imp := range imports {
 			// An import whose first path element carries no dot is standard
 			// library ("os", "path/filepath"); anything else is a module.
@@ -38,7 +43,7 @@ func TestOpImportsOnlyStdlibAndLoop(t *testing.T) {
 // The other direction, stated as a rule and now enforced: internal/loop keeps
 // the primitives and must never learn about the seam above it.
 func TestLoopDoesNotImportOp(t *testing.T) {
-	for file, imports := range packageImports(t, "../loop") {
+	for file, imports := range packageImports(t, "../loop", false) {
 		for _, imp := range imports {
 			if strings.HasSuffix(imp, "/internal/op") {
 				t.Fatalf("%s imports %q: the dependency direction is one-way", file, imp)
@@ -47,16 +52,19 @@ func TestLoopDoesNotImportOp(t *testing.T) {
 	}
 }
 
-// packageImports maps file name -> import paths for every non-test .go file in
-// dir. Test files are deliberately included for internal/op's own check below by
-// callers that want them; here they are excluded, because a test-only import of
-// a higher layer is a different (and still forbidden) question answered by the
-// compiler itself — an op test importing internal/cli would not compile.
-func packageImports(t *testing.T, dir string) map[string][]string {
+// packageImports maps file name -> import paths for every .go file in dir,
+// including tests when withTests is set.
+//
+// internal/op's own files are checked WITH tests: an op test importing
+// internal/cli happens to be a compile error today (these are in-package tests,
+// so it would close a cycle), but a future internal/hubwire is not — no cycle,
+// so nothing but this check would catch a test reaching down into the layer the
+// seam exists to stay above (opus-xhigh, PR #148 gate).
+func packageImports(t *testing.T, dir string, withTests bool) map[string][]string {
 	t.Helper()
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
+		return withTests || !strings.HasSuffix(fi.Name(), "_test.go")
 	}, parser.ImportsOnly)
 	if err != nil {
 		t.Fatal(err)

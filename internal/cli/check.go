@@ -153,7 +153,18 @@ func cmdCheck(args []string) error {
 	// archiving DURING check (the old behavior) is at-most-once for the WORK. A
 	// crash between claim and ack now RE-DELIVERS (at-least-once); handlers must
 	// be idempotent.
-	if _, err := op.Claim(cfg, op.Context{ActorID: agentID}, op.ClaimReq{Limit: limit, NoArchive: noArchive}, emit); err != nil {
+	sum, err := op.Claim(cfg, op.Context{ActorID: agentID}, op.ClaimReq{Limit: limit, NoArchive: noArchive}, emit)
+	// Arm on residue EXISTENCE, not only on a rendered message, and do it
+	// before returning any error: claimed-but-unacked mail whose body cannot be
+	// read (a permissions change, or residue past MaxInboxMessageBytes — the
+	// hand-protocol path writes inbox files directly) still leaves this lane
+	// holding it, which is exactly the state the latch covers. Emitting arms
+	// earlier and per-message, so this is a no-op on every path that displayed
+	// anything.
+	if sum.Redelivered > 0 {
+		setLatch()
+	}
+	if err != nil {
 		if errors.Is(err, op.ErrNotRegistered) {
 			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
 		}

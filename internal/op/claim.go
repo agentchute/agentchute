@@ -90,12 +90,18 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 	if rerr != nil {
 		return sum, fmt.Errorf("list claimed residue: %w", rerr)
 	}
+	// Counted from the LISTING, before any body is read, and load-bearing on
+	// the error path: the guard latch is armed by residue EXISTING, not by a
+	// message being displayed (§6.6/E1 — the lane holds claimed-but-unacked
+	// mail whether or not its bytes could be rendered). The latch is local, so
+	// the CLI arms it; this count is how the seam tells it there is residue at
+	// all when the read below fails and no MessageEvent is ever emitted.
+	sum.Redelivered = len(redelivered)
 	for _, msg := range redelivered {
 		content, err := loop.ReadFileLimit(msg.Path, loop.MaxInboxMessageBytes)
 		if err != nil {
 			return sum, fmt.Errorf("read claimed message %s: %w", msg.Path, err)
 		}
-		sum.Redelivered++
 		if err := emitMessage(emit, agentID, msg, content, true); err != nil {
 			return sum, err
 		}

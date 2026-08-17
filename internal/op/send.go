@@ -86,9 +86,17 @@ func SendPreflight(cfg *loop.Config, ctx Context, to string) error {
 //     linked-but-dir-sync-failed — report, never resend.
 //   - (populated SendResp, err): delivered, but the asker-side owed
 //     bookkeeping failed. The error is RecordOwed's own, unwrapped, so the
-//     caller renders it verbatim; Filename being non-empty is what tells the
-//     two apart. An ask without a recorded obligation is a silent leak, so it
-//     is surfaced loudly rather than swallowed.
+//     caller renders it verbatim. An ask without a recorded obligation is a
+//     silent leak, so it is surfaced loudly rather than swallowed.
+//
+// **Committed is the discriminator** between the first shape and the third —
+// not a non-empty Filename, which is only an incidental proxy for the same
+// fact. Committed is the field DESIGN §4.4.1 makes mandatory on every send-ok
+// and the one the never-auto-replay rule is written against, so keying on it
+// makes the local decision and the wire decision the same predicate. A future
+// path that returned a partially populated response beside an error would
+// otherwise be read as "delivered, do not resend" on the strength of a
+// filename (opus-xhigh, PR #148 gate).
 func Send(cfg *loop.Config, ctx Context, req SendReq) (SendResp, error) {
 	now := time.Now().UTC()
 

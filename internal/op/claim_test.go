@@ -329,6 +329,45 @@ func TestClaimMessageEventCarriesReplyRefAndBody(t *testing.T) {
 	}
 }
 
+// The seam half of the guard-latch arming rule: the summary reports residue
+// found by the LISTING, before any body is read, so a caller can arm on
+// residue EXISTING even when the read then fails and no MessageEvent is ever
+// emitted. The latch itself is local (§6.6) and stays the CLI's — this is only
+// the signal it needs (opus-xhigh, PR #148 gate).
+func TestClaimReportsResidueEvenWhenItCannotBeRead(t *testing.T) {
+	cfg := newPool(t)
+	enroll(t, cfg, "claude-code")
+	enroll(t, cfg, "codex")
+	deliver(t, cfg, "codex", "claude-code", "body")
+
+	// Claim it, so it becomes residue, then make it unreadable.
+	var first collector
+	if _, err := Claim(cfg, Context{ActorID: "claude-code"}, ClaimReq{}, first.emit); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(cfg.AgentClaimedDir("claude-code"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	residue := filepath.Join(cfg.AgentClaimedDir("claude-code"), entries[0].Name())
+	if err := os.Chmod(residue, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(residue, 0o600) }()
+
+	var c collector
+	sum, err := Claim(cfg, Context{ActorID: "claude-code"}, ClaimReq{}, c.emit)
+	if err == nil {
+		t.Fatal("an unreadable claimed message must still be an error")
+	}
+	if sum.Redelivered != 1 {
+		t.Fatalf("summary = %+v, want the residue counted from the listing", sum)
+	}
+	if len(c.messages()) != 0 {
+		t.Fatal("nothing can have been emitted: the read failed")
+	}
+}
+
 func TestClaimRefusesUnregisteredAgent(t *testing.T) {
 	cfg := newPool(t)
 	var c collector

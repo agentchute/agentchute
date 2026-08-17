@@ -239,7 +239,10 @@ func TestSendReportsOwedBookkeepingFailureBesideACommittedResponse(t *testing.T)
 	if err == nil {
 		t.Fatal("an ask whose obligation was never recorded must not report success")
 	}
-	if resp.Filename == "" || !resp.Committed {
+	// Committed is THE discriminator between this shape and a failed delivery —
+	// the same field DESIGN §4.4.1 makes mandatory on send-ok and writes the
+	// never-auto-replay rule against, so local and wire read one signal.
+	if !resp.Committed || resp.Filename == "" {
 		t.Fatalf("resp = %+v, want the committed delivery reported alongside the error", resp)
 	}
 	if n := countFiles(t, cfg.AgentInboxDir("codex")); n != 1 {
