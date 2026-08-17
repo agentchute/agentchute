@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/agentchute/agentchute/internal/hubwire"
@@ -99,6 +100,33 @@ func OpenOneShot(ctx context.Context, remote *loop.RemoteConfig, agentID, bin st
 	}
 	s.warnings = invocation.Warnings
 	return s, nil
+}
+
+// Probe opens a one-shot hello using keyPath without consulting config.json.
+// Join and rotation use it before the local hub record exists, and when a
+// staged version must be tested before it becomes the active symlink.
+func Probe(ctx context.Context, remote *loop.RemoteConfig, agentID, bin, keyPath string) (hubwire.HelloOK, []string, error) {
+	stateDir := ""
+	if keyPath != "" {
+		stateDir = filepath.Dir(filepath.Dir(keyPath))
+	}
+	invocation, err := BuildSSHInvocation(SSHBuildOptions{Remote: remote, AgentID: agentID, KeyPath: keyPath, StateDir: stateDir})
+	if err != nil {
+		return hubwire.HelloOK{}, nil, err
+	}
+	transport, err := startSSH(ctx, invocation)
+	if err != nil {
+		return hubwire.HelloOK{}, nil, err
+	}
+	session, err := OpenOneShotTransport(transport, remote, agentID, bin)
+	if err != nil {
+		return hubwire.HelloOK{}, invocation.Warnings, err
+	}
+	hello := session.Hello()
+	if err := session.Close(); err != nil {
+		return hubwire.HelloOK{}, invocation.Warnings, err
+	}
+	return hello, invocation.Warnings, nil
 }
 
 func OpenOneShotTransport(transport Transport, remote *loop.RemoteConfig, agentID, bin string) (*OneShot, error) {

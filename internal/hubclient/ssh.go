@@ -23,6 +23,8 @@ const controlPathTokenWidth = 64
 type SSHBuildOptions struct {
 	Remote        *loop.RemoteConfig
 	AgentID       string
+	KeyPath       string
+	StateDir      string
 	Channel       bool
 	TempRoots     []string
 	EnsureOwned   func(string) error
@@ -42,7 +44,14 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 	if err := loop.ValidateAgentID(opts.AgentID); err != nil {
 		return SSHInvocation{}, fmt.Errorf("build ssh invocation: %w", err)
 	}
-	key := filepath.Join(opts.Remote.HubDir, "keys", opts.AgentID+"_ed25519")
+	stateDir := opts.StateDir
+	if stateDir == "" {
+		stateDir = opts.Remote.HubDir
+	}
+	key := opts.KeyPath
+	if key == "" {
+		key = filepath.Join(stateDir, "keys", opts.AgentID+"_ed25519")
+	}
 	args := []string{
 		"-T",
 		"-o", "BatchMode=yes",
@@ -55,7 +64,7 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 	}
 	args = append(args,
 		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile="+filepath.Join(opts.Remote.HubDir, "known_hosts"),
+		"-o", "UserKnownHostsFile="+filepath.Join(stateDir, "known_hosts"),
 		"-o", "IdentitiesOnly=yes", "-i", key,
 		"-o", "ClearAllForwardings=yes",
 	)
@@ -63,6 +72,9 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 	if opts.Channel {
 		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
 	} else {
+		if opts.PreferredRoot == "" {
+			opts.PreferredRoot = stateDir
+		}
 		muxDir, attempted, err := selectMuxDir(opts)
 		if err != nil {
 			args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
