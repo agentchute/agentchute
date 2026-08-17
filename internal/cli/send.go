@@ -226,11 +226,13 @@ func cmdSend(args []string) error {
 		ReplyTo:    replyTo,
 		ReplyToSet: replyToSet,
 	}
-	// Committed means the message IS in the recipient's inbox; an error beside
-	// it is the owed-bookkeeping failure below, never a delivery failure. This
-	// is the same predicate the wire's never-auto-replay rule uses (§4.4.1), so
-	// local and remote decide "do not resend" off one field. Nothing delivered
-	// => spool the body and classify.
+	// Committed means the message IS in the recipient's inbox, and it is the
+	// same predicate the wire's never-auto-replay rule uses (§4.4.1), so local
+	// and remote decide "do not resend" off one field. op.Send returns a nil
+	// error once delivery commits, so an error here always means nothing was
+	// delivered: spool the body and classify. The two non-fatal outcomes that
+	// can ride a commit arrive as fields on the response, not as errors —
+	// DurabilityNote and OwedNote, both handled below.
 	if !resp.Committed {
 		return preserveSendBody(cfg, fromID, toID, rawBody, now, retry, sendErr)
 	}
