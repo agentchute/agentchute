@@ -3202,9 +3202,15 @@ checklist. WI-6.6 lands in the same PR that satisfies these steps.
     - Reject any `main` spec or conformance target under `web/`.
     - Reject a current-page tag that differs from `gh release view --json
       tagName --jq .tagName`.
-    - **Manual step (not in the script below):** validate every versioned
-      spec fragment against the rendered Contents API HTML. The script
-      only rejects `main` targets and mismatched release tags.
+    - Validate every versioned spec fragment against the rendered Contents
+      API HTML.
+
+    Requires **`rg`** and **`gh`**. `test -n "$refs"` and
+    `test -n "$anchors"` fail loudly on an empty set: if a future
+    refactor removes every versioned reference, the check must fail
+    rather than pass. Observed pass at the #156 handoff:
+    **`latest=v1.5.7`, six current-root references, zero mismatches,
+    five versioned spec fragments resolved in rendered Contents API HTML.**
 
     ```sh
     test -z "$(rg -n 'github\.com/agentchute/agentchute/blob/main/AGENTCHUTE\.md|raw\.githubusercontent\.com/agentchute/agentchute/main/AGENTCHUTE\.md|github\.com/agentchute/agentchute/tree/main/conformance' web --glob '*.html' || true)"
@@ -3215,6 +3221,21 @@ checklist. WI-6.6 lands in the same PR that satisfies these steps.
     test -n "$refs"
     bad=$(printf '%s\n' "$refs" | grep -Fv "/$latest/" || true)
     test -z "$bad"
+
+    anchors=$(rg -o --no-filename 'https://github\.com/agentchute/agentchute/blob/[^/]+/AGENTCHUTE\.md#[^" <]+' web --glob '*.html')
+    test -n "$anchors"
+    printf '%s\n' "$anchors" |
+    while IFS= read -r url; do
+      tagged=${url#*blob/}
+      tag=${tagged%%/*}
+      anchor=${url##*#}
+      gh api "repos/agentchute/agentchute/contents/AGENTCHUTE.md?ref=$tag" \
+        -H 'Accept: application/vnd.github.html+json' |
+        rg -Fq "href=\"#$anchor\"" || {
+          printf 'broken spec anchor: %s\n' "$url" >&2
+          exit 1
+        }
+    done
     ```
 
 ---
