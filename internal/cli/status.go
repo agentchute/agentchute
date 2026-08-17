@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 func cmdStatus(args []string) error {
@@ -52,46 +54,47 @@ func cmdStatus(args []string) error {
 	}
 
 	now := time.Now().UTC()
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): status acts AS
-	// the explicitly identified agent. B1: this preflight confirms enrollment
-	// but does not refresh liveness.
-	selfPath := cfg.AgentRegistrationPath(agentID)
-	if _, err := os.Stat(selfPath); err == nil {
-		// registered; proceed.
-	} else if os.IsNotExist(err) {
-		return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
-	} else {
-		return fmt.Errorf("stat own registration: %w", err)
+	// Read errors arrive as warn notes DURING the read, so they land on stderr
+	// before the table exactly as they always have — position included.
+	resp, err := op.Status(cfg, op.Context{ActorID: agentID}, op.StatusReq{}, func(ev op.Event) error {
+		if ev.Note != nil && ev.Note.Level == op.NoteWarn {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", ev.Note.Msg)
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, op.ErrNotRegistered) {
+			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
+		}
+		return err
 	}
 
-	regs, warnings := readRegistrations(cfg)
-	for _, w := range warnings {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
-	}
-
-	printStatus(os.Stdout, cfg, regs, now)
+	printStatus(os.Stdout, cfg, registrationsOf(resp.Agents), now)
 	return nil
+}
+
+// registrationsOf rebuilds the map printStatus takes from the seam's status
+// rows. The registrations are PARTIAL by design — only the four fields
+// printStatus, registrationStatusLabel and protocolVersionWarning actually read
+// — and never escape cmdStatus. The rows also carry InboxDepth and Status,
+// which the local renderer re-derives itself; WI-4.5 is where it switches onto
+// them, because a remote client can neither stat the hub's inboxes nor read its
+// claims.
+func registrationsOf(agents []op.StatusAgent) map[string]*loop.Registration {
+	regs := make(map[string]*loop.Registration, len(agents))
+	for _, a := range agents {
+		regs[a.AgentID] = &loop.Registration{
+			AgentID:         a.AgentID,
+			LastSeen:        a.LastSeen,
+			Host:            a.Host,
+			ProtocolVersion: a.ProtocolVersion,
+		}
+	}
+	return regs
 }
 
 func statusUsage(err error) error {
 	return fmt.Errorf("%w\nusage: agentchute status --as <agent-id> [--control-repo <path>] [--loop-dir <path>]", err)
-}
-
-// readRegistrations reads every registration in the pool leniently (v2.5 plan
-// B5): one corrupt or unreadable row must not abort `status` for the whole
-// pool — it is surfaced as a warning instead, and every other row still
-// renders.
-func readRegistrations(cfg *loop.Config) (map[string]*loop.Registration, []string) {
-	regList, errs := loop.ReadRegistrationsLenient(cfg.AgentsDir())
-	regs := make(map[string]*loop.Registration, len(regList))
-	for _, reg := range regList {
-		regs[reg.AgentID] = reg
-	}
-	var warnings []string
-	for _, e := range errs {
-		warnings = append(warnings, e.Error())
-	}
-	return regs, warnings
 }
 
 func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registration, now time.Time) {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // cmdTurnEnd is the ordered end-of-turn handler (v2.5 plan A7, C24): ONE
@@ -151,7 +152,7 @@ func cmdTurnEnd(args []string) error {
 
 	var acked []ackItem
 	if archive {
-		acked, err = archiveAllClaimed(cfg, agentID, now)
+		acked, _, err = ackClaimed(cfg, agentID)
 		if err != nil {
 			return err
 		}
@@ -166,7 +167,7 @@ func cmdTurnEnd(args []string) error {
 	}
 
 	// STEP 3.
-	status, err := evaluateGate(cfg, agentID, gatePhaseFinish, false, false, now)
+	status, err := op.Gate(cfg, op.Context{ActorID: agentID}, op.GateReq{Phase: gatePhaseFinish})
 	if err != nil {
 		return err
 	}

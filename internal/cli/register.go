@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // repoListFlag accumulates --working-repo flag occurrences.
@@ -60,23 +61,19 @@ type registerResult struct {
 	Warnings      []string
 }
 
-// performRegister writes / refreshes a registration on disk. Shared between
-// register-like commands so host detection and the existing-field merge stay
-// centralized.
+// performRegister writes / refreshes a registration through the seam.
 //
-// Pull-only (simple-again Gate 6c): a registration carries no wake state, so
-// there is no wake autodetect, no tmux pane lock, and no same-pane/stale-peer
-// dedup. The retained behavior is: write the registration record. A fresh
-// serve lease owned by another process refuses the registration regardless
-// of row age or presence; stale same-id state is merged as crash recovery.
+// It is a thin ADAPTER, deliberately keeping its shipped signature: thirteen
+// existing call sites take registerOpts, one of them passing Bio/BioProvided —
+// fields the reshaped request does not have — so no type alias could bridge it.
+// It is a CALLER of internal/op, never a callee, so no cycle.
+//
+// The one piece of work it does itself is HOST RESOLUTION (D1a). With no --host
+// flag the local semantics are not "preserve" but "substitute os.Hostname()",
+// and a nil host resolved hub-side would record the HUB's hostname for every
+// remote self-check — the wrong machine. So the resolution happens client-side,
+// here, and the op treats what it receives as explicit.
 func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*registerResult, error) {
-	if err := loop.ValidateAgentID(opts.AgentID); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(opts.Vendor) == "" {
-		return nil, fmt.Errorf("missing --vendor (recommended values: anthropic, openai, local, human)")
-	}
-
 	host := opts.Host
 	if !opts.HostProvided {
 		if h, err := os.Hostname(); err == nil {
@@ -86,112 +83,34 @@ func performRegister(cfg *loop.Config, opts registerOpts, now time.Time) (*regis
 		}
 	}
 
-	result, err := publishRegistrationOnce(cfg, opts, host, now)
-	if os.IsExist(err) {
-		// WriteRegistrationExclusive closed a creation race with a writer that
-		// did not take our agent lock. Re-read once through the normal merge
-		// path; its live-owner check decides whether this caller may adopt the
-		// now-existing row.
-		return publishRegistrationOnce(cfg, opts, host, now)
+	vendor := opts.Vendor
+	req := op.RegisterReq{
+		Vendor:       &vendor,
+		Host:         host,
+		WorkingRepos: opts.WorkingRepos,
+		ServeToken:   opts.ServeToken,
+		// Announce and Sweep stay false on every local path: cmdRegister keeps
+		// its own AnnounceEnrollment call and cmdBoot its own sweep, so nothing
+		// local changes. Both fields exist for the wire, where a remote lane's
+		// fan-out and hygiene must run against the HUB's pool.
 	}
-	return result, err
-}
+	if opts.BioProvided {
+		bio := opts.Bio
+		req.Bio = &bio
+	}
 
-// publishRegistrationOnce writes one registration under the per-agent lock
-// (v2.5 plan B5: `.live` is deleted — presence is registration `last_seen`
-// age plus, where it matters, a live serve claim). The write is: re-read the
-// existing registration (for the field merge), build the no-wake record,
-// ensure the inbox dir, then write — exclusively (create-if-not-exists) on a
-// fresh row so a concurrent same-id create is re-read before this process may
-// merge it.
-func publishRegistrationOnce(cfg *loop.Config, opts registerOpts, host string, now time.Time) (*registerResult, error) {
-	regPath := cfg.AgentRegistrationPath(opts.AgentID)
-	inboxDir := cfg.AgentInboxDir(opts.AgentID)
-
-	var reg *loop.Registration
-	var existingFound bool
-
-	// The per-agent lock serializes the read-merge-write so a concurrent writer
-	// cannot tear the registration or lose a field merge. ReadRegistration /
-	// WriteRegistration / WriteRegistrationExclusive / EnsurePrivateDir are all
-	// lock-free, so there is no agent-lock self-nesting on this stack.
-	err := loop.WithAgentLock(cfg, opts.AgentID, func() error {
-		// Authoritative re-read under the lock — the view the merge writes.
-		existing, rerr := loop.ReadRegistration(regPath)
-		if rerr == nil {
-			existingFound = true
-		} else if !os.IsNotExist(rerr) {
-			return fmt.Errorf("read existing registration: %w", rerr)
-		}
-		if registrationLiveElsewhere(cfg, opts.AgentID, opts.ServeToken, now) {
-			return fmt.Errorf("agent id %q is live elsewhere; pick a distinct name (--as %s-2?)", opts.AgentID, opts.AgentID)
-		}
-
-		reg = &loop.Registration{
-			AgentID:         opts.AgentID,
-			ProtocolVersion: loop.CurrentProtocolVersion,
-			Vendor:          opts.Vendor,
-			ControlRepo:     cfg.ControlRepo,
-			WorkingRepos:    opts.WorkingRepos,
-			Host:            host,
-			LastSeen:        now,
-		}
-
-		if existingFound {
-			if len(opts.WorkingRepos) == 0 {
-				reg.WorkingRepos = existing.WorkingRepos
-			}
-			reg.Body = existing.Body
-		}
-
-		if opts.BioProvided {
-			reg.Body = opts.Bio
-		}
-
-		// Fix A2: create the inbox (and the agent-state dir) BEFORE publishing the
-		// registration so a peer can never observe a live registration with no
-		// inbox. A leftover empty inbox dir for an id whose exclusive create then
-		// loses the race is harmless.
-		if err := loop.EnsurePrivateDir(inboxDir); err != nil {
-			return fmt.Errorf("create inbox dir: %w", err)
-		}
-
-		if !existingFound {
-			// Atomic create-if-not-exists. EEXIST propagates so performRegister
-			// can re-read the winner and apply the same live-owner refusal before
-			// deciding whether a same-id merge is safe.
-			if werr := loop.WriteRegistrationExclusive(regPath, reg); werr != nil {
-				if os.IsExist(werr) {
-					return werr
-				}
-				return fmt.Errorf("write registration: %w", werr)
-			}
-		} else if werr := loop.WriteRegistration(regPath, reg); werr != nil {
-			return fmt.Errorf("write registration: %w", werr)
-		}
-		return nil
-	})
+	resp, err := op.Register(cfg, op.Context{ActorID: opts.AgentID}, req, now)
 	if err != nil {
-		// Preserve raw os.ErrExist so performRegister can re-read an
-		// exclusive-create race exactly once.
 		return nil, err
 	}
-
 	return &registerResult{
-		Reg:           reg,
-		InboxDir:      inboxDir,
-		Refreshed:     true, // AGENTCHUTE.md §5: any successful boot/register write reports refreshed
-		ExistingFound: existingFound,
-		ResolvedHost:  host,
+		Reg:           resp.Reg.Registration(),
+		InboxDir:      resp.InboxDir,
+		Refreshed:     resp.Refreshed,
+		ExistingFound: resp.ExistingFound,
+		ResolvedHost:  resp.ResolvedHost,
+		Warnings:      resp.Warnings,
 	}, nil
-}
-
-func registrationLiveElsewhere(cfg *loop.Config, agentID, serveToken string, now time.Time) bool {
-	claim, err := loop.ReadServeClaim(cfg, agentID)
-	if err != nil || loop.ClaimIsStale(claim, now) {
-		return false
-	}
-	return strings.TrimSpace(serveToken) == "" || claim.ServeToken != strings.TrimSpace(serveToken)
 }
 
 func cmdRegister(args []string) error {

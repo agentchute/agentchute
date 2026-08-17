@@ -1,15 +1,16 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // oldMailBannerAfter is the age threshold (v2.5 plan A3, C18) past which
@@ -106,65 +107,14 @@ func cmdCheck(args []string) error {
 
 	now := time.Now().UTC()
 
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse to operate
-	// for an unregistered agent. check is an active agent command — it
-	// archives, quarantines, and sends corrective notify; all of those
-	// imply the agent IS enrolled in the pool.
-	// B1: CLI touches no longer refresh liveness — only serve's lease-gated
-	// heartbeat does (HeartbeatRegistration). This preflight only confirms
-	// the agent is enrolled at all.
-	selfPath := cfg.AgentRegistrationPath(agentID)
-	if _, err := os.Stat(selfPath); err == nil {
-		// registered; proceed.
-	} else if os.IsNotExist(err) {
-		return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
-	} else {
-		return fmt.Errorf("stat own registration: %w", err)
-	}
-
-	inboxDir := cfg.AgentInboxDir(agentID)
-	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
-	if err != nil {
-		return fmt.Errorf("list inbox: %w", err)
-	}
-	// §11 protocol enforcement: for each file that looks like a message
-	// attempt but fails the §6.1 reference filename encoding, quarantine
-	// it and (best-effort) notify the inferred offender. Expected noise
-	// (.DS_Store, .tmp_*, dirs, symlinks) stays silent as before.
-	// Enforcement is a state mutation (file moves + outgoing message), so
-	// we honor --no-archive and skip it in dry-run mode.
-	if !noArchive {
-		for _, name := range skipped {
-			srcPath := filepath.Join(inboxDir, name)
-			quarantined, err := loop.QuarantineInboxFile(srcPath, cfg.MalformedDir(), agentID, now)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to quarantine %s: %v\n", name, err)
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "warning: quarantined %s (malformed §6.1 filename) -> %s\n",
-				name, quarantined)
-		}
-	} else if len(skipped) > 0 {
-		fmt.Fprintf(os.Stderr, "warning: %d non-§6.1 file(s) in inbox; --no-archive suppressed §11 enforcement:\n", len(skipped))
-		for _, name := range skipped {
-			fmt.Fprintf(os.Stderr, "  %s\n", name)
-		}
-	}
-	// GATE 5 — two-phase consume (claim → commit). `check` is phase 1: it
-	// CLAIMS (moves inbox -> .claimed) and DISPLAYS, but does NOT archive. The
-	// separate `ack` verb is phase 2 (COMMIT/archive). The real bug this fixes:
-	// the CLI prints and EXITS, then the model acts AFTER check returns — so
-	// archiving DURING check (the old behavior) is at-most-once for the WORK. A
-	// crash between claim and ack now RE-DELIVERS (at-least-once); handlers must
-	// be idempotent.
-	claimedDir := cfg.AgentClaimedDir(agentID)
-
-	// v2.5 plan A7/C23: set the guard latch at the FIRST of (a) listing
-	// non-empty .claimed residue for redelivery or (b) claiming/displaying any
-	// message (including --no-archive). latchArmed makes repeat calls within
-	// this one invocation cheap no-ops (maybeSetGuardLatch itself is already
-	// idempotent per-session, but a large inbox would otherwise re-take the
-	// state lock once per displayed message for no benefit).
+	// v2.5 plan A7/C23: set the guard latch at the FIRST message event of any
+	// kind — redelivered residue included, and in both the normal and
+	// --no-archive paths — BEFORE rendering it (E1). The latch is LOCAL state
+	// (§6.6), so it is the EMITTER's job, never the op's: a disconnect after one
+	// displayed message must still leave the latch armed over the claimed
+	// residue. latchArmed makes repeat calls within this one invocation cheap
+	// no-ops (maybeSetGuardLatch is already idempotent per-session, but a large
+	// inbox would otherwise re-take the state lock once per displayed message).
 	latchArmed := false
 	setLatch := func() {
 		if latchArmed {
@@ -174,114 +124,68 @@ func cmdCheck(args []string) error {
 		latchArmed = true
 	}
 
-	// FIRST: re-display any uncommitted residue from a crashed/un-acked prior
-	// turn. These were CLAIMED but never COMMITTED (no ack). We re-deliver them
-	// with a REDELIVERED banner so the agent re-acts; `ack` archives them.
-	redelivered, rerr := loop.ListClaimedMessages(claimedDir)
-	if rerr != nil {
-		return fmt.Errorf("list claimed residue: %w", rerr)
-	}
-	if len(redelivered) > 0 {
-		setLatch()
-	}
-	for _, msg := range redelivered {
-		content, err := loop.ReadFileLimit(msg.Path, loop.MaxInboxMessageBytes)
-		if err != nil {
-			return fmt.Errorf("read claimed message %s: %w", msg.Path, err)
-		}
-		displayConsumed(cfg, agentID, msg, content, true, now)
-	}
-
-	// (v2.5 plan A3, review fix): the empty-inbox line no longer returns
-	// early — it must fall through to the claim loop below (a no-op when
-	// msgs is empty) and on to the C19 prune offer at the very end, which
-	// needs to run AFTER any obligation-discharging replies in THIS turn's
-	// own claim loop have already been processed (see that comment).
-	if len(msgs) == 0 && len(redelivered) == 0 {
-		fmt.Println("(inbox empty)")
-	}
-
-	claimed := 0
-	for _, msg := range msgs {
-		if limit > 0 && claimed >= limit {
-			fmt.Printf("(reached limit of %d; %d more pending)\n", limit, len(msgs)-claimed)
-			break
-		}
-		content, err := loop.ReadFileLimit(msg.Path, loop.MaxInboxMessageBytes)
-		if err != nil {
-			return fmt.Errorf("read message %s: %w", msg.Path, err)
-		}
-
-		// §11 enforcement on frontmatter: if the file has an opening `---` but
-		// the block doesn't parse, quarantine + notify the (filename-known)
-		// sender and skip processing. Body-only messages pass through. Quarantine
-		// is a state mutation, so it (like claim) is suppressed under --no-archive.
-		if err := loop.ValidateMessageFrontmatter(content); err != nil {
-			if noArchive {
-				fmt.Fprintf(os.Stderr, "warning: %s has malformed frontmatter (%v); --no-archive suppressed §11 enforcement\n",
-					msg.Filename, err)
-				claimed++
-				continue
-			}
-			quarantined, qerr := loop.QuarantineInboxFile(msg.Path, cfg.MalformedDir(), agentID, now)
-			if qerr != nil {
-				fmt.Fprintf(os.Stderr, "warning: %s has malformed frontmatter but quarantine failed: %v\n", msg.Filename, qerr)
-				claimed++
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "warning: quarantined %s (malformed §6.4 frontmatter: %v) -> %s\n",
-				msg.Filename, err, quarantined)
-			claimed++
-			continue
-		}
-
-		if noArchive {
-			// Dry run: DISPLAY in place, do NOT claim/move. The asker-side owed
-			// flip (ClearOwed) is a state mutation too, so displayConsumed's
-			// no-side-effect display is appropriate here — we pass a read-only
-			// flag below.
+	emit := func(ev op.Event) error {
+		switch {
+		case ev.Message != nil:
 			setLatch()
-			displayConsumedReadOnly(agentID, msg, content, now)
-			claimed++
-			continue
-		}
-
-		// CLAIM (phase 1): move inbox -> .claimed under the canonical name, then
-		// display from the claimed copy. NO archive (that is `ack`, phase 2).
-		claimedPath, cerr := loop.ClaimMessage(msg, claimedDir)
-		if cerr != nil {
-			return fmt.Errorf("claim message %s: %w", msg.Filename, cerr)
-		}
-		msg.Path = claimedPath
-		setLatch()
-		displayConsumed(cfg, agentID, msg, content, false, now)
-		claimed++
-	}
-
-	if !noArchive && claimed > 0 {
-		fmt.Println("note: messages CLAIMED (at-least-once), not yet archived. Run `agentchute ack` to commit; a crash before ack re-delivers them.")
-	}
-
-	// C19 (v2.5 plan A3): offer this agent's own expired reply obligations
-	// for pruning. Print-only — never auto-removes; `agentchute clean --owed`
-	// (plan A4) is the explicit, human-triggered command that actually
-	// prunes them. Deliberately placed AFTER the claim loop above (review
-	// fix): a reply consumed by THIS turn can discharge (ClearOwed) the very
-	// obligation being offered here — computing the offer any earlier would
-	// print a stale obligation moments before the same turn clears it. Not
-	// gated on --no-archive or on there being any mail to claim this turn
-	// (the empty-inbox branch above falls through rather than returning), so
-	// a returning agent with no new mail still sees a weeks-old obligation.
-	if owed, oerr := loop.LoadOwedLedger(cfg, agentID); oerr != nil {
-		fmt.Fprintf(os.Stderr, "warning: owed-reply ledger is corrupt or unreadable; inspect `state/%s/owed.json`\n", agentID)
-	} else {
-		for _, e := range owed.ExpiredOwed(now) {
+			renderClaimedMessage(agentID, *ev.Message, now)
+		case ev.Note != nil:
+			// The level IS the stream, and the renderer — never the op —
+			// supplies the `warning: ` prefix.
+			if ev.Note.Level == op.NoteWarn {
+				fmt.Fprintf(os.Stderr, "warning: %s\n", ev.Note.Msg)
+			} else {
+				fmt.Println(ev.Note.Msg)
+			}
+		case ev.Owed != nil:
+			// C19: print-only. The explicit, human-triggered prune command is
+			// what actually removes an obligation.
 			fmt.Printf("stale reply obligation (%s, expired %s ago) — prune with: agentchute clean --owed --as %s\n",
-				e.Key().RefString(), now.Sub(e.By).Round(time.Second), agentID)
+				ev.Owed.Ref, now.Sub(ev.Owed.By).Round(time.Second), agentID)
 		}
+		return nil
 	}
 
+	// GATE 5 — two-phase consume (claim → commit). `check` is phase 1: it
+	// CLAIMS (moves inbox -> .claimed) and DISPLAYS, but does NOT archive. The
+	// separate `ack` verb is phase 2 (COMMIT/archive). The real bug this fixes:
+	// the CLI prints and EXITS, then the model acts AFTER check returns — so
+	// archiving DURING check (the old behavior) is at-most-once for the WORK. A
+	// crash between claim and ack now RE-DELIVERS (at-least-once); handlers must
+	// be idempotent.
+	sum, err := op.Claim(cfg, op.Context{ActorID: agentID}, op.ClaimReq{Limit: limit, NoArchive: noArchive}, emit)
+	// Arm on residue EXISTENCE, not only on a rendered message, and do it
+	// before returning any error: claimed-but-unacked mail whose body cannot be
+	// read (a permissions change, or residue past MaxInboxMessageBytes — the
+	// hand-protocol path writes inbox files directly) still leaves this lane
+	// holding it, which is exactly the state the latch covers. Emitting arms
+	// earlier and per-message, so this is a no-op on every path that displayed
+	// anything.
+	if sum.Redelivered > 0 {
+		setLatch()
+	}
+	if err != nil {
+		if errors.Is(err, op.ErrNotRegistered) {
+			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
+		}
+		return err
+	}
 	return nil
+}
+
+// renderClaimedMessage prints one consumed message: the C18 age banner when it
+// is older than oldMailBannerAfter, the header, the sanitized body, and the
+// copyable reply ref when a reply is required.
+func renderClaimedMessage(agentID string, ev op.MessageEvent, now time.Time) {
+	stamp, err := time.Parse(time.RFC3339Nano, ev.Stamp)
+	if err != nil {
+		stamp = time.Time{}
+	}
+	msg := loop.Message{Filename: ev.Filename, Sender: ev.Sender, Timestamp: stamp}
+	printConsumedBody(msg, ev.Body, ev.Redelivered, now)
+	if ev.ReplyRequired && ev.ReplyRef != "" {
+		fmt.Printf("reply-required: reply with `agentchute send --from %s --to %s --reply-to %s ...`\n\n", agentID, ev.Sender, ev.ReplyRef)
+	}
 }
 
 // maybeSetGuardLatch sets agentID's guard latch for the current guarded
@@ -297,47 +201,6 @@ func maybeSetGuardLatch(cfg *loop.Config, agentID string) {
 	if err := loop.SetGuardLatch(cfg, agentID, session); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to set guard latch: %v\n", err)
 	}
-}
-
-// displayConsumed prints one consumed message and runs the asker-side obligation
-// flip. `redelivered` toggles the REDELIVERED banner (uncommitted residue from a
-// crashed/un-acked prior turn).
-//
-//   - in_reply_to flip: if the message is a reply that references one of OUR
-//     outstanding asks (a canonical MsgID ref keyed From=us), discharge that
-//     `.owed` obligation (ClearOwed). Idempotent, so re-display is safe.
-//   - reply ref: if the message asks US for a reply, print the copyable ref the
-//     reply must carry as --reply-to / in_reply_to so the asker can clear their
-//     obligation when they consume our reply.
-func displayConsumed(cfg *loop.Config, agentID string, msg loop.Message, content []byte, redelivered bool, now time.Time) {
-	printConsumedBody(msg, content, redelivered, now)
-
-	fm := loop.ParseMessageFrontmatter(content)
-
-	// Asker-side owed flip. ClearOwed only touches OUR ledger and only removes a
-	// matching key. The ref must name us as asker, and the consumed reply must
-	// come from the agent that owed it; otherwise a third party could clear an
-	// obligation by echoing someone else's ref.
-	if ref := strings.TrimSpace(fm["in_reply_to"]); ref != "" {
-		if key, ok := loop.ParseMsgIDRef(ref); ok && key.From == agentID && msg.Sender == key.To {
-			if err := loop.ClearOwed(cfg, agentID, key); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to clear owed obligation %s: %v\n", ref, err)
-			}
-		} else if key, ok := loop.ParseTsRef(ref); ok && key.From == agentID && msg.Sender == key.To {
-			if err := loop.ClearOwed(cfg, agentID, key); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to clear owed obligation %s: %v\n", ref, err)
-			}
-		}
-	}
-
-	printReplyRefIfRequired(agentID, msg, fm)
-}
-
-// displayConsumedReadOnly is the --no-archive (dry-run) display: it prints the
-// body and the reply ref but performs NO state mutation (no ClearOwed).
-func displayConsumedReadOnly(agentID string, msg loop.Message, content []byte, now time.Time) {
-	printConsumedBody(msg, content, false, now)
-	printReplyRefIfRequired(agentID, msg, loop.ParseMessageFrontmatter(content))
 }
 
 // printConsumedBody prints the C18 age banner (v2.5 plan A3) above the
@@ -387,30 +250,6 @@ func sanitizeControlBytes(s string) string {
 	return b.String()
 }
 
-// printReplyRefIfRequired prints the copyable in_reply_to ref a reply to msg must
-// carry, when msg is reply_required. The emitted reference matches the message's
-// filename identity form so it clears the asker's matching obligation.
-func printReplyRefIfRequired(agentID string, msg loop.Message, fm map[string]string) {
-	if !isFrontmatterReplyRequired(fm) {
-		return
-	}
-
-	var ref string
-	if from, seq, ok := loop.ParseSeqFilename(msg.Filename); ok {
-		ref = (loop.MsgID{To: agentID, From: from, Seq: seq}).RefString()
-	} else if id, ok := loop.ParseTsFilename(msg.Filename); ok {
-		id.To = agentID
-		ref = id.RefString()
-	} else {
-		return
-	}
-	fmt.Printf("reply-required: reply with `agentchute send --from %s --to %s --reply-to %s ...`\n\n", agentID, msg.Sender, ref)
-}
-
 func checkUsage(err error) error {
 	return fmt.Errorf("%w\nusage: agentchute check [--as <agent-id>] [--vendor <v>] [--control-repo <path>] [--loop-dir <path>] [--no-archive] [--limit <n>]\n  check CLAIMS + displays (at-least-once); run `agentchute ack` to commit (archive).", err)
-}
-
-func isFrontmatterReplyRequired(fm map[string]string) bool {
-	return strings.ToLower(strings.TrimSpace(fm["reply_required"])) == "true"
 }

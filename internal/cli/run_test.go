@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // Simple-again Gate 6b (pull-only): the runner RECEIVE socket was removed.
@@ -497,14 +498,15 @@ func newPollTestRuntime(t *testing.T, cfg *loop.Config, agentID string) *runnerR
 	if err != nil {
 		t.Fatal(err)
 	}
+	tmpl := heartbeatTemplate(cfg, opts)
 	rt := &runnerRuntime{
-		cfg:         cfg,
-		opts:        opts,
-		started:     time.Now().UTC(),
-		lease:       lease,
-		regTemplate: heartbeatTemplate(cfg, opts),
-		wakeCh:      make(chan bool, 1),
-		stopCh:      make(chan struct{}),
+		cfg:     cfg,
+		opts:    opts,
+		started: time.Now().UTC(),
+		lease:   lease,
+		channel: op.NewChannel(cfg, op.Context{ActorID: agentID}, op.ChannelOpts{Lease: lease, HeartbeatTemplate: &tmpl}),
+		wakeCh:  make(chan bool, 1),
+		stopCh:  make(chan struct{}),
 	}
 	return rt
 }

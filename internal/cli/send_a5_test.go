@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 func TestSendPreflightRunsBeforeStdin(t *testing.T) {
@@ -226,15 +227,15 @@ func TestSendPartialSuccessOnOwedFailure(t *testing.T) {
 
 func TestSendPostLinkSyncFailureIsPartialSuccess(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	originalSend := sendTsMessageWithCommit
-	sendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, serveToken string) (loop.TsID, bool, error) {
+	originalSend := op.SendTsMessageWithCommit
+	op.SendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, serveToken string) (loop.TsID, bool, error) {
 		id, committed, err := originalSend(cfg, from, to, content, serveToken)
 		if err != nil {
 			return id, committed, err
 		}
 		return id, true, errors.New("forced post-link sync failure")
 	}
-	defer func() { sendTsMessageWithCommit = originalSend }()
+	defer func() { op.SendTsMessageWithCommit = originalSend }()
 
 	var stdout string
 	var sendErr error

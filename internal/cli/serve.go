@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 	runnerpty "github.com/agentchute/agentchute/internal/runner/pty"
 )
 
@@ -226,20 +227,22 @@ type runnerRuntime struct {
 	childPID int
 	cmd      *exec.Cmd
 	ptmx     *os.File
-	lease    *loop.ServeLease
-	done     <-chan error
-	diag     *runnerDiagnostics
+	// lease is the runner's own handle on the serve lease it acquired at
+	// startup. The channel below ADOPTS this same lease (its adoption arm), so
+	// there is one lease and two names for it: this field is what the runner's
+	// shutdown path releases, and what b1_convergence_test.go:67 releases to
+	// simulate a killed serve.
+	lease *loop.ServeLease
+	done  <-chan error
+	diag  *runnerDiagnostics
 
-	// regTemplate is the no-wake registration template HeartbeatRegistration
-	// refreshes every tick (v2.5 plan B1, C13). Built once from the same
-	// fields registerRunner used for the initial write, so every heartbeat
-	// re-asserts the same AgentID/Vendor/ControlRepo/Host/provenance.
-	regTemplate loop.Registration
-	// lastSweep is the last time this runner ran SweepStaleRegistrations
-	// (v2.5 plan B1, C11). Zero value means "never yet" — pollOnce treats
-	// that as due immediately, matching boot's "sweep once, early" behavior
-	// for a pool whose only hygiene path is this runner.
-	lastSweep time.Time
+	// channel is the lease/tick handle (internal/op): it holds the serve lease,
+	// the no-wake heartbeat template HeartbeatRegistration refreshes every tick
+	// (C13), and the 10-minute sweep throttle (C11) whose zero value makes the
+	// very first tick due immediately. One handle in place of the three fields
+	// those facts used to occupy — the same shape the hub session and the
+	// remote serve channel inherit.
+	channel *op.Channel
 
 	mu                 sync.Mutex
 	ptmxMu             sync.Mutex
@@ -360,6 +363,30 @@ func restoreRunnerTerminal(restoreTerminal func() error, diag *runnerDiagnostics
 	diag.printBufferedFatal(stderr)
 }
 
+// newRunnerRuntime builds the runner's live state from ONE lease value.
+//
+// The lease has to reach two places — the runtime's own handle, which the
+// shutdown path releases, and the op.Channel that ADOPTS it for the tick — and
+// they were two independent lines in a struct literal. One of them went missing
+// in the seam extraction, so every clean exit released nothing and left
+// serve.claim on disk: the lane looked live to the whole pool and the next
+// `serve` for that id refused to start. The suite stayed green because every
+// runner test builds its runtime through newPollTestRuntime, which set the field
+// (codex, PR #148 gate). A constructor taking the lease once makes the pair
+// impossible to desynchronize and the field impossible to omit.
+func newRunnerRuntime(cfg *loop.Config, opts runnerOptions, cwd string, lease *loop.ServeLease, tmpl loop.Registration) *runnerRuntime {
+	return &runnerRuntime{
+		cfg:     cfg,
+		opts:    opts,
+		cwd:     cwd,
+		started: time.Now().UTC(),
+		lease:   lease,
+		channel: op.NewChannel(cfg, op.Context{ActorID: opts.AgentID}, op.ChannelOpts{Lease: lease, HeartbeatTemplate: &tmpl}),
+		wakeCh:  make(chan bool, 1),
+		stopCh:  make(chan struct{}),
+	}
+}
+
 func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	stateDir := cfg.AgentStateDir(opts.AgentID)
 	if err := loop.EnsurePrivateDir(stateDir); err != nil {
@@ -416,21 +443,12 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		defer diag.printBufferedFatal(os.Stderr)
 	}
 
-	rt := &runnerRuntime{
-		cfg:         cfg,
-		opts:        opts,
-		cwd:         cwd,
-		started:     time.Now().UTC(),
-		childPID:    cmd.Process.Pid,
-		cmd:         cmd,
-		ptmx:        ptmx,
-		lease:       lease,
-		done:        done,
-		diag:        diag,
-		regTemplate: heartbeatTemplate(cfg, opts),
-		wakeCh:      make(chan bool, 1),
-		stopCh:      make(chan struct{}),
-	}
+	rt := newRunnerRuntime(cfg, opts, cwd, lease, heartbeatTemplate(cfg, opts))
+	rt.childPID = cmd.Process.Pid
+	rt.cmd = cmd
+	rt.ptmx = ptmx
+	rt.done = done
+	rt.diag = diag
 	nowUnix := time.Now().UnixNano()
 	rt.lastOutputUnixNano.Store(nowUnix)
 	rt.lastInputUnixNano.Store(nowUnix)
@@ -608,39 +626,26 @@ func (r *runnerRuntime) pollLoop() {
 
 func (r *runnerRuntime) pollOnce() {
 	now := time.Now().UTC()
-	// Fence verify + heartbeat the serve lease (protocol-v2 §6b). ErrFenced means
-	// we were RECLAIMED — another serve now owns this id — so we must stop
-	// injecting and shut down cleanly rather than become a dup-writer. (nil lease
-	// in the poll-only unit-test runtime: skip.)
-	if r.lease != nil {
-		if err := loop.RenewLease(r.lease); err != nil {
-			if errors.Is(err, loop.ErrFenced) {
-				r.bufferFatalf("serve: this agentchute binary was fenced out (update or identity reclaim). Restart this lane: ac serve <wrapper>\n")
-				r.requestShutdown(syscall.SIGTERM)
-				return
-			}
-			r.logf("agentchute serve: renew serve lease: %v\n", err)
+	// One tick: fence verify + lease renew, lease-gated heartbeat (self-healing
+	// if a sweep removed the row since the last tick), the 10-minute-throttled
+	// pool sweep, and the pending-mail count — in that order, behind the seam.
+	//
+	// ErrFenced means we were RECLAIMED: another serve now owns this id, so we
+	// must stop injecting and shut down cleanly rather than become a
+	// dup-writer. It is the ONLY hard error a tick returns; every other step
+	// failure comes back as a warning and the tick continues, exactly as the
+	// runner has always done.
+	tick, err := r.channel.Tick(op.TickReq{})
+	if err != nil {
+		if errors.Is(err, op.ErrFenced) {
+			r.bufferFatalf("serve: this agentchute binary was fenced out (update or identity reclaim). Restart this lane: ac serve <wrapper>\n")
+			r.requestShutdown(syscall.SIGTERM)
+			return
 		}
+		r.logf("agentchute serve: tick: %v\n", err)
 	}
-	// Lease-gated heartbeat (v2.5 plan B1, C13): unconditional refresh of the
-	// registration row, self-healing if a sweep (ours or a peer's) removed it
-	// since the last tick. nil lease in the poll-only unit-test runtime: skip
-	// rather than pass an empty token, which HeartbeatRegistration rejects.
-	if r.lease != nil {
-		if err := loop.HeartbeatRegistration(r.cfg, r.regTemplate, r.lease.Token); err != nil {
-			r.logf("agentchute serve: heartbeat registration: %v\n", err)
-		}
-	}
-
-	// Lazy sweep (C11): bounded, 10-minute cadence. lastSweep's zero value
-	// makes the very first tick due immediately — harmless even right after
-	// boot's own sweep (nothing is stale seconds later) and useful for a pool
-	// whose runner is its only hygiene path.
-	if now.Sub(r.lastSweep) >= sweepInterval {
-		if _, err := loop.SweepStaleRegistrations(r.cfg, r.opts.AgentID, now); err != nil {
-			r.logf("agentchute serve: sweep stale registrations: %v\n", err)
-		}
-		r.lastSweep = now
+	for _, w := range tick.Warnings {
+		r.logf("%s\n", w)
 	}
 
 	// Re-cue predicate (v2.5 plan A2, C16/C17): cue whenever mail is pending —
@@ -656,7 +661,7 @@ func (r *runnerRuntime) pollOnce() {
 	// observed empty — here, and in injectIfPending's drained-mail skip path.
 	// Once a wake is already in flight (pendingWake), we do not re-enqueue —
 	// enqueueWake itself guards that.
-	pending := r.hasPendingInboxMail()
+	pending := tick.Pending > 0 || tick.Skipped > 0
 	r.mu.Lock()
 	if !pending {
 		r.injectedThisPeriod = false
@@ -755,11 +760,7 @@ func (r *runnerRuntime) injectIfPending() {
 // pending) to preserve the safe failure direction: an extra spurious cue is
 // acceptable, a suppressed real one is not.
 func (r *runnerRuntime) hasPendingInboxMail() bool {
-	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(r.cfg.AgentInboxDir(r.opts.AgentID))
-	if err != nil && !errors.Is(err, loop.ErrInboxMissing) {
-		return true
-	}
-	return len(msgs) > 0 || len(skipped) > 0
+	return op.HasPendingInboxMail(r.cfg, r.opts.AgentID)
 }
 
 // waitForInjectionWindow blocks until it is safe to inject, or false if the
