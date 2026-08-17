@@ -452,7 +452,7 @@ restrict,command="/usr/local/bin/agentchute hub session --agent <id> --pool <abs
 
 Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable":false}`
 
-**`claimed_held`** is an optional boolean, top-level on the `error` frame. It is encoded **only when `true`**; its absence means no claimed residue is held. Absence is `false` by definition, not by inference, and is not a malformed frame. When `true`, the operation failed **and** claimed mail is held on the hub for this actor, so the client must arm its guard latch even though it received no `msg` frames. A client that sees `claimed_held: true` arms its latch. The version handshake makes a mixed-version pair impossible, so this is a parsing rule, not a compatibility rule. W1-hub's conformance vector exercises the residue path, so a hub that omits the field there fails a vector.
+**`claimed_held`** is an optional boolean, top-level on the `error` frame. It is encoded **only when `true`**; its absence means no claimed residue is held. Absence is `false` by definition, not by inference, and is not a malformed frame. When `true`, the operation failed **and** claimed mail is held on the hub for this actor, so the client must arm its guard latch even though it received no `msg` frames. A client that sees `claimed_held: true` arms its latch. The version handshake makes a mixed-version pair impossible, so this is a parsing rule, not a compatibility rule. With an always-present field, a hub that omits it produces a malformed frame and the client knows something is wrong; with presence-means-true, an omission is indistinguishable from a legitimate absence. **W6** covers that gap.
 
 | code | emitter | meaning |
 |---|---|---|
