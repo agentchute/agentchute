@@ -46,31 +46,39 @@ func TestRunnerRuntimeIsOnlyBuiltByItsConstructor(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Walk the WHOLE file, tracking the enclosing function, rather than
+	// iterating func declarations: a literal in a package-level var initializer
+	// has no enclosing FuncDecl and a decls-only walk never sees it. Not a
+	// plausible construction site — a runnerRuntime needs a cfg, opts and a
+	// lease that exist only at run time — but a guard that claims to be
+	// structural should not have a hole in it (opus-xhigh, PR #148 gate).
 	found := 0
-	for _, decl := range f.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-		ast.Inspect(fn, func(n ast.Node) bool {
-			lit, ok := n.(*ast.CompositeLit)
-			if !ok {
-				return true
-			}
-			ident, ok := lit.Type.(*ast.Ident)
+	var enclosing *ast.FuncDecl
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.FuncDecl:
+			enclosing = node
+		case *ast.CompositeLit:
+			ident, ok := node.Type.(*ast.Ident)
 			if !ok || ident.Name != "runnerRuntime" {
 				return true
 			}
 			found++
-			if fn.Name.Name != ctor {
-				t.Errorf("%s:%d: runnerRuntime built directly in %s; build it through %s, "+
-					"which wires the lease to BOTH the runtime handle and the channel from one value "+
-					"(a literal that sets one and not the other leaked serve.claim on every clean exit)",
-					file, fset.Position(lit.Pos()).Line, fn.Name.Name, ctor)
+			where := "package scope"
+			if enclosing != nil && enclosing.Body != nil &&
+				node.Pos() >= enclosing.Body.Pos() && node.Pos() <= enclosing.Body.End() {
+				if enclosing.Name.Name == ctor {
+					return true
+				}
+				where = enclosing.Name.Name
 			}
-			return true
-		})
-	}
+			t.Errorf("%s:%d: runnerRuntime built directly in %s; build it through %s, "+
+				"which wires the lease to BOTH the runtime handle and the channel from one value "+
+				"(a literal that sets one and not the other leaked serve.claim on every clean exit)",
+				file, fset.Position(node.Pos()).Line, where, ctor)
+		}
+		return true
+	})
 
 	// A check that found nothing would pass vacuously — e.g. if the struct were
 	// renamed, or the file moved.
