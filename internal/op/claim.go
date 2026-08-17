@@ -19,7 +19,18 @@ type ClaimReq struct {
 
 // ClaimSummary is counts only (D2). Everything unbounded left as events.
 type ClaimSummary struct {
-	Claimed     int `json:"claimed"`
+	Claimed int `json:"claimed"`
+	// Redelivered counts the uncommitted residue this claim FOUND, taken from
+	// the listing before any body is read — NOT the number of messages actually
+	// re-delivered to the caller. The two are identical on every successful
+	// path and diverge only when a residue read fails, where the count is what
+	// tells the caller it is holding claimed mail and must arm its guard latch
+	// (§6.6/E1) even though no MessageEvent was ever emitted.
+	//
+	// This field becomes the wire's `check-ok.redelivered`, so M3 must decide
+	// whether that keeps the found-not-delivered meaning or splits in two,
+	// rather than assuming it counts messages the client received
+	// (opus-xhigh, PR #148 gate; tracked on the M3 hand-off).
 	Redelivered int `json:"redelivered"`
 	Quarantined int `json:"quarantined"`
 	OwedExpired int `json:"owed_expired"`

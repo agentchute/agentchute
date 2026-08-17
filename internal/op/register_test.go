@@ -104,6 +104,34 @@ func TestRegisterRefusesAVendorNothingCanResolve(t *testing.T) {
 	}
 }
 
+// PRESENCE, not emptiness: an explicit `--vendor ""` is a REFUSAL even on a
+// canonical id whose name would otherwise imply one. Testing emptiness instead
+// would silently turn a caller's explicit clear into a guess (codex, PR #148
+// gate).
+func TestRegisterRefusesAnExplicitEmptyVendorEvenOnACanonicalID(t *testing.T) {
+	for _, explicit := range []string{"", "   "} {
+		cfg := newPool(t)
+		_, err := Register(cfg, Context{ActorID: "claude-code"}, RegisterReq{Vendor: &explicit}, time.Now().UTC())
+		if err == nil {
+			t.Fatalf("explicit --vendor %q was silently resolved instead of refused", explicit)
+		}
+		if !strings.HasPrefix(err.Error(), "missing --vendor (recommended values:") {
+			t.Fatalf("err = %v, want the shipped missing-vendor refusal", err)
+		}
+		// And nothing was written: the refusal precedes the registration.
+		if _, serr := loop.ReadRegistration(cfg.AgentRegistrationPath("claude-code")); serr == nil {
+			t.Fatal("a refused register still wrote a row")
+		}
+	}
+	// The same id with NO vendor field at all (nil) does resolve — that is the
+	// branch this one must not be confused with.
+	cfg := newPool(t)
+	resp, err := Register(cfg, Context{ActorID: "claude-code"}, RegisterReq{}, time.Now().UTC())
+	if err != nil || resp.Reg.Vendor != "anthropic" {
+		t.Fatalf("nil vendor: resp = %+v, err = %v, want hub resolution to anthropic", resp, err)
+	}
+}
+
 // D1b: a nil Vendor is HUB-resolved — the actor's existing row first, then the
 // canonical-id table. This is not deferrable to the client, because on a remote
 // lane the client's own view is the mail-free shadow: a custom id like the

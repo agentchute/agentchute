@@ -108,16 +108,21 @@ func Register(cfg *loop.Config, ctx Context, req RegisterReq, now time.Time) (Re
 	if err := loop.ValidateAgentID(ctx.ActorID); err != nil {
 		return RegisterResp{}, err
 	}
-	// Vendor presence (D1b): non-nil is explicit and wins; nil means "the HUB
-	// resolves it". The resolution has to live here rather than in the caller
-	// because on a remote lane the caller's own view is the mail-free SHADOW —
-	// a custom id's vendor (the roster's "sonnet" is the recorded example) would
-	// never resolve there, and every step-0 repair would fail.
-	vendor := ""
+	// Vendor PRESENCE, not emptiness (D1b). Non-nil is explicit and wins —
+	// including an explicit empty, which is a refusal rather than an invitation
+	// to guess. Only nil means "the HUB resolves it", and that resolution has to
+	// live here rather than in the caller because on a remote lane the caller's
+	// own view is the mail-free SHADOW: a custom id's vendor (the roster's
+	// "sonnet" is the recorded example) would never resolve there, and every
+	// step-0 repair would fail.
+	//
+	// Testing emptiness instead of presence would silently turn an explicit
+	// `--vendor ""` on a canonical id into whatever the id happens to imply
+	// (codex, PR #148 gate).
+	var vendor string
 	if req.Vendor != nil {
 		vendor = strings.TrimSpace(*req.Vendor)
-	}
-	if vendor == "" {
+	} else {
 		vendor = ResolveVendor(cfg, ctx.ActorID)
 	}
 	if vendor == "" {
@@ -315,20 +320,28 @@ func ResolveVendor(cfg *loop.Config, agentID string) string {
 // of one) to its vendor.
 func vendorForAgentID(agentID string) string {
 	switch {
-	case matchesCanonicalID(agentID, "claude-code"):
+	case MatchesCanonicalID(agentID, "claude-code"):
 		return "anthropic"
-	case matchesCanonicalID(agentID, "codex"):
+	case MatchesCanonicalID(agentID, "codex"):
 		return "openai"
-	case matchesCanonicalID(agentID, "gemini-cli"):
+	case MatchesCanonicalID(agentID, "gemini-cli"):
 		return "google"
-	case matchesCanonicalID(agentID, "grok"):
+	case MatchesCanonicalID(agentID, "grok"):
 		return "xai"
 	default:
 		return ""
 	}
 }
 
-func matchesCanonicalID(agentID, canon string) bool {
+// MatchesCanonicalID reports whether agentID is a canonical wrapper id or a
+// `<canon>-suffix` variant of one.
+//
+// Exported and single-sourced deliberately: internal/cli needs the same
+// predicate for wrapper/hook identity, and a verbatim twin in two packages is
+// the same drift risk as two vendor tables one level down — change the suffix
+// rule in one and vendor resolution silently diverges from hook installation
+// (opus-xhigh, PR #148 gate).
+func MatchesCanonicalID(agentID, canon string) bool {
 	agentID = strings.TrimSpace(agentID)
 	canon = strings.TrimSpace(canon)
 	return agentID == canon || strings.HasPrefix(agentID, canon+"-")

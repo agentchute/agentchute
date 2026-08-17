@@ -67,8 +67,10 @@ func resolveAgentVendor(vendor, agentID string, cfg *loop.Config) string {
 	return op.ResolveVendor(cfg, agentID)
 }
 
+// registrationMatchesCanonical keeps its shipped name and signature for its
+// wrapper/hook-identity callers (doctor.go, setup_reset.go) and delegates to the
+// seam, so the canonical-id rule has ONE definition rather than a verbatim twin
+// per package.
 func registrationMatchesCanonical(agentID, canon string) bool {
-	agentID = strings.TrimSpace(agentID)
-	canon = strings.TrimSpace(canon)
-	return agentID == canon || strings.HasPrefix(agentID, canon+"-")
+	return op.MatchesCanonicalID(agentID, canon)
 }
