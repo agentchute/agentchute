@@ -41,6 +41,7 @@ func init() {
 		"hooks":        cmdHooks,
 		"clean":        cmdClean,
 		"guard":        cmdGuard,
+		"hub":          cmdHub,
 		"turn-end":     cmdTurnEnd,
 	}
 }
@@ -304,6 +305,9 @@ func extractGlobalFlag(args []string, name string) (value string, rest []string,
 func commandNamesSorted() []string {
 	out := make([]string, 0, len(commandHandlers))
 	for name := range commandHandlers {
+		if name == "hub" {
+			continue
+		}
 		out = append(out, name)
 	}
 	sort.Strings(out)

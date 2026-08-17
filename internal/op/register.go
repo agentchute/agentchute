@@ -105,6 +105,17 @@ type RegisterResp struct {
 // A fresh serve lease owned by another process refuses the registration
 // regardless of row age; stale same-id state is merged as crash recovery.
 func Register(cfg *loop.Config, ctx Context, req RegisterReq, now time.Time) (RegisterResp, error) {
+	return register(cfg, ctx, req, now, nil)
+}
+
+// RegisterWithPrecommitValidation lets a transport reject a response shape
+// before the corresponding registration becomes visible. The validator runs
+// under the agent lock after the final merge but before any filesystem write.
+func RegisterWithPrecommitValidation(cfg *loop.Config, ctx Context, req RegisterReq, now time.Time, validate func(RegisterResp) error) (RegisterResp, error) {
+	return register(cfg, ctx, req, now, validate)
+}
+
+func register(cfg *loop.Config, ctx Context, req RegisterReq, now time.Time, validate func(RegisterResp) error) (RegisterResp, error) {
 	if err := loop.ValidateAgentID(ctx.ActorID); err != nil {
 		return RegisterResp{}, err
 	}
@@ -129,13 +140,13 @@ func Register(cfg *loop.Config, ctx Context, req RegisterReq, now time.Time) (Re
 		return RegisterResp{}, fmt.Errorf("missing --vendor (recommended values: anthropic, openai, local, human)")
 	}
 
-	resp, err := publishRegistrationOnce(cfg, ctx.ActorID, vendor, req, now)
+	resp, err := publishRegistrationOnce(cfg, ctx.ActorID, vendor, req, now, validate)
 	if os.IsExist(err) {
 		// WriteRegistrationExclusive closed a creation race with a writer that
 		// did not take our agent lock. Re-read once through the normal merge
 		// path; its live-owner check decides whether this caller may adopt the
 		// now-existing row.
-		resp, err = publishRegistrationOnce(cfg, ctx.ActorID, vendor, req, now)
+		resp, err = publishRegistrationOnce(cfg, ctx.ActorID, vendor, req, now, validate)
 	}
 	if err != nil {
 		return RegisterResp{}, err
@@ -172,7 +183,7 @@ func Register(cfg *loop.Config, ctx Context, req RegisterReq, now time.Time) (Re
 // no-wake record, ensure the inbox dir, then write — exclusively
 // (create-if-not-exists) on a fresh row, so a concurrent same-id create is
 // re-read before this process may merge it.
-func publishRegistrationOnce(cfg *loop.Config, agentID, vendor string, req RegisterReq, now time.Time) (RegisterResp, error) {
+func publishRegistrationOnce(cfg *loop.Config, agentID, vendor string, req RegisterReq, now time.Time, validate func(RegisterResp) error) (RegisterResp, error) {
 	regPath := cfg.AgentRegistrationPath(agentID)
 	inboxDir := cfg.AgentInboxDir(agentID)
 
@@ -216,6 +227,13 @@ func publishRegistrationOnce(cfg *loop.Config, agentID, vendor string, req Regis
 			reg.Body = *req.Bio
 		}
 
+		resp := registerWriteResponse(reg, inboxDir, existingFound, req.Host)
+		if validate != nil {
+			if verr := validate(resp); verr != nil {
+				return verr
+			}
+		}
+
 		// Fix A2: create the inbox (and the agent-state dir) BEFORE publishing
 		// the registration so a peer can never observe a live registration with
 		// no inbox. A leftover empty inbox dir for an id whose exclusive create
@@ -245,13 +263,17 @@ func publishRegistrationOnce(cfg *loop.Config, agentID, vendor string, req Regis
 		return RegisterResp{}, err
 	}
 
+	return registerWriteResponse(reg, inboxDir, existingFound, req.Host), nil
+}
+
+func registerWriteResponse(reg *loop.Registration, inboxDir string, existingFound bool, resolvedHost string) RegisterResp {
 	return RegisterResp{
 		Reg:           RegistrationViewOf(reg),
 		InboxDir:      inboxDir,
 		Refreshed:     true, // §5: any successful boot/register write reports refreshed
 		ExistingFound: existingFound,
-		ResolvedHost:  req.Host,
-	}, nil
+		ResolvedHost:  resolvedHost,
+	}
 }
 
 // registrationLiveElsewhere reports whether a FRESH serve claim owns this id and

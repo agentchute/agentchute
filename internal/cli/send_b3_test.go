@@ -135,21 +135,19 @@ func TestSendRefusesMalformedRecipientAtPreflight(t *testing.T) {
 // itself catches the underlying race; this proves cmdSend renders it right).
 func TestSendFreshButRacingText(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	originalSend := op.SendTsMessageWithCommit
-	op.SendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, serveToken string) (loop.TsID, bool, error) {
-		return loop.TsID{}, false, &loop.ErrRecipientStale{
-			To:        to,
+	send := func(_ *loop.Config, _ op.Context, req op.SendReq) (op.SendResp, error) {
+		return op.SendResp{}, &loop.ErrRecipientStale{
+			To:        req.To,
 			LastSeen:  time.Now().UTC().Add(-90 * time.Second),
 			Age:       90 * time.Second,
 			Threshold: time.Hour,
 		}
 	}
-	defer func() { op.SendTsMessageWithCommit = originalSend }()
 
 	var sendErr error
 	withCwd(t, root, func() {
 		sendErr = withSendStdin(t, "body", func() error {
-			return cmdSend([]string{"--from", "claude-code", "--to", "codex"})
+			return cmdSendWithOp([]string{"--from", "claude-code", "--to", "codex"}, send)
 		})
 	})
 	if sendErr == nil {

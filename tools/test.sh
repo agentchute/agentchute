@@ -19,6 +19,10 @@ say "go test ./..."
 # shellcheck disable=SC2086
 env $strip_env go test ./... || { say "FAIL: go test"; exit 1; }
 
+say "cd conformance && go test ./..."
+# shellcheck disable=SC2086
+(cd conformance && env $strip_env go test ./...) || { say "FAIL: conformance go test"; exit 1; }
+
 say "go build ./..."
 # shellcheck disable=SC2086
 env $strip_env go build ./... || { say "FAIL: go build"; exit 1; }

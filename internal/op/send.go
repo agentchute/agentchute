@@ -7,13 +7,7 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// SendTsMessageWithCommit is the delivery seam (F1): mint the send stamp under
-// the write-ahead floor, then link into the recipient's inbox under their lock
-// (fresh-suffix EEXIST retry included). EXPORTED deliberately — two existing
-// package-`cli` tests reassign it to force a post-link sync failure and a
-// fresh-but-racing recipient, and an unexported var here would leave them
-// nothing to patch. One production call site: Send, below.
-var SendTsMessageWithCommit = loop.SendTsMessageWithCommit
+type sendDelivery func(*loop.Config, string, string, []byte, string) (loop.TsID, bool, error)
 
 // SendReq is a fully composed message plus its delivery options.
 //
@@ -113,6 +107,13 @@ func SendPreflight(cfg *loop.Config, ctx Context, to string) error {
 // expressible on the wire at all. A seam whose local behavior cannot survive
 // its own transport is a seam defect, so the fact moved onto the response.
 func Send(cfg *loop.Config, ctx Context, req SendReq) (SendResp, error) {
+	return sendWithDelivery(cfg, ctx, req, loop.SendTsMessageWithCommit)
+}
+
+// sendWithDelivery keeps the delivery dependency invocation-scoped. A hub
+// process may serve many sessions, so a mutable package seam would let one
+// session or test change every other session's send path.
+func sendWithDelivery(cfg *loop.Config, ctx Context, req SendReq, deliver sendDelivery) (SendResp, error) {
 	now := time.Now().UTC()
 
 	if err := SendPreflight(cfg, ctx, req.To); err != nil {
@@ -123,7 +124,7 @@ func Send(cfg *loop.Config, ctx Context, req SendReq) (SendResp, error) {
 	// `agentchute serve` carries the runner's active serve-lease epoch, so a
 	// write from a fenced (reclaimed) agent fails closed. Empty token (no
 	// serve lease) => intentionally unfenced.
-	id, committed, sendErr := SendTsMessageWithCommit(cfg, ctx.ActorID, req.To, req.Content, req.ServeToken)
+	id, committed, sendErr := deliver(cfg, ctx.ActorID, req.To, req.Content, req.ServeToken)
 	if sendErr != nil && !committed {
 		return SendResp{}, classifyDeliveryFailure(sendErr)
 	}

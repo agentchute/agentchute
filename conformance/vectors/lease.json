@@ -1,0 +1,9 @@
+{
+  "schema": "agentchute-lease-vectors-v1",
+  "vectors": [
+    {"id":"L1","kind":"fresh_acquire_fails_closed","name":"a second acquire while fresh fails closed"},
+    {"id":"L2","kind":"fenced_holder_writes_nothing","name":"a fenced holder cannot heartbeat or mint"},
+    {"id":"L3","kind":"release_token_checked","name":"release never deletes a successor claim"},
+    {"id":"L4","kind":"stale_reclaim_fences_old","name":"stale pid-dead reclaim succeeds and kills the old token"}
+  ]
+}
