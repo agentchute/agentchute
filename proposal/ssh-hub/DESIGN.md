@@ -3002,10 +3002,10 @@ the consensus. Additions:
   read. Setup is `chmod 000` on a `.claimed` residue file, the same probe
   that proved the M1 latch bug in two worktrees on both platforms.
 
-Timing (C7): these vectors are **not** a post-release merge. The L set and
-the fake-transport W set land inside M3 (with the code they test); the
-sshd-backed W runs land inside M6 — all of it **gating** the v1.6.0 tag,
-never after it (§11).
+Timing (C7): these vectors are **not** a post-release merge. L plus the
+hub-side W halves land inside M3; the client-side W1/W2/W6 halves land
+inside M4; the sshd-backed W reruns land inside M6 — all of it **gating**
+the v1.6.0 tag, never after it (§11).
 
 ---
 
