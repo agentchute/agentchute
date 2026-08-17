@@ -452,6 +452,8 @@ restrict,command="/usr/local/bin/agentchute hub session --agent <id> --pool <abs
 
 Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable":false}`
 
+**`claimed_held`** is an optional boolean, top-level on the `error` frame. It is encoded **only as `true` and omitted otherwise**. This is deliberately **not** the always-present rule that `owed_note` and `durability_note` follow: absence is not a malformed frame, and it means this error is not reporting held claimed mail. When present and `true`, the operation failed **and** claimed mail is held on the hub for this actor, so the client must arm its guard latch even though it received no `msg` frames. A client that sees `claimed_held: true` arms its latch. The version handshake makes a mixed-version pair impossible, so this is a parsing rule, not a compatibility rule.
+
 | code | emitter | meaning |
 |---|---|---|
 | `E_VERSION` | hub | protocol version mismatch (handshake) |
