@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/hubclient"
+	"github.com/agentchute/agentchute/internal/hubwire"
 	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 )
@@ -85,15 +87,38 @@ func TestRemoteSendUnknownSpoolsOutsideShadowWithBodyFileRetry(t *testing.T) {
 	}
 }
 
-func TestClaimedHeldErrorArmsLocalLatch(t *testing.T) {
-	cfg := &loop.Config{LoopDir: filepath.Join(t.TempDir(), ".agentchute", "loop")}
+func TestW6ClientRemoteCheckClaimedHeldArmsLocalLatch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
 	t.Setenv("AGENTCHUTE_GUARD", "1")
 	t.Setenv("AGENTCHUTE_SERVE_TOKEN", "session-token")
-	err := &hubclient.Error{Code: "E_HUB_IO", Msg: "read failed", ClaimedHeld: true}
-	if !hubclient.ClaimedHeld(err) {
-		t.Fatal("claimed_held was lost")
+	t.Setenv("AGENTCHUTE_W6_TEST_BINARY", os.Args[0])
+	t.Setenv("AGENTCHUTE_W6_TEST_HELPER", "1")
+
+	remote, err := loop.ParseRemoteURL("ssh://hub.example/remote/pool")
+	if err != nil {
+		t.Fatal(err)
 	}
-	maybeSetGuardLatch(cfg, "codex")
+	if err := hubclient.WriteHubConfig(remote.HubID, &hubclient.HubConfig{
+		URL: remote.URL, JoinedAs: []string{"codex"}, Pool: "/remote/pool", Pool12: "0123456789ab",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	ssh := filepath.Join(binDir, "ssh")
+	script := "#!/bin/sh\nexec \"$AGENTCHUTE_W6_TEST_BINARY\" -test.run '^TestW6ClientRemoteCheckClaimedHeldSSHHelper$'\n"
+	if err := os.WriteFile(ssh, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	err = cmdCheck([]string{"--as", "codex", "--control-repo", remote.URL})
+	if hubclient.ErrorCode(err) != "E_HUB_IO" || !hubclient.ClaimedHeld(err) {
+		t.Fatalf("check error = %v code=%s claimed_held=%v", err, hubclient.ErrorCode(err), hubclient.ClaimedHeld(err))
+	}
+	cfg := &loop.Config{LoopDir: remote.ShadowLoopDir}
 	latch, readErr := loop.ReadGuardLatch(cfg, "codex")
 	if readErr != nil {
 		t.Fatal(readErr)
@@ -101,6 +126,44 @@ func TestClaimedHeldErrorArmsLocalLatch(t *testing.T) {
 	if latch.Session != "session-token" {
 		t.Fatalf("latch session = %q", latch.Session)
 	}
+}
+
+func TestW6ClientRemoteCheckClaimedHeldSSHHelper(t *testing.T) {
+	if os.Getenv("AGENTCHUTE_W6_TEST_HELPER") != "1" {
+		return
+	}
+	fail := func(err error) {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	r := hubwire.NewReader(os.Stdin)
+	w := hubwire.NewWriter(os.Stdout)
+	raw, err := r.Read()
+	if err != nil || raw.T != "hello" {
+		fail(fmt.Errorf("read hello: type=%q err=%v", raw.T, err))
+	}
+	var hello hubwire.Hello
+	if err := raw.Decode(&hello); err != nil {
+		fail(err)
+	}
+	if err := w.Write(hubwire.HelloOK{
+		ResponseBase: hubwire.ResponseBase{T: "hello-ok", Re: raw.ID},
+		V:            hubwire.Version, Agent: hello.Agent, Pool: "/remote/pool", Pool12: "0123456789ab",
+		Writable: true, HubBin: "test", HubTime: time.Now().UTC(),
+	}, nil); err != nil {
+		fail(err)
+	}
+	raw, err = r.Read()
+	if err != nil || raw.T != "check" {
+		fail(fmt.Errorf("read check: type=%q err=%v", raw.T, err))
+	}
+	if err := w.Write(hubwire.Error{
+		ResponseBase: hubwire.ResponseBase{T: "error", Re: raw.ID},
+		Code:         "E_HUB_IO", Msg: "fixture unreadable claim", ClaimedHeld: true,
+	}, nil); err != nil {
+		fail(err)
+	}
+	os.Exit(0)
 }
 
 func TestRecipientReachabilityFromWireError(t *testing.T) {
