@@ -4,6 +4,16 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.6.0 (2026-08-17) — a seam, and nothing else
+
+**Internal refactor only: no behavior change, no new command or flag, and no hub capability claimed or shipped. Nothing to do on any lane — no cutover, no forced update.** Protocol v2.5, registration wire `v: 3`, and the enrollment marker are unchanged; every command's text, `--json`, and exit codes are byte-identical to v1.5.7.
+
+**Operation seam**
+- Each coordination operation — `send`, `check`, `ack`, `gate`, `status`, `register`, the runner's tick, and owed-ledger cleanup — moved out of `internal/cli` into a new `internal/op` package behind a request/response shape per operation. `internal/cli` keeps flag parsing, terminal rendering, and process concerns and calls the op layer for the work. `internal/loop` has a zero-byte diff ([#148](https://github.com/agentchute/agentchute/pull/148)).
+- `internal/op` must not import `internal/cli`, enforced by a test that parses the package's own imports rather than by convention. That one-way constraint is the release: an operation that cannot reach into the CLI is one that can later be driven by something other than a local terminal ([#148](https://github.com/agentchute/agentchute/pull/148)).
+- Streamed output is delivered as events the caller renders, so an operation no longer writes to a stream directly; display-only code stayed in `internal/cli`. Moved helpers kept a thin alias or adapter behind their old name and signature, so the existing suite passes essentially unmodified — three test files needed one hunk each, only because a struct literal and a reassigned package-level variable cannot be aliased. 68 new tests cover the op layer directly; the suite is 838 cases ([#148](https://github.com/agentchute/agentchute/pull/148)).
+- Tagged despite shipping nothing usable, on purpose: `AGENTCHUTE.md` is normative, so no released spec may describe a capability no released binary carries. The seam ships first; the prose that will be written against it comes after.
+
 ## v1.5.7 (2026-08-13) — a reply that fits, a cue that says when
 
 **Send**
