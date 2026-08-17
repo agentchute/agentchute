@@ -28,8 +28,8 @@ M1 seam ──▶ M2 spec ──▶ M3 codec+session+vectors ──▶ M4 client
 ```
 
 (M1 is merged at `7d08654`. M2 is merged at `1431657`. #154 (published spec
-off `main`) is the remaining hold in front of any later merge that would
-publish more hub capability.)
+off `main`) closed at `69f4e3c`; the published spec now points at the
+latest release.)
 
 - **M1** (operation seam, **2,000–2,500 LOC** — re-priced from 1,500 because
   every wrapped helper MOVES into `internal/op` rather than being called
@@ -109,10 +109,12 @@ Ground rules for every M1 item:
   3. **every struct field** an item **collapses, removes, or re-signatures**.
      A field reached through a receiver (`rt.lease`) is neither a function
      nor a type, so populations 1–2 miss it. For each such field, grep every
-     `internal/cli/*_test.go` for receiver-qualified uses
-     (`rt.<field>`, `runtime.<field>`, …) before the item may be called
-     done. A comment-only hit needs nothing; a **code** hit needs an alias,
-     an adapter, a preserved field, or a named exception.
+     `internal/cli/*_test.go` for **two spellings** before the item may be
+     called done: receiver-qualified uses (`rt.<field>`, `runtime.<field>`,
+     …) **and** keyed struct-literal fields (`<field>:`). A struct literal
+     setting a field by key is how M1's bug was written. A comment-only
+     hit needs nothing; a **code** hit needs an alias, an adapter, a
+     preserved field, or a named exception.
 
   For each identifier in populations 1–2 the item does ONE of two things
   before it may be called done: leave a thin alias/adapter in `cli` (or
@@ -130,7 +132,7 @@ Ground rules for every M1 item:
   `b1_convergence_test.go:67`, the adapter). There is no fourth. **Re-run
   the field check for M3–M6 only**; do not re-open M1.
 
-  Run over both populations at `1244ae4`, the check yields exactly: the three
+  Run over the three populations at `1244ae4`, the check yields exactly: the three
   M1 exceptions in the table above, the four M1 aliases/adapters, and — from
   population 2, which is where round 3's version stopped — **`resolveAgentID`
   in M4**, whose five direct calls in `internal/cli/identity_test.go` are
@@ -1596,12 +1598,13 @@ bullets** (W1-hub, W2-hub, W3-hub, the combined W4/W5, and W6-hub) green under
 
 **WI-3.6 — replace `op.SendTsMessageWithCommit` with a non-global seam.**
 
-(a) The exported mutable package var is a CLI test seam and is wrong for a
-long-lived hub session (process-global write shared across sessions).
-**Pinned shape:** a dependency-parameterized internal helper in production
-`op.Send`; a dependency-parameterized helper in `cmdSend` for the two
-existing CLI tests; the hub session calls the production path directly.
-No exported mutable var, no session-shared test mutation.
+(a) An unexported package var is still process-global. A hub session
+process holds many sessions, so it is shared mutable state across them.
+**Pinned shape:** **no** mutable package-level state on `op.Send`'s hub
+path — exported or not. Production `op.Send` takes its delivery
+dependency as a parameter through an internal helper; `cmdSend` gets a
+dependency-parameterized helper for the two existing CLI tests; the hub
+session calls the production path directly.
 
 (b) #150 / #152 item 4; recorded at M1 gate `ac0b6eb` and deferred because
 changing it there would have edited tests outside M1's closed exception
@@ -1618,13 +1621,15 @@ exported var (must be named up front):
 `internal/op/helpers_test.go`, and `internal/loop/floor_test.go` are the
 loop function, not this var.
 
-(d) After this item, no exported mutable send-delivery var remains. The
-hub session calls the production helper; CLI tests inject via the
-cmdSend-parameterized helper only.
+(d) After this item, no mutable package-level send-delivery state remains
+on the hub path. The hub session calls the production helper; CLI tests
+inject via the cmdSend-parameterized helper only.
 
 (f) Done-when: those three test files retarget the new seam; `tools/test.sh`
-green; `grep SendTsMessageWithCommit internal/op/*.go` shows no exported
-`var` declaration.
+green; a check **fails** on any mutable package-level declaration
+reachable from `op.Send`'s hub path, not just an exported one. **codex
+proposes the exact check in its M3 PR**, the same way it owns the W
+harness interface.
 
 (g) (no new LOC estimate — existing M3 envelope.)
 
@@ -3118,16 +3123,19 @@ execution start (this plan does not run it). **Budget reshuffle (Alex,
 implementing M3–M6 means codex is no longer the mandatory second gate on
 those merges**, so opus-xhigh's single deep pass has to be the hard one.
 
-Per §2 rule 1, **one lane owns each merge**; a named specialist item is
-handed over inside that merge and the owner integrates.
+Per §2 rule 1, **one lane owns each merge**. There are no specialist
+implementation hand-offs left: **codex implements every M3–M6 item**,
+including WI-3.4 and WI-5.3b/c. opus-xhigh reviews only, one named deep
+pass per merge. M5's deep-pass surface already covers key lifecycle, so
+review coverage does not change.
 
 | merge | merge owner (implementer) | specialist hand-off inside the merge | reviewer (every remaining merge) | deep pass (one, named surface) |
 |---|---|---|---|---|
 | M1 | opus-high (done) | — | opus-xhigh | — (spent) |
 | M2 | grok (done) | — | opus-xhigh + codex | — (spent) |
-| M3 | **codex** | **WI-3.4** (the sole `internal/loop` change) → opus-xhigh | **grok** (incl. codec round-trip tests) | **opus-xhigh**: §4.4.3 producer rules FIRST (`status-ok` two budgets vs the encoded line, prefix-only truncation, never-emit-over-64-KiB, streaming that never materializes an unbounded slice); security surface (forced-command pinning, `--as`/`--from`, `pool.id` J1) rides along. Not the codec round-trips. |
+| M3 | **codex** | — | **grok** (incl. codec round-trip tests) | **opus-xhigh**: §4.4.3 producer rules FIRST (`status-ok` two budgets vs the encoded line, prefix-only truncation, never-emit-over-64-KiB, streaming that never materializes an unbounded slice); security surface (forced-command pinning, `--as`/`--from`, `pool.id` J1) rides along. Not the codec round-trips. |
 | M4 | **codex** | — | **grok** | **opus-xhigh**: §6.8 contract + resolver precedence |
-| M5 | **codex** | **WI-5.3b** (key lifecycle + recovery classifier) and **WI-5.3c** (migration state machine) → opus-xhigh | **grok** (persona-walk §7 quickstarts and every §7.5 text) | **opus-xhigh**: §7.2 versioned keypairs, symlink-as-only-pointer, join/rotate/migrate lock, migration renaming directories out from under it |
+| M5 | **codex** | — | **grok** (persona-walk §7 quickstarts and every §7.5 text) | **opus-xhigh**: §7.2 versioned keypairs, symlink-as-only-pointer, join/rotate/migrate lock, migration renaming directories out from under it |
 | M6 | **codex** | — | **grok** (walks the matrix vs §10.3 row-for-row) | **opus-xhigh**: conformance **vectors only** — not CI wiring, not the sshd matrix |
 
 **Integrator-owned items** (claude-code, not the merge owner): **WI-6.6**
@@ -3194,8 +3202,9 @@ checklist. WI-6.6 lands in the same PR that satisfies these steps.
     - Reject any `main` spec or conformance target under `web/`.
     - Reject a current-page tag that differs from `gh release view --json
       tagName --jq .tagName`.
-    - Validate every versioned spec fragment against the rendered Contents
-      API HTML.
+    - **Manual step (not in the script below):** validate every versioned
+      spec fragment against the rendered Contents API HTML. The script
+      only rejects `main` targets and mismatched release tags.
 
     ```sh
     test -z "$(rg -n 'github\.com/agentchute/agentchute/blob/main/AGENTCHUTE\.md|raw\.githubusercontent\.com/agentchute/agentchute/main/AGENTCHUTE\.md|github\.com/agentchute/agentchute/tree/main/conformance' web --glob '*.html' || true)"
@@ -3216,9 +3225,10 @@ checklist. WI-6.6 lands in the same PR that satisfies these steps.
    alters lease reclaim for LOCAL pools too. The ordering is spec-fixed
    (freshness refusal first — C8) and the comparison is **equality only**; any
    drift toward wall-clock ordering re-creates the bug B6 caught, where an NTP
-   step steals a live lane's lease. opus-xhigh implements, codex
-   conservative-gates, and the seven cases are non-negotiable — including the
-   clock-step row, which the withdrawn rule failed.
+   step steals a live lane's lease. **codex implements**; grok reviews;
+   opus-xhigh deep-passes the named surface. The seven cases are
+   non-negotiable — including the clock-step row, which the withdrawn
+   rule failed.
 2. **Guard-latch M4 routing.** `guard` resolves its id inline
    (`guard.go:175-189`) — if WI-4.8 misses it, the latch lives under `codex`
    while the lane acts as `codex-tiny` and the guard silently never denies. The
