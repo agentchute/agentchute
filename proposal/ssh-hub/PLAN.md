@@ -3217,10 +3217,11 @@ checklist. WI-6.6 lands in the same PR that satisfies these steps.
 
     ```sh
     set -eu
-    # Do not add `set -o pipefail`: the `rg | rg` pipelines legitimately
-    # produce no matches on a tree with no versioned references, and
-    # pipefail plus `set -e` would abort there instead of at the explicit
-    # test -n / test -z guards.
+    # Do not add `set -o pipefail`. The block targets POSIX `sh`. Also
+    # `gh api | rg -Fq` may validly close the upstream writer early after
+    # a match; pipefail would turn that success into a false failure.
+    # `|| true` on the two assignments is what defers a no-match `rg` to
+    # the test -n guards — not the absence of pipefail.
 
     test -z "$(rg -n 'github\.com/agentchute/agentchute/blob/main/AGENTCHUTE\.md|raw\.githubusercontent\.com/agentchute/agentchute/main/AGENTCHUTE\.md|github\.com/agentchute/agentchute/tree/main/conformance' web --glob '*.html' || true)"
 
