@@ -26,6 +26,8 @@ type HubSessionTransport interface {
 
 type hubSessionTransport = HubSessionTransport
 
+var hubSessionNow = func() time.Time { return time.Now().UTC() }
+
 // HubSessionConfig is the forced-command identity pinned by authorized_keys.
 // It intentionally contains no discovery inputs or client-selected actor.
 type HubSessionConfig struct {
@@ -324,7 +326,7 @@ func (s *hubSession) dispatch(raw hubwire.RawFrame) (bool, error) {
 		if s.mode == "channel" {
 			resp, err = s.channel.RegisterWithPrecommitValidation(opReq, validateResponse)
 		} else {
-			resp, err = op.RegisterWithPrecommitValidation(s.cfg, s.ctx, opReq, time.Now().UTC(), validateResponse)
+			resp, err = op.RegisterWithPrecommitValidation(s.cfg, s.ctx, opReq, hubSessionNow(), validateResponse)
 		}
 		if err != nil {
 			return s.mode != "channel", s.writeError(raw.ID, err)
