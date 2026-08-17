@@ -1494,7 +1494,7 @@ declared coverage gaps. They get their own item **after M6**.
 (a) Executable-spec coverage for the lease/fencing gap and for the hub half of
 the wire lifecycle.
 
-(b) §9.3 (L1–L4; W1–W5 and the timing rule).
+(b) §9.3 (L1–L4; W1–W6 and the timing rule).
 
 **(c) Placement, pinned — this IS the finding (B3/X3).** Verified facts:
 `conformance/go.mod` is exactly three lines (`module agentchute.dev/conformance`,
@@ -1572,16 +1572,24 @@ root `go test ./...` never enters it; `tools/test.sh` never enters it; only
   check ⇒ `op.ErrFenced` / `E_FENCED`, nothing linked.
 - **W4/W5**: identity and version mismatch close the session at the handshake
   (already fully hub-side).
+- **W6-hub**: unreadable claimed residue reports `claimed_held`. Setup:
+  make a `.claimed` residue file unreadable hub-side (`chmod 000`). Drive
+  `check`. Assert the terminal `error` frame carries `claimed_held: true`.
+  W1 does **not** cover this: W1 is disconnect-after-claim, where no
+  terminal `error` is written. The setup is the same probe opus-xhigh used
+  to prove the M1 latch bug in two worktrees, on both platforms. Client
+  latch-arming is M4.
 
-The CLIENT halves — "reported unknown and not replayed" and "next check
-redelivers **with the banner**" — cannot run here and move to **M4 (WI-4.10)**.
+The CLIENT halves — "reported unknown and not replayed", "next check
+redelivers **with the banner**", and "arm the latch on `claimed_held`
+with no `msg` frames" — cannot run here and move to **M4 (WI-4.10)**.
 A green W2 in M3 that claims client behavior is testing nothing; that is the
 review's canary for this item.
 
 L1–L4 as §9.3 states them, driven in-process against the seam.
 
-(f) Done-when: L1–L4 plus the **five hub-side W assertions across four
-bullets** (W1-hub, W2-hub, W3-hub, and the combined W4/W5) green under
+(f) Done-when: L1–L4 plus the **six hub-side W assertions across five
+bullets** (W1-hub, W2-hub, W3-hub, the combined W4/W5, and W6-hub) green under
 `tools/test.sh`; `git diff` shows both `go.mod` files unchanged.
 
 (g) ~350 LOC.
@@ -2327,7 +2335,7 @@ M3.)*
 
 (a) The two W vectors whose client-side behavior M3 had no client to test.
 
-(b) §9.3 (W1, W2); §4.5.2, §4.5.3.
+(b) §9.3 (W1, W2, W6); §4.5.2, §4.5.3.
 
 (c) MODIFY `internal/spectest/wire.go` — add the client-driven halves as
 **exported, transport-parameterized helpers** beside the hub-side ones (R6, the
@@ -2340,9 +2348,11 @@ definitions, so the vector has one source and two drivers.
 renders the REDELIVERED banner (the `check.go:180-193` path). **W2-client**: an
 in-window disconnect is reported as `E_SEND_UNKNOWN`, the body is spooled, and
 nothing is replayed automatically — asserted by counting **hub-side inbox
-files**, not by inspecting client state.
+files**, not by inspecting client state. **W6-client**: a `check` that
+terminates as `error` with `claimed_held: true` and no `msg` frames arms
+the local guard latch.
 
-(f) Done-when: W1–W5 are green with hub-side halves (M3) and client halves (M4)
+(f) Done-when: W1–W6 are green with hub-side halves (M3) and client halves (M4)
 in one `tools/test.sh` run. The sshd re-run is WI-6.4's and gates the tag.
 
 (g) ~120 LOC.
@@ -2942,7 +2952,7 @@ untagged `doc.go` from WI-6.1 is what makes that deterministic).
 
 **WI-6.4 — sshd-backed W vector runs.**
 
-(a) Re-drive conformance W1–W5 through the real transport (§9.3's timing rule:
+(a) Re-drive conformance W1–W6 through the real transport (§9.3's timing rule:
 they gate the tag).
 
 (c) NEW `integration/sshd/conformance_wire_test.go`, which **imports
@@ -2952,7 +2962,7 @@ assertion helpers, driving them through the real ssh transport instead of
 under `conformance/vectors/` — and ONE assertion implementation, parameterized
 by transport.
 
-(f) Done-when: W1–W5 (hub-side halves and client halves alike) green under sshd
+(f) Done-when: W1–W6 (hub-side halves and client halves alike) green under sshd
 on both OSes, run as `sh tools/sshd-test.sh`.
 
 (g) ~150 LOC.

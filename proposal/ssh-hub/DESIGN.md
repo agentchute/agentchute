@@ -1084,7 +1084,7 @@ as `true` and omitted otherwise, set when `Claim` returns an error with
 `true`. **`check-ok.redelivered` is unchanged** — `check-ok` is only
 emitted on a nil error, where residue found equals residue delivered.
 **A `note` frame is not sufficient** — arming a latch must never depend
-on parsing display text.
+on parsing display text. Covered by **W6**, not W1.
 
 | code | meaning | maps from |
 |---|---|---|
@@ -2993,7 +2993,14 @@ the consensus. Additions:
   `W1` disconnect-after-claim redelivers; `W2` disconnect-after-send is
   reported unknown and not replayed; `W3` reclaim-during-send fails fenced;
   `W4` identity mismatch closes at handshake; `W5` version mismatch closes at
-  handshake.
+  handshake; `W6` unreadable claimed residue reports `claimed_held: true`
+  (and the client arms its latch with no `msg` frames). W1 is
+  disconnect-after-claim: the session dies and **no terminal `error` frame
+  is written**, so it does not cover a hub that forgets `claimed_held`.
+  W6's path is `Claim` returning an error with
+  `ClaimSummary.Redelivered > 0` — residue exists but its bytes cannot be
+  read. Setup is `chmod 000` on a `.claimed` residue file, the same probe
+  that proved the M1 latch bug in two worktrees on both platforms.
 
 Timing (C7): these vectors are **not** a post-release merge. The L set and
 the fake-transport W set land inside M3 (with the code they test); the
