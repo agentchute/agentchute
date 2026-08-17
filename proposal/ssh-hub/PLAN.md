@@ -3216,16 +3216,22 @@ checklist. WI-6.6 lands in the same PR that satisfies these steps.
     five versioned spec fragments resolved in rendered Contents API HTML.**
 
     ```sh
+    set -eu
+    # Do not add `set -o pipefail`: the `rg | rg` pipelines legitimately
+    # produce no matches on a tree with no versioned references, and
+    # pipefail plus `set -e` would abort there instead of at the explicit
+    # test -n / test -z guards.
+
     test -z "$(rg -n 'github\.com/agentchute/agentchute/blob/main/AGENTCHUTE\.md|raw\.githubusercontent\.com/agentchute/agentchute/main/AGENTCHUTE\.md|github\.com/agentchute/agentchute/tree/main/conformance' web --glob '*.html' || true)"
 
     latest=$(gh release view --repo agentchute/agentchute --json tagName --jq .tagName)
     refs=$(rg -o --no-filename 'https://[^" <]+' web/*.html |
-      rg 'raw\.githubusercontent\.com/agentchute/agentchute/[^/]+/AGENTCHUTE\.md|github\.com/agentchute/agentchute/(blob/[^/]+/AGENTCHUTE\.md|tree/[^/]+/conformance)')
+      rg 'raw\.githubusercontent\.com/agentchute/agentchute/[^/]+/AGENTCHUTE\.md|github\.com/agentchute/agentchute/(blob/[^/]+/AGENTCHUTE\.md|tree/[^/]+/conformance)' || true)
     test -n "$refs"
     bad=$(printf '%s\n' "$refs" | grep -Fv "/$latest/" || true)
     test -z "$bad"
 
-    anchors=$(rg -o --no-filename 'https://github\.com/agentchute/agentchute/blob/[^/]+/AGENTCHUTE\.md#[^" <]+' web --glob '*.html')
+    anchors=$(rg -o --no-filename 'https://github\.com/agentchute/agentchute/blob/[^/]+/AGENTCHUTE\.md#[^" <]+' web --glob '*.html' || true)
     test -n "$anchors"
     printf '%s\n' "$anchors" |
     while IFS= read -r url; do
