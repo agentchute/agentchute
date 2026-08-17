@@ -7,9 +7,9 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // cmdAck is phase 2 of the two-phase consume (Gate 5): the COMMIT. It archives
@@ -108,28 +108,19 @@ func cmdAck(args []string) error {
 		}
 	}
 
-	now := time.Now().UTC()
-
 	// UNCONDITIONAL COMMIT (F7): archive every claimed message regardless of
-	// finish-gate status — see the doc comment above cmdAck.
-	acked, err := archiveAllClaimed(cfg, agentID, now)
+	// finish-gate status — see the doc comment above cmdAck. The finish gate is
+	// evaluated by the op AFTER committing, purely to REPORT whether other
+	// obligations remain, so its reasons never stale-cite the batch just
+	// archived.
+	acked, sum, err := ackClaimed(cfg, agentID)
 	if err != nil {
 		return err
 	}
 
-	// Evaluate the finish gate AFTER committing, purely to REPORT whether other
-	// obligations remain. Read-only; reuses gate.go's exact blocking predicate,
-	// so ack and `gate --before finish` can never disagree about whether finish
-	// would block. Post-commit means the reported reasons never stale-cite the
-	// batch we just archived (gate.go's own ClaimedResidue warning drops to 0).
-	clear, reasons, err := finishGateClear(cfg, agentID, now)
-	if err != nil {
-		return fmt.Errorf("evaluate finish gate: %w", err)
-	}
-
-	result := ackResult{Agent: agentID, Count: len(acked), Acked: acked, GateClear: clear}
-	if !clear {
-		result.BlockReasons = reasons
+	result := ackResult{Agent: agentID, Count: len(acked), Acked: acked, GateClear: sum.GateClear}
+	if !sum.GateClear {
+		result.BlockReasons = sum.BlockReasons
 	}
 
 	if quiet {
@@ -150,32 +141,30 @@ func cmdAck(args []string) error {
 	// Exit code carries the distinction JSON/text already reported: clear => the
 	// commit is fully done; blocked => committed, but do not treat this turn as
 	// finished (same sentinel/exit-2 contract as `gate --before finish`).
-	if !clear {
+	if !sum.GateClear {
 		return errBlocked
 	}
 	return nil
 }
 
-// archiveAllClaimed commits every message CLAIMED in inbox/<id>/.claimed
-// (phase 1) into the archive (phase 2, the actual commit point). Shared by
-// cmdAck and turn-end step 1 (v2.5 plan A7/C24) so the two entry points can
-// never diverge in what "commit claimed mail" means. An empty .claimed is a
-// no-op success (returns an empty, non-nil slice).
-func archiveAllClaimed(cfg *loop.Config, agentID string, now time.Time) ([]ackItem, error) {
-	claimedDir := cfg.AgentClaimedDir(agentID)
-	residue, err := loop.ListClaimedMessages(claimedDir)
-	if err != nil {
-		return nil, fmt.Errorf("list claimed residue: %w", err)
-	}
-	acked := make([]ackItem, 0, len(residue))
-	for _, msg := range residue {
-		dest, err := loop.ArchiveMessage(msg, cfg.ArchiveDir(), agentID, now)
-		if err != nil {
-			return nil, fmt.Errorf("ack (archive) %s: %w", msg.Filename, err)
+// ackClaimed commits every message CLAIMED in inbox/<id>/.claimed (phase 1)
+// into the archive (phase 2, the actual commit point) through the seam, and
+// collects the per-item events for rendering. Shared by cmdAck and turn-end
+// step 1 (v2.5 plan A7/C24) so the two entry points can never diverge in what
+// "commit claimed mail" means. An empty .claimed is a no-op success (returns an
+// empty, non-nil slice).
+func ackClaimed(cfg *loop.Config, agentID string) ([]ackItem, op.AckSummary, error) {
+	acked := make([]ackItem, 0)
+	sum, err := op.Ack(cfg, op.Context{ActorID: agentID}, op.AckReq{}, func(ev op.Event) error {
+		if ev.Ack != nil {
+			acked = append(acked, ackItem{Filename: ev.Ack.Filename, ArchivePath: ev.Ack.ArchivePath})
 		}
-		acked = append(acked, ackItem{Filename: msg.Filename, ArchivePath: dest})
+		return nil
+	})
+	if err != nil {
+		return nil, sum, err
 	}
-	return acked, nil
+	return acked, sum, nil
 }
 
 // emitAckText prints the human-readable ack outcome: the committed items (or

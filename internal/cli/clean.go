@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // clean.go — the v2.5 manual clean command (implementation plan slice A4,
@@ -118,57 +119,11 @@ type cleanOwedResult struct {
 // RecordOwed/ClearOwed (from the agent's own `check`/`send`) cannot race the
 // read-modify-write.
 func cmdCleanOwed(cfg *loop.Config, agentID string, apply, jsonOut bool, now time.Time) error {
-	result := cleanOwedResult{Agent: agentID, Pruned: []string{}}
-
-	if !apply {
-		ledger, err := loop.LoadOwedLedger(cfg, agentID)
-		if err != nil {
-			return fmt.Errorf("load owed ledger: %w", err)
-		}
-		for _, e := range ledger.ExpiredOwed(now) {
-			result.Pruned = append(result.Pruned, e.Key().RefString())
-		}
-		if jsonOut {
-			return emitCleanJSON(result)
-		}
-		emitCleanOwedText(result, apply)
-		return nil
-	}
-
-	err := loop.WithAgentLock(cfg, agentID, func() error {
-		ledger, err := loop.LoadOwedLedger(cfg, agentID)
-		if err != nil {
-			return fmt.Errorf("load owed ledger: %w", err)
-		}
-		expired := ledger.ExpiredOwed(now)
-		// Keyed by OwedKey, not counted: RecordOwed's own API is idempotent per
-		// key and can never create two entries with the same identity,
-		// so this can't observe a real duplicate through normal use. A
-		// hand-edited ledger with a duplicate key would have BOTH instances
-		// pruned together if either is expired — not reachable via the API,
-		// so left as a documented limitation rather than a count-based fix.
-		expiredKeys := make(map[loop.OwedKey]bool, len(expired))
-		for _, e := range expired {
-			result.Pruned = append(result.Pruned, e.Key().RefString())
-			expiredKeys[e.Key()] = true
-		}
-		if len(expired) == 0 {
-			return nil
-		}
-		kept := make([]loop.OwedEntry, 0, len(ledger.Owed))
-		for _, e := range ledger.Owed {
-			if expiredKeys[e.Key()] {
-				continue
-			}
-			kept = append(kept, e)
-		}
-		ledger.Owed = kept
-		return loop.SaveOwedLedger(cfg, agentID, ledger)
-	})
+	resp, err := op.CleanOwed(cfg, op.Context{ActorID: agentID}, op.CleanOwedReq{Apply: apply})
 	if err != nil {
 		return err
 	}
-	result.Applied = apply && len(result.Pruned) > 0
+	result := cleanOwedResult{Agent: resp.Agent, Pruned: resp.Pruned, Applied: resp.Applied}
 
 	if jsonOut {
 		return emitCleanJSON(result)
@@ -244,8 +199,9 @@ func cmdCleanMailbox(cfg *loop.Config, target string, apply, jsonOut bool, now t
 	}
 
 	// Re-check the guard AND perform the removal under the SAME
-	// WithAgentLock(target) critical section (review fix): publishRegistrationOnce
-	// (register.go) and BOTH of AcquireServeLease's paths — fresh-acquire and
+	// WithAgentLock(target) critical section (review fix): the registration
+	// write (publishRegistrationOnce, internal/op) and BOTH of
+	// AcquireServeLease's paths — fresh-acquire and
 	// reclaim (lease.go, unified under one lock as of the fresh-acquire-lock
 	// fix; comment corrected — it used to describe the fresh-acquire path as
 	// unlocked, which was exactly the gap codex reproduced against this

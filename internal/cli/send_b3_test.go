@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // send_b3_test.go — v2.5 plan B3: send re-derives reachability itself under
@@ -134,8 +135,8 @@ func TestSendRefusesMalformedRecipientAtPreflight(t *testing.T) {
 // itself catches the underlying race; this proves cmdSend renders it right).
 func TestSendFreshButRacingText(t *testing.T) {
 	root, cfg := setupSendFixture(t)
-	originalSend := sendTsMessageWithCommit
-	sendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, serveToken string) (loop.TsID, bool, error) {
+	originalSend := op.SendTsMessageWithCommit
+	op.SendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, serveToken string) (loop.TsID, bool, error) {
 		return loop.TsID{}, false, &loop.ErrRecipientStale{
 			To:        to,
 			LastSeen:  time.Now().UTC().Add(-90 * time.Second),
@@ -143,7 +144,7 @@ func TestSendFreshButRacingText(t *testing.T) {
 			Threshold: time.Hour,
 		}
 	}
-	defer func() { sendTsMessageWithCommit = originalSend }()
+	defer func() { op.SendTsMessageWithCommit = originalSend }()
 
 	var sendErr error
 	withCwd(t, root, func() {

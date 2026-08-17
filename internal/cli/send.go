@@ -12,13 +12,12 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // afterSendPreflightHook is a test seam for the recipient-disappears race:
 // preflight has passed and the body has been read, but delivery has not begun.
 var afterSendPreflightHook func()
-
-var sendTsMessageWithCommit = loop.SendTsMessageWithCommit
 
 var sendStdin = os.Stdin
 
@@ -132,43 +131,17 @@ func cmdSend(args []string) error {
 		return fmt.Errorf("--from: %w", err)
 	}
 
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): refuse invalid
-	// sender or recipient state before reading stdin, so a piped body remains
-	// untouched on every preflight failure.
-	// B1: CLI touches no longer refresh liveness — only serve's lease-gated
-	// heartbeat does (HeartbeatRegistration). This preflight only confirms
-	// the sender is enrolled at all.
-	selfPath := cfg.AgentRegistrationPath(fromID)
-	if _, err := os.Stat(selfPath); err == nil {
-		// registered; proceed.
-	} else if os.IsNotExist(err) {
-		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", fromID, fromID)
-	} else {
-		return fmt.Errorf("stat own registration: %w", err)
-	}
-
-	// B3 (v2.5 plan): the recipient preflight is a LOCK-FREE read of to's
-	// registration — never WithAgentLock(toID) here, whose ensurePrivateDir
-	// side effect would manufacture state/<toID>/ for an arbitrary --to typo
-	// (§4 risk; TestSendTakesNoLockForUnknownRecipient pins it). This is a
-	// fast-fail optimization only, run BEFORE stdin so a piped body is never
-	// touched on a doomed send (A5 ordering) — the actual enforcement is the
-	// re-check inside loop.DeliverUnderRecipientLock, which a sweep or a
-	// heartbeat can always race against between here and there.
+	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3) + B3's lock-free
+	// recipient read, both at the seam now (op.SendPreflight). Run here, BEFORE
+	// stdin, so a piped body remains untouched on every preflight failure (A5
+	// ordering). This call is the fast-fail: op.Send runs the same check as the
+	// authoritative one, since on the wire there is no earlier point to run it
+	// at (DESIGN §4.5.1).
+	actor := op.Context{ActorID: fromID}
 	inboxDir := cfg.AgentInboxDir(toID)
 	now := time.Now().UTC()
-	rr, rrErr := loop.CheckRecipientReachability(cfg, toID, now)
-	if rrErr != nil {
-		if errors.Is(rrErr, loop.ErrRecipientUnknown) {
-			return unknownRecipientError(toID, rrErr)
-		}
-		if errors.Is(rrErr, loop.ErrRecipientUnreadable) {
-			return unreadableRecipientError(toID)
-		}
-		return rrErr
-	}
-	if !rr.Fresh {
-		return staleRecipientError(toID, rr)
+	if err := op.SendPreflight(cfg, actor, toID); err != nil {
+		return renderSendPreflightError(fromID, toID, err)
 	}
 
 	// `--body-file` is an explicit body source even when the file is empty: an
@@ -239,7 +212,13 @@ func cmdSend(args []string) error {
 	// so a write from a fenced (reclaimed) agent fails closed (MintSendStamp's
 	// VerifyFence -> ErrFenced). Empty env (no serve lease) => intentionally
 	// unfenced.
-	id, committed, sendErr := sendTsMessageWithCommit(cfg, fromID, toID, content, os.Getenv("AGENTCHUTE_SERVE_TOKEN"))
+	resp, sendErr := op.Send(cfg, actor, op.SendReq{
+		To:         toID,
+		Content:    content,
+		Ask:        ask,
+		ReplyBy:    replyBy,
+		ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN"),
+	})
 	retry := sendRetryOptions{
 		Ask:        ask,
 		ReplyBy:    replyBy.String(),
@@ -247,26 +226,28 @@ func cmdSend(args []string) error {
 		ReplyTo:    replyTo,
 		ReplyToSet: replyToSet,
 	}
-	if sendErr != nil && !committed {
+	// A populated response means the message IS in the recipient's inbox; an
+	// error beside it is the owed-bookkeeping failure below, never a delivery
+	// failure. Nothing delivered => spool the body and classify.
+	if resp.Filename == "" {
 		return preserveSendBody(cfg, fromID, toID, rawBody, now, retry, sendErr)
 	}
 	// The on-wire identity is (to,from,timestamp,suffix) (v2.5 plan B7): `to`
-	// is the inbox directory, from/stamp/suffix the filename. `id` here is the
-	// identity DeliverUnderRecipientLock actually committed, whose suffix may
-	// differ from what was first proposed if a link collision forced a
-	// fresh-suffix retry (C4). No sender-asserted message_id is emitted.
-	msg := loop.Message{Filename: id.Filename(), Path: filepath.Join(inboxDir, id.Filename())}
+	// is the inbox directory, from/stamp/suffix the filename. The committed
+	// suffix may differ from what was first proposed if a link collision forced
+	// a fresh-suffix retry (C4). No sender-asserted message_id is emitted.
+	msg := loop.Message{Filename: resp.Filename, Path: filepath.Join(inboxDir, resp.Filename)}
 	result := sendResult{
 		Filename: msg.Filename,
 		Path:     msg.Path,
 		From:     fromID,
 		To:       toID,
 	}
-	if sendErr != nil {
+	if resp.DurabilityNote != "" {
 		if err := emitSendResult(result, jsonOut); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "WARNING: message delivered but inbox durability sync failed: %v. Do NOT resend.\n", sendErr)
+		fmt.Fprintf(os.Stderr, "WARNING: message delivered but inbox durability sync failed: %s. Do NOT resend.\n", resp.DurabilityNote)
 	}
 
 	// Asker-owned obligation (protocol-v2 / Gate 5): when we ASK for a reply,
@@ -276,30 +257,50 @@ func cmdSend(args []string) error {
 	// non-blocking dead-recipient warning. The recipient echoes id.RefString() as
 	// their reply's in_reply_to; our `check` then discharges it (ClearOwed). A
 	// failure here is loud: an ask without a recorded obligation is a silent leak.
-	if ask {
-		deadline := now.Add(loop.ReplyOwedDeadline)
-		if replyBy > 0 {
-			deadline = now.Add(replyBy)
-		}
-		if err := loop.RecordOwed(cfg, fromID, id, deadline, now); err != nil {
-			if sendErr == nil {
-				if emitErr := emitSendResult(result, jsonOut); emitErr != nil {
-					return emitErr
-				}
+	if sendErr != nil {
+		if resp.DurabilityNote == "" {
+			if emitErr := emitSendResult(result, jsonOut); emitErr != nil {
+				return emitErr
 			}
-			fmt.Fprintf(os.Stderr, "WARNING: reply-obligation bookkeeping failed: %v. Do NOT resend.\n", err)
-			return nil
 		}
+		fmt.Fprintf(os.Stderr, "WARNING: reply-obligation bookkeeping failed: %v. Do NOT resend.\n", sendErr)
+		return nil
 	}
 
 	// Reply obligations are asker-owned only (v0.9.0): --reply-to carries the
 	// `in_reply_to` ref (emitted by ComposeMessage above) so the ASKER's `.owed`
 	// obligation discharges when they consume this reply (ClearOwed, check.go).
 	// There is NO recipient-side ledger to mutate here.
-	if sendErr != nil {
+	if resp.DurabilityNote != "" {
 		return nil
 	}
 	return emitSendResult(result, jsonOut)
+}
+
+// renderSendPreflightError maps op.SendPreflight's typed refusals to the C29
+// texts. One sentinel, one text each; the sender-path "sender %q" wording is
+// this call site's own and differs from check/status's "agent %q" by design.
+func renderSendPreflightError(from, to string, err error) error {
+	switch {
+	case errors.Is(err, op.ErrNotRegistered):
+		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", from, from)
+	case errors.Is(err, op.ErrRecipientUnknown):
+		return unknownRecipientError(to, err)
+	case errors.Is(err, op.ErrRecipientUnreadable):
+		return unreadableRecipientError(to)
+	case errors.Is(err, op.ErrRecipientStale):
+		var stale *loop.ErrRecipientStale
+		if errors.As(err, &stale) {
+			return staleRecipientError(to, loop.RecipientReachability{
+				LastSeen:  stale.LastSeen,
+				Age:       stale.Age,
+				Threshold: stale.Threshold,
+			})
+		}
+		return err
+	default:
+		return err
+	}
 }
 
 // sendResult is the structured shape of `send`'s output (the same fields
