@@ -304,12 +304,17 @@ func (s *hubSession) dispatch(raw hubwire.RawFrame) (bool, error) {
 			return true, s.writeError(raw.ID, err)
 		}
 		opReq := op.RegisterReq{Vendor: req.Vendor, Host: req.Host, Bio: req.Bio, WorkingRepos: req.WorkingRepos, Announce: req.Announce, Sweep: req.Sweep, ServeToken: req.ServeToken}
+		validateResponse := func(resp op.RegisterResp) error {
+			wireResp, body := registerResponse(raw.ID, resp)
+			_, err := hubwire.Encode(wireResp, body)
+			return err
+		}
 		var resp op.RegisterResp
 		var err error
 		if s.mode == "channel" {
-			resp, err = s.channel.Register(opReq)
+			resp, err = s.channel.RegisterWithPrecommitValidation(opReq, validateResponse)
 		} else {
-			resp, err = op.Register(s.cfg, s.ctx, opReq, time.Now().UTC())
+			resp, err = op.RegisterWithPrecommitValidation(s.cfg, s.ctx, opReq, time.Now().UTC(), validateResponse)
 		}
 		if err != nil {
 			return s.mode != "channel", s.writeError(raw.ID, err)

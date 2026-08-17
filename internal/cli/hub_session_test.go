@@ -211,6 +211,38 @@ func TestHubSessionChannelHappyPathAndOrder(t *testing.T) {
 	}
 }
 
+func TestHubSessionRejectsUnencodableRegisterBeforeMutation(t *testing.T) {
+	pool, cfg := newHubPool(t)
+	s := startHubSession(t, pool, "codex", hubSessionTiming{}, nil, nil)
+	helloHub(t, s, "codex", 1)
+
+	vendor := "openai"
+	host := strings.Repeat("h", hubwire.MaxControlLine/2)
+	if err := s.writer.Write(hubwire.Register{RequestBase: hubwire.RequestBase{T: "register", ID: 2}, Vendor: &vendor, Host: host}, nil); err != nil {
+		t.Fatalf("the request itself must fit: %v", err)
+	}
+	raw, err := s.reader.Read()
+	if err != nil || raw.T != "error" {
+		t.Fatalf("register = %s, %v", raw.T, err)
+	}
+	var wireErr hubwire.Error
+	if err := raw.Decode(&wireErr); err != nil {
+		t.Fatal(err)
+	}
+	if wireErr.Code != hubwire.CodeTooLarge {
+		t.Fatalf("code = %s, want %s", wireErr.Code, hubwire.CodeTooLarge)
+	}
+	if _, err := os.Stat(cfg.AgentRegistrationPath("codex")); !os.IsNotExist(err) {
+		t.Fatalf("oversize response committed a registration: %v", err)
+	}
+	if _, err := os.Stat(cfg.AgentInboxDir("codex")); !os.IsNotExist(err) {
+		t.Fatalf("oversize response created an inbox: %v", err)
+	}
+	if err := <-s.done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHubSessionEveryOneShotOp(t *testing.T) {
 	pool, cfg := newHubPool(t)
 	enrollHubAgent(t, cfg, "codex")

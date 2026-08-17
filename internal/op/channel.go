@@ -110,9 +110,19 @@ func (c *Channel) Token() string {
 // also where the template comes from — the tick needs one, and a validating
 // template is exactly this request's payload.
 func (c *Channel) Register(req RegisterReq) (RegisterResp, error) {
+	return c.register(req, nil)
+}
+
+// RegisterWithPrecommitValidation is Register with a transport-owned response
+// validator that runs before the registration write.
+func (c *Channel) RegisterWithPrecommitValidation(req RegisterReq, validate func(RegisterResp) error) (RegisterResp, error) {
+	return c.register(req, validate)
+}
+
+func (c *Channel) register(req RegisterReq, validate func(RegisterResp) error) (RegisterResp, error) {
 	req.ServeToken = c.Token()
 	now := time.Now().UTC()
-	resp, err := Register(c.cfg, c.ctx, req, now)
+	resp, err := register(c.cfg, c.ctx, req, now, validate)
 	if err != nil {
 		return resp, err
 	}
