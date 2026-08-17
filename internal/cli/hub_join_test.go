@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -501,8 +502,9 @@ func TestHubJoinMigrationRefusesMismatchedRunnerState(t *testing.T) {
 	withCwd(t, root, func() {
 		err = cmdHubJoin([]string{newRemote.URL, "--name", "codex"})
 	})
-	if err == nil || !strings.Contains(err.Error(), "move the file to the matching lane's state directory") {
-		t.Fatalf("migration error = %v", err)
+	want := fmt.Sprintf("hub join: confirm lane %q is stopped, then move runner state %s to agent_id %q's state directory (or remove it if stale) and re-run. This agent_id mismatch prevents the join from proving the lane is stopped", "codex-tiny", runnerPath, "other-lane")
+	if err == nil || err.Error() != want {
+		t.Fatalf("migration error = %q, want %q", err, want)
 	}
 	if _, statErr := os.Stat(oldRemote.HubDir); statErr != nil {
 		t.Fatalf("old hub dir changed after refusal: %v", statErr)

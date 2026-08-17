@@ -163,7 +163,7 @@ func refuseLiveHubMigration(root, oldDir string, cfg *hubclient.HubConfig) error
 			continue
 		}
 		if errors.Is(err, loop.ErrRunnerStateAgentMismatch) {
-			return fmt.Errorf("hub join: lane %q's runner state at %s reports a different agent_id (%v), so this join cannot prove the lane is stopped. Confirm the lane is stopped, then move the file to the matching lane's state directory or remove it if it is stale before re-running", agentID, loopCfg.RunnerStatePath(agentID), err)
+			return fmt.Errorf("hub join: confirm lane %q is stopped, then move runner state %s to agent_id %q's state directory (or remove it if stale) and re-run. This agent_id mismatch prevents the join from proving the lane is stopped", agentID, loopCfg.RunnerStatePath(agentID), state.AgentID)
 		}
 		if err != nil {
 			return fmt.Errorf("hub join: lane %q's runner state at %s could not be read or decoded (%v), so this join cannot prove the lane is stopped. Confirm the lane is stopped, then repair the JSON or remove the corrupt file before re-running", agentID, loopCfg.RunnerStatePath(agentID), err)

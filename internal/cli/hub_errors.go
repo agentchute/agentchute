@@ -46,7 +46,7 @@ func hubIOError(cause error) error {
 }
 
 func hubFencedError(agentID string) error {
-	return &hubwire.ProtocolError{Code: "E_FENCED", Msg: fmt.Sprintf("serve: this lane was fenced out (lease reclaimed — likely a newer serve for %s, or a hub update). Restart this lane: ac serve %s", agentID, agentID)}
+	return &hubwire.ProtocolError{Code: "E_FENCED", Msg: fmt.Sprintf("serve: this lane was fenced out (lease reclaimed — likely a newer serve for %s, or a hub update). Restart this lane with its wrapper: ac --as %s serve <wrapper>", agentID, agentID)}
 }
 
 func hubLeaseHeldError(cfg *loop.Config, agentID string, now time.Time) error {
