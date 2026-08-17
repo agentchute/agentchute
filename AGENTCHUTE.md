@@ -372,7 +372,7 @@ H: {"t":"hello-ok","re":1,"v":1,"agent":"codex","pool":"/home/alex/code/agentchu
 
 Complete v1. Client→hub: `hello`, `send`, `check`, `ack`, `register`, `status`, `gate`, `pending`, `clean-owed`, `lease-acquire`, `tick`, `lease-release`. Hub→client: `hello-ok`, `send-ok`, `msg`, `owed-item`, `check-ok`, `ack-item`, `ack-ok`, `register-ok`, `status-ok`, `gate-ok`, `pending-ok`, `clean-owed-ok`, `lease-ok`, `tick-ok`, `release-ok`, `note`, `error`.
 
-Event-stream frames interleave in production order. Unbounded lists never ride inside one control frame: `check`/`pending` stream as `msg` (a pending `msg` omits `body_len` unless the request set `show_body`); `ack` results as `ack-item`; owed entries as `owed-item`; notes — both `warn` and `info` — as `note`. Terminal `*-ok` frames carry counts, never arrays.
+Event-stream frames interleave in production order. Unbounded lists never ride inside one control frame: `check`/`pending` stream as `msg` (a pending `msg` omits `body_len` unless the request set `show_body`); `ack` results as `ack-item`; owed entries as `owed-item`; notes — both `warn` and `info` — as `note`. Terminal `*-ok` frames carry counts for those streams, never arrays of the streamed items; fixed-small lists may ride inline.
 
 `tick-ok.warnings` is `[]string` and is **always present** — `[]` when the tick was clean, never omitted. A missing field is a malformed response, not a defaulted empty. The fenced case is the tick's only hard error; every other step failure rides in `warnings`.
 
