@@ -390,7 +390,7 @@ H: {"t":"send-ok","re":2,
 
 **`committed` is mandatory on every `send-ok`.** `committed:true` means the recipient-side `link()` succeeded, so the message IS delivered and must never be resent — including `committed:true` with a non-empty `durability_note` (linked, dir-sync failed) and/or a non-empty `owed_note` (delivered, asker-side reply-obligation record failed). A `send-ok` without `committed` is a **malformed** response, not a defaulted `false`.
 
-**`durability_note` and `owed_note` are mandatory on every `send-ok`**, each a string, always present — `""` when that arm is clean; omission of either field is a **malformed** response, not a defaulted empty (the same rule `tick-ok.warnings` follows). They are independent: both may be non-empty on the same send, because a dir-sync failure and an owed-record failure are two distinct facts. A non-empty `owed_note` is not a delivery failure. Nothing may treat it as grounds to resend.
+**`durability_note` and `owed_note` are mandatory on every `send-ok`**, each a string, always present — `""` when that arm is clean; omission of either field is a **malformed** response, not a defaulted empty (the same rule `tick-ok.warnings` follows). They are independent: both may be non-empty on the same send, because a dir-sync failure and an owed-record failure are two distinct facts. A non-empty `owed_note` is not a delivery failure. Nothing may treat it as grounds to resend. **`claimed_held` on the terminal `error` frame deliberately departs from this always-present rule.** A forgotten `durability_note` or `owed_note` is a malformed `send-ok` and the client knows something is wrong; a forgotten `claimed_held` is indistinguishable from a legitimate "no residue" omission. That cost is accepted: presence means `true`, absence means no claimed residue is held.
 
 A remote send terminates as `send-ok` or `error`. Those are two shapes: `error` means nothing was delivered; `send-ok` means delivery committed (`committed` is the discriminator). An owed-record failure cannot ride as `error` — that frame would lose the committed response and drive spool/retry on an already-delivered send.
 
@@ -451,6 +451,8 @@ restrict,command="/usr/local/bin/agentchute hub session --agent <id> --pool <abs
 ### 13.10 Error-code registry
 
 Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable":false}`
+
+**`claimed_held`** is an optional boolean, top-level on the `error` frame. It is encoded **only when `true`**; its absence means no claimed residue is held. Absence is `false` by definition, not by inference, and is not a malformed frame. When `true`, the operation failed **and** claimed mail is held on the hub for this actor, so the client must arm its guard latch even though it received no `msg` frames. A client that sees `claimed_held: true` arms its latch. The version handshake makes a mixed-version pair impossible, so this is a parsing rule, not a compatibility rule. With an always-present field, a hub that omits it produces a malformed frame and the client knows something is wrong; with presence-means-true, an omission is indistinguishable from a legitimate absence. **W6** covers that gap.
 
 | code | emitter | meaning |
 |---|---|---|

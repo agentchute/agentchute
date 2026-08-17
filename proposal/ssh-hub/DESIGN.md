@@ -216,11 +216,17 @@ Conventions:
   hub-side (`state/<id>/owed.json` on the hub), so gate/check/clean all see
   one ledger.
 - **Output**: `SendResp{Filename, Ref string, Committed bool, DurabilityNote
-  string}` — `Ref` is `TsID.RefString()` (`internal/loop/tsid.go:76
-  @ 1244ae4`). `Committed && DurabilityNote != ""` is the linked-but-sync-
-  failed partial success (`internal/loop/seq.go:179-181 @ 1244ae4`), which the
-  CLI already renders as "delivered … Do NOT resend"
-  (`internal/cli/send.go:269 @ 1244ae4`).
+  string, OwedNote string}` — `Ref` is `TsID.RefString()`
+  (`internal/loop/tsid.go:76 @ 1244ae4`). `Committed && DurabilityNote !=
+  ""` is the linked-but-sync-failed partial success
+  (`internal/loop/seq.go:179-181 @ 1244ae4`), which the CLI already renders
+  as "delivered … Do NOT resend" (`internal/cli/send.go:269 @ 1244ae4`).
+  `OwedNote` is the asker-side reply-obligation bookkeeping failure after
+  delivery (`json:"owed_note"`). `DurabilityNote` and `OwedNote` are
+  **independent, always-present strings** — `""` when clean, never omitted.
+  **The operation error is nil once delivery commits.** `err != nil` means
+  unambiguously "not delivered"; a non-empty `OwedNote` is not a delivery
+  failure and must not drive resend.
 - **Errors**: `ErrNotRegistered` (sender — one sentinel and one wire code, but
   the sender-path *text* stays with this call site; §7.5 carries both texts),
   `loop.ErrRecipientUnknown`
@@ -692,8 +698,7 @@ schema.
   the hub's `authorized_keys` forced command ignores it and runs
   `agentchute hub session …` (verified `sshd(8)`: *"command= … applies to
   shell, command or subsystem execution"*, with the client's request preserved
-  in `SSH_ORIGINAL_COMMAND` — which is why the client sends a fixed marker
-  string: hub-side audit logs read cleanly). **Rejected alternative**: a real
+  in `SSH_ORIGINAL_COMMAND`). **Rejected alternative**: a real
   `Subsystem agentchute-hub` directive in `sshd_config` — it requires root,
   an sshd reload, and a second install step on the hub, and a forced command
   overrides it anyway; it would add a whole "subsystem not found" error class
@@ -925,7 +930,7 @@ C: {"t":"send","id":2,"to":"claude-code","ask":true,"reply_by_s":3600,
 H: {"t":"send-ok","re":2,
     "filename":"20260814T210503123456Z_from-codex_r4b1d….md",
     "ref":"to-claude-code_from-codex_20260814T210503123456Z_r4b1d…",
-    "committed":true,"durability_note":""}
+    "committed":true,"durability_note":"","owed_note":""}
 ```
 
 `committed` is **mandatory on every `send-ok`** and is the field the
@@ -937,6 +942,17 @@ never be resent — including the `committed:true` + non-empty
 "delivered … Do NOT resend" (`internal/cli/send.go:269 @ 1244ae4`). It
 mirrors `op.SendResp.Committed` (§3.1) 1:1; a `send-ok` without it is a
 malformed response, not a defaulted `false`.
+
+`durability_note` and `owed_note` are **mandatory on every `send-ok`**,
+each a string, always present — `""` when that arm is clean; omission of
+either field is a malformed response, not a defaulted empty (the same
+rule `tick-ok.warnings` follows). They are independent: both may be
+non-empty on the same send. A non-empty `owed_note` is not a delivery
+failure; nothing may treat it as grounds to resend. A remote send
+terminates as `send-ok` or `error`: `error` means nothing was delivered;
+`send-ok` means delivery committed. An owed-record failure cannot ride
+as `error`. This matches AGENTCHUTE.md §13 and the shipped M1 binary;
+DESIGN is aligned (the earlier §13-wins carve-out is closed).
 
 `serve_token` is present only when the sender runs under a serve lease (the
 child got it via `AGENTCHUTE_SERVE_TOKEN`, `internal/cli/serve.go:520
@@ -1060,6 +1076,15 @@ Actor context never appears: it is the session's pinned identity
 #### 4.4.2 Error frame and code registry
 
 `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable":false}`
+
+**Pinned amendment (#152 item 2): the error path carries `claimed_held`.**
+A top-level optional boolean on the terminal `error` frame, encoded only
+as `true` and omitted otherwise, set when `Claim` returns an error with
+`ClaimSummary.Redelivered > 0`. M3 frames it; M4 arms the local latch on
+`true`. **`check-ok.redelivered` is unchanged** — `check-ok` is only
+emitted on a nil error, where residue found equals residue delivered.
+**A `note` frame is not sufficient** — arming a latch must never depend
+on parsing display text. Covered by **W6**, not W1.
 
 | code | meaning | maps from |
 |---|---|---|
@@ -1344,7 +1369,7 @@ restrict,command="/usr/local/bin/agentchute hub session --agent codex --pool /ho
   allocation, and `~/.ssh/rc` execution. Future-proof default-deny.
 - `command="…"` (verified): runs for shell, exec, **and subsystem** requests —
   the client's requested command (`agentchute-hub`) is ignored and preserved
-  in `SSH_ORIGINAL_COMMAND` for audit.
+  in `SSH_ORIGINAL_COMMAND`.
 - The binary path is absolute (resolved via `os.Executable()` at authorize
   time) — forced commands run with a minimal env; PATH must not be trusted.
 - `--pool` is the hub pool's absolute control-repo path, baked in — no
@@ -1455,10 +1480,6 @@ restrict,command="/usr/local/bin/agentchute hub session --agent codex --pool /ho
   `AGENTCHUTE_CONTROL_REPO`/`AGENTCHUTE_LOOP_DIR` in the hub user's
   environment would otherwise outrank the pinned pool
   (`internal/loop/config.go:218-225,299-329 @ 1244ae4`).
-- `hub session` logs `SSH_ORIGINAL_COMMAND` for audit only after stripping
-  C0/C1 control bytes (same treatment message bodies get,
-  `sanitizeControlBytes`, `internal/cli/check.go:374 @ 1244ae4`) — a hostile
-  client-supplied string must not repaint a hub operator's terminal.
 
 ### 5.2 Key→id mapping storage
 
@@ -2848,12 +2869,18 @@ pastes when you can SSH to the hub yourself).
 
 ## 9. Compatibility & spec delta
 
-Ordering (C6, decided): the seam refactor (merge M1, §11) makes **no** spec
-claim and tags **v1.6.0 before any spec change**; the spec merge (M2) then
-lands before any hub code; **no further tag exists until v1.7.0** ships the
-complete capability. So the spec never describes a transport no released
-binary has, and no released binary carries an unspecified transport —
-Working rule 1 (spec before code) holds for every hub-code merge.
+Ordering (C6, decided): **one tag, at the end of M6, numbered v1.6.0.**
+There is no standalone post-M1 tag. Both halves of C6 — no released spec
+ahead of a released binary, no released binary carrying an unspecified
+transport — are boundary conditions on *released artifacts*; a single tag
+after M6 satisfies both. **Ordering constrains tags, not publication.**
+Publication happens at merge-to-main (the site auto-deploys from `main`).
+What actually keeps the published spec from describing a transport no
+released binary has is that published spec/conformance URLs are pinned to
+the latest GitHub release (issue #154, PR #156) — not an interim tag.
+Working rule 1 (spec before code) still holds: M2 merges before any hub
+code. M1 is already on `main` (`7d08654`); M2 is already on `main`
+(`1431657`).
 
 ### 9.1 AGENTCHUTE.md amendments (exact sections)
 
@@ -2966,12 +2993,19 @@ the consensus. Additions:
   `W1` disconnect-after-claim redelivers; `W2` disconnect-after-send is
   reported unknown and not replayed; `W3` reclaim-during-send fails fenced;
   `W4` identity mismatch closes at handshake; `W5` version mismatch closes at
-  handshake.
+  handshake; `W6` unreadable claimed residue reports `claimed_held: true`
+  (and the client arms its latch with no `msg` frames). W1 is
+  disconnect-after-claim: the session dies and **no terminal `error` frame
+  is written**, so it does not cover a hub that forgets `claimed_held`.
+  W6's path is `Claim` returning an error with
+  `ClaimSummary.Redelivered > 0` — residue exists but its bytes cannot be
+  read. Setup is `chmod 000` on a `.claimed` residue file, the same probe
+  that proved the M1 latch bug in two worktrees on both platforms.
 
-Timing (C7): these vectors are **not** a post-release merge. The L set and
-the fake-transport W set land inside M3 (with the code they test); the
-sshd-backed W runs land inside M6 — all of it **gating** the v1.7.0 tag,
-never after it (§11).
+Timing (C7): these vectors are **not** a post-release merge. L plus the
+hub-side W halves land inside M3; the client-side W1/W2/W6 halves land
+inside M4; the sshd-backed W reruns land inside M6 — all of it **gating**
+the v1.6.0 tag, never after it (§11).
 
 ---
 
@@ -3006,7 +3040,9 @@ The codec reads/writes an `io.ReadWriter`; tests drive it over `net.Pipe`:
 round-trip every frame type; body trailers byte-exact at 0 B, 1 B, 4 MiB, and
 4 MiB+1 (`E_TOO_LARGE`); truncated frame/trailer at every boundary; unknown
 `t`; unknown fields ignored; oversize line; interleaved `note` frames at both
-levels, with `warn`→stderr / `info`→stdout routing asserted end-to-end (§4.3);
+levels, with **frame-level production order** asserted (rendered
+`warn`→stderr / `info`→stdout is M4 / WI-4.5 — production remote rendering
+first lands there; a test-only renderer would prove no production behavior);
 a `register-ok` whose `reg.body` exceeds 64 KiB round-tripping through the
 trailer (§4.4.3); the **`status-ok` two-budget rows** (§4.4.3) — 64 small rows
 in ⇒ 64 out, `truncated:false`; 65 in ⇒ the first 64 in sort order,
@@ -3115,23 +3151,25 @@ conformance vectors moved INSIDE the merges they test (C7).
 
 | merge | contents | ~LOC (incl. tests) | reviewer gate | tag |
 |---|---|---|---|---|
-| M1 | **Operation seam** `internal/op`: extract §3 ops (op.Context + emitter shapes from day one); CLI calls seam in-process; zero behavior change — the existing CLI test files pass unmodified. `op` is a LEAF over `internal/loop` and imports neither `internal/cli` nor any transport package — the §7.4 dependency direction (B2), with a direction test landing here | 1,500 | deep-review (design) + codex | **v1.6.0** immediately after (seam-only; no hub claim anywhere) |
+| M1 | **Operation seam** `internal/op`: extract §3 ops (op.Context + emitter shapes from day one); CLI calls seam in-process; zero behavior change — the existing CLI test files pass unmodified. `op` is a LEAF over `internal/loop` and imports neither `internal/cli` nor any transport package — the §7.4 dependency direction (B2), with a direction test landing here | 1,500 | deep-review (design) + codex | — (merged; no standalone tag) |
 | M2 | **Spec**: the normative Hub wire & lifecycle section + §9.1 amendments + §9.2 EXTENSIONS.md + enrollment-surface deltas (G-M4). Prose only | 350 | deep-review + codex (spec PRs always) | — |
-| M3 | **Wire codec + `hub session` + conformance**: frames/codes/handshake + fake-transport & fuzz tests (§10.2); forced-command entry, op dispatch, pinning, deadlines, streaming emitters; the §6.9 boot-**ref** pid-proof in `lease.go` (`ServeClaim.BootRef` + the two per-boot-UUID sources + the equality rule in branch (d)); **L vectors + fake-transport W vectors** | 2,450 | deep-review + codex (security-sensitive: conservative lane) | — |
-| M4 | **Client transport + remote discovery**: `ssh://` grammar, §6.8 env/discovery contract **including rule 5's launcher fix in `internal/cli/dispatch.go` + `internal/cli/shims.go`** (forward the URL, omit `--loop-dir` — B4; ships with the discovery arm, never after it), shadow dir, ssh invocation builder, one-shot ops (send/check/ack/status/gate/pending/boot/clean-owed) with the four remote `Vendor:nil` call sites (S2), spool + ambiguity handling, hook degradation + 30 s negative cache | 1,350 | codex | — |
-| M5 | **Remote serve channel + join UX**: lease lifecycle over the channel, tick, single-writer, fence-on-drop both sides, default-on relaunch (§6.7); `hub join`/`hub authorize`/doctor group/error catalog — the §7 UX exactly (auto-authorize, probe-before-pointer, key idempotence, `--list` validation, env warnings) | 2,400 | deep-review + codex (install surface → conservative lane) | — |
-| M6 | **Real-sshd integration matrix + CI (§10.3–10.4) + sshd-backed W vector runs + docs** (quickstarts, Tailscale recipe, README pointer) | 1,150 | codex | **v1.7.0** after green on ubuntu + macos |
+| M3 | **Wire codec + `hub session` + conformance**: frames/codes/handshake + fake-transport & fuzz tests (§10.2); forced-command entry, op dispatch, pinning, deadlines, streaming emitters; the §6.9 boot-**ref** pid-proof in `lease.go` (`ServeClaim.BootRef` + the two per-boot-UUID sources + the equality rule in branch (d)); **L vectors + fake-transport W vectors** | 2,450 | grok review; opus-xhigh deep pass on §4.4.3 producer rules (+ security riding) | — |
+| M4 | **Client transport + remote discovery**: `ssh://` grammar, §6.8 env/discovery contract **including rule 5's launcher fix in `internal/cli/dispatch.go` + `internal/cli/shims.go`** (forward the URL, omit `--loop-dir` — B4; ships with the discovery arm, never after it), shadow dir, ssh invocation builder, one-shot ops (send/check/ack/status/gate/pending/boot/clean-owed) with the four remote `Vendor:nil` call sites (S2), spool + ambiguity handling, hook degradation + 30 s negative cache | 1,350 | grok review; opus-xhigh deep pass on §6.8 + resolver | — |
+| M5 | **Remote serve channel + join UX**: lease lifecycle over the channel, tick, single-writer, fence-on-drop both sides, default-on relaunch (§6.7); `hub join`/`hub authorize`/doctor group/error catalog — the §7 UX exactly (auto-authorize, probe-before-pointer, key idempotence, `--list` validation, env warnings) | 2,400 | grok review; opus-xhigh deep pass on §7.2 key lifecycle | — |
+| M6 | **Real-sshd integration matrix + CI (§10.3–10.4) + sshd-backed W vector runs + docs** (quickstarts, Tailscale recipe, README pointer) | 1,150 | grok review + opus-xhigh vectors-only deep pass | **v1.6.0** after green on ubuntu + macos |
 
 Total ≈ 9.2k LOC — larger than the synthesis's 300–600-line naive-hub sketch
 because the consensus itself priced the seam extraction at 1.5–3k and added
 the lifecycle/pinning/test release gates; this is the honest cost of "zero
-issues, very seamless". Order constraints: M1 tags v1.6.0 **before** M2 (C6
-— the spec must never describe a capability no release has); M2 before any
-hub code (Working rule 1); M3→M4→M5 sequential (each consumes the previous
-layer); M6 gates the v1.7.0 tag — no tag while any conformance vector or the
-sshd matrix is red. Reviewer-gate names follow the current team model
-(deep-review lane + mandatory codex backstop); the roster is dynamic — bind
-gates to roles at execution time, not to today's names.
+issues, very seamless". Order constraints: **no tag until after M6** (C6
+constrains released artifacts; publication is merge; #154/#156 pin the
+published spec to the latest release); M2 before any hub code (Working
+rule 1); M3→M4→M5 sequential (each consumes the previous layer); M6
+gates the **v1.6.0** tag — no tag while any conformance vector or the
+sshd matrix is red. Reviewer-gate names: **codex implements M3–M6**;
+**grok reviews** every remaining merge; **opus-xhigh** one named deep
+pass per merge (see PLAN.md §4). Codex is not the second gate on merges
+it implements.
 
 ---
 
