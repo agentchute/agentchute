@@ -123,6 +123,8 @@ func authorizeHubKey(opts hubAuthorizeOptions, out io.Writer) error {
 		return err
 	}
 	marker := hubKeyMarker(opts.Agent, pool.PoolID)
+	// restrict is deny-by-default for current and future SSH forwarding features;
+	// replacing it with an enumerated no-* list would silently weaken this key.
 	line := fmt.Sprintf("restrict,command=\"%s hub session --agent %s --pool %s --pool-id %s\" %s %s %s", executable, opts.Agent, pool.Path, pool.PoolID, key.Type, key.Blob, marker)
 
 	var action string
