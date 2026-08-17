@@ -245,6 +245,24 @@ func TestChannelTickBeforeRegisterIsAnOrderError(t *testing.T) {
 	}
 }
 
+// The order check must not be conditional on holding a lease: a FRESH channel
+// that ticks before it registers has no heartbeat template either way, and
+// nesting the check under the lease branch let that case return nil and quietly
+// do a subset of the work (codex, PR #148 gate).
+func TestChannelFreshTickBeforeRegisterIsAnOrderError(t *testing.T) {
+	cfg := newPool(t)
+	enroll(t, cfg, "runner-test")
+	ch := NewChannel(cfg, Context{ActorID: "runner-test"}, ChannelOpts{})
+
+	resp, err := ch.Tick(TickReq{})
+	if !errors.Is(err, ErrOrder) {
+		t.Fatalf("err = %v, want ErrOrder on a channel that never registered", err)
+	}
+	if len(resp.Warnings) != 0 || resp.Pending != 0 || len(resp.Swept) != 0 {
+		t.Fatalf("resp = %+v, want no work done before the order check", resp)
+	}
+}
+
 func TestChannelReleaseLeaseIsSafeWithoutOne(t *testing.T) {
 	cfg := newPool(t)
 	ch := NewChannel(cfg, Context{ActorID: "runner-test"}, ChannelOpts{})

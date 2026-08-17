@@ -428,6 +428,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		childPID: cmd.Process.Pid,
 		cmd:      cmd,
 		ptmx:     ptmx,
+		lease:    lease,
 		done:     done,
 		diag:     diag,
 		channel:  op.NewChannel(cfg, op.Context{ActorID: opts.AgentID}, op.ChannelOpts{Lease: lease, HeartbeatTemplate: &tmpl}),

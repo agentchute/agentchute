@@ -91,15 +91,100 @@ func TestRegisterBioPresenceSemantics(t *testing.T) {
 	}
 }
 
-// A nil vendor is today's missing-vendor refusal, byte for byte: hub-side
-// resolution lands with the client call-site branch that first produces a nil.
-func TestRegisterRefusesAMissingVendor(t *testing.T) {
+// A vendor nobody can name is still the shipped refusal, byte for byte — but
+// only once BOTH hub-side fallbacks have failed. "sonnet" is the live roster's
+// own example of an id the canonical table cannot name, with no row to read.
+func TestRegisterRefusesAVendorNothingCanResolve(t *testing.T) {
 	cfg := newPool(t)
 	for _, req := range []RegisterReq{{}, {Vendor: ptr("")}, {Vendor: ptr("   ")}} {
-		_, err := Register(cfg, Context{ActorID: "claude-code"}, req, time.Now().UTC())
+		_, err := Register(cfg, Context{ActorID: "sonnet"}, req, time.Now().UTC())
 		if err == nil || !strings.HasPrefix(err.Error(), "missing --vendor (recommended values:") {
 			t.Fatalf("err = %v, want the shipped missing-vendor refusal", err)
 		}
+	}
+}
+
+// D1b: a nil Vendor is HUB-resolved — the actor's existing row first, then the
+// canonical-id table. This is not deferrable to the client, because on a remote
+// lane the client's own view is the mail-free shadow: a custom id like the
+// roster's "sonnet" would never resolve there and every step-0 self-repair
+// would fail (codex, PR #148 gate).
+//
+// The equivalence that matters: nil must behave exactly as the CLI's
+// resolveAgentVendor would, which is why both fallbacks live behind one
+// implementation (ResolveVendor) rather than being duplicated per layer.
+func TestRegisterResolvesANilVendorHubSide(t *testing.T) {
+	t.Run("existing row wins", func(t *testing.T) {
+		cfg := newPool(t)
+		// A custom id the canonical table cannot name, already enrolled.
+		custom := "sonnet"
+		explicit := "anthropic"
+		if _, err := Register(cfg, Context{ActorID: custom}, RegisterReq{Vendor: &explicit}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		// The bare re-register a turn-start self-check performs: no --vendor.
+		resp, err := Register(cfg, Context{ActorID: custom}, RegisterReq{}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("a nil vendor against an existing custom-id row must succeed: %v", err)
+		}
+		if resp.Reg.Vendor != "anthropic" {
+			t.Fatalf("vendor = %q, want the existing row's", resp.Reg.Vendor)
+		}
+	})
+
+	t.Run("canonical id fallback", func(t *testing.T) {
+		cfg := newPool(t)
+		// No row at all; the id itself names the vendor.
+		resp, err := Register(cfg, Context{ActorID: "claude-code"}, RegisterReq{}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("a nil vendor on a canonical id must resolve: %v", err)
+		}
+		if resp.Reg.Vendor != "anthropic" {
+			t.Fatalf("vendor = %q, want anthropic from the canonical table", resp.Reg.Vendor)
+		}
+		// A `<canon>-suffix` variant resolves the same way.
+		suffixed, err := Register(cfg, Context{ActorID: "codex-2"}, RegisterReq{}, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("a suffixed canonical id must resolve: %v", err)
+		}
+		if suffixed.Reg.Vendor != "openai" {
+			t.Fatalf("vendor = %q, want openai", suffixed.Reg.Vendor)
+		}
+	})
+
+	t.Run("explicit always wins", func(t *testing.T) {
+		cfg := newPool(t)
+		override := "local"
+		resp, err := Register(cfg, Context{ActorID: "claude-code"}, RegisterReq{Vendor: &override}, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Reg.Vendor != "local" {
+			t.Fatalf("vendor = %q, want the explicit value over the canonical table", resp.Reg.Vendor)
+		}
+	})
+}
+
+// ResolveVendor is the seam both the hub and the CLI's resolveAgentVendor use,
+// so its precedence is pinned directly too.
+func TestResolveVendorPrecedence(t *testing.T) {
+	cfg := newPool(t)
+	if got := ResolveVendor(cfg, "sonnet"); got != "" {
+		t.Fatalf("ResolveVendor(unknown) = %q, want empty", got)
+	}
+	if got := ResolveVendor(cfg, "claude-code"); got != "anthropic" {
+		t.Fatalf("ResolveVendor(canonical) = %q, want anthropic", got)
+	}
+	explicit := "human"
+	if _, err := Register(cfg, Context{ActorID: "sonnet"}, RegisterReq{Vendor: &explicit}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveVendor(cfg, "sonnet"); got != "human" {
+		t.Fatalf("ResolveVendor(existing row) = %q, want human", got)
+	}
+	// A nil config is the no-pool case: the canonical table alone answers.
+	if got := ResolveVendor(nil, "grok"); got != "xai" {
+		t.Fatalf("ResolveVendor(nil cfg) = %q, want xai", got)
 	}
 }
 

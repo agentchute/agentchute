@@ -108,15 +108,19 @@ func Register(cfg *loop.Config, ctx Context, req RegisterReq, now time.Time) (Re
 	if err := loop.ValidateAgentID(ctx.ActorID); err != nil {
 		return RegisterResp{}, err
 	}
-	// Hub-side vendor resolution for a nil Vendor (D1b) lands in M4 with the
-	// client call-site branch that first produces one: in M1 every caller is
-	// local and has already resolved it, so nil and explicit-empty are the same
-	// missing-vendor refusal they have always been.
+	// Vendor presence (D1b): non-nil is explicit and wins; nil means "the HUB
+	// resolves it". The resolution has to live here rather than in the caller
+	// because on a remote lane the caller's own view is the mail-free SHADOW —
+	// a custom id's vendor (the roster's "sonnet" is the recorded example) would
+	// never resolve there, and every step-0 repair would fail.
 	vendor := ""
 	if req.Vendor != nil {
-		vendor = *req.Vendor
+		vendor = strings.TrimSpace(*req.Vendor)
 	}
-	if strings.TrimSpace(vendor) == "" {
+	if vendor == "" {
+		vendor = ResolveVendor(cfg, ctx.ActorID)
+	}
+	if vendor == "" {
 		return RegisterResp{}, fmt.Errorf("missing --vendor (recommended values: anthropic, openai, local, human)")
 	}
 
@@ -284,4 +288,48 @@ func (v RegistrationView) Registration() *loop.Registration {
 		LastSeen:        v.LastSeen,
 		Body:            v.Body,
 	}
+}
+
+// ResolveVendor is the hub-side vendor resolution a nil RegisterReq.Vendor
+// triggers (D1b): the actor's EXISTING registration row first, then the
+// canonical-id table. Empty means neither could name one, which is the
+// caller's missing-vendor refusal.
+//
+// It lives here, not in the CLI, because the row it reads must be the HUB's:
+// a remote lane resolving locally would read its mail-free shadow. The CLI's
+// resolveAgentVendor keeps its own signature and delegates the same two
+// fallbacks here, so there is ONE canonical-id table rather than two that can
+// drift.
+func ResolveVendor(cfg *loop.Config, agentID string) string {
+	if cfg != nil {
+		if reg, err := loop.ReadRegistration(cfg.AgentRegistrationPath(agentID)); err == nil {
+			if v := strings.TrimSpace(reg.Vendor); v != "" {
+				return v
+			}
+		}
+	}
+	return vendorForAgentID(agentID)
+}
+
+// vendorForAgentID maps a canonical wrapper id (or a `<canon>-suffix` variant
+// of one) to its vendor.
+func vendorForAgentID(agentID string) string {
+	switch {
+	case matchesCanonicalID(agentID, "claude-code"):
+		return "anthropic"
+	case matchesCanonicalID(agentID, "codex"):
+		return "openai"
+	case matchesCanonicalID(agentID, "gemini-cli"):
+		return "google"
+	case matchesCanonicalID(agentID, "grok"):
+		return "xai"
+	default:
+		return ""
+	}
+}
+
+func matchesCanonicalID(agentID, canon string) bool {
+	agentID = strings.TrimSpace(agentID)
+	canon = strings.TrimSpace(canon)
+	return agentID == canon || strings.HasPrefix(agentID, canon+"-")
 }

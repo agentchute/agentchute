@@ -142,6 +142,15 @@ func (c *Channel) Tick(TickReq) (TickResp, error) {
 	resp.Warnings = []string{}
 	now := time.Now().UTC()
 
+	// §6.1 step order, checked FIRST and unconditionally: a tick needs the
+	// heartbeat template the channel's own Register supplies, so a tick that
+	// arrives before one is refused rather than quietly doing a subset of the
+	// work. Checking it inside the lease branch let a fresh channel tick and
+	// return nil (codex, PR #148 gate).
+	if c.template == nil {
+		return resp, ErrOrder
+	}
+
 	// nil lease: the poll-only arm (no fence to verify, no token to heartbeat
 	// with). HeartbeatRegistration rejects an empty token outright, so these
 	// two steps are skipped rather than called with one.
@@ -151,9 +160,6 @@ func (c *Channel) Tick(TickReq) (TickResp, error) {
 				return resp, err
 			}
 			resp.Warnings = append(resp.Warnings, fmt.Sprintf("agentchute serve: renew serve lease: %v", err))
-		}
-		if c.template == nil {
-			return resp, ErrOrder
 		}
 		if err := loop.HeartbeatRegistration(c.cfg, *c.template, c.lease.Token); err != nil {
 			resp.Warnings = append(resp.Warnings, fmt.Sprintf("agentchute serve: heartbeat registration: %v", err))
