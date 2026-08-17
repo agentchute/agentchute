@@ -245,10 +245,12 @@ func cmdSend(args []string) error {
 		From:     fromID,
 		To:       toID,
 	}
+	emitted := false
 	if resp.DurabilityNote != "" {
 		if err := emitSendResult(result, jsonOut); err != nil {
 			return err
 		}
+		emitted = true
 		fmt.Fprintf(os.Stderr, "WARNING: message delivered but inbox durability sync failed: %s. Do NOT resend.\n", resp.DurabilityNote)
 	}
 
@@ -259,21 +261,25 @@ func cmdSend(args []string) error {
 	// non-blocking dead-recipient warning. The recipient echoes id.RefString() as
 	// their reply's in_reply_to; our `check` then discharges it (ClearOwed). A
 	// failure here is loud: an ask without a recorded obligation is a silent leak.
-	if sendErr != nil {
-		if resp.DurabilityNote == "" {
+	// It is NOT a delivery failure: the message is in the recipient's inbox and
+	// resending it would duplicate it. It rides the response rather than an
+	// error precisely so the remote path can say the same thing — an error
+	// frame would lose the committed send and drive spool/retry handling.
+	if resp.OwedNote != "" {
+		if !emitted {
 			if emitErr := emitSendResult(result, jsonOut); emitErr != nil {
 				return emitErr
 			}
+			emitted = true
 		}
-		fmt.Fprintf(os.Stderr, "WARNING: reply-obligation bookkeeping failed: %v. Do NOT resend.\n", sendErr)
-		return nil
+		fmt.Fprintf(os.Stderr, "WARNING: reply-obligation bookkeeping failed: %s. Do NOT resend.\n", resp.OwedNote)
 	}
 
 	// Reply obligations are asker-owned only (v0.9.0): --reply-to carries the
 	// `in_reply_to` ref (emitted by ComposeMessage above) so the ASKER's `.owed`
 	// obligation discharges when they consume this reply (ClearOwed, check.go).
 	// There is NO recipient-side ledger to mutate here.
-	if resp.DurabilityNote != "" {
+	if emitted {
 		return nil
 	}
 	return emitSendResult(result, jsonOut)

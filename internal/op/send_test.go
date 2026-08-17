@@ -214,9 +214,12 @@ func TestSendPartialSuccessReportsDurabilityNote(t *testing.T) {
 	}
 }
 
-// The third return shape: delivered, but the owed bookkeeping failed. The
-// response is populated (so the caller knows NOT to resend) and the error is
-// RecordOwed's own, so the warning text stays verbatim.
+// Delivered, but the owed bookkeeping failed. This is NOT an error: the message
+// is in the recipient's inbox, so anything that treated it as a failure would
+// invite a duplicate send. It rides the RESPONSE as OwedNote, which is the only
+// shape a remote send can express — an error frame loses the committed response
+// and drives spool/retry handling, and send-ok had nowhere to carry the warning
+// (codex, PR #148 gate; authorized by claude-code).
 func TestSendReportsOwedBookkeepingFailureBesideACommittedResponse(t *testing.T) {
 	cfg := newPool(t)
 	enroll(t, cfg, "claude-code")
@@ -236,17 +239,69 @@ func TestSendReportsOwedBookkeepingFailureBesideACommittedResponse(t *testing.T)
 		Content: loop.ComposeMessage("claude-code", "", "hi"),
 		Ask:     true,
 	})
-	if err == nil {
-		t.Fatal("an ask whose obligation was never recorded must not report success")
+	if err != nil {
+		t.Fatalf("a committed delivery must not return an error: %v", err)
 	}
-	// Committed is THE discriminator between this shape and a failed delivery —
-	// the same field DESIGN §4.4.1 makes mandatory on send-ok and writes the
-	// never-auto-replay rule against, so local and wire read one signal.
+	// Committed is THE discriminator against a failed delivery — the same field
+	// DESIGN §4.4.1 makes mandatory on send-ok and writes the never-auto-replay
+	// rule against, so local and wire read one signal.
 	if !resp.Committed || resp.Filename == "" {
-		t.Fatalf("resp = %+v, want the committed delivery reported alongside the error", resp)
+		t.Fatalf("resp = %+v, want the committed delivery reported", resp)
+	}
+	// The failure is REPORTED, not swallowed: an ask with no recorded
+	// obligation is a silent leak.
+	if resp.OwedNote == "" {
+		t.Fatalf("resp = %+v, want the owed-bookkeeping failure reported on the response", resp)
 	}
 	if n := countFiles(t, cfg.AgentInboxDir("codex")); n != 1 {
 		t.Fatalf("recipient inbox = %d files, want the message delivered", n)
+	}
+	// The ledger really is empty — the note is not cosmetic.
+	if ledger, lerr := loop.LoadOwedLedger(cfg, "claude-code"); lerr == nil && len(ledger.Owed) != 0 {
+		t.Fatalf("owed ledger = %+v, want the obligation genuinely unrecorded", ledger.Owed)
+	}
+}
+
+// DurabilityNote and OwedNote are independent: one send can hit both, and they
+// must arrive as two distinct facts rather than one overloaded field.
+func TestSendReportsDurabilityAndOwedFailuresIndependently(t *testing.T) {
+	cfg := newPool(t)
+	enroll(t, cfg, "claude-code")
+	enroll(t, cfg, "codex")
+
+	original := SendTsMessageWithCommit
+	SendTsMessageWithCommit = func(cfg *loop.Config, from, to string, content []byte, token string) (loop.TsID, bool, error) {
+		id, committed, err := original(cfg, from, to, content, token)
+		if err != nil {
+			return id, committed, err
+		}
+		return id, true, errors.New("forced post-link sync failure")
+	}
+	defer func() { SendTsMessageWithCommit = original }()
+
+	if err := os.MkdirAll(cfg.AgentStateDir("claude-code"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(ownedLedgerPath(cfg, "claude-code"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := Send(cfg, Context{ActorID: "claude-code"}, SendReq{
+		To:      "codex",
+		Content: loop.ComposeMessage("claude-code", "", "hi"),
+		Ask:     true,
+	})
+	if err != nil {
+		t.Fatalf("a committed delivery must not return an error: %v", err)
+	}
+	if !resp.Committed {
+		t.Fatalf("resp = %+v, want committed", resp)
+	}
+	if resp.DurabilityNote != "forced post-link sync failure" {
+		t.Fatalf("durability note = %q", resp.DurabilityNote)
+	}
+	if resp.OwedNote == "" || resp.OwedNote == resp.DurabilityNote {
+		t.Fatalf("resp = %+v, want a distinct owed note", resp)
 	}
 }
 

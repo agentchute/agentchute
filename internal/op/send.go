@@ -31,13 +31,25 @@ type SendReq struct {
 
 // SendResp is a committed delivery.
 //
-// Committed && DurabilityNote != "" is the linked-but-sync-failed partial
-// success: the message IS in the recipient's inbox and must never be resent.
+// Two independent non-fatal outcomes can ride alongside a commit, and they are
+// SEPARATE fields because they are separate facts with separate operator text —
+// and because both can happen on the same send:
+//
+//   - DurabilityNote: linked-but-dir-sync-failed. The message IS in the
+//     recipient's inbox and must never be resent.
+//   - OwedNote: delivery committed but the ASKER-side reply obligation could
+//     not be recorded. An ask without a recorded obligation is a silent leak,
+//     so it is reported loudly — but it is not a delivery failure, and nothing
+//     may treat it as one.
+//
+// Both are always present on the wire (empty when they did not occur), like
+// tick-ok's warnings.
 type SendResp struct {
 	Filename       string `json:"filename"`
 	Ref            string `json:"ref"`
 	Committed      bool   `json:"committed"`
 	DurabilityNote string `json:"durability_note"`
+	OwedNote       string `json:"owed_note"`
 }
 
 // SendPreflight is Send's lock-free, non-mutating validation: the sender is
@@ -76,27 +88,30 @@ func SendPreflight(cfg *loop.Config, ctx Context, to string) error {
 // Send validates and delivers one composed message, then — when Ask — records
 // the ASKER-OWNED reply obligation.
 //
-// Return contract, three shapes:
+// Return contract, exactly TWO shapes — once delivery commits, the error is
+// always nil:
 //
 //   - (zero SendResp, err): nothing was delivered. err classifies why:
 //     ErrNotRegistered, ErrRecipientUnknown/Unreadable/Stale from the
 //     preflight, ErrRecipientRacing or ErrFenced from delivery, or a raw I/O
 //     error. The caller still holds the body and must spool it.
-//   - (populated SendResp, nil): delivered. A non-empty DurabilityNote means
-//     linked-but-dir-sync-failed — report, never resend.
-//   - (populated SendResp, err): delivered, but the asker-side owed
-//     bookkeeping failed. The error is RecordOwed's own, unwrapped, so the
-//     caller renders it verbatim. An ask without a recorded obligation is a
-//     silent leak, so it is surfaced loudly rather than swallowed.
+//   - (populated SendResp, nil): delivered. DurabilityNote and/or OwedNote
+//     report anything non-fatal that happened alongside the commit.
 //
-// **Committed is the discriminator** between the first shape and the third —
-// not a non-empty Filename, which is only an incidental proxy for the same
-// fact. Committed is the field DESIGN §4.4.1 makes mandatory on every send-ok
-// and the one the never-auto-replay rule is written against, so keying on it
-// makes the local decision and the wire decision the same predicate. A future
-// path that returned a partially populated response beside an error would
-// otherwise be read as "delivered, do not resend" on the strength of a
-// filename (opus-xhigh, PR #148 gate).
+// **Committed is the discriminator**, not a non-empty Filename — Filename is
+// only an incidental proxy for the same fact. Committed is the field DESIGN
+// §4.4.1 makes mandatory on every send-ok and the one the never-auto-replay
+// rule is written against, so the local decision and the wire decision are the
+// same predicate (opus-xhigh, PR #148 gate).
+//
+// **Why the owed failure is a FIELD and not an error beside a populated
+// response** (codex, PR #148 gate; authorized by claude-code): a remote send
+// terminates with either send-ok or error (§§4.4/4.5.3). An error frame loses
+// the committed response and drives spool/failure handling — a duplicate-send
+// hazard on an operation that already committed — while the send-ok frame had
+// nowhere to carry the warning. So "exit 0, delivered, do NOT resend" was not
+// expressible on the wire at all. A seam whose local behavior cannot survive
+// its own transport is a seam defect, so the fact moved onto the response.
 func Send(cfg *loop.Config, ctx Context, req SendReq) (SendResp, error) {
 	now := time.Now().UTC()
 
@@ -127,7 +142,9 @@ func Send(cfg *loop.Config, ctx Context, req SendReq) (SendResp, error) {
 			deadline = now.Add(req.ReplyBy)
 		}
 		if err := loop.RecordOwed(cfg, ctx.ActorID, id, deadline, now); err != nil {
-			return resp, err
+			// Not an error: the message is delivered and resending it would
+			// duplicate it. The caller renders this verbatim.
+			resp.OwedNote = err.Error()
 		}
 	}
 	return resp, nil
