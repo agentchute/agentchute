@@ -126,6 +126,29 @@ func TestDiscoverRemoteEnvBeatsPointer(t *testing.T) {
 	}
 }
 
+func TestDiscoverRemotePointerBranchesBeforeLocalRepoChecks(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	raw := "ssh://User@HUB.Example:22/remote/pool/"
+	remote, err := ParseRemoteURL(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, remote.ConfigPath, []byte("{}\n"))
+	mustWrite(t, filepath.Join(cwd, PointerFileName), []byte(raw+"\n"))
+
+	cfg, err := Discover(DiscoverOpts{Cwd: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Remote == nil || cfg.Remote.URL != "ssh://User@hub.example/remote/pool" {
+		t.Fatalf("pointer discovery remote = %#v", cfg.Remote)
+	}
+	if cfg.ControlRepoOrigin != "pointer:"+filepath.Join(cwd, PointerFileName) {
+		t.Fatalf("pointer origin = %q", cfg.ControlRepoOrigin)
+	}
+}
+
 func TestResolvePointerTargetPreservesSSHLocator(t *testing.T) {
 	raw := "ssh://User@Host.Example/absolute/pool"
 	got, err := ResolvePointerTarget(t.TempDir(), raw)
