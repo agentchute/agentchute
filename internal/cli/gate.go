@@ -70,7 +70,7 @@ func cmdGate(args []string) error {
 		return err
 	}
 
-	agentID, err = resolveAgentID(agentID)
+	agentID, err = resolveAgentID(agentID, cfg)
 	if err != nil {
 		return err
 	}
@@ -86,11 +86,21 @@ func cmdGate(args []string) error {
 		return gateUsage(fmt.Errorf("unknown phase %q (valid: consensus|commit|release|finish|continue)", phase))
 	}
 
-	status, err := op.Gate(cfg, op.Context{ActorID: agentID}, op.GateReq{
+	req := op.GateReq{
 		Phase:          phase,
 		RequireConfirm: requireConfirm,
 		AckStaleReg:    ackStaleReg,
-	})
+	}
+	var status op.GateResp
+	if cfg.Remote != nil {
+		session, openErr := openRemoteOneShot(cfg, agentID)
+		if openErr != nil {
+			return openErr
+		}
+		status, err = session.Gate(req)
+	} else {
+		status, err = op.Gate(cfg, op.Context{ActorID: agentID}, req)
+	}
 	if err != nil {
 		return err
 	}

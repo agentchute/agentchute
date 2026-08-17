@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 func TestParseDispatch_Commands(t *testing.T) {
@@ -220,7 +224,7 @@ func TestSplitDispatchContext_ThenParseRoundTrip(t *testing.T) {
 
 func TestBuildDispatchRunArgs_SingleAuthoritativePair(t *testing.T) {
 	got := buildDispatchRunArgs("/bin/agentchute", "openai", []string{"--as", "reviewer"},
-		"/repo", "/repo/.agentchute/loop", []string{"/usr/bin/codex", "resume"})
+		&loop.Config{ControlRepo: "/repo", LoopDir: "/repo/.agentchute/loop"}, []string{"/usr/bin/codex", "resume"})
 	want := []string{
 		"/bin/agentchute", "serve", "--vendor", "openai", "--as", "reviewer",
 		"--control-repo", "/repo", "--loop-dir", "/repo/.agentchute/loop", "--shim-name", "ac", "--",
@@ -240,6 +244,64 @@ func TestBuildDispatchRunArgs_SingleAuthoritativePair(t *testing.T) {
 		if n != 1 {
 			t.Errorf("%s appears %d times, want 1", f, n)
 		}
+	}
+}
+
+func TestBuildDispatchRunArgs_RemoteForwardsLocatorWithoutLoopDir(t *testing.T) {
+	cfg := &loop.Config{
+		ControlRepo: "/local/repo",
+		LoopDir:     "/home/me/.agentchute/hub/abc/.agentchute/loop",
+		Remote:      &loop.RemoteConfig{URL: "ssh://user@hub.example/remote/pool"},
+	}
+	got := buildDispatchRunArgs("/bin/agentchute", "openai", nil, cfg, []string{"/usr/bin/codex"})
+	want := []string{
+		"/bin/agentchute", "serve", "--vendor", "openai",
+		"--control-repo", cfg.Remote.URL, "--shim-name", "ac", "--", "/usr/bin/codex",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("runArgs =\n  %v\nwant\n  %v", got, want)
+	}
+	if stringSliceContains(got, "--loop-dir") {
+		t.Fatalf("remote runArgs contains --loop-dir: %v", got)
+	}
+}
+
+func TestBuildDispatchRunArgs_RemoteDiscoveryRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	remote, err := loop.ParseRemoteURL("ssh://User@HUB.Example:22/remote/pool/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(remote.ConfigPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(remote.ConfigPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	argv := buildDispatchRunArgs("/bin/agentchute", "openai", nil, &loop.Config{
+		ControlRepo: t.TempDir(),
+		LoopDir:     remote.ShadowLoopDir,
+		Remote:      remote,
+	}, []string{"/usr/bin/codex"})
+	locator, rest, found := extractGlobalFlag(argv[2:], "--control-repo")
+	if !found {
+		t.Fatalf("emitted argv has no --control-repo: %v", argv)
+	}
+	if _, _, found := extractGlobalFlag(rest, "--loop-dir"); found {
+		t.Fatalf("emitted remote argv has --loop-dir: %v", argv)
+	}
+	cwd := t.TempDir()
+	cfg, err := loop.Discover(loop.DiscoverOpts{ControlRepoFlag: locator, Cwd: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Remote == nil {
+		t.Fatalf("round-trip discovery de-remoted argv: %#v", cfg)
+	}
+	if cfg.Remote.URL != "ssh://User@hub.example/remote/pool" || cfg.LoopDir != remote.ShadowLoopDir {
+		t.Fatalf("round-trip remote/shadow = %q/%q", cfg.Remote.URL, cfg.LoopDir)
 	}
 }
 

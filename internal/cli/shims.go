@@ -297,18 +297,18 @@ func cmdShimsExec(args []string) error {
 	if err != nil {
 		return err
 	}
-	runArgs := []string{
-		agentchuteBin,
-		"serve",
-		"--vendor", spec.Vendor,
-		"--control-repo", cfg.ControlRepo,
-		"--loop-dir", cfg.LoopDir,
-		"--shim-name", spec.Name,
-	}
-	runArgs = append(runArgs, ensureDispatchIdentity(nil, spec.AgentID, os.Getenv("AGENTCHUTE_AGENT_ID"))...)
+	runArgs := buildShimRunArgs(agentchuteBin, spec, cfg, os.Getenv("AGENTCHUTE_AGENT_ID"), wrapperArgs)
+	return execReplace(agentchuteBin, runArgs, os.Environ())
+}
+
+func buildShimRunArgs(agentchuteBin string, spec wrapperSpec, cfg *loop.Config, envID string, wrapperArgs []string) []string {
+	runArgs := []string{agentchuteBin, "serve", "--vendor", spec.Vendor}
+	runArgs = append(runArgs, launcherControlArgs(cfg)...)
+	runArgs = append(runArgs, "--shim-name", spec.Name)
+	runArgs = append(runArgs, ensureDispatchIdentity(nil, spec.AgentID, envID)...)
 	runArgs = append(runArgs, "--")
 	runArgs = append(runArgs, wrapperArgs...)
-	return execReplace(agentchuteBin, runArgs, os.Environ())
+	return runArgs
 }
 
 func wrapperSpecForName(name string) (wrapperSpec, bool) {

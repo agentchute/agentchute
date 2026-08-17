@@ -4,6 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"sort"
+
+	"github.com/agentchute/agentchute/internal/hubclient"
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 func cmdIdentity(args []string) error {
@@ -21,11 +26,37 @@ func cmdIdentity(args []string) error {
 		return identityUsage(err)
 	}
 
-	id, err := resolveAgentID(agentID)
+	var cfg *loop.Config
+	if cwd, err := os.Getwd(); err == nil {
+		cfg, _ = loop.Discover(loop.DiscoverOpts{
+			ControlRepoFlag: controlRepo,
+			LoopDirFlag:     loopDir,
+			Cwd:             cwd,
+			EnvControlRepo:  os.Getenv("AGENTCHUTE_CONTROL_REPO"),
+			EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
+		})
+	}
+	id, err := resolveAgentID(agentID, cfg)
 	if err != nil {
 		return err
 	}
-	fmt.Println(id)
+	if cfg == nil || cfg.Remote == nil {
+		fmt.Println(id)
+		return nil
+	}
+	hubCfg, err := hubclient.ReadHubConfig(cfg.Remote.HubID)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(hubCfg.Names))
+	for name := range hubCfg.Names {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Printf("%s -> %s\n", name, hubCfg.Names[name])
+	}
+	fmt.Printf("resolved: %s\n", id)
 	return nil
 }
 

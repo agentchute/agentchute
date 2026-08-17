@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // cmdBoot is the session-start ritual: one command replacing register +
@@ -57,6 +58,8 @@ func cmdBoot(args []string) error {
 			opts.HostProvided = true
 		case "bio":
 			opts.BioProvided = true
+		case "vendor":
+			opts.VendorProvided = true
 		}
 	})
 
@@ -75,7 +78,7 @@ func cmdBoot(args []string) error {
 		return err
 	}
 
-	agentID, err = resolveAgentID(agentID)
+	agentID, err = resolveAgentID(agentID, cfg)
 	if err != nil {
 		return err
 	}
@@ -83,11 +86,24 @@ func cmdBoot(args []string) error {
 		return err
 	}
 	opts.AgentID = agentID
-	opts.Vendor = resolveAgentVendor(vendor, agentID, cfg)
+	if cfg.Remote != nil {
+		opts.Vendor = strings.TrimSpace(vendor)
+		opts.Sweep = true
+	} else {
+		opts.Vendor = resolveAgentVendor(vendor, agentID, cfg)
+	}
 
 	now := time.Now().UTC()
+	hookMode := contextOnly || codexHook == "SessionStart"
+	if cfg.Remote != nil && hookMode && remoteHookCached(cfg) {
+		fmt.Fprintln(os.Stderr, "hub unreachable; skipping (will retry next event)")
+		return nil
+	}
 	result, err := performRegister(cfg, opts, now)
 	if err != nil {
+		if cfg.Remote != nil && hookMode && degradeRemoteHook(err) {
+			return nil
+		}
 		return err
 	}
 
@@ -96,32 +112,57 @@ func cmdBoot(args []string) error {
 	// runner is offline still gets bounded hygiene from whoever boots into it.
 	// A sweep failure is a warning, never a boot failure: hygiene is best-effort
 	// and must not block session start.
-	if _, serr := loop.SweepStaleRegistrations(cfg, agentID, now); serr != nil {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("sweep stale registrations: %v", serr))
+	if cfg.Remote == nil {
+		if _, serr := loop.SweepStaleRegistrations(cfg, agentID, now); serr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("sweep stale registrations: %v", serr))
+		}
 	}
 
 	// Inbox peek — strictly side-effect free, same path `pending` uses.
-	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(result.InboxDir)
-	if err != nil {
-		return fmt.Errorf("list inbox: %w", err)
-	}
-	unread := make([]pendingEntry, 0, len(msgs))
+	unread := make([]pendingEntry, 0)
+	malformedCount := 0
 	inheritedMail := false
-	for _, msg := range msgs {
-		if msg.Timestamp.Before(result.Reg.LastSeen) {
-			inheritedMail = true
-		}
-		entry := pendingEntry{
-			From:      msg.Sender,
-			Filename:  msg.Filename,
-			Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano),
-		}
-		if fm, _, ferr := readFrontmatter(msg.Path); ferr == nil {
-			if v := strings.ToLower(strings.TrimSpace(fm["reply_required"])); v == "true" {
-				entry.ReplyRequired = true
+	if cfg.Remote != nil {
+		session, openErr := openRemoteOneShot(cfg, agentID)
+		if openErr != nil {
+			if hookMode && degradeRemoteHook(openErr) {
+				return nil
 			}
+			return openErr
 		}
-		unread = append(unread, entry)
+		sum, pendingErr := session.Pending(op.PendingReq{}, func(ev op.Event) error {
+			if ev.Message != nil {
+				stamp, _ := time.Parse(time.RFC3339Nano, ev.Message.Stamp)
+				if stamp.Before(result.Reg.LastSeen) {
+					inheritedMail = true
+				}
+				unread = append(unread, pendingEntry{From: ev.Message.Sender, Filename: ev.Message.Filename, Timestamp: ev.Message.Stamp, ReplyRequired: ev.Message.ReplyRequired})
+			}
+			return nil
+		})
+		if pendingErr != nil {
+			if hookMode && degradeRemoteHook(pendingErr) {
+				return nil
+			}
+			return pendingErr
+		}
+		malformedCount = sum.Malformed
+	} else {
+		msgs, skipped, listErr := loop.ListInboxMessagesWithSkipped(result.InboxDir)
+		if listErr != nil {
+			return fmt.Errorf("list inbox: %w", listErr)
+		}
+		malformedCount = len(skipped)
+		for _, msg := range msgs {
+			if msg.Timestamp.Before(result.Reg.LastSeen) {
+				inheritedMail = true
+			}
+			entry := pendingEntry{From: msg.Sender, Filename: msg.Filename, Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano)}
+			if fm, _, ferr := readFrontmatter(msg.Path); ferr == nil {
+				entry.ReplyRequired = strings.EqualFold(strings.TrimSpace(fm["reply_required"]), "true")
+			}
+			unread = append(unread, entry)
+		}
 	}
 	var notes []string
 	if inheritedMail {
@@ -133,12 +174,12 @@ func cmdBoot(args []string) error {
 	// recipient-side pending-reply ledger. Blocking is purely on unread mail.
 	status := bootStatus{
 		Agent:          agentID,
-		Vendor:         opts.Vendor,
+		Vendor:         result.Reg.Vendor,
 		Refreshed:      result.Refreshed,
 		ExistingFound:  result.ExistingFound,
 		UnreadCount:    len(unread),
 		Unread:         unread,
-		MalformedCount: len(skipped),
+		MalformedCount: malformedCount,
 		Host:           result.ResolvedHost,
 		Warnings:       result.Warnings,
 		Notes:          notes,

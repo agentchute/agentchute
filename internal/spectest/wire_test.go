@@ -27,10 +27,12 @@ type pipeSession struct {
 	done <-chan error
 }
 
-func (s *pipeSession) Read(p []byte) (int, error)  { return s.conn.Read(p) }
-func (s *pipeSession) Write(p []byte) (int, error) { return s.conn.Write(p) }
-func (s *pipeSession) Close() error                { return s.conn.Close() }
-func (s *pipeSession) ForceDisconnect() error      { return s.conn.Close() }
+func (s *pipeSession) Read(p []byte) (int, error)         { return s.conn.Read(p) }
+func (s *pipeSession) Write(p []byte) (int, error)        { return s.conn.Write(p) }
+func (s *pipeSession) Close() error                       { return s.conn.Close() }
+func (s *pipeSession) SetReadDeadline(t time.Time) error  { return s.conn.SetReadDeadline(t) }
+func (s *pipeSession) SetWriteDeadline(t time.Time) error { return s.conn.SetWriteDeadline(t) }
+func (s *pipeSession) ForceDisconnect() error             { return s.conn.Close() }
 func (s *pipeSession) Wait(ctx context.Context) error {
 	select {
 	case err := <-s.done:
@@ -133,4 +135,34 @@ func TestWireVectors(t *testing.T) {
 		}
 		return &pipeFactory{pool: pool, cfg: cfg}
 	})
+}
+
+func TestWireClientVectors(t *testing.T) {
+	vectors, err := LoadVectors("wire.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	AssertWireClientVectors(t, vectors, newPipeFactory)
+}
+
+func newPipeFactory(t *testing.T) SessionFactory {
+	pool := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pool, "AGENTCHUTE.md"), []byte("# spec\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loopDir := filepath.Join(pool, ".agentchute", "loop")
+	if err := os.MkdirAll(filepath.Join(loopDir, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(loopDir, "state", "pool.id"), []byte(testPoolID+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &loop.Config{ControlRepo: pool, LoopDir: loopDir, Vendor: "agentchute"}
+	vendor := "test"
+	for _, id := range []string{"codex", "grok"} {
+		if _, err := op.Register(cfg, op.Context{ActorID: id}, op.RegisterReq{Vendor: &vendor, Host: "test"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &pipeFactory{pool: pool, cfg: cfg}
 }

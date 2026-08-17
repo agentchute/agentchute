@@ -88,7 +88,7 @@ func cmdAck(args []string) error {
 		return err
 	}
 
-	agentID, err = resolveAgentID(agentID)
+	agentID, err = resolveAgentID(agentID, cfg)
 	if err != nil {
 		return err
 	}
@@ -155,12 +155,23 @@ func cmdAck(args []string) error {
 // empty, non-nil slice).
 func ackClaimed(cfg *loop.Config, agentID string) ([]ackItem, op.AckSummary, error) {
 	acked := make([]ackItem, 0)
-	sum, err := op.Ack(cfg, op.Context{ActorID: agentID}, op.AckReq{}, func(ev op.Event) error {
+	emit := func(ev op.Event) error {
 		if ev.Ack != nil {
 			acked = append(acked, ackItem{Filename: ev.Ack.Filename, ArchivePath: ev.Ack.ArchivePath})
 		}
 		return nil
-	})
+	}
+	var sum op.AckSummary
+	var err error
+	if cfg.Remote != nil {
+		session, openErr := openRemoteOneShot(cfg, agentID)
+		if openErr != nil {
+			return nil, sum, openErr
+		}
+		sum, err = session.Ack(emit)
+	} else {
+		sum, err = op.Ack(cfg, op.Context{ActorID: agentID}, op.AckReq{}, emit)
+	}
 	if err != nil {
 		return nil, sum, err
 	}

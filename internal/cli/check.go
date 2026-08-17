@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
 	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 )
@@ -85,7 +86,7 @@ func cmdCheck(args []string) error {
 		return err
 	}
 
-	agentID, err = resolveAgentID(agentID)
+	agentID, err = resolveAgentID(agentID, cfg)
 	if err != nil {
 		return err
 	}
@@ -130,13 +131,7 @@ func cmdCheck(args []string) error {
 			setLatch()
 			renderClaimedMessage(agentID, *ev.Message, now)
 		case ev.Note != nil:
-			// The level IS the stream, and the renderer — never the op —
-			// supplies the `warning: ` prefix.
-			if ev.Note.Level == op.NoteWarn {
-				fmt.Fprintf(os.Stderr, "warning: %s\n", ev.Note.Msg)
-			} else {
-				fmt.Println(ev.Note.Msg)
-			}
+			renderOpNote(*ev.Note)
 		case ev.Owed != nil:
 			// C19: print-only. The explicit, human-triggered prune command is
 			// what actually removes an obligation.
@@ -153,7 +148,17 @@ func cmdCheck(args []string) error {
 	// archiving DURING check (the old behavior) is at-most-once for the WORK. A
 	// crash between claim and ack now RE-DELIVERS (at-least-once); handlers must
 	// be idempotent.
-	sum, err := op.Claim(cfg, op.Context{ActorID: agentID}, op.ClaimReq{Limit: limit, NoArchive: noArchive}, emit)
+	claimReq := op.ClaimReq{Limit: limit, NoArchive: noArchive}
+	var sum op.ClaimSummary
+	if cfg.Remote != nil {
+		session, openErr := openRemoteOneShot(cfg, agentID)
+		if openErr != nil {
+			return openErr
+		}
+		sum, err = session.Check(claimReq, emit)
+	} else {
+		sum, err = op.Claim(cfg, op.Context{ActorID: agentID}, claimReq, emit)
+	}
 	// Arm on residue EXISTENCE, not only on a rendered message, and do it
 	// before returning any error: claimed-but-unacked mail whose body cannot be
 	// read (a permissions change, or residue past MaxInboxMessageBytes — the
@@ -161,7 +166,7 @@ func cmdCheck(args []string) error {
 	// holding it, which is exactly the state the latch covers. Emitting arms
 	// earlier and per-message, so this is a no-op on every path that displayed
 	// anything.
-	if sum.Redelivered > 0 {
+	if sum.Redelivered > 0 || hubclient.ClaimedHeld(err) {
 		setLatch()
 	}
 	if err != nil {
@@ -171,6 +176,14 @@ func cmdCheck(args []string) error {
 		return err
 	}
 	return nil
+}
+
+func renderOpNote(note op.NoteEvent) {
+	if note.Level == op.NoteWarn {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", note.Msg)
+		return
+	}
+	fmt.Println(note.Msg)
 }
 
 // renderClaimedMessage prints one consumed message: the C18 age banner when it

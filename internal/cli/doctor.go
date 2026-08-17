@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
+	"github.com/agentchute/agentchute/internal/hubwire"
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
@@ -147,7 +149,19 @@ func cmdDoctor(args []string) error {
 		opts.PoolState = &ps
 	}
 
-	report := runDoctorChecks(cfg, agentID, opts)
+	if agentID != "" {
+		agentID, err = resolveAgentID(agentID, cfg)
+		if err != nil {
+			return err
+		}
+	}
+
+	var report doctorReport
+	if cfg.Remote != nil {
+		report = runRemoteDoctorChecks(cfg, agentID, opts.Now)
+	} else {
+		report = runDoctorChecks(cfg, agentID, opts)
+	}
 
 	if jsonOut {
 		if err := emitDoctorJSON(report); err != nil {
@@ -160,6 +174,82 @@ func cmdDoctor(args []string) error {
 		return errBlocked
 	}
 	return nil
+}
+
+func runRemoteDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doctorReport {
+	report := doctorReport{Agent: agentID}
+	add := func(check doctorCheck) {
+		report.Checks = append(report.Checks, check)
+		switch check.Severity {
+		case severityBlocker:
+			report.Blockers++
+		case severityWarn:
+			report.Warnings++
+		}
+	}
+	hubCfg, err := hubclient.ReadHubConfig(cfg.Remote.HubID)
+	if err != nil {
+		add(doctorCheck{Name: "hub_config", Severity: severityBlocker, Message: err.Error()})
+		return report
+	}
+	joined := strings.Join(hubCfg.JoinedAs, ", ")
+	add(doctorCheck{Name: "hub_config", Severity: severityOK, Message: fmt.Sprintf("%s, joined as %s", hubCfg.URL, joined)})
+	if agentID == "" && len(hubCfg.JoinedAs) > 0 {
+		agentID = hubCfg.JoinedAs[0]
+		report.Agent = agentID
+	}
+	key := filepath.Join(cfg.Remote.HubDir, "keys", agentID+"_ed25519")
+	keyInfo, keyErr := os.Lstat(key)
+	if keyErr != nil {
+		add(doctorCheck{Name: "hub_key", Severity: severityBlocker, Message: fmt.Sprintf("key unavailable at %s: %v", key, keyErr)})
+	} else if keyInfo.Mode()&os.ModeSymlink == 0 {
+		add(doctorCheck{Name: "hub_key", Severity: severityBlocker, Message: fmt.Sprintf("%s is not the active-key symlink", key)})
+	} else if target, err := filepath.EvalSymlinks(key); err != nil {
+		add(doctorCheck{Name: "hub_key", Severity: severityBlocker, Message: fmt.Sprintf("active key target invalid: %v", err)})
+	} else if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o600 {
+		add(doctorCheck{Name: "hub_key", Severity: severityBlocker, Message: fmt.Sprintf("active key target must be a 0600 file: %s", target)})
+	} else {
+		add(doctorCheck{Name: "hub_key", Severity: severityOK, Message: fmt.Sprintf("%s -> %s, 0600", key, filepath.Base(target))})
+	}
+	if cached, age, err := hubclient.ConnectFailureCached(cfg.Remote, now); err == nil && cached {
+		add(doctorCheck{Name: "hub_negative_cache", Severity: severityWarn, Message: fmt.Sprintf("hooks are suppressing repeat connects after E_CONNECT %s ago", age.Round(time.Second))})
+	}
+	if agentID == "" {
+		add(doctorCheck{Name: "hub_connect", Severity: severityBlocker, Message: "no joined identity available for the hub probe"})
+		return report
+	}
+	started := time.Now()
+	session, err := openRemoteOneShot(cfg, agentID)
+	if err != nil {
+		code := hubclient.ErrorCode(err)
+		if code == "" {
+			code = "E_CONNECT"
+		}
+		add(doctorCheck{Name: "hub_connect", Severity: severityBlocker, Message: fmt.Sprintf("%s: %v", code, err)})
+		return report
+	}
+	hello := session.Hello()
+	_ = session.Close()
+	add(doctorCheck{Name: "hub_connect", Severity: severityOK, Message: fmt.Sprintf("rtt %s", time.Since(started).Round(time.Millisecond))})
+	if hello.Agent != agentID {
+		add(doctorCheck{Name: "hub_identity", Severity: severityBlocker, Message: fmt.Sprintf("key pinned to %s, acting as %s", hello.Agent, agentID)})
+	} else {
+		add(doctorCheck{Name: "hub_identity", Severity: severityOK, Message: fmt.Sprintf("key pinned to %s; protocol %s v%d; hub binary %s", hello.Agent, hubwire.Protocol, hello.V, hello.HubBin)})
+	}
+	if hello.Pool != hubCfg.Pool || hello.Pool12 != hubCfg.Pool12 {
+		add(doctorCheck{Name: "hub_pool", Severity: severityBlocker, Message: fmt.Sprintf("E_POOL_MISMATCH: joined %s/%s, hub reports %s/%s", hubCfg.Pool, hubCfg.Pool12, hello.Pool, hello.Pool12)})
+	} else if !hello.Writable {
+		add(doctorCheck{Name: "hub_pool", Severity: severityBlocker, Message: "hub pool is not writable"})
+	} else {
+		offset := hello.HubTime.Sub(time.Now().UTC()).Round(100 * time.Millisecond)
+		add(doctorCheck{Name: "hub_pool", Severity: severityOK, Message: fmt.Sprintf("writable; hub time offset %s", offset)})
+	}
+	if envID := strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID")); envID != "" {
+		if mapped, ok := hubCfg.Names[envID]; ok && mapped != envID {
+			add(doctorCheck{Name: "hub_identity_env", Severity: severityWarn, Message: fmt.Sprintf("AGENTCHUTE_AGENT_ID=%s is a local name on this machine; every command resolves it to %q (this hub's names map). Unset it, or export the full id, if that is not what you want.", envID, mapped)})
+		}
+	}
+	return report
 }
 
 const (

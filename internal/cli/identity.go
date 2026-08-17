@@ -5,16 +5,35 @@ import (
 	"os"
 	"strings"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
 	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 )
 
 const missingAgentIdentityHint = "missing agent identity: pass --as/--from or set AGENTCHUTE_AGENT_ID (e.g. export AGENTCHUTE_AGENT_ID=claude-code). See AGENTS.md enrollment."
 
-func resolveAgentID(flagID string) (string, error) {
-	id, err := resolveAgentIDRaw(flagID)
+func resolveAgentID(flagID string, cfg *loop.Config, fallbackID ...string) (string, error) {
+	id, err := resolveAgentIDRaw(flagID, fallbackID...)
 	if err != nil {
 		return "", err
+	}
+	if cfg != nil && cfg.Remote != nil {
+		hubCfg, err := hubclient.ReadHubConfig(cfg.Remote.HubID)
+		if err != nil {
+			return "", err
+		}
+		joinedID := false
+		for _, candidate := range hubCfg.JoinedAs {
+			if id == candidate {
+				joinedID = true
+				break
+			}
+		}
+		if !joinedID {
+			if mapped, ok := hubCfg.Names[id]; ok {
+				id = mapped
+			}
+		}
 	}
 	// Structural traversal-safety: every path that produces an agent id flows
 	// through this single validation, so a hostile --as / AGENTCHUTE_AGENT_ID
@@ -25,7 +44,7 @@ func resolveAgentID(flagID string) (string, error) {
 	return id, nil
 }
 
-func resolveAgentIDRaw(flagID string) (string, error) {
+func resolveAgentIDRaw(flagID string, fallbackID ...string) (string, error) {
 	// 1. Explicit --as flag wins.
 	if strings.TrimSpace(flagID) != "" {
 		return strings.TrimSpace(flagID), nil
@@ -34,6 +53,11 @@ func resolveAgentIDRaw(flagID string) (string, error) {
 	// 2. AGENTCHUTE_AGENT_ID env var.
 	if envID := strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID")); envID != "" {
 		return envID, nil
+	}
+
+	// 3. A direct serve launch may supply its wrapper's canonical id.
+	if len(fallbackID) > 0 && strings.TrimSpace(fallbackID[0]) != "" {
+		return strings.TrimSpace(fallbackID[0]), nil
 	}
 
 	return "", fmt.Errorf("%s", missingAgentIdentityHint)

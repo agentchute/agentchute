@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // cmdPending lists unread inbox messages without archiving, quarantining,
@@ -60,51 +61,12 @@ func cmdPending(args []string) error {
 		return err
 	}
 
-	agentID, err = resolveAgentID(agentID)
+	agentID, err = resolveAgentID(agentID, cfg)
 	if err != nil {
 		return err
 	}
 	if err := loop.ValidateAgentID(agentID); err != nil {
 		return err
-	}
-
-	// v0.2.1 "Enforced Enrollment" (AGENTCHUTE.md §5.3): pending stays
-	// read-only, so it does NOT hard-refuse on missing registration like
-	// the active commands. Instead it surfaces a `needs_boot` reason in
-	// every output mode (text, --json, --claude-hook, --codex-hook). The
-	// only exit-2 path is --fail-if-any (codex review: needs_boot IS
-	// actionable work).
-	needsBoot := false
-	if _, err := os.Stat(cfg.AgentRegistrationPath(agentID)); err != nil {
-		if os.IsNotExist(err) {
-			needsBoot = true
-		} else {
-			return fmt.Errorf("stat own registration: %w", err)
-		}
-	}
-
-	// Strictly read-only: we do NOT update last_seen here. Pending is the
-	// hook-safe peek; `boot` is the lifecycle event that ticks last_seen.
-	inboxDir := cfg.AgentInboxDir(agentID)
-	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
-	if err != nil {
-		if errors.Is(err, loop.ErrInboxMissing) {
-			needsBoot = true
-			msgs, skipped = nil, nil
-		} else {
-			return fmt.Errorf("list inbox: %w", err)
-		}
-	}
-
-	// Asker-owned `.owed` obligations — replies WE are owed by peers (v0.9.0:
-	// the sole reply-obligation surface). Surfaced alongside the inbox count so
-	// per-turn hook context shows the full picture. NON-BLOCKING (asker-owned,
-	// dead-recipient signal); LoadOwedLedger is strictly read-only. A corrupt
-	// `.owed` is not fatal here — gate/boot own blocking, so pending stays a
-	// best-effort peek and reports zero owed rather than crashing.
-	var owedEntries []loop.OwedEntry
-	if owed, oerr := loop.LoadOwedLedger(cfg, agentID); oerr == nil {
-		owedEntries = owed.OutstandingOwed()
 	}
 
 	// Staleness annotation is ON BY DEFAULT at the same threshold `check`
@@ -124,29 +86,85 @@ func cmdPending(args []string) error {
 	}
 
 	now := time.Now().UTC()
-	entries := make([]pendingEntry, 0, len(msgs))
-	for _, msg := range msgs {
-		entry := pendingEntry{
-			From:      msg.Sender,
-			Filename:  msg.Filename,
-			Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano),
-			Age:       humanAge(now.Sub(msg.Timestamp.UTC())),
+	needsBoot := false
+	malformed := 0
+	entries := make([]pendingEntry, 0)
+	var owedEntries []loop.OwedEntry
+	if cfg.Remote != nil {
+		if remoteHookCached(cfg) {
+			fmt.Fprintln(os.Stderr, "hub unreachable; skipping (will retry next event)")
+			return nil
 		}
-		// Parse frontmatter for reply_required.
-		// Body intentionally not read unless --show-body.
-		fm, body, ferr := readFrontmatter(msg.Path)
-		if ferr == nil {
-			if v := strings.ToLower(strings.TrimSpace(fm["reply_required"])); v == "true" {
-				entry.ReplyRequired = true
+		session, openErr := openRemoteOneShot(cfg, agentID)
+		if openErr != nil {
+			if degradeRemoteHook(openErr) {
+				return nil
 			}
-			if showBody {
-				entry.Body = body
+			return openErr
+		}
+		emit := func(ev op.Event) error {
+			switch {
+			case ev.Message != nil:
+				stamp, _ := time.Parse(time.RFC3339Nano, ev.Message.Stamp)
+				entry := pendingEntry{From: ev.Message.Sender, Filename: ev.Message.Filename, Timestamp: ev.Message.Stamp, Age: humanAge(now.Sub(stamp)), ReplyRequired: ev.Message.ReplyRequired}
+				if showBody && ev.Message.Body != nil {
+					entry.Body = loop.ExtractMessageBody(ev.Message.Body)
+				}
+				if staleThreshold > 0 && now.Sub(stamp) > staleThreshold {
+					entry.Stale = true
+				}
+				entries = append(entries, entry)
+			case ev.Owed != nil:
+				owedEntries = append(owedEntries, loop.OwedEntry{To: ev.Owed.To, From: ev.Owed.From, Seq: ev.Owed.Seq, Stamp: ev.Owed.Stamp, Suffix: ev.Owed.Suffix, By: ev.Owed.By, RecordedAt: ev.Owed.RecordedAt})
+			}
+			return nil
+		}
+		sum, pendingErr := session.Pending(op.PendingReq{ShowBody: showBody}, emit)
+		if pendingErr != nil {
+			if degradeRemoteHook(pendingErr) {
+				return nil
+			}
+			return pendingErr
+		}
+		needsBoot = sum.NeedsBoot
+		malformed = sum.Malformed
+	} else {
+		// v0.2.1 enforced enrollment: pending remains a read-only report.
+		if _, err := os.Stat(cfg.AgentRegistrationPath(agentID)); err != nil {
+			if os.IsNotExist(err) {
+				needsBoot = true
+			} else {
+				return fmt.Errorf("stat own registration: %w", err)
 			}
 		}
-		if staleThreshold > 0 && now.Sub(msg.Timestamp.UTC()) > staleThreshold {
-			entry.Stale = true
+		msgs, skipped, listErr := loop.ListInboxMessagesWithSkipped(cfg.AgentInboxDir(agentID))
+		if listErr != nil {
+			if errors.Is(listErr, loop.ErrInboxMissing) {
+				needsBoot = true
+				msgs, skipped = nil, nil
+			} else {
+				return fmt.Errorf("list inbox: %w", listErr)
+			}
 		}
-		entries = append(entries, entry)
+		malformed = len(skipped)
+		if owed, oerr := loop.LoadOwedLedger(cfg, agentID); oerr == nil {
+			owedEntries = owed.OutstandingOwed()
+		}
+		entries = make([]pendingEntry, 0, len(msgs))
+		for _, msg := range msgs {
+			entry := pendingEntry{From: msg.Sender, Filename: msg.Filename, Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano), Age: humanAge(now.Sub(msg.Timestamp.UTC()))}
+			fm, body, ferr := readFrontmatter(msg.Path)
+			if ferr == nil {
+				entry.ReplyRequired = strings.EqualFold(strings.TrimSpace(fm["reply_required"]), "true")
+				if showBody {
+					entry.Body = body
+				}
+			}
+			if staleThreshold > 0 && now.Sub(msg.Timestamp.UTC()) > staleThreshold {
+				entry.Stale = true
+			}
+			entries = append(entries, entry)
+		}
 	}
 
 	// Emit output. The two --*-hook modes emit wrapper-specific JSON shapes
@@ -154,15 +172,15 @@ func cmdPending(args []string) error {
 	// context for that hook event. They never exit nonzero — the hook is
 	// for information, not lifecycle gating.
 	if claudeHook == "UserPromptSubmit" {
-		return emitClaudeUserPromptSubmit(entries, owedEntries, len(skipped), needsBoot, agentID)
+		return emitClaudeUserPromptSubmit(entries, owedEntries, malformed, needsBoot, agentID)
 	}
 	if codexHook == "UserPromptSubmit" {
-		return emitCodexUserPromptSubmit(entries, owedEntries, len(skipped), needsBoot, agentID)
+		return emitCodexUserPromptSubmit(entries, owedEntries, malformed, needsBoot, agentID)
 	}
 	if jsonOut {
-		return emitPendingJSON(entries, owedEntries, len(skipped), needsBoot, agentID)
+		return emitPendingJSON(entries, owedEntries, malformed, needsBoot, agentID)
 	}
-	emitPendingText(entries, owedEntries, len(skipped), needsBoot, agentID)
+	emitPendingText(entries, owedEntries, malformed, needsBoot, agentID)
 
 	// Exit code: 0 by default. With --fail-if-any, exit 2 if the inbox has
 	// unread mail OR the agent needs boot — the reasons a scheduler should wake

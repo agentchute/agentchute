@@ -78,7 +78,7 @@ func cmdClean(args []string) error {
 		if strings.TrimSpace(agentID) == "" && strings.TrimSpace(os.Getenv("AGENTCHUTE_AGENT_ID")) == "" {
 			return cleanUsage(fmt.Errorf("--owed requires an explicit identity: pass --as <id> or set AGENTCHUTE_AGENT_ID"))
 		}
-		agentID, err = resolveAgentID(agentID)
+		agentID, err = resolveAgentID(agentID, cfg)
 		if err != nil {
 			return err
 		}
@@ -86,6 +86,9 @@ func cmdClean(args []string) error {
 			return err
 		}
 		return cmdCleanOwed(cfg, agentID, apply, jsonOut, now)
+	}
+	if cfg.Remote != nil {
+		return fmt.Errorf("clean --mailbox is hub-local; run it on the hub")
 	}
 
 	if err := loop.ValidateAgentID(mailboxTarget); err != nil {
@@ -119,7 +122,18 @@ type cleanOwedResult struct {
 // RecordOwed/ClearOwed (from the agent's own `check`/`send`) cannot race the
 // read-modify-write.
 func cmdCleanOwed(cfg *loop.Config, agentID string, apply, jsonOut bool, now time.Time) error {
-	resp, err := op.CleanOwed(cfg, op.Context{ActorID: agentID}, op.CleanOwedReq{Apply: apply})
+	req := op.CleanOwedReq{Apply: apply}
+	var resp op.CleanOwedResp
+	var err error
+	if cfg.Remote != nil {
+		session, openErr := openRemoteOneShot(cfg, agentID)
+		if openErr != nil {
+			return openErr
+		}
+		resp, err = session.CleanOwed(req)
+	} else {
+		resp, err = op.CleanOwed(cfg, op.Context{ActorID: agentID}, req)
+	}
 	if err != nil {
 		return err
 	}

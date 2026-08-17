@@ -239,23 +239,26 @@ func dispatchExecRun(plan dispatchPlan, shimDir string) error {
 	if err != nil {
 		return err
 	}
-	runArgs := buildDispatchRunArgs(agentchuteBin, plan.Wrapper.Vendor, forwardGlobal, cfg.ControlRepo, cfg.LoopDir, wrapperArgs)
+	runArgs := buildDispatchRunArgs(agentchuteBin, plan.Wrapper.Vendor, forwardGlobal, cfg, wrapperArgs)
 	return execReplace(agentchuteBin, runArgs, os.Environ())
 }
 
 // buildDispatchRunArgs assembles the `agentchute serve` argv for a dispatcher
 // launch, emitting exactly one authoritative --vendor/--control-repo/--loop-dir.
-func buildDispatchRunArgs(agentchuteBin, vendor string, forwardGlobal []string, controlRepo, loopDir string, wrapperArgs []string) []string {
+func buildDispatchRunArgs(agentchuteBin, vendor string, forwardGlobal []string, cfg *loop.Config, wrapperArgs []string) []string {
 	runArgs := []string{agentchuteBin, "serve", "--vendor", vendor}
 	runArgs = append(runArgs, forwardGlobal...)
-	runArgs = append(runArgs,
-		"--control-repo", controlRepo,
-		"--loop-dir", loopDir,
-		"--shim-name", "ac",
-		"--",
-	)
+	runArgs = append(runArgs, launcherControlArgs(cfg)...)
+	runArgs = append(runArgs, "--shim-name", "ac", "--")
 	runArgs = append(runArgs, wrapperArgs...)
 	return runArgs
+}
+
+func launcherControlArgs(cfg *loop.Config) []string {
+	if cfg.Remote != nil {
+		return []string{"--control-repo", cfg.Remote.URL}
+	}
+	return []string{"--control-repo", cfg.ControlRepo, "--loop-dir", cfg.LoopDir}
 }
 
 func dispatchHasFlag(args []string, name string) bool {

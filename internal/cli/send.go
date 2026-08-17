@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
 	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 )
@@ -129,7 +130,7 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 		}
 	}
 
-	fromID, err = resolveAgentID(fromID)
+	fromID, err = resolveAgentID(fromID, cfg)
 	if err != nil {
 		return err
 	}
@@ -146,8 +147,10 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 	actor := op.Context{ActorID: fromID}
 	inboxDir := cfg.AgentInboxDir(toID)
 	now := time.Now().UTC()
-	if err := op.SendPreflight(cfg, actor, toID); err != nil {
-		return renderSendPreflightError(fromID, toID, err)
+	if cfg.Remote == nil {
+		if err := op.SendPreflight(cfg, actor, toID); err != nil {
+			return renderSendPreflightError(fromID, toID, err)
+		}
 	}
 
 	// `--body-file` is an explicit body source even when the file is empty: an
@@ -218,13 +221,25 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 	// so a write from a fenced (reclaimed) agent fails closed (MintSendStamp's
 	// VerifyFence -> ErrFenced). Empty env (no serve lease) => intentionally
 	// unfenced.
-	resp, sendErr := send(cfg, actor, op.SendReq{
+	sendReq := op.SendReq{
 		To:         toID,
 		Content:    content,
 		Ask:        ask,
 		ReplyBy:    replyBy,
 		ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN"),
-	})
+	}
+	var resp op.SendResp
+	var sendErr error
+	if cfg.Remote != nil {
+		session, openErr := openRemoteOneShot(cfg, fromID)
+		if openErr != nil {
+			sendErr = openErr
+		} else {
+			resp, sendErr = session.Send(sendReq)
+		}
+	} else {
+		resp, sendErr = send(cfg, actor, sendReq)
+	}
 	retry := sendRetryOptions{
 		Ask:        ask,
 		ReplyBy:    replyBy.String(),
@@ -240,12 +255,22 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 	// can ride a commit arrive as fields on the response, not as errors —
 	// DurabilityNote and OwedNote, both handled below.
 	if !resp.Committed {
+		if cfg.Remote != nil {
+			return preserveRemoteSendBody(cfg, fromID, toID, rawBody, now, retry, sendErr)
+		}
 		return preserveSendBody(cfg, fromID, toID, rawBody, now, retry, sendErr)
 	}
 	// The on-wire identity is (to,from,timestamp,suffix) (v2.5 plan B7): `to`
 	// is the inbox directory, from/stamp/suffix the filename. The committed
 	// suffix may differ from what was first proposed if a link collision forced
 	// a fresh-suffix retry (C4). No sender-asserted message_id is emitted.
+	if cfg.Remote != nil {
+		pool := cfg.Remote.PoolPath
+		if hubCfg, cfgErr := hubclient.ReadHubConfig(cfg.Remote.HubID); cfgErr == nil && hubCfg.Pool != "" {
+			pool = hubCfg.Pool
+		}
+		inboxDir = filepath.Join(pool, ".agentchute", "loop", "inbox", toID)
+	}
 	msg := loop.Message{Filename: resp.Filename, Path: filepath.Join(inboxDir, resp.Filename)}
 	result := sendResult{
 		Filename: msg.Filename,
@@ -297,6 +322,14 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 // texts. One sentinel, one text each; the sender-path "sender %q" wording is
 // this call site's own and differs from check/status's "agent %q" by design.
 func renderSendPreflightError(from, to string, err error) error {
+	switch hubclient.ErrorCode(err) {
+	case "E_RECIPIENT_RACING":
+		return racingRecipientError(to)
+	case "E_RECIPIENT_STALE":
+		if rr, ok := recipientReachabilityFromWireError(err.Error()); ok {
+			return staleRecipientError(to, rr)
+		}
+	}
 	switch {
 	case errors.Is(err, op.ErrNotRegistered):
 		return fmt.Errorf("sender %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", from, from)
@@ -317,6 +350,30 @@ func renderSendPreflightError(from, to string, err error) error {
 	default:
 		return err
 	}
+}
+
+func recipientReachabilityFromWireError(message string) (loop.RecipientReachability, bool) {
+	var out loop.RecipientReachability
+	lastSeenAt := strings.Index(message, "last_seen=")
+	ageAt := strings.Index(message, " age=")
+	thresholdAt := strings.Index(message, " > stale_after=")
+	if lastSeenAt < 0 || ageAt < 0 || thresholdAt < 0 || lastSeenAt >= ageAt || ageAt >= thresholdAt {
+		return out, false
+	}
+	lastSeen := message[lastSeenAt+len("last_seen=") : ageAt]
+	ageText := message[ageAt+len(" age=") : thresholdAt]
+	thresholdText := strings.TrimSuffix(message[thresholdAt+len(" > stale_after="):], ")")
+	var err error
+	out.LastSeen, err = time.Parse(time.RFC3339, lastSeen)
+	if err != nil {
+		return loop.RecipientReachability{}, false
+	}
+	out.Age, err = time.ParseDuration(ageText)
+	if err != nil {
+		return loop.RecipientReachability{}, false
+	}
+	out.Threshold, err = time.ParseDuration(thresholdText)
+	return out, err == nil
 }
 
 // sendResult is the structured shape of `send`'s output (the same fields
@@ -441,8 +498,23 @@ func preserveSendBody(cfg *loop.Config, from, to, body string, now time.Time, re
 	return fmt.Errorf("%w\nbody preserved at %s; retry with: %s", baseErr, spoolPath, sendRetryCommand(from, to, spoolPath, retry))
 }
 
+func preserveRemoteSendBody(cfg *loop.Config, from, to, body string, now time.Time, retry sendRetryOptions, cause error) error {
+	spoolPath, spoolErr := writeSendSpool(cfg, from, to, body, now)
+	if spoolErr != nil {
+		return fmt.Errorf("%w; body preservation failed: %v", cause, spoolErr)
+	}
+	retryCommand := sendRetryCommandBodyFile(from, to, spoolPath, retry)
+	if hubclient.ErrorCode(cause) == "E_SEND_UNKNOWN" {
+		return fmt.Errorf("hub: connection lost after the send was transmitted — DELIVERY UNKNOWN. Do NOT resend blindly: a copy may already be in %s's inbox (check `agentchute status`, or ask them). Body preserved at %s; if you confirm it did not arrive, retry with: %s", to, spoolPath, retryCommand)
+	}
+	return fmt.Errorf("%w\nbody preserved at %s; retry with: %s", renderSendPreflightError(from, to, cause), spoolPath, retryCommand)
+}
+
 func writeSendSpool(cfg *loop.Config, from, to, body string, now time.Time) (string, error) {
 	spoolDir := filepath.Join(cfg.AgentStateDir(from), "spool")
+	if cfg.Remote != nil {
+		spoolDir = filepath.Join(cfg.Remote.HubDir, "spool")
+	}
 	if err := os.MkdirAll(spoolDir, 0o700); err != nil {
 		return "", err
 	}
@@ -491,6 +563,20 @@ func sendRetryCommand(from, to, spoolPath string, opts sendRetryOptions) string 
 		parts = append(parts, "--reply-to", shellQuote(opts.ReplyTo))
 	}
 	return strings.Join(parts, " ") + " < " + shellQuote(spoolPath)
+}
+
+func sendRetryCommandBodyFile(from, to, spoolPath string, opts sendRetryOptions) string {
+	parts := []string{"agentchute", "send", "--to", to, "--from", from}
+	if opts.Ask {
+		parts = append(parts, "--ask")
+	}
+	if opts.ReplyBySet {
+		parts = append(parts, "--reply-by", shellQuote(opts.ReplyBy))
+	}
+	if opts.ReplyToSet {
+		parts = append(parts, "--reply-to", shellQuote(opts.ReplyTo))
+	}
+	return strings.Join(parts, " ") + " --body-file " + shellQuote(spoolPath)
 }
 
 // applyAskHeading prepends a `## ASK` heading if the body doesn't already

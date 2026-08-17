@@ -32,12 +32,6 @@ func cmdStatus(args []string) error {
 		return statusUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	var err error
-	agentID, err = resolveAgentID(agentID)
-	if err != nil {
-		return err
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -52,16 +46,30 @@ func cmdStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	agentID, err = resolveAgentID(agentID, cfg)
+	if err != nil {
+		return err
+	}
 
 	now := time.Now().UTC()
 	// Read errors arrive as warn notes DURING the read, so they land on stderr
 	// before the table exactly as they always have — position included.
-	resp, err := op.Status(cfg, op.Context{ActorID: agentID}, op.StatusReq{}, func(ev op.Event) error {
+	emit := func(ev op.Event) error {
 		if ev.Note != nil && ev.Note.Level == op.NoteWarn {
 			fmt.Fprintf(os.Stderr, "warning: %s\n", ev.Note.Msg)
 		}
 		return nil
-	})
+	}
+	var resp op.StatusResp
+	if cfg.Remote != nil {
+		session, openErr := openRemoteOneShot(cfg, agentID)
+		if openErr != nil {
+			return openErr
+		}
+		resp, err = session.Status(emit)
+	} else {
+		resp, err = op.Status(cfg, op.Context{ActorID: agentID}, op.StatusReq{}, emit)
+	}
 	if err != nil {
 		if errors.Is(err, op.ErrNotRegistered) {
 			return fmt.Errorf("agent %q is not registered. Run `agentchute boot --as %s --vendor <vendor>` first (AGENTCHUTE.md §5.3)", agentID, agentID)
@@ -69,7 +77,11 @@ func cmdStatus(args []string) error {
 		return err
 	}
 
-	printStatus(os.Stdout, cfg, registrationsOf(resp.Agents), now)
+	if cfg.Remote != nil {
+		printRemoteStatus(os.Stdout, cfg, resp)
+	} else {
+		printStatus(os.Stdout, cfg, registrationsOf(resp.Agents), now)
+	}
 	return nil
 }
 
@@ -98,13 +110,7 @@ func statusUsage(err error) error {
 }
 
 func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registration, now time.Time) {
-	fmt.Fprintf(w, "control_repo: %s%s\n", cfg.ControlRepo, formatOriginSuffix(cfg.ControlRepoOrigin))
-	fmt.Fprintf(w, "loop_dir:     %s%s\n", cfg.LoopDir, formatOriginSuffix(cfg.LoopDirOrigin))
-	fmt.Fprintf(w, "vendor:       %s\n", cfg.Vendor)
-	for _, shadowed := range cfg.ShadowedPointers {
-		fmt.Fprintf(w, "  (shadowed pointer: %s)\n", shadowed)
-	}
-	fmt.Fprintln(w)
+	printStatusHeader(w, cfg)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	// Pull-only (Gate 6c): registrations carry no wake state. There is no
@@ -126,6 +132,48 @@ func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registrati
 	}
 	_ = tw.Flush()
 
+	printProtocolWarnings(w, regs)
+}
+
+func printStatusHeader(w io.Writer, cfg *loop.Config) {
+	controlRepo := cfg.ControlRepo
+	if cfg.Remote != nil {
+		controlRepo = cfg.Remote.URL
+	}
+	fmt.Fprintf(w, "control_repo: %s%s\n", controlRepo, formatOriginSuffix(cfg.ControlRepoOrigin))
+	fmt.Fprintf(w, "loop_dir:     %s%s\n", cfg.LoopDir, formatOriginSuffix(cfg.LoopDirOrigin))
+	if cfg.Remote != nil {
+		fmt.Fprintln(w, "  (local shadow: this process's own loop dir, not the hub's)")
+	}
+	fmt.Fprintf(w, "vendor:       %s\n", cfg.Vendor)
+	for _, shadowed := range cfg.ShadowedPointers {
+		fmt.Fprintf(w, "  (shadowed pointer: %s)\n", shadowed)
+	}
+	fmt.Fprintln(w)
+}
+
+func printRemoteStatus(w io.Writer, cfg *loop.Config, resp op.StatusResp) {
+	printStatusHeader(w, cfg)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "AGENT\tSTATUS\tINBOX\tLAST_SEEN\tAGE\tHOST\tPROTO")
+	regs := make(map[string]*loop.Registration, len(resp.Agents))
+	for _, agent := range resp.Agents {
+		regs[agent.AgentID] = &loop.Registration{AgentID: agent.AgentID, LastSeen: agent.LastSeen, Host: agent.Host, ProtocolVersion: agent.ProtocolVersion}
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+			agent.AgentID, agent.Status, agent.InboxDepth,
+			formatMaybeTime(agent.LastSeen), formatAge(resp.Now, agent.LastSeen),
+			formatDash(agent.Host), formatProtocolVersion(agent.ProtocolVersion),
+		)
+	}
+	_ = tw.Flush()
+	printProtocolWarnings(w, regs)
+	if resp.Truncated {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "note: listing truncated by the hub at the first row that would exceed 64 rows or a 64 KiB response; later agent ids are missing.")
+	}
+}
+
+func printProtocolWarnings(w io.Writer, regs map[string]*loop.Registration) {
 	var warnings []string
 	for _, id := range loop.RegistrationsByAgentID(regs) {
 		if warning := protocolVersionWarning(regs[id]); warning != "" {

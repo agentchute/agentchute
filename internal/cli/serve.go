@@ -72,6 +72,7 @@ type runnerOptions struct {
 	WrapperArgs     []string
 	ShimName        string // ac-* launcher shim that started this lane (provenance).
 	Guarded         bool   // wrapper's hooks can clear the guard latch (v2.5 A7/C22); serve exports AGENTCHUTE_GUARD=1 only when true.
+	VendorProvided  bool
 }
 
 func cmdServe(args []string) error {
@@ -93,6 +94,11 @@ func cmdServe(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return runUsage(err)
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "vendor" {
+			opts.VendorProvided = true
+		}
+	})
 
 	if opts.IntervalSeconds < minServeIntervalSeconds {
 		return fmt.Errorf("--interval must be >= %d seconds", minServeIntervalSeconds)
@@ -143,19 +149,29 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	opts.AgentID, err = resolveAgentID(opts.AgentID)
+	fallbackID := ""
+	if launchedWrapper != "" {
+		if _, lookupErr := exec.LookPath(opts.WrapperArgs[0]); lookupErr == nil {
+			fallbackID = launchedWrapper
+		}
+	}
+	opts.AgentID, err = resolveAgentID(opts.AgentID, cfg, fallbackID)
 	if err != nil {
 		return err
 	}
 	if err := loop.ValidateAgentID(opts.AgentID); err != nil {
 		return err
 	}
-	opts.Vendor = resolveAgentVendor(opts.Vendor, opts.AgentID, cfg)
-	if opts.Vendor == "" {
+	if cfg.Remote == nil {
+		opts.Vendor = resolveAgentVendor(opts.Vendor, opts.AgentID, cfg)
+	}
+	if cfg.Remote == nil && opts.Vendor == "" {
 		return fmt.Errorf("missing --vendor (recommended values: anthropic, openai, google)")
 	}
-	if err := loop.ValidateAgentID(opts.Vendor); err != nil {
-		return fmt.Errorf("--vendor: %w", err)
+	if opts.Vendor != "" {
+		if err := loop.ValidateAgentID(opts.Vendor); err != nil {
+			return fmt.Errorf("--vendor: %w", err)
+		}
 	}
 	if err := refreshWrapperHook(cfg.ControlRepo, launchedWrapper); err != nil {
 		return fmt.Errorf("serve: refresh %s hook: %w", launchedWrapper, err)
@@ -518,18 +534,13 @@ func withoutEnv(env []string, keys ...string) []string {
 }
 
 func runnerChildEnv(cfg *loop.Config, opts runnerOptions, serveToken string) []string {
-	// Strip any inherited AGENTCHUTE_GUARD before conditionally re-adding it
-	// below: os.Environ() carries THIS process's own env, which is nonempty
-	// whenever a guarded session itself launches `ac serve <other-wrapper>`
-	// (e.g. `ac serve grok` run from inside a guarded claude-code session).
-	// Without stripping, an unguarded wrapper's child would inherit the bit
-	// from its guarded parent and appear armed with no hook able to ever
-	// clear the latch (codex review, PR #89 finding #2).
-	env := withoutEnv(os.Environ(), "AGENTCHUTE_GUARD")
+	// Strip inherited authoritative values before conditionally re-adding them:
+	// os.Environ() carries THIS process's discovery and guard context whenever a
+	// served child launches another lane. A remote child must inherit the hub URL
+	// and no loop-dir override; an unguarded child must not inherit the guard bit.
+	env := withoutEnv(os.Environ(), "AGENTCHUTE_GUARD", "AGENTCHUTE_CONTROL_REPO", "AGENTCHUTE_LOOP_DIR")
 	env = append(env,
 		"AGENTCHUTE_AGENT_ID="+opts.AgentID,
-		"AGENTCHUTE_CONTROL_REPO="+cfg.ControlRepo,
-		"AGENTCHUTE_LOOP_DIR="+cfg.LoopDir,
 		"AGENTCHUTE_RUNNER=1",
 		"AGENTCHUTE_RUNNER_PID="+strconv.Itoa(os.Getpid()),
 		// Fence the child's sends: send.go passes this serve_token to
@@ -537,6 +548,14 @@ func runnerChildEnv(cfg *loop.Config, opts runnerOptions, serveToken string) []s
 		// (protocol-v2 §6b). Empty when launched without a lease => unfenced.
 		"AGENTCHUTE_SERVE_TOKEN="+serveToken,
 	)
+	if cfg.Remote != nil {
+		env = append(env, "AGENTCHUTE_CONTROL_REPO="+cfg.Remote.URL)
+	} else {
+		env = append(env,
+			"AGENTCHUTE_CONTROL_REPO="+cfg.ControlRepo,
+			"AGENTCHUTE_LOOP_DIR="+cfg.LoopDir,
+		)
+	}
 	if opts.Guarded {
 		// v2.5 A7/C22: only a wrapper whose installed hooks can clear the
 		// guard latch (via turn-end) may have it armed. Unguarded wrappers
@@ -552,12 +571,13 @@ func registerRunner(cfg *loop.Config, opts runnerOptions, serveToken string, now
 	// path via the PTY supervisor, not a registration field. The registration is
 	// a plain no-wake record.
 	_, err := performRegister(cfg, registerOpts{
-		AgentID:      opts.AgentID,
-		Vendor:       opts.Vendor,
-		WorkingRepos: []string{cfg.ControlRepo},
-		Host:         localHostname(),
-		HostProvided: true,
-		ServeToken:   serveToken,
+		AgentID:        opts.AgentID,
+		Vendor:         opts.Vendor,
+		WorkingRepos:   []string{cfg.ControlRepo},
+		Host:           localHostname(),
+		HostProvided:   true,
+		ServeToken:     serveToken,
+		VendorProvided: opts.VendorProvided,
 	}, now)
 	return err
 }
