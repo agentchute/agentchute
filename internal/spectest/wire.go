@@ -2,6 +2,7 @@ package spectest
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -83,6 +84,7 @@ func assertW1Client(t *testing.T, f SessionFactory) {
 	if err == nil {
 		t.Fatal("disconnect after first message returned nil error")
 	}
+	waitSession(t, transport)
 	if n, err := f.State().ClaimedCount("codex"); err != nil || n != 1 {
 		t.Fatalf("claimed residue = %d, %v", n, err)
 	}
@@ -101,27 +103,25 @@ func assertW1Client(t *testing.T, f SessionFactory) {
 
 type disconnectAfterCommit struct {
 	Session
-	state  StateProbe
-	agent  string
-	writes int
+	state StateProbe
+	agent string
+	reads int
 }
 
-func (d *disconnectAfterCommit) Write(p []byte) (int, error) {
-	n, err := d.Session.Write(p)
-	d.writes++
-	if d.writes == 2 {
-		go func() {
-			deadline := time.Now().Add(2 * time.Second)
-			for time.Now().Before(deadline) {
-				if count, countErr := d.state.InboxCount(d.agent); countErr == nil && count == 1 {
-					_ = d.ForceDisconnect()
-					return
-				}
-				time.Sleep(time.Millisecond)
+func (d *disconnectAfterCommit) Read(p []byte) (int, error) {
+	d.reads++
+	if d.reads == 2 {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if count, countErr := d.state.InboxCount(d.agent); countErr == nil && count == 1 {
+				_ = d.ForceDisconnect()
+				return d.Session.Read(p)
 			}
-		}()
+			time.Sleep(time.Millisecond)
+		}
+		return 0, fmt.Errorf("send did not commit before disconnect deadline")
 	}
-	return n, err
+	return d.Session.Read(p)
 }
 
 func assertW2Client(t *testing.T, f SessionFactory) {
@@ -140,6 +140,7 @@ func assertW2Client(t *testing.T, f SessionFactory) {
 	if hubclient.ErrorCode(err) != "E_SEND_UNKNOWN" {
 		t.Fatalf("send error = %v (%s), want E_SEND_UNKNOWN", err, hubclient.ErrorCode(err))
 	}
+	waitSession(t, raw)
 	if n, err := f.State().InboxCount("grok"); err != nil || n != 1 {
 		t.Fatalf("delivery count = %d, %v", n, err)
 	}
@@ -154,11 +155,12 @@ func assertW6Client(t *testing.T, f SessionFactory) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restore() })
-	client, _ := openClient(t, f, "codex")
+	client, transport := openClient(t, f, "codex")
 	_, err = client.Check(op.ClaimReq{}, func(op.Event) error { return nil })
 	if hubclient.ErrorCode(err) != "E_HUB_IO" || !hubclient.ClaimedHeld(err) {
 		t.Fatalf("check error = %v code=%s claimed_held=%v", err, hubclient.ErrorCode(err), hubclient.ClaimedHeld(err))
 	}
+	waitSession(t, transport)
 }
 
 type StateProbe interface {
@@ -336,6 +338,7 @@ func assertW3(t *testing.T, f SessionFactory) {
 		t.Fatalf("delivery count = %d, %v", n, err)
 	}
 	_ = channel.ForceDisconnect()
+	waitSession(t, channel)
 }
 
 func assertHandshakeError(t *testing.T, f SessionFactory, acting string, minV int, want string) {

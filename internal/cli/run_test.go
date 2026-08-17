@@ -303,6 +303,29 @@ func TestRunnerChildEnvCarriesServeToken(t *testing.T) {
 	}
 }
 
+func TestRunnerChildEnvRemotePreservesLocatorAndOmitsLoopDir(t *testing.T) {
+	t.Setenv("AGENTCHUTE_CONTROL_REPO", "/inherited/local/repo")
+	t.Setenv("AGENTCHUTE_LOOP_DIR", "/inherited/local/loop")
+	cfg := &loop.Config{
+		ControlRepo: "/current/local/repo",
+		LoopDir:     "/local/shadow/.agentchute/loop",
+		Remote:      &loop.RemoteConfig{URL: "ssh://user@hub.example/remote/pool"},
+	}
+	env := runnerChildEnv(cfg, runnerOptions{AgentID: "codex-tiny", Vendor: "openai"}, "tok-remote")
+	controlRepos := make([]string, 0, 1)
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, "AGENTCHUTE_CONTROL_REPO="):
+			controlRepos = append(controlRepos, strings.TrimPrefix(kv, "AGENTCHUTE_CONTROL_REPO="))
+		case strings.HasPrefix(kv, "AGENTCHUTE_LOOP_DIR="):
+			t.Fatalf("remote child carries a loop-dir override: %q", kv)
+		}
+	}
+	if len(controlRepos) != 1 || controlRepos[0] != cfg.Remote.URL {
+		t.Fatalf("remote child control repo = %v, want only %q", controlRepos, cfg.Remote.URL)
+	}
+}
+
 // TestRunnerChildEnvStripsInheritedGuardBit is the v2.5 A7/C22 guard-enablement
 // contract (codex review, PR #89 finding #2): an unguarded wrapper (Guarded:
 // false, e.g. grok) must never appear armed just because the PROCESS running
