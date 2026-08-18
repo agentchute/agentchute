@@ -36,11 +36,8 @@ func TestSSHDChildEnvSendAndSupervisedRelaunchDefault(t *testing.T) {
 		t.Fatalf("child identity/token = %+v", first)
 	}
 	waitInboxCount(t, h, "grok", 1, 5*time.Second)
-	// The fake child has completed its one-shot send. Close that test-owned mux
-	// master before the separate shadow-latch command so this row does not
-	// overlap two forced commands on a connection it is not testing.
-	h.stopMuxMasters()
-	if err := h.State().Deliver("grok", agentID, "arm remote shadow latch"); err != nil {
+	waitChildEvents(t, childLog, "send-done", 1, 5*time.Second)
+	if err := h.State().Deliver("sshd-fixture-peer", agentID, "arm remote shadow latch"); err != nil {
 		t.Fatal(err)
 	}
 	stdout, stderr, err := runWithChildEnv(h, checkout, first, nil, "check")
@@ -216,6 +213,7 @@ log=%s
 printf 'start|%%s|%%s|%%s|%%s|%%s\n' "$$" "$AGENTCHUTE_AGENT_ID" "$AGENTCHUTE_SERVE_TOKEN" "$AGENTCHUTE_CONTROL_REPO" "${AGENTCHUTE_LOOP_DIR-}" >> "$log"
 trap 'printf "term|%%s||||\n" "$$" >> "$log"; exit 0' TERM INT HUP
 %s send --to grok --body child-send >/dev/null 2>&1 || true
+printf 'send-done|%%s|%%s|%%s|%%s|%%s\n' "$$" "$AGENTCHUTE_AGENT_ID" "$AGENTCHUTE_SERVE_TOKEN" "$AGENTCHUTE_CONTROL_REPO" "${AGENTCHUTE_LOOP_DIR-}" >> "$log"
 while :; do sleep 1; done
 `, shellLiteral(logPath), shellLiteral(h.binary))
 	if err := os.WriteFile(filepath.Join(h.clientBin, "codex"), []byte(script), 0o700); err != nil {
