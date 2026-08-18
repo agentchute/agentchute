@@ -244,10 +244,12 @@ func finishHubMigration(root string, remote *loop.RemoteConfig, oldDir string, o
 	// migration's frozen tree, and report success having never migrated oldDir at
 	// all.
 	//
-	// If a frozen tree somehow exists anyway, the rename fails (a non-empty
-	// directory cannot be renamed onto) and halfFinishedMigration tells the
-	// operator to re-run — which is exactly right, because the re-run's sweep is
-	// what clears it.
+	// If a frozen tree somehow exists anyway the rename fails, and it fails for a
+	// stronger reason than "the directory is non-empty": os.Rename Lstats the
+	// target and returns a synthetic EEXIST for ANY directory, without calling
+	// rename(2) at all (os/file_unix.go). So the freeze can never silently adopt
+	// a leftover tree, empty or not. halfFinishedMigration then tells the
+	// operator to re-run, which is exactly right — the re-run's sweep clears it.
 	frozen := newDir + hubMigrationFrozenSuffix
 	if err := os.Rename(oldDir, frozen); err != nil {
 		return halfFinishedMigration(oldDir, newDir, "freezing the old hub directory", err)

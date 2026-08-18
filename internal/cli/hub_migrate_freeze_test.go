@@ -200,12 +200,16 @@ func TestHubJoinSweepsAFrozenTreeOnlyAfterVerifyingIt(t *testing.T) {
 // same lock — so a row driving the join cannot tell the two versions apart. My
 // first attempt did exactly that and the mutation passed.
 //
-// The fixture is an EMPTY frozen directory, deliberately: it verifies trivially
-// (nothing in it is missing from newDir) and an empty directory CAN be renamed
-// onto. So the correct code renames over it and completes, while the branch skips
-// the rename, "verifies" nothing, deletes it, and returns success with oldDir
-// still sitting there. A non-empty fixture would make the branch fail on
-// verification instead — the right answer for the wrong reason.
+// The fixture is an EMPTY frozen directory, deliberately: it verifies trivially,
+// so the restored branch cannot fail for the wrong reason. A non-empty fixture
+// makes the branch fail on VERIFICATION instead — right answer, wrong reason —
+// which is exactly how the first version of this row passed its own mutation.
+//
+// Note what the correct code does here, because it is stronger than it looks:
+// os.Rename Lstats the target and returns a synthetic EEXIST for ANY directory,
+// empty or not, without calling rename(2) (os/file_unix.go). So the freeze
+// refuses to adopt a leftover tree in every case, and this row exercises the
+// refusal rather than an overwrite.
 func TestHubMigrationNeverSucceedsWithoutMigratingTheOldDirectory(t *testing.T) {
 	root, oldRemote := setupHubJoinTest(t)
 	_, _ = seedJoinedHub(t, root, oldRemote)

@@ -446,6 +446,24 @@ func newRunnerRuntime(cfg *loop.Config, opts runnerOptions, cwd string, lease *l
 
 func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 	if cfg.Remote != nil {
+		// A SHARED hub lock for this lane's whole lifetime, taken BEFORE anything
+		// opens a descriptor into the hub tree.
+		//
+		// runner.log lives INSIDE the tree a migration moves — ShadowLoopDir is
+		// hubDir/.agentchute/loop and AgentStateDir hangs off it — and this lane
+		// holds an O_APPEND descriptor to it. A descriptor follows the INODE, not
+		// the name, so the migration's freeze does not detach it: an append after
+		// the migration verifies lands in the frozen tree and is deleted with it.
+		// Freezing narrows that window; only excluding the PROCESS closes it.
+		//
+		// The lock is released by the kernel when this process dies, so a crashed
+		// lane never leaves a stale lock. Local pools take nothing — there is no
+		// hub to migrate.
+		release, err := acquireHubLocks([]string{cfg.Remote.HubID}, hubLockShared)
+		if err != nil {
+			return err
+		}
+		defer release()
 		return runRemoteWrapper(cfg, opts, cwd)
 	}
 	stateDir := cfg.AgentStateDir(opts.AgentID)
