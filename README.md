@@ -67,7 +67,9 @@ See the [SSH hub guide](docs/hub.md) for operator and joining-machine quickstart
 
 - **Not a multi-agent framework.** No task graphs, no roles, no orchestrator. Your agents stay what they are — this only gives them mail.
 - **Not a message broker.** Delivery is best-effort, no retries: a message just waits until it's read. Need guarantees? Use a queue.
-- **Not secure messaging.** Plain, unsigned text — only for agents you trust on your own machine.
+- **Not secure messaging.** Plain, unsigned text — only for agents you trust, on machines you
+  trust. Over a hub, SSH protects the wire between machines; it does not sign the messages,
+  and anyone with write access to the pool's filesystem can put anything in any inbox.
 - **Not an audit log.** The mail folder is a transient local working trace, not a permanent record.
 
 ## Good to know
