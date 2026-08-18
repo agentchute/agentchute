@@ -76,9 +76,22 @@ func cmdHubJoin(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Learn which ids the first scope must hold BEFORE taking anything. A frozen
+	// tree left by an interrupted move belongs to some OTHER hub id, and the
+	// sweep below deletes it — so that id has to be held too. Reading the marker
+	// inside a lock on the new id and then taking the old one would invert the
+	// sorted order the migration itself uses.
+	frozenOrigin, err := frozenHubMigrationOrigin(remote)
+	if err != nil {
+		return err
+	}
+	firstScope := []string{remote.HubID}
+	if frozenOrigin != "" {
+		firstScope = append(firstScope, frozenOrigin)
+	}
 	var oldHubID string
 	completed := false
-	err = withHubLock(remote.HubID, func() error {
+	err = withHubLocks(firstScope, func() error {
 		// Before anything else: finish a migration that was interrupted after it
 		// froze the old tree. Nothing else can see that state — the old directory
 		// is gone, so there is no candidate to find.

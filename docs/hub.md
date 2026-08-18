@@ -103,6 +103,25 @@ Common failures are actionable and fail closed:
 
 The complete error-code registry is in [AGENTCHUTE.md §13.10](../AGENTCHUTE.md#1310-error-code-registry).
 
+## A live lane blocks a migration, by design
+
+Moving a hub to a new URL migrates the joining machine's local hub directory — and a running
+`ac serve` lane writes inside that directory the whole time it is up. So a migration refuses
+while a lane is live:
+
+```
+hub join: this hub is busy (lock ~/.agentchute/hub/.locks/3fa8c21b90de.lock). Either another
+agentchute hub join/rotate is running, or a `serve` lane is live against it — a lane holds
+this lock for as long as it runs, and migrating underneath it would delete state it is still
+writing. Stop the lane (or wait for the other join), then re-run.
+```
+
+That refusal is correct, not a bug: the lane holds open files inside the directory being
+moved, and an open file follows the file itself rather than its name — so a migration that
+went ahead would delete writes the lane was still making. Stop the lane, re-run the join,
+start the lane again. The reverse also holds: a lane will not start while a migration is in
+progress, and says so.
+
 ## Upgrading a machine that has two copies of agentchute
 
 Joining a hub rewrites the checkout's `.agentchute-control-repo` pointer to an `ssh://`

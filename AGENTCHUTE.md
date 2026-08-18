@@ -452,6 +452,24 @@ restrict,command="/usr/local/bin/agentchute hub session --agent <id> --pool <abs
 - `state/pool.id` is the pool's durable identity: one regular, non-symlink, 0600 file whose entire content matches `^[0-9a-f]{12}\n$`. `hello-ok.pool12` always carries the value **read from that file**, never an argv echo.
 - A compromised remote key can act fully as that one id (send, claim/ack its inbox, hold its serve lease, read the roster) and poison peers with message content. It cannot get a shell, act as another id, read another agent's `state/` or mail, or tamper with pool state outside the protocol. Co-tenants on the hub itself remain under §15 cooperative trust; bodies remain untrusted data.
 
+### 13.9a Writers under a migrated hub tree
+
+A joined machine's shadow loop dir lives **inside** the hub directory, and a same-hub
+migration (an alias/URL change for the same pool) renames that directory. A descriptor
+follows the inode, not the name, so renaming does not detach a writer that already has one
+open: a write issued after the migration has verified the copy lands in the moved-aside tree
+and is destroyed with it.
+
+**Any process that opens a descriptor under a hub tree MUST hold that hub's shared lock for
+as long as the descriptor lives, and a migration MUST hold the same lock exclusively for both
+the old and new hub ids.** The lock file lives beside the hub directories, never inside one,
+so it survives the rename. A migration that cannot take the lock MUST refuse rather than
+proceed; it MUST NOT wait indefinitely, and it MUST NOT delete a tree it has not verified.
+
+Implementations that keep no state inside the hub directory are unaffected. This constrains
+where state may live as much as how it is written: putting a writer's state inside the
+migrated tree is what creates the requirement.
+
 ### 13.10 Error-code registry
 
 Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable":false}`

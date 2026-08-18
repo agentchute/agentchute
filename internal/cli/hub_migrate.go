@@ -192,6 +192,36 @@ func hubDirForMessage(hubID string) string {
 // above. Provenance says who created the directory; this says what is actually
 // in it. The RemoveAll is irreversible, so it is gated on the second question
 // rather than inferred from the first.
+// frozenHubMigrationOrigin reports the old hub id a frozen tree came from, read
+// from the marker the migration wrote before the rename. Empty means there is no
+// frozen tree.
+//
+// It is deliberately a READ, done before any lock is taken, so the caller can
+// acquire both ids in ONE sorted acquisition. Reading the marker inside a lock on
+// the new id and then taking the old one would be a lock-order inversion against
+// the migration's own sorted acquire.
+//
+// A frozen tree with no readable marker is an ERROR, not an invitation to sweep.
+// finishHubMigration removes the marker only AFTER the tree is gone, so
+// frozen-exists implies marker-exists; if it does not, we cannot know which
+// processes to exclude, and deleting a tree without knowing whom to exclude is
+// the whole class of defect this file has been fixing.
+func frozenHubMigrationOrigin(remote *loop.RemoteConfig) (string, error) {
+	frozen := remote.HubDir + hubMigrationFrozenSuffix
+	if _, err := os.Stat(frozen); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(remote.HubDir, hubMigrationMarker))
+	oldID := strings.TrimSpace(string(data))
+	if err != nil || !hubDirNameRE.MatchString(oldID) {
+		return "", fmt.Errorf("hub join: %s holds a hub tree from an interrupted move, but %s does not say which hub it came from, so this cannot tell which lanes to exclude before deleting it. NOTHING has been deleted — every byte is still in %s. Inspect it, and remove it by hand once you are sure nothing is running against it", frozen, filepath.Join(remote.HubDir, hubMigrationMarker), frozen)
+	}
+	return oldID, nil
+}
+
 // hubMigrationFrozenSuffix names the old tree once it has been moved out of the
 // path any lane can resolve. It is derived from the NEW hub id deliberately: the
 // surviving id is the one a later join can compute, so a crash after the freeze
@@ -287,6 +317,8 @@ func sweepFrozenHubMigration(remote *loop.RemoteConfig) error {
 		}
 		return err
 	}
+	// The caller holds the locks. If it could not learn WHICH ids to hold, it
+	// must not have called us — see frozenHubMigrationOrigin.
 	if err := hubMigrationVerify(frozen, remote.HubDir); err != nil {
 		return fmt.Errorf("hub join: a previous hub move was interrupted after it froze the old directory, and %s does not fully represent %s — so the frozen tree is NOT being deleted and nothing is lost. Resolve the difference (the bytes are all still in %s), then re-run this join: %w", remote.HubDir, frozen, frozen, err)
 	}

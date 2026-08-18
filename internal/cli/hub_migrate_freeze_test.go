@@ -252,3 +252,83 @@ func TestFrozenHubDirIsNotAMigrationCandidate(t *testing.T) {
 		t.Fatal("the candidate scan no longer matches a bare hub id; the row above proves nothing")
 	}
 }
+
+// A lane holding the OLD hub id must block the SWEEP, not only the migration.
+//
+// The existing "shared lock on the old id refuses the migration" row exercises
+// scope 2, which already held both ids. It stays green with the sweep completely
+// unlocked, so it cannot pin this. This row drives the sweep path specifically:
+// a frozen tree present and NO migration candidate, so scope 1 is the only thing
+// that runs.
+func TestSweepRefusesWhileALaneHoldsTheOldHubID(t *testing.T) {
+	shortenHubLockTimeout(t)
+	root, oldRemote := setupHubJoinTest(t)
+	oldPub, oldTarget := seedJoinedHub(t, root, oldRemote)
+	newRemote, err := loop.ParseRemoteURL("ssh://alex@hub-alias.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := newRemote.HubDir + hubMigrationFrozenSuffix
+
+	// The post-freeze crash state: newDir complete and carrying the marker, the
+	// old tree frozen, the old directory gone — so nothing is a candidate and
+	// only the sweep has work to do.
+	crashAfterHubMigrationRename(t, root, oldRemote, newRemote)
+	if err := os.Rename(oldRemote.HubDir, frozen); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireHubLocks([]string{oldRemote.HubID}, hubLockShared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	var joinErr error
+	withCwd(t, root, func() { joinErr = cmdHubJoin([]string{newRemote.URL, "--name", "codex"}) })
+	if joinErr == nil {
+		t.Fatal("the sweep deleted a frozen tree while a lane held the hub it came from")
+	}
+	if _, err := os.Stat(frozen); err != nil {
+		t.Fatalf("the refusal did not leave the frozen tree in place: %v", err)
+	}
+	assertOldHubKeyIntact(t, oldRemote, oldPub, oldTarget, frozen)
+}
+
+// A frozen tree whose marker cannot name its origin is REFUSED, never swept.
+//
+// The sweep has to know which hub id to exclude before deleting anything.
+// Without the marker it cannot, and deleting a tree without knowing whom to
+// exclude is the whole class of defect this file exists to fix — so the tree
+// stays and the operator is told where the bytes are.
+func TestSweepRefusesAFrozenTreeItCannotAttribute(t *testing.T) {
+	shortenHubLockTimeout(t)
+	root, oldRemote := setupHubJoinTest(t)
+	oldPub, oldTarget := seedJoinedHub(t, root, oldRemote)
+	newRemote, err := loop.ParseRemoteURL("ssh://alex@hub-alias.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := newRemote.HubDir + hubMigrationFrozenSuffix
+
+	crashAfterHubMigrationRename(t, root, oldRemote, newRemote)
+	if err := os.Rename(oldRemote.HubDir, frozen); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(newRemote.HubDir, hubMigrationMarker)); err != nil {
+		t.Fatal(err)
+	}
+
+	var joinErr error
+	withCwd(t, root, func() { joinErr = cmdHubJoin([]string{newRemote.URL, "--name", "codex"}) })
+	if joinErr == nil {
+		t.Fatal("a frozen tree with no marker was swept; nothing knew which lanes to exclude")
+	}
+	if !strings.Contains(joinErr.Error(), "does not say which hub it came from") {
+		t.Fatalf("refusal does not explain what is missing: %v", joinErr)
+	}
+	if _, err := os.Stat(frozen); err != nil {
+		t.Fatalf("the refusal deleted the tree anyway: %v", err)
+	}
+	assertOldHubKeyIntact(t, oldRemote, oldPub, oldTarget, frozen)
+}
