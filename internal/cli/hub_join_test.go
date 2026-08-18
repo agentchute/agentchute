@@ -31,6 +31,7 @@ func setupHubJoinTest(t *testing.T) (string, *loop.RemoteConfig) {
 	// These package-level seams require serial tests; do not call t.Parallel in this file.
 	originalProbe := hubJoinProbe
 	originalAuthorize := hubJoinAutoAuthorize
+	originalJoinReapMux := hubJoinReapMux
 	originalInstall := hubJoinInstallShims
 	originalHostname := hubJoinHostname
 	originalFingerprint := hubJoinFingerprint
@@ -41,9 +42,11 @@ func setupHubJoinTest(t *testing.T) (string, *loop.RemoteConfig) {
 	hubJoinFingerprint = func(*loop.RemoteConfig) (string, error) { return "SHA256:host", nil }
 	hubJoinDiscoverFingerprint = func(*loop.RemoteConfig) (string, error) { return "SHA256:host", nil }
 	hubMigrationReapMux = func(*hubclient.HubConfig, string) {}
+	hubJoinReapMux = func(*loop.RemoteConfig, string, string, string) error { return nil }
 	t.Cleanup(func() {
 		hubJoinProbe = originalProbe
 		hubJoinAutoAuthorize = originalAuthorize
+		hubJoinReapMux = originalJoinReapMux
 		hubJoinInstallShims = originalInstall
 		hubJoinHostname = originalHostname
 		hubJoinFingerprint = originalFingerprint
@@ -276,6 +279,7 @@ func TestHubJoinRotateUsesReplaceAndPromotes(t *testing.T) {
 	old, _ := os.Readlink(active)
 	probeCalls := 0
 	replaced := false
+	reaped := ""
 	hubJoinProbe = func(_ *loop.RemoteConfig, _ string, keyPath string) (hubwire.HelloOK, []string, error) {
 		probeCalls++
 		if strings.HasSuffix(keyPath, ".v2") && probeCalls == 1 {
@@ -287,11 +291,21 @@ func TestHubJoinRotateUsesReplaceAndPromotes(t *testing.T) {
 		replaced = replace
 		return nil
 	}
+	hubJoinReapMux = func(_ *loop.RemoteConfig, agentID, keyPath, stateDir string) error {
+		if agentID != "codex-tiny" || stateDir != remote.HubDir {
+			t.Fatalf("reap args = agent %q state %q", agentID, stateDir)
+		}
+		reaped = keyPath
+		return nil
+	}
 	if err := runHubJoin(root, remote, hubJoinOptions{URL: remote.URL, Name: "codex", RotateKey: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !replaced {
 		t.Fatal("rotation did not request --replace-key")
+	}
+	if !strings.HasSuffix(reaped, ".v2") {
+		t.Fatalf("rotation reaped key path %q, want staged v2", reaped)
 	}
 	if target, err := os.Readlink(active); err != nil || target == old || !strings.HasSuffix(target, ".v2") {
 		t.Fatalf("rotation target = %q, %v; old %q", target, err, old)

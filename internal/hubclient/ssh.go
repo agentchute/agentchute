@@ -3,6 +3,8 @@ package hubclient
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +20,11 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-const controlPathTokenWidth = 64
+const (
+	controlPathByteBudget = 100
+	controlPathTokenWidth = 64
+	muxIsolationKeyWidth  = 12
+)
 
 type SSHBuildOptions struct {
 	Remote        *loop.RemoteConfig
@@ -35,6 +41,36 @@ type SSHBuildOptions struct {
 type SSHInvocation struct {
 	Args     []string
 	Warnings []string
+}
+
+// ReapSSHMux closes this identity's live one-shot master, if any. Callers use
+// it after a local authorization change that must force the next operation to
+// authenticate again; channel sessions never multiplex and are unaffected.
+func ReapSSHMux(remote *loop.RemoteConfig, agentID, keyPath, stateDir string) error {
+	invocation, err := BuildSSHInvocation(SSHBuildOptions{Remote: remote, AgentID: agentID, KeyPath: keyPath, StateDir: stateDir})
+	if err != nil {
+		return err
+	}
+	controlPath := ""
+	for _, arg := range invocation.Args {
+		if strings.HasPrefix(arg, "ControlPath=") && arg != "ControlPath=none" {
+			controlPath = arg
+			break
+		}
+	}
+	if controlPath == "" {
+		return nil
+	}
+	args := []string{"-O", "exit", "-o", controlPath}
+	if remote.Port != 22 {
+		args = append(args, "-p", strconv.Itoa(remote.Port))
+	}
+	args = append(args, remote.Destination())
+	out, err := exec.Command("ssh", args...).CombinedOutput()
+	if err == nil || strings.Contains(strings.ToLower(string(out)), "control socket connect") {
+		return nil
+	}
+	return fmt.Errorf("reap SSH multiplex master: %w: %s", err, strings.TrimSpace(string(out)))
 }
 
 func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
@@ -69,13 +105,17 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 		"-o", "ClearAllForwardings=yes",
 	)
 	var warnings []string
+	// Every invocation sharing a mux key must keep the same connection-affecting
+	// options: an attached session inherits the master's forwarding, host-key,
+	// and route decisions. User ssh_config alias changes are deliberately not
+	// reimplemented here; a live master retains its resolved route until close.
 	if opts.Channel {
 		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
 	} else {
 		if opts.PreferredRoot == "" {
 			opts.PreferredRoot = stateDir
 		}
-		muxDir, attempted, err := selectMuxDir(opts)
+		muxDir, attempted, err := selectMuxDir(opts, muxIsolationKey(opts.Remote, opts.AgentID, key))
 		if err != nil {
 			args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
 			warnings = append(warnings, fmt.Sprintf("ssh multiplexing disabled: no owned ControlPath directory fits the 100-byte socket budget (tried %s)", strings.Join(attempted, ", ")))
@@ -91,15 +131,16 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 	return SSHInvocation{Args: args, Warnings: warnings}, nil
 }
 
-func selectMuxDir(opts SSHBuildOptions) (string, []string, error) {
+func selectMuxDir(opts SSHBuildOptions, isolationKey string) (string, []string, error) {
 	ensure := opts.EnsureOwned
 	if ensure == nil {
 		ensure = loop.EnsureOwnedSocketDir
 	}
-	preferred := filepath.Join(opts.Remote.HubDir, "mux")
+	preferredRoot := opts.Remote.HubDir
 	if opts.PreferredRoot != "" {
-		preferred = filepath.Join(opts.PreferredRoot, "mux")
+		preferredRoot = opts.PreferredRoot
 	}
+	preferred := filepath.Join(preferredRoot, "mux", isolationKey)
 	attempted := []string{preferred}
 	if controlPathFits(preferred) {
 		if err := loop.EnsurePrivateDir(preferred); err == nil {
@@ -116,7 +157,7 @@ func selectMuxDir(opts SSHBuildOptions) (string, []string, error) {
 	}
 	seen := map[string]bool{}
 	for _, root := range roots {
-		candidate := filepath.Join(root, "agentchute-hub-"+uid, opts.Remote.HubID)
+		candidate := filepath.Join(root, "ac-"+uid, isolationKey)
 		if seen[candidate] {
 			continue
 		}
@@ -133,8 +174,22 @@ func selectMuxDir(opts SSHBuildOptions) (string, []string, error) {
 	return "", attempted, errors.New("no usable mux directory")
 }
 
+// muxIsolationKey is an opaque connection-isolation key, not a hub id. HubID
+// already hashes the canonical URL (user, host, port, and pool path). SSH's %C
+// token omits IdentityFile, so this also binds the acting agent and resolved
+// key version; rotating the stable active-key symlink therefore opens a new
+// master instead of reusing one authenticated with the retired key.
+func muxIsolationKey(remote *loop.RemoteConfig, agentID, keyPath string) string {
+	resolvedKey := filepath.Clean(keyPath)
+	if resolved, err := filepath.EvalSymlinks(keyPath); err == nil {
+		resolvedKey = resolved
+	}
+	sum := sha256.Sum256([]byte(remote.HubID + "\x00" + agentID + "\x00" + resolvedKey))
+	return hex.EncodeToString(sum[:])[:muxIsolationKeyWidth]
+}
+
 func controlPathFits(muxDir string) bool {
-	return len(muxDir)+1+controlPathTokenWidth < 100
+	return len(muxDir)+1+controlPathTokenWidth < controlPathByteBudget
 }
 
 func currentUserID() string {

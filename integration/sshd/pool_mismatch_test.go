@@ -27,7 +27,7 @@ func TestSSHDPoolOnlyKeyLineEditFailsBeforeHello(t *testing.T) {
 	assertWireError(t, frame, hubwire.CodePoolMismatch)
 }
 
-func TestSSHDConsistentRepointFailsInClientArm(t *testing.T) {
+func TestSSHDRepointTakesEffectAfterLiveMasterIsReaped(t *testing.T) {
 	h := newSSHDHarness(t)
 	checkout := h.newCheckout()
 	stdout, stderr, err := h.runCLI(checkout, "hub", "join", h.remote.URL, "--as", "work-tiny")
@@ -47,9 +47,59 @@ func TestSSHDConsistentRepointFailsInClientArm(t *testing.T) {
 	}
 	rewriteAuthorizedCommand(t, h, "work-tiny", h.pool, other, sshdPoolID, otherID)
 
+	before := h.authCount()
+	stdout, stderr, err = h.runCLI(checkout, "status", "--as", "work-tiny")
+	if err == nil || !strings.Contains(stderr, "not registered") || strings.Contains(stderr, "joined pool id") {
+		t.Fatalf("live-master status did not retain its authorization snapshot: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	if got := h.authCount(); got != before {
+		t.Fatalf("live-master repoint re-authenticated: auth count %d -> %d", before, got)
+	}
+
+	remote := parseRemoteForHome(t, h)
+	activeKey := filepath.Join(remote.HubDir, "keys", "work-tiny_ed25519")
+	if err := hubclient.ReapSSHMux(remote, "work-tiny", activeKey, remote.HubDir); err != nil {
+		t.Fatal(err)
+	}
 	stdout, stderr, err = h.runCLI(checkout, "status", "--as", "work-tiny")
 	if err == nil || !strings.Contains(stderr, "but this machine joined pool id "+sshdPoolID) || !strings.Contains(stderr, otherID) {
-		t.Fatalf("client-arm status = %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		t.Fatalf("fresh-auth client-arm status = %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	if got := h.authCount(); got != before+1 {
+		t.Fatalf("post-reap status auth count = %d, want %d", got, before+1)
+	}
+}
+
+func TestSSHDHubSideRepointCannotReapClientHeldMaster(t *testing.T) {
+	h := newSSHDHarness(t)
+	beforeHello := helloOverSession(t, h, "codex", hubclient.SSHBuildOptions{})
+	beforeAuth := h.authCount()
+
+	other := filepath.Join(h.root, "same-id-other-pool")
+	if err := os.MkdirAll(filepath.Join(other, ".agentchute", "loop", "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "AGENTCHUTE.md"), []byte("# other\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, ".agentchute", "loop", "state", "pool.id"), []byte(sshdPoolID+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pubkey, err := os.ReadFile(h.keys["codex"] + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := h.runCLI(h.pool, "hub", "authorize", "--agent", "codex", "--pool", other, "--key", strings.TrimSpace(string(pubkey)), "--replace-key")
+	if err != nil {
+		t.Fatalf("hub-side repoint: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+
+	afterHello := helloOverSession(t, h, "codex", hubclient.SSHBuildOptions{})
+	if afterHello.Pool != beforeHello.Pool || afterHello.Pool == other {
+		t.Fatalf("client-held master changed pool snapshot: before %q after %q", beforeHello.Pool, afterHello.Pool)
+	}
+	if got := h.authCount(); got != beforeAuth {
+		t.Fatalf("hub-side repoint reaped remote client master: auth count %d -> %d", beforeAuth, got)
 	}
 }
 

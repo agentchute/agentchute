@@ -160,10 +160,7 @@ func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hu
 	s.oneShotTimer = time.AfterFunc(timing.OneShotLifetime, func() { _ = transport.Close() })
 	defer s.oneShotTimer.Stop()
 
-	if err := s.setReadDeadline(timing.Hello); err != nil {
-		return err
-	}
-	raw, err := s.reader.Read()
+	raw, err := s.read(timing.Hello)
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
 			_ = s.writeError(0, err)
@@ -209,10 +206,7 @@ func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hu
 		if s.mode == "channel" {
 			readFor = timing.ChannelRead
 		}
-		if err := s.setReadDeadline(readFor); err != nil {
-			return err
-		}
-		raw, err := s.reader.Read()
+		raw, err := s.read(readFor)
 		if err != nil {
 			if errors.Is(err, io.EOF) || ctx.Err() != nil {
 				return nil
@@ -346,10 +340,7 @@ func (s *hubSession) dispatch(raw hubwire.RawFrame) (bool, error) {
 		if err != nil {
 			return true, s.writeError(raw.ID, err)
 		}
-		if err := s.setWriteDeadline(); err != nil {
-			return true, err
-		}
-		return true, s.writer.WriteStatus(raw.ID, resp)
+		return true, s.writeStatus(raw.ID, resp)
 	case "gate":
 		if raw.HasBody {
 			return true, s.malformed(raw.ID, "gate cannot carry a body")
@@ -470,26 +461,71 @@ func (s *hubSession) writeError(re int64, err error) error {
 }
 
 func (s *hubSession) write(frame any, body []byte) error {
-	if err := s.setWriteDeadline(); err != nil {
+	if err := s.prepareWriteDeadline(); err != nil {
 		return err
 	}
-	return s.writer.Write(frame, body)
+	return s.watchIO(s.timing.Write, func() error { return s.writer.Write(frame, body) })
 }
 
-func (s *hubSession) setReadDeadline(after time.Duration) error {
-	err := s.transport.SetReadDeadline(time.Now().Add(after))
-	if errors.Is(err, os.ErrNoDeadline) {
-		return nil
+func (s *hubSession) writeStatus(re int64, resp op.StatusResp) error {
+	if err := s.prepareWriteDeadline(); err != nil {
+		return err
 	}
-	return err
+	return s.watchIO(s.timing.Write, func() error { return s.writer.WriteStatus(re, resp) })
 }
 
-func (s *hubSession) setWriteDeadline() error {
+func (s *hubSession) read(after time.Duration) (hubwire.RawFrame, error) {
+	err := s.transport.SetReadDeadline(time.Now().Add(after))
+	if err != nil && !errors.Is(err, os.ErrNoDeadline) {
+		return hubwire.RawFrame{}, err
+	}
+	type result struct {
+		raw hubwire.RawFrame
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		raw, readErr := s.reader.Read()
+		done <- result{raw: raw, err: readErr}
+	}()
+	timer := time.NewTimer(after)
+	defer timer.Stop()
+	select {
+	case got := <-done:
+		return got.raw, got.err
+	case <-timer.C:
+		_ = s.transport.Close()
+		return hubwire.RawFrame{}, os.ErrDeadlineExceeded
+	}
+}
+
+func (s *hubSession) prepareWriteDeadline() error {
 	err := s.transport.SetWriteDeadline(time.Now().Add(s.timing.Write))
 	if errors.Is(err, os.ErrNoDeadline) {
 		return nil
 	}
 	return err
+}
+
+// watchIO is the deadline that production SSH carriage actually enforces.
+// A forced command reads and writes inherited pipe fds; os.File.SetDeadline
+// returns os.ErrNoDeadline for those files, so a deadline attached to the
+// blocked call is inert. This independent timer closes the transport and
+// returns a deadline error even if the OS does not interrupt that call, so the
+// session reaches its single defer path; that existing path remains the only
+// place a held lease is released.
+func (s *hubSession) watchIO(after time.Duration, operation func() error) error {
+	done := make(chan error, 1)
+	go func() { done <- operation() }()
+	timer := time.NewTimer(after)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		_ = s.transport.Close()
+		return os.ErrDeadlineExceeded
+	}
 }
 
 var poolIDPattern = regexp.MustCompile(`^[0-9a-f]{12}\n$`)

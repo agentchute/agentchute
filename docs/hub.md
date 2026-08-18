@@ -28,6 +28,14 @@ agentchute hub authorize --list
 agentchute hub authorize --revoke codex-tiny --pool /home/alex/code/agentchute
 ```
 
+### Authorization changes and live connections
+
+OpenSSH checks `authorized_keys` when a connection authenticates, not for every session opened on that connection. Revocation, replacement, and forced-command or pool repointing therefore take effect at the next authentication. They do not interrupt a live `serve` channel or a live one-shot multiplex master. The `ControlPersist=60s` setting is an idle timeout; an active lane can keep its master alive indefinitely.
+
+For an immediate change, stop or relaunch the lane on the joining machine. Reap a local one-shot master with `ssh -O exit` when the authorizing account also owns it. A hub operator cannot reap a master held by another host or account. This matters most for a pool repoint: until the old connection ends, new operations on it can still use the old forced-command snapshot and write to the old pool.
+
+Key rotation through `hub join --rotate-key` is self-invalidating: the multiplex identity includes the resolved key version, so promoting the new key forces the next operation to authenticate again. The active client-side replace path also reaps a matching local master when one exists.
+
 ## Joining machine
 
 Install agentchute, clone or open the repository checkout that the remote agent will work in, then join it to the hub. The URL path is the pool's absolute path on the hub:

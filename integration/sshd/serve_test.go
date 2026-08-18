@@ -36,6 +36,10 @@ func TestSSHDChildEnvSendAndSupervisedRelaunchDefault(t *testing.T) {
 		t.Fatalf("child identity/token = %+v", first)
 	}
 	waitInboxCount(t, h, "grok", 1, 5*time.Second)
+	// The fake child has completed its one-shot send. Close that test-owned mux
+	// master before the separate shadow-latch command so this row does not
+	// overlap two forced commands on a connection it is not testing.
+	h.stopMuxMasters()
 	if err := h.State().Deliver("grok", agentID, "arm remote shadow latch"); err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +77,35 @@ func TestSSHDChildEnvSendAndSupervisedRelaunchDefault(t *testing.T) {
 	claim, err := loop.ReadServeClaim(h.cfg, agentID)
 	if err != nil || claim.ServeToken != second.Token {
 		t.Fatalf("new hub claim = %+v, %v", claim, err)
+	}
+}
+
+func TestSSHDChildIsNotRelaunchedWhenOptedOut(t *testing.T) {
+	h := newSSHDHarness(t)
+	checkout, agentID := joinNamedCodex(t, h)
+	childLog := filepath.Join(h.root, "opt-out-child.log")
+	writeFakeCodex(t, h, childLog)
+	serve := startServe(t, h, checkout, true)
+	defer serve.stop()
+
+	first := waitChildStarts(t, childLog, 1, 10*time.Second)[0]
+	dropServeSSH(t, serve)
+	term := waitChildTerms(t, childLog, 1, 15*time.Second)[0]
+	if term.PID != first.PID {
+		t.Fatalf("terminated pid = %d, want %d", term.PID, first.PID)
+	}
+	waitClaimAbsent(t, h.cfg, agentID, 5*time.Second)
+	if err := serve.wait(10 * time.Second); err == nil {
+		t.Fatal("opted-out serve survived channel loss")
+	}
+	if !strings.Contains(serve.stderr.String(), "wrapper was stopped") || !strings.Contains(serve.stderr.String(), "--relaunch=false") {
+		t.Fatalf("opt-out stderr = %q", serve.stderr.String())
+	}
+	if starts := readChildEvents(t, childLog, "start"); len(starts) != 1 {
+		t.Fatalf("opted-out serve launched %d children: %+v", len(starts), starts)
+	}
+	if processExists(first.PID) {
+		t.Fatalf("opted-out child pid %d remains alive", first.PID)
 	}
 }
 

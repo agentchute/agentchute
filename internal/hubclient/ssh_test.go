@@ -3,6 +3,7 @@ package hubclient
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -34,7 +35,7 @@ func TestBuildSSHInvocationGolden(t *testing.T) {
 		"-o", "UserKnownHostsFile=" + filepath.Join(hubDir, "known_hosts"),
 		"-o", "IdentitiesOnly=yes", "-i", filepath.Join(hubDir, "keys", "codex_ed25519"),
 		"-o", "ClearAllForwardings=yes",
-		"-o", "ControlMaster=auto", "-o", "ControlPath=" + filepath.Join(hubDir, "mux", "%C"), "-o", "ControlPersist=60s",
+		"-o", "ControlMaster=auto", "-o", "ControlPath=" + filepath.Join(hubDir, "mux", muxIsolationKey(remote, "codex", filepath.Join(hubDir, "keys", "codex_ed25519")), "%C"), "-o", "ControlPersist=60s",
 		"-o", "LogLevel=ERROR",
 		"-p", "2222", "alex@hub.example", "agentchute-hub",
 	}
@@ -70,7 +71,8 @@ func TestBuildSSHInvocationControlPathFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := "ControlPath=" + filepath.Join(shortRoot, "agentchute-hub-0", remote.HubID, "%C")
+	isolationKey := muxIsolationKey(remote, "codex", filepath.Join(remote.HubDir, "keys", "codex_ed25519"))
+	wantPrefix := "ControlPath=" + filepath.Join(shortRoot, "ac-0", isolationKey, "%C")
 	if !strings.Contains(strings.Join(got.Args, " "), wantPrefix) {
 		t.Fatalf("fallback argv = %v, want %s", got.Args, wantPrefix)
 	}
@@ -88,6 +90,77 @@ func TestBuildSSHInvocationControlPathFallbacks(t *testing.T) {
 	}
 	if len(disabled.Warnings) != 1 || !strings.Contains(disabled.Warnings[0], "tried") {
 		t.Fatalf("disabled warnings = %v, want exactly one", disabled.Warnings)
+	}
+}
+
+func TestMuxIsolationKeyBindsEveryIdentityInput(t *testing.T) {
+	remote := &loop.RemoteConfig{HubID: "0123456789ab"}
+	base := muxIsolationKey(remote, "codex", "/keys/codex_ed25519")
+	if len(base) != muxIsolationKeyWidth {
+		t.Fatalf("isolation key width = %d, want %d", len(base), muxIsolationKeyWidth)
+	}
+	if _, err := hex.DecodeString(base); err != nil {
+		t.Fatalf("isolation key %q is not hex: %v", base, err)
+	}
+	tests := []struct {
+		name    string
+		remote  *loop.RemoteConfig
+		agentID string
+		keyPath string
+	}{
+		{name: "hub", remote: &loop.RemoteConfig{HubID: "abcdef012345"}, agentID: "codex", keyPath: "/keys/codex_ed25519"},
+		{name: "agent", remote: remote, agentID: "grok", keyPath: "/keys/codex_ed25519"},
+		{name: "identity file", remote: remote, agentID: "codex", keyPath: "/keys/codex_ed25519.v2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := muxIsolationKey(tt.remote, tt.agentID, tt.keyPath); got == base {
+				t.Fatalf("changed %s retained isolation key %q", tt.name, got)
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	v1 := filepath.Join(dir, "codex_ed25519.v1")
+	v2 := filepath.Join(dir, "codex_ed25519.v2")
+	if err := os.WriteFile(v1, []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(v2, []byte("v2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(dir, "codex_ed25519")
+	if err := os.Symlink(filepath.Base(v1), active); err != nil {
+		t.Fatal(err)
+	}
+	before := muxIsolationKey(remote, "codex", active)
+	next := active + ".tmp"
+	if err := os.Symlink(filepath.Base(v2), next); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(next, active); err != nil {
+		t.Fatal(err)
+	}
+	if after := muxIsolationKey(remote, "codex", active); after == before {
+		t.Fatalf("rotated active symlink retained isolation key %q", after)
+	}
+}
+
+func TestControlPathFallbackBudgetForRealisticUserIDs(t *testing.T) {
+	if controlPathByteBudget != 100 || controlPathTokenWidth != 64 {
+		t.Fatalf("ControlPath constants = budget %d, token %d", controlPathByteBudget, controlPathTokenWidth)
+	}
+	for _, uid := range []string{"0", "501", "1001", "12345", "unknown"} {
+		t.Run(uid, func(t *testing.T) {
+			dir := filepath.Join("/tmp", "ac-"+uid, "0123456789ab")
+			expanded := len(dir) + 1 + controlPathTokenWidth
+			if expanded >= controlPathByteBudget {
+				t.Fatalf("expanded ControlPath length = %d, want < %d (%s)", expanded, controlPathByteBudget, dir)
+			}
+			if !controlPathFits(dir) {
+				t.Fatalf("controlPathFits(%q) = false at length %d", dir, expanded)
+			}
+		})
 	}
 }
 

@@ -51,6 +51,7 @@ agentchute serve codex</code></pre>
   <div class="wrap">
     <h2>What stays pinned</h2>
     <p>Each generated client key maps to exactly one agent id and one durable pool identity. Host-key changes, identity mismatches, pool mismatches, and live duplicate leases fail closed before an operation runs.</p>
+    <p>Authorization edits take effect at the next SSH authentication, not inside an established connection. To apply a revoke or pool repoint immediately, stop or relaunch the lane on the joining machine; a hub cannot reap a multiplex master held on another host. Key rotation changes the master-isolation digest and forces fresh authentication automatically.</p>
     <p>The persistent runner owns the remote lease and fencing token. If the SSH channel drops, it terminates the child first and relaunches by default after the hub returns.</p>
   </div>
 </section>

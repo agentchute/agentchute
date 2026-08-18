@@ -7,10 +7,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/agentchute/agentchute/internal/hubclient"
@@ -316,10 +314,9 @@ func reapHubMigrationMux(cfg *hubclient.HubConfig, oldDir string) {
 	if err != nil || len(cfg.JoinedAs) == 0 {
 		return
 	}
-	args := []string{"-O", "exit", "-o", "ControlPath=" + filepath.Join(oldDir, "mux", "%C")}
-	if remote.Port != 22 {
-		args = append(args, "-p", strconv.Itoa(remote.Port))
+	remote.HubDir = oldDir
+	for _, agentID := range cfg.JoinedAs {
+		keyPath := filepath.Join(oldDir, "keys", agentID+"_ed25519")
+		_ = hubclient.ReapSSHMux(remote, agentID, keyPath, oldDir)
 	}
-	args = append(args, remote.Destination())
-	_ = exec.Command("ssh", args...).Run()
 }

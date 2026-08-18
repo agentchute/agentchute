@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -207,6 +208,33 @@ func TestSSHDClockStepsDoNotStealLiveLease(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSSHDHalfOpenClientHitsHubReadDeadlineAndReleases(t *testing.T) {
+	h := newSSHDHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	transport, err := h.open(ctx, "codex", "discard-this-command", hubclient.SSHBuildOptions{Channel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close()
+	channel, err := hubclient.OpenChannelTransport(transport, h.remote, "codex", "sshd-integration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := channel.AcquireLease(op.LeaseReq{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = transport.cmd.Process.Signal(syscall.SIGCONT) }()
+
+	// The stopped client leaves the server's forced-command stdin open but
+	// silent. The hub-side watchdog must break that half-open read and return
+	// through the session's existing deferred lease release.
+	waitClaimAbsent(t, h.cfg, "codex", 25*time.Second)
 }
 
 func TestSSHDBootRefSurvivesHeartbeatAndUnknownKeyDrops(t *testing.T) {

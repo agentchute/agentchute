@@ -530,6 +530,11 @@ type failingWriteTransport struct {
 	failAt int
 }
 
+type noDeadlineTransport struct{ net.Conn }
+
+func (t *noDeadlineTransport) SetReadDeadline(time.Time) error  { return os.ErrNoDeadline }
+func (t *noDeadlineTransport) SetWriteDeadline(time.Time) error { return os.ErrNoDeadline }
+
 func (t *failingWriteTransport) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -741,6 +746,43 @@ func TestHubSessionDeadlines(t *testing.T) {
 		case <-s.done:
 		case <-time.After(time.Second):
 			t.Fatal("write deadline did not close")
+		}
+	})
+	t.Run("pipe read watchdog releases lease", func(t *testing.T) {
+		pool, cfg := newHubPool(t)
+		s := startHubSession(t, pool, "codex", hubSessionTiming{ChannelRead: 20 * time.Millisecond, Write: 10 * time.Millisecond}, func(conn net.Conn) hubSessionTransport {
+			return &noDeadlineTransport{Conn: conn}
+		}, nil)
+		helloHub(t, s, "codex", 1)
+		if err := s.writer.Write(hubwire.LeaseAcquire{RequestBase: hubwire.RequestBase{T: "lease-acquire", ID: 2}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if raw, err := s.reader.Read(); err != nil || raw.T != "lease-ok" {
+			t.Fatalf("lease = %s, %v", raw.T, err)
+		}
+		select {
+		case <-s.done:
+		case <-time.After(time.Second):
+			t.Fatal("pipe read watchdog did not close")
+		}
+		if _, err := os.Stat(filepath.Join(cfg.AgentStateDir("codex"), "serve.claim")); !os.IsNotExist(err) {
+			t.Fatalf("pipe read watchdog left lease: %v", err)
+		}
+	})
+	t.Run("pipe write watchdog", func(t *testing.T) {
+		pool, cfg := newHubPool(t)
+		enrollHubAgent(t, cfg, "codex")
+		s := startHubSession(t, pool, "codex", hubSessionTiming{Write: 20 * time.Millisecond}, func(conn net.Conn) hubSessionTransport {
+			return &noDeadlineTransport{Conn: conn}
+		}, nil)
+		helloHub(t, s, "codex", 1)
+		if err := s.writer.Write(hubwire.Status{RequestBase: hubwire.RequestBase{T: "status", ID: 2}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-s.done:
+		case <-time.After(time.Second):
+			t.Fatal("pipe write watchdog did not close")
 		}
 	})
 }

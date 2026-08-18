@@ -31,6 +31,7 @@ var hubJoinProbe = func(remote *loop.RemoteConfig, agentID, keyPath string) (hub
 }
 
 var hubJoinAutoAuthorize = runHubJoinAutoAuthorize
+var hubJoinReapMux = hubclient.ReapSSHMux
 var hubJoinInstallShims = installHubJoinShims
 var hubJoinHostname = os.Hostname
 var hubJoinFingerprint = readHubJoinFingerprint
@@ -356,6 +357,11 @@ func authorizeHubJoinKey(remote *loop.RemoteConfig, agentID string, key hubKeyVe
 		return false, nil
 	}
 	fmt.Println("ok")
+	if replace {
+		if err := hubJoinReapMux(remote, agentID, key.Private, remote.HubDir); err != nil {
+			return false, fmt.Errorf("hub join: authorization changed, but the local SSH master could not be reaped; stop this lane before retrying: %w", err)
+		}
+	}
 	return true, nil
 }
 

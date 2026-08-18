@@ -15,6 +15,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,8 @@ type sshdHarness struct {
 	adminKey    string
 	keys        map[string]string
 	maxRead     int
+	muxMu       sync.Mutex
+	muxPaths    map[string]struct{}
 
 	processMu sync.Mutex
 	process   *exec.Cmd
@@ -107,7 +110,7 @@ func newSSHDHarness(t *testing.T) *sshdHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &sshdHarness{t: t, root: root, repo: sshdRepoRoot(t), keys: make(map[string]string)}
+	h := &sshdHarness{t: t, root: root, repo: sshdRepoRoot(t), keys: make(map[string]string), muxPaths: make(map[string]struct{})}
 	if strings.Contains(t.Name(), "/W1/") {
 		// Keep the first msg frame out of bufio's read-ahead so W1 can sever
 		// the real SSH transport at the vector's exact failure boundary.
@@ -371,13 +374,14 @@ func (h *sshdHarness) start() {
 	}
 	h.process = cmd
 	h.done = make(chan struct{})
+	done := h.done
 	h.waitErr = nil
 	go func() {
 		err := cmd.Wait()
 		h.processMu.Lock()
 		h.waitErr = err
 		h.processMu.Unlock()
-		close(h.done)
+		close(done)
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -397,6 +401,7 @@ func (h *sshdHarness) start() {
 }
 
 func (h *sshdHarness) stop() {
+	h.stopMuxMasters()
 	h.processMu.Lock()
 	cmd, done := h.process, h.done
 	h.processMu.Unlock()
@@ -442,6 +447,7 @@ func (h *sshdHarness) open(ctx context.Context, pinned, requested string, opts h
 	if err != nil {
 		return nil, err
 	}
+	h.rememberMuxPath(invocation)
 	invocation.Args[len(invocation.Args)-1] = requested
 	cmd := exec.CommandContext(ctx, h.ssh, invocation.Args...)
 	stdinPipe, err := cmd.StdinPipe()
@@ -470,6 +476,81 @@ func (h *sshdHarness) open(ctx context.Context, pinned, requested string, opts h
 		close(session.done)
 	}()
 	return session, nil
+}
+
+func (h *sshdHarness) rememberMuxPath(invocation hubclient.SSHInvocation) {
+	for _, arg := range invocation.Args {
+		if !strings.HasPrefix(arg, "ControlPath=") || arg == "ControlPath=none" {
+			continue
+		}
+		h.muxMu.Lock()
+		h.muxPaths[arg] = struct{}{}
+		h.muxMu.Unlock()
+	}
+}
+
+func (h *sshdHarness) stopMuxMasters() {
+	if h.remote == nil || h.ssh == "" {
+		return
+	}
+	h.rememberJoinedMuxPaths()
+	h.muxMu.Lock()
+	paths := make([]string, 0, len(h.muxPaths))
+	for path := range h.muxPaths {
+		paths = append(paths, path)
+	}
+	h.muxMu.Unlock()
+	for _, controlPath := range paths {
+		_ = h.muxControl(controlPath, "exit")
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if err := h.muxControl(controlPath, "check"); err != nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func (h *sshdHarness) muxControl(controlPath, operation string) error {
+	args := []string{"-F", "/dev/null", "-O", operation, "-o", controlPath}
+	if h.port != 22 {
+		args = append(args, "-p", strconv.Itoa(h.port))
+	}
+	args = append(args, h.remote.Destination())
+	return exec.Command(h.ssh, args...).Run()
+}
+
+func (h *sshdHarness) rememberJoinedMuxPaths() {
+	remote, err := loop.ParseRemoteURL(h.remote.URL)
+	if err != nil {
+		return
+	}
+	remote.HubDir = filepath.Join(h.clientHome, ".agentchute", "hub", remote.HubID)
+	remote.ConfigPath = filepath.Join(remote.HubDir, "config.json")
+	remote.ShadowLoopDir = filepath.Join(remote.HubDir, ".agentchute", "loop")
+	entries, err := os.ReadDir(filepath.Join(remote.HubDir, "keys"))
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		marker := strings.Index(name, "_ed25519")
+		if entry.IsDir() || marker <= 0 || strings.HasSuffix(name, ".pub") {
+			continue
+		}
+		suffix := name[marker+len("_ed25519"):]
+		if suffix != "" && !strings.HasPrefix(suffix, ".v") {
+			continue
+		}
+		agentID := name[:marker]
+		invocation, err := hubclient.BuildSSHInvocation(hubclient.SSHBuildOptions{
+			Remote: remote, AgentID: agentID, KeyPath: filepath.Join(remote.HubDir, "keys", name), StateDir: remote.HubDir,
+		})
+		if err == nil {
+			h.rememberMuxPath(invocation)
+		}
+	}
 }
 
 func (h *sshdHarness) State() spectest.StateProbe { return (*sshdState)(h) }
