@@ -41,6 +41,13 @@ import (
 func TestSSHDMuxIsReapedAcrossMigration(t *testing.T) {
 	h := newSSHDHarness(t)
 	checkout := h.newCheckout()
+	// Seed the hub-dir known_hosts for BOTH urls so each join records a host-key
+	// fingerprint, as a real join does via its own accept-new connect. Without
+	// it the config carries none, no migration candidate is ever found, and the
+	// alias rejoin degrades into a fresh join — a real production state, but a
+	// different row's subject.
+	h.seedHubKnownHosts(t, h.remote.URL)
+	h.seedHubKnownHosts(t, h.aliasURL())
 
 	if stdout, stderr, err := h.runCLI(checkout, "hub", "join", h.remote.URL, "--as", "work-tiny"); err != nil {
 		t.Fatalf("hub join: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
@@ -75,7 +82,9 @@ func TestSSHDMuxIsReapedAcrossMigration(t *testing.T) {
 		t.Fatalf("alias rejoin: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
 	}
 
-	newRemote := parseRemoteForHome(t, h)
+	// The new hub id belongs to the ALIAS url; parsing the original would always
+	// yield the old id and this comparison would be vacuous.
+	newRemote := parseRemoteURLForHome(t, h, aliasURL)
 	if newRemote.HubID == oldRemote.HubID {
 		t.Fatalf("alias rejoin did not produce a new hub id (%s); this row would test nothing", newRemote.HubID)
 	}
