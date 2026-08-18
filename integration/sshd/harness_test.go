@@ -422,10 +422,49 @@ func (h *sshdHarness) stop() {
 func (h *sshdHarness) close() {
 	h.closeOnce.Do(func() {
 		h.stop()
+		// Dump the daemon's own account of the session BEFORE deleting the
+		// fixture. sshd runs at LogLevel VERBOSE and records who authenticated,
+		// when each channel opened, and — the part that matters when a stream
+		// ends early — which SIDE disconnected and why. Without this the log is
+		// written, read once for authCount(), and then removed with the root, so
+		// a failure that only reproduces on a CI runner cannot be diagnosed from
+		// the run at all: you get the client's classification ("channel to the
+		// hub was lost") and nothing about the cause.
+		if h.t.Failed() {
+			h.dumpDiagnostics()
+		}
 		if err := os.RemoveAll(h.root); err != nil {
 			h.t.Errorf("remove sshd fixture: %v", err)
 		}
 	})
+}
+
+// sshdLogTailLines bounds the dump: enough to cover a full session's open,
+// channel and disconnect records, short enough not to bury the failure.
+const sshdLogTailLines = 80
+
+func (h *sshdHarness) dumpDiagnostics() {
+	h.t.Helper()
+	b, err := os.ReadFile(h.log)
+	if err != nil {
+		h.t.Logf("sshd log unavailable (%s): %v", h.log, err)
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
+		h.t.Logf("sshd log is empty (%s) — the daemon logged nothing, so the failure is client-side or before connect", h.log)
+		return
+	}
+	dropped := 0
+	if len(lines) > sshdLogTailLines {
+		dropped = len(lines) - sshdLogTailLines
+		lines = lines[dropped:]
+	}
+	header := fmt.Sprintf("sshd log tail (%s, port %d)", h.log, h.port)
+	if dropped > 0 {
+		header += fmt.Sprintf(", %d earlier line(s) omitted", dropped)
+	}
+	h.t.Logf("%s:\n%s", header, strings.Join(lines, "\n"))
 }
 
 func (h *sshdHarness) Open(ctx context.Context, pinned string) (spectest.Session, error) {
