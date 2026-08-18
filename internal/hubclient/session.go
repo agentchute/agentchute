@@ -23,21 +23,8 @@ type Error struct {
 	Cause       error
 }
 
-func (e *Error) Error() string {
-	// E_CHANNEL_LOST is the FALLBACK arm of classifySSHFailure — it means "an ssh
-	// failure we could not classify", so it is the one error whose message says
-	// least about what happened, while being the one that most needs to. It has
-	// carried a Cause all along and thrown it away at the point of display.
-	//
-	// M6 spent hours on a bare "channel to the hub was lost" that turned out to
-	// have arrived AFTER the operation completed, which the message also cannot
-	// distinguish: "nothing happened, re-run" and "everything happened, do not
-	// re-run" read identically. (#169)
-	if e.Code == "E_CHANNEL_LOST" && e.Cause != nil {
-		return e.Msg + " (" + e.Cause.Error() + ")"
-	}
-	return e.Msg
-}
+func (e *Error) Error() string { return e.Msg }
+
 func (e *Error) Unwrap() error {
 	if e.Cause != nil {
 		return e.Cause

@@ -317,7 +317,58 @@ func classifySSHFailure(remote *loop.RemoteConfig, agentID, stage string, cause 
 	if stage == "connect" {
 		return &Error{Code: "E_CONNECT", Msg: fmt.Sprintf("hub: cannot reach %s:%d (connect failed after 5s). Check network/VPN/tailnet, then retry; `agentchute doctor` runs this same probe. (If this machine should no longer be joined to this hub, delete .agentchute-control-repo.)", remote.Host, remote.Port), Retriable: true, Cause: cause}
 	}
-	return &Error{Code: "E_CHANNEL_LOST", Msg: "hub: channel to the hub was lost", Retriable: true, Cause: cause}
+	return &Error{Code: "E_CHANNEL_LOST", Msg: "hub: channel to the hub was lost" + channelLostDetail(waitErr, stderr, cause), Retriable: true, Cause: cause}
+}
+
+// channelLostDetail says what actually failed, for the one arm that otherwise
+// cannot. E_CHANNEL_LOST is the fallback: host-key and permission-denied are
+// matched on stderr text, hello-timeout and connect on stage, and exactly one
+// exit code (127) is read out of waitErr. Everything else lands here.
+//
+// Three signals are in hand at that point and two were being discarded. `Cause`
+// is the READ error — it renders as "EOF", which only restates what "channel
+// lost" already means. The two that discriminate are:
+//
+//   - waitErr: ssh's exit status. This is the value that separates "ssh died"
+//     from "ssh faithfully propagated a non-zero exit from the remote hub
+//     session", and "signal: killed" from either. Only exit 127 was ever read.
+//   - stderr: ssh's own account of why it gave up, captured and then consulted
+//     only for two substring matches.
+//
+// The read error is kept too — "EOF" versus "connection reset by peer" is a real
+// distinction — but it is reported alongside the other two rather than as the
+// whole story, which is what it was.
+//
+// stderr can carry remote paths, so only the last non-empty line is included and
+// it is length-capped. The exit status carries no such risk and is unconditional.
+func channelLostDetail(waitErr error, stderr string, cause error) string {
+	var parts []string
+	if cause != nil {
+		parts = append(parts, "read: "+cause.Error())
+	}
+	if waitErr != nil {
+		parts = append(parts, waitErr.Error())
+	}
+	if line := lastNonEmptyLine(stderr); line != "" {
+		if len(line) > 200 {
+			line = line[:200] + "…"
+		}
+		parts = append(parts, "ssh: "+line)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func readActivePublicKey(remote *loop.RemoteConfig, agentID string) (string, error) {
