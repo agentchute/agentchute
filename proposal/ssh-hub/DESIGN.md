@@ -785,9 +785,9 @@ rather than inventing a second one (`Config.RunnerSocketPath`,
   codebase, not two) and `64` is a deliberately conservative upper bound for
   `%C`'s expansion, which the client cannot compute itself. Over-triggering
   costs one extra authentication; under-triggering costs a broken mux.
-- **Preferred**: `muxDir = <hubdir>/mux` (§7.4).
+- **Preferred**: `muxDir = <hubdir>/mux/<isolationKey>` (§7.4), where `<isolationKey>` is the opaque 12-hex digest over hub id, agent id, and resolved key version. The socket is `<muxDir>/%C`.
 - **Fallback when it does not fit**: a per-user temp dir
-  `<tempRoot>/agentchute-hub-<uid>/<hub-id>`, trying `os.TempDir()` then
+  `<tempRoot>/ac-<uid>/<isolationKey>`, trying `os.TempDir()` then
   `/tmp` and taking the first that passes the same budget (macOS's `$TMPDIR`
   is itself a long `/var/folders/…` path, so `/tmp` is a real second
   candidate). Created and checked through the shipped owned-0700 discipline —
@@ -3093,7 +3093,7 @@ Matrix (each row asserts both sides' end state):
 | lease-held refusal | two serves same id; second gets `E_LEASE_HELD` |
 | host-key change | swap host key; assert `E_HOSTKEY_CHANGED` refusal |
 | mux reuse | 3 sequential one-shots; assert 1 sshd auth log entry (ControlMaster hit) |
-| ControlPath length rule (§4.2) | drive the invocation builder with an **injected** hub-dir length (deterministic — no real deep `$HOME`, no OS dependence; no CI runner has a home deep enough to trigger this naturally): within budget ⇒ `-o ControlPath=<hubdir>/mux/%C`; over budget ⇒ the owned-0700 per-user temp path (assert the dir is 0700 and uid-owned, and that a symlinked or foreign-owned temp dir is refused, `runner_socketdir_unix.go:24-49`); over budget with every temp root also over budget/unwritable ⇒ `-o ControlMaster=no -o ControlPath=none` plus exactly one `warn` note naming both attempted paths, and the op still succeeds. Re-run the mux-reuse row through the fallback arm (still 1 auth entry) and the disabled arm (3 auth entries) |
+| ControlPath length rule (§4.2) | drive the invocation builder with an **injected** hub-dir length (deterministic — no real deep `$HOME`, no OS dependence; no CI runner has a home deep enough to trigger this naturally): within budget ⇒ `-o ControlPath=<hubdir>/mux/<isolationKey>/%C`; over budget ⇒ the owned-0700 per-user temp path `<tempRoot>/ac-<uid>/<isolationKey>` (assert the dir is 0700 and uid-owned, and that a symlinked or foreign-owned temp dir is refused, `runner_socketdir_unix.go:24-49`); over budget with every temp root also over budget/unwritable ⇒ `-o ControlMaster=no -o ControlPath=none` plus exactly one `warn` note naming both attempted paths, and the op still succeeds. Re-run the mux-reuse row through the fallback arm (still 1 auth entry) and the disabled arm (3 auth entries) |
 | child env contract (§6.8) | launch remote serve in the harness; assert child env carries `AGENTCHUTE_CONTROL_REPO=<ssh URL>` and no `AGENTCHUTE_LOOP_DIR`; with networking blocked, run `guard --pre-tool-use` in hook context and assert it resolves the SHADOW latch (denies while armed — never fail-open); child `send` lands in the hub pool |
 | supervised relaunch — default path (§6.7, D5) | launch a remote lane with a BARE `agentchute serve` (no flag — this is the load-bearing default); kill sshd; restart sshd; assert the lane re-acquires with a NEW token and NEW child pid, exactly one lane instance, old child SIGTERM'd first. An implementation that kept relaunch opt-in fails this row |
 | relaunch opted out (`--relaunch=false`) | same drop; assert the old child is stopped, NO new child appears, and serve exits with `E_CHANNEL_LOST` echoing its own argv |
