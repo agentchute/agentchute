@@ -192,6 +192,10 @@ func hubDirForMessage(hubID string) string {
 // above. Provenance says who created the directory; this says what is actually
 // in it. The RemoveAll is irreversible, so it is gated on the second question
 // rather than inferred from the first.
+// hubFrozenOrigin is a seam so a row can make the pre-lock and under-lock reads
+// disagree, which is the whole point of re-verifying.
+var hubFrozenOrigin = frozenHubMigrationOrigin
+
 // frozenHubMigrationOrigin reports the old hub id a frozen tree came from, read
 // from the marker the migration wrote before the rename. Empty means there is no
 // frozen tree.

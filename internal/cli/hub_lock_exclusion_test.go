@@ -74,17 +74,21 @@ func TestMigrationRefusesWhileALaneHoldsAnOpenDescriptor(t *testing.T) {
 	assertOldHubKeyIntact(t, oldRemote, oldPub, oldTarget)
 }
 
-// The exclusion has to work in BOTH directions, and each direction fails for a
-// different reason if only one is tested.
+// The LOCK HELPER's three semantics: shared excludes exclusive, exclusive
+// excludes shared, and shared does not exclude shared.
 //
-// Direction 1 pins that the migration takes the OLD hub id exclusively. That is
-// the specific thing nothing else catches: every at-risk writer is on the OLD id,
-// and a version that locks only the new one passes every other row here.
+// Read what this row does before trusting it with more than that. It calls
+// acquireHubLocks directly and never runs a migration, so it does NOT pin that
+// the migration takes the OLD hub id — measured: locking only the new id passes
+// every subtest here. The row that owns that property is
+// TestMigrationRefusesWhileALaneHoldsAnOpenDescriptor, which drives cmdHubJoin.
 //
-// Direction 2 pins that a lane cannot START underneath a running migration. It is
-// what a future refactor would break by taking the lock after opening the log,
-// or by not taking it at all for a remote config.
-func TestHubLockExcludesInBothDirections(t *testing.T) {
+// An earlier version of this comment claimed the opposite, and the claim was the
+// dangerous half: someone weakening the migration row would read it, believe the
+// old-id property was covered here, and be wrong. It is the same mistake this
+// file diagnoses one function down for the serve row — a test that constructs the
+// lane with the helper cannot pin what the production caller does with it.
+func TestHubLockSemantics(t *testing.T) {
 	shortenHubLockTimeout(t)
 	_, remote := setupHubJoinTest(t)
 

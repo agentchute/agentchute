@@ -81,7 +81,7 @@ func cmdHubJoin(args []string) error {
 	// sweep below deletes it — so that id has to be held too. Reading the marker
 	// inside a lock on the new id and then taking the old one would invert the
 	// sorted order the migration itself uses.
-	frozenOrigin, err := frozenHubMigrationOrigin(remote)
+	frozenOrigin, err := hubFrozenOrigin(remote)
 	if err != nil {
 		return err
 	}
@@ -92,9 +92,23 @@ func cmdHubJoin(args []string) error {
 	var oldHubID string
 	completed := false
 	err = withHubLocks(firstScope, func() error {
-		// Before anything else: finish a migration that was interrupted after it
-		// froze the old tree. Nothing else can see that state — the old directory
-		// is gone, so there is no candidate to find.
+		// The pre-lock read chose WHICH locks to take, so it is a hint until it is
+		// confirmed under them. Narrow but real: two joins to the same new URL,
+		// the first crashing after its freeze — the second sees no frozen tree
+		// before the lock, waits on the new id, and would otherwise sweep a tree
+		// whose origin it never learned and whose hub it does not hold.
+		//
+		// Same discipline scope 2 already applies to the migration candidate.
+		confirmed, originErr := hubFrozenOrigin(remote)
+		if originErr != nil {
+			return originErr
+		}
+		if confirmed != frozenOrigin {
+			return fmt.Errorf("hub join: a frozen hub tree appeared or changed while locks were acquired (%q -> %q); nothing was touched, re-run", frozenOrigin, confirmed)
+		}
+		// Now finish a migration that was interrupted after it froze the old tree.
+		// Nothing else can see that state — the old directory is gone, so there is
+		// no candidate to find.
 		if sweepErr := sweepFrozenHubMigration(remote); sweepErr != nil {
 			return sweepErr
 		}

@@ -332,3 +332,56 @@ func TestSweepRefusesAFrozenTreeItCannotAttribute(t *testing.T) {
 	}
 	assertOldHubKeyIntact(t, oldRemote, oldPub, oldTarget, frozen)
 }
+
+// The pre-lock origin read is re-verified UNDER the lock.
+//
+// It chose which locks to take, so until it is confirmed under them it is a hint.
+// The reachable case is two joins to the same new URL where the first crashes
+// after its freeze: the second sees no frozen tree before the lock, waits on the
+// new id, and would then sweep a tree whose origin it never learned and whose hub
+// it does not hold.
+//
+// The seam makes the two reads disagree, which is the only thing that
+// distinguishes a guard from no guard here.
+func TestHubJoinRefusesWhenAFrozenTreeAppearsWhileLocking(t *testing.T) {
+	shortenHubLockTimeout(t)
+	root, oldRemote := setupHubJoinTest(t)
+	oldPub, oldTarget := seedJoinedHub(t, root, oldRemote)
+	newRemote, err := loop.ParseRemoteURL("ssh://alex@hub-alias.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := newRemote.HubDir + hubMigrationFrozenSuffix
+	crashAfterHubMigrationRename(t, root, oldRemote, newRemote)
+	if err := os.Rename(oldRemote.HubDir, frozen); err != nil {
+		t.Fatal(err)
+	}
+
+	original := hubFrozenOrigin
+	t.Cleanup(func() { hubFrozenOrigin = original })
+	calls := 0
+	hubFrozenOrigin = func(remote *loop.RemoteConfig) (string, error) {
+		calls++
+		if calls == 1 {
+			// The pre-lock read: nothing there yet.
+			return "", nil
+		}
+		return original(remote)
+	}
+
+	var joinErr error
+	withCwd(t, root, func() { joinErr = cmdHubJoin([]string{newRemote.URL, "--name", "codex"}) })
+	if joinErr == nil {
+		t.Fatal("the join swept a frozen tree that appeared after it had already chosen which locks to hold")
+	}
+	if !strings.Contains(joinErr.Error(), "while locks were acquired") {
+		t.Fatalf("refusal does not name the race: %v", joinErr)
+	}
+	if _, err := os.Stat(frozen); err != nil {
+		t.Fatalf("the refusal deleted the tree anyway: %v", err)
+	}
+	assertOldHubKeyIntact(t, oldRemote, oldPub, oldTarget, frozen)
+	if calls < 2 {
+		t.Fatalf("the origin was read %d time(s); the under-lock re-read never happened", calls)
+	}
+}
