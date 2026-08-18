@@ -12,11 +12,27 @@ import (
 
 // A pointer write that changes nothing must say nothing.
 //
+// captureStdout is stdout-only. That holds for everything asserted here because
+// every one of these paths writes with fmt.Printf; a message moved to stderr
+// would go unseen rather than red.
+//
 // A migration writes the pointer and the join that follows it writes the same
 // value again, so a recovery run announced "wrote pointer" twice for one
 // pointer. The first write is real and still reported; the second is a no-op
 // and now silent.
 func TestHubJoinPointerIsSilentWhenNothingChanges(t *testing.T) {
+	// Pin the resolver, or this row proves nothing on CI. It calls
+	// writeHubJoinPointer directly, so without this it uses the default
+	// exec.LookPath("agentchute") — which RESOLVES on a developer box (making the
+	// mutation red) and ERRORS on a runner with no agentchute installed, where
+	// warnHubJoinShadowedBinary returns before printing and the no-op write is
+	// silent whether or not the gate exists. The gate could then be deleted and
+	// nothing would redden. A nonexistent path is enough: warn keeps the
+	// unresolved string when EvalSymlinks fails, so no fixture binary is needed.
+	originalLook := hubJoinLookPath
+	t.Cleanup(func() { hubJoinLookPath = originalLook })
+	hubJoinLookPath = func() (string, error) { return "/nonexistent/agentchute", nil }
+
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".git", "info"), 0o700); err != nil {
 		t.Fatal(err)
