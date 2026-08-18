@@ -171,7 +171,7 @@ func TestHubKeyRecoveryRetiresAnUnusableOrphanAndRemints(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state, minted, err := prepareHubKey(dir, "codex-tiny")
+	_, minted, err := prepareHubKey(dir, "codex-tiny")
 	if err != nil {
 		t.Fatalf("recovery failed: %v", err)
 	}
@@ -186,7 +186,6 @@ func TestHubKeyRecoveryRetiresAnUnusableOrphanAndRemints(t *testing.T) {
 	// reusing v1 collides with nothing and no contract says otherwise. Asserting
 	// it would have pinned an invention of mine rather than a documented rule —
 	// which is exactly the hazard of a test built from the implementation.
-	_ = state
 
 	// Retired, not deleted: the operator can still inspect it.
 	entries, err := os.ReadDir(keysDir)
@@ -219,6 +218,38 @@ func TestHubKeyRecoveryRetiresAnUnusableOrphanAndRemints(t *testing.T) {
 	}
 	if retiredBody != "not a key\n" {
 		t.Fatalf("the retired file does not hold the unusable key material: %q", retiredBody)
+	}
+
+	// Both halves, same stamp. The retired PUBLIC half matters more here than the
+	// private one: the private is corrupt, so nothing can regenerate the public
+	// from it, and mintHubKey immediately overwrites <agent>_ed25519.v1.pub with
+	// the fresh key's — the remint reuses v1. The retired .pub is therefore the
+	// ONLY surviving record of which key this was, and it is what an operator
+	// needs to find and revoke the matching authorized_keys line on the hub. Lose
+	// it and the stranded credential becomes unidentifiable.
+	//
+	// Asserting the paired stamp as well, because "for every artifact the code
+	// moves, assert every file that artifact is made of" is exactly the class of
+	// miss this row has already produced twice.
+	var retiredPub, privStamp, pubStamp string
+	for _, e := range entries {
+		name := e.Name()
+		idx := strings.Index(name, ".invalid.")
+		if idx < 0 {
+			continue
+		}
+		if strings.Contains(name, ".pub") {
+			retiredPub = readKeyFile(t, filepath.Join(keysDir, name))
+			pubStamp = name[idx+len(".invalid."):]
+		} else {
+			privStamp = name[idx+len(".invalid."):]
+		}
+	}
+	if retiredPub != orphanPub {
+		t.Fatalf("the retired public half was not preserved: %q, want %q", retiredPub, orphanPub)
+	}
+	if privStamp == "" || privStamp != pubStamp {
+		t.Fatalf("the two halves were not retired under the same stamp: private=%q public=%q", privStamp, pubStamp)
 	}
 }
 
