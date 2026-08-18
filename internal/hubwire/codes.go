@@ -15,6 +15,10 @@ const (
 	CodeMalformedFrame = "E_MALFORMED_FRAME"
 	CodeTooLarge       = "E_TOO_LARGE"
 	CodeUnsupported    = "E_UNSUPPORTED"
+	// CodeUnpinned: the hub was reached WITHOUT an authorized_keys forced
+	// command, so the agent id and pool for the session were chosen by the caller
+	// rather than pinned by sshd. Hub-emitted: only the hub can observe it.
+	CodeUnpinned = "E_UNPINNED"
 )
 
 const (
@@ -43,6 +47,7 @@ var Emitters = map[string]string{
 	CodeMalformedFrame:       EmitterHub,
 	CodeTooLarge:             EmitterHub,
 	CodeUnsupported:          EmitterHub,
+	CodeUnpinned:             EmitterHub,
 	"E_CONNECT":              EmitterClient,
 	"E_UNAUTHORIZED":         EmitterClient,
 	"E_HOSTKEY_CHANGED":      EmitterClient,

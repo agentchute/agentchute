@@ -144,3 +144,11 @@ func checkHubAuthorizedKeysAudit() doctorCheck {
 	}
 	return doctorCheck{Name: "hub_authorized_keys", Severity: severityOK, Message: message}
 }
+
+// hubUnpinnedMessage names BOTH producers, because they look identical from the
+// hub and their remedies are opposite. Telling an operator to disable Tailscale
+// when their real problem is an unauthorized key repeats exactly the misdirection
+// this check exists to end.
+func hubUnpinnedMessage() string {
+	return "hub: this hub did not apply an `authorized_keys` forced command, so the agent id and pool for this session were chosen by the caller rather than pinned by sshd. Refusing to serve. Two things look like this from here: an ssh-intercepting layer (Tailscale SSH, an ssh proxy) where `authorized_keys` is never consulted — `agentchute hub authorize` then writes a line that grants nothing and removing a key revokes nothing — or a login that authenticated with some other identity from the caller's ssh config or agent. On the hub, either disable the interception (Tailscale: `tailscale set --ssh=false`) or run a dedicated sshd for the hub; then re-run `agentchute doctor` from the joining machine. (If you are writing a client: the hub requires the session to be opened by requesting the literal command `agentchute-hub`, which the forced command overrides.)"
+}

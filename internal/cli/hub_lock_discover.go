@@ -61,8 +61,15 @@ func (r *hubLockRegistry) add(release func()) {
 	r.releases = append(r.releases, release)
 }
 
-// releaseHubLocksHeldByCommand is called by Main once the handler has returned,
-// and by tests that drive handlers directly. Releasing twice is harmless.
+// releaseHubLocksHeldByCommand is called by Main once the handler has returned.
+//
+// Nothing else calls it, and the comment used to also claim "and by tests that
+// drive handlers directly" — which no test does. A comment that names a caller
+// that does not exist reads as a guarantee the code has not got: a row driving a
+// handler directly leaks its shared acquisition for the life of the test binary.
+// Shared acquisitions from one process are compatible, so it is not a bug today;
+// it would become one the moment a row expected a lock to be free after a handler
+// returned. Releasing twice is harmless if a caller ever is added.
 func releaseHubLocksHeldByCommand() {
 	heldHubLocks.mu.Lock()
 	releases := heldHubLocks.releases
