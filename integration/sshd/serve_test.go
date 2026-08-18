@@ -37,6 +37,16 @@ func TestSSHDChildEnvSendAndSupervisedRelaunchDefault(t *testing.T) {
 	}
 	waitInboxCount(t, h, "grok", 1, 5*time.Second)
 	waitChildEvents(t, childLog, "send-done", 1, 5*time.Second)
+	// Waiting for the child's send to EXIT is necessary but not sufficient: its
+	// one-shot leaves a ControlPersist master behind, so the check below
+	// multiplexes over the SAME connection. CI showed exactly that — two
+	// `Starting session: forced-command` records on one port, then
+	// `channel to the hub was lost` — on both platforms.
+	//
+	// Reap the master too. The send-done wait closes the race against a
+	// still-closing send; this closes the sharing that outlives it. Both are
+	// needed, and neither replaces the other.
+	h.stopMuxMasters()
 	if err := h.State().Deliver("sshd-fixture-peer", agentID, "arm remote shadow latch"); err != nil {
 		t.Fatal(err)
 	}
