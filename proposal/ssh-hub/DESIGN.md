@@ -736,7 +736,7 @@ ssh -T \
 `-o ServerAliveInterval=15 -o ServerAliveCountMax=2` and
 
 ```
-  -o ControlMaster=auto -o ControlPath=<hubdir>/mux/%C -o ControlPersist=60s
+  -o ControlMaster=auto -o ControlPath=<tempRoot>/ac-<uid>/<isolationKey>/%C -o ControlPersist=60s
 ```
 
 Rationale for the split (each verified against `ssh_config(5)`):
@@ -773,22 +773,37 @@ Rationale for the split (each verified against `ssh_config(5)`):
 
 **`ControlPath` length rule (normative).** A ControlPath is a Unix domain
 socket, so its expanded path is capped by `sun_path` — ~104 bytes on macOS,
-108 on Linux — and `<hubdir>/mux/%C` under a deep `$HOME` can silently exceed
-it, breaking multiplexing with an opaque ssh error. The codebase already
-solves exactly this for the runner socket and this design reuses that shape
-rather than inventing a second one (`Config.RunnerSocketPath`,
+108 on Linux — and a hub-dir-local `<hubdir>/mux/%C` exceeds it, breaking
+multiplexing with an opaque ssh error.
+
+**There is deliberately no hub-dir-local arm.** One was specified and shipped,
+and it was unreachable for EVERY home including an empty one: the budget leaves
+34 bytes for the whole directory, while `/.agentchute/hub/<12hex>/mux/<12hex>`
+spends 46 before a single byte of `$HOME`. It looked healthy only because the
+temp path covers every run. No shortening rescues it — dropping the hub-id
+segment still leaves room for a one-byte home — so it is removed rather than
+trimmed or kept as documented-vestigial, which would only invite its
+restoration. The one honest consequence: **mux sockets live outside the hub
+dir, so removing a hub dir does not remove them.** That was already true (the
+arm never ran); a migration reaps them explicitly before removal by re-deriving
+the live path, and a stale socket is harmless because ssh reconnects when a
+socket is dead.
+
+The codebase already solves the length problem for the runner socket and this
+design reuses that shape rather than inventing a second one (`Config.RunnerSocketPath`,
 `internal/loop/config.go:168-193 @ 1244ae4`):
 
-- **Threshold, the shipped one.** The builder refuses the preferred path when
+- **Threshold, the shipped one.** The builder refuses a candidate when
   `len(muxDir) + 1 + 64 >= 100`, where `100` is the literal
   `RunnerSocketPath` already uses (`config.go:170` — one number in the
   codebase, not two) and `64` is a deliberately conservative upper bound for
   `%C`'s expansion, which the client cannot compute itself. Over-triggering
   costs one extra authentication; under-triggering costs a broken mux.
-- **Preferred**: `muxDir = <hubdir>/mux/<isolationKey>` (§7.4), where `<isolationKey>` is the opaque 12-hex digest over hub id, agent id, and resolved key version. The socket is `<muxDir>/%C`.
-- **Fallback when it does not fit**: a per-user temp dir
-  `<tempRoot>/ac-<uid>/<isolationKey>`, trying `os.TempDir()` then
-  `/tmp` and taking the first that passes the same budget (macOS's `$TMPDIR`
+- **The path, and there is only one**: a per-user temp dir
+  `<tempRoot>/ac-<uid>/<isolationKey>` (§7.4), where `<isolationKey>` is the
+  opaque 12-hex digest over hub id, agent id, and resolved key version. The
+  socket is `<muxDir>/%C`. Candidates are `os.TempDir()` then
+  `/tmp`, taking the first that passes the budget (macOS's `$TMPDIR`
   is itself a long `/var/folders/…` path, so `/tmp` is a real second
   candidate). Created and checked through the shipped owned-0700 discipline —
   `EnsureRunnerSocketDir` → `ensureOwnedRunnerSocketDir`
@@ -797,7 +812,7 @@ rather than inventing a second one (`Config.RunnerSocketPath`,
   symlink reject, uid-ownership reject, `Chmod` 0700), generalized to a
   caller-supplied path rather than copied. The uid suffix plus the ownership
   check is what keeps a shared `/tmp` from being squattable.
-- **If neither fits (or the temp root is unusable)**: **disable multiplexing
+- **If no candidate fits (or every temp root is unusable)**: **disable multiplexing
   for this hub** — one-shots run `-o ControlMaster=no -o ControlPath=none`,
   as the channel already does — and emit exactly one `warn` note naming both
   attempted paths. Correctness is unaffected; only the per-op authentication
@@ -2865,7 +2880,7 @@ pastes when you can SSH to the hub yourself).
 | 22 | remote laptop sleeps, later wakes | on wake, ServerAlive/tick deadline kill the dead channel ≤15 s | child fenced + stopped during sleep-detection; the lane relaunches within one backoff step of waking (relaunch default-on); hub side released at its 20 s read deadline back when the laptop slept | relaunch status line; with `--relaunch=false`, `E_CHANNEL_LOST` |
 | 23 | hub reboots (N remote lanes) | all channels drop at reboot; sshd returns minutes later | every remote serve (relaunch default-on) retries with capped backoff (≤60 s interval) and relaunches when sshd answers — zero human action on any machine; pre-reboot `serve.claim` files are long stale by then and reclaimable because their recorded `boot_ref` differs from the rebooted host's (§6.9; freshness floor still applies first, C8) | relaunch status lines; with `--relaunch=false`, N × `E_CHANNEL_LOST` |
 | 24 | hub `agentchute update`/`setup` invalidates all serve leases (`lease.go:371-376 @ 1244ae4`) | every channel's next `tick` → `E_FENCED` | fleet-wide fence by design (the update forcing function); lanes perform their single `E_FENCED` relaunch attempt (default-on) and come back under the new binary; note: a live hub session keeps executing its already-open old binary inode until it exits | `E_FENCED` text |
-| 25 | `<hubdir>/mux/%C` too long for `sun_path` (deep `$HOME`; ~104 B macOS / 108 B linux) | the ControlPath length budget in the ssh-invocation builder (§4.2), before ssh is spawned | one-shots move to the owned-0700 per-user temp mux dir; if that does not fit either, multiplexing is disabled for this hub (one extra authentication per op, correctness unaffected). Never a refusal; the channel never multiplexes anyway | none in the fallback arm; exactly one `warn` note naming both attempted paths in the mux-disabled arm |
+| 25 | the mux socket path too long for `sun_path` (~104 B macOS / 108 B linux) | the ControlPath length budget in the ssh-invocation builder (§4.2), before ssh is spawned | the owned-0700 per-user temp mux dir is the only arm; if no temp root fits or is usable, multiplexing is disabled for this hub (one extra authentication per op, correctness unaffected). Never a refusal; the channel never multiplexes anyway | none while a candidate fits; exactly one `warn` note naming every attempted path in the mux-disabled arm |
 
 ---
 
@@ -3093,7 +3108,7 @@ Matrix (each row asserts both sides' end state):
 | lease-held refusal | two serves same id; second gets `E_LEASE_HELD` |
 | host-key change | swap host key; assert `E_HOSTKEY_CHANGED` refusal |
 | mux reuse | 3 sequential one-shots; assert 1 sshd auth log entry (ControlMaster hit) |
-| ControlPath length rule (§4.2) | drive the invocation builder with an **injected** hub-dir length (deterministic — no real deep `$HOME`, no OS dependence; no CI runner has a home deep enough to trigger this naturally): within budget ⇒ `-o ControlPath=<hubdir>/mux/<isolationKey>/%C`; over budget ⇒ the owned-0700 per-user temp path `<tempRoot>/ac-<uid>/<isolationKey>` (assert the dir is 0700 and uid-owned, and that a symlinked or foreign-owned temp dir is refused, `runner_socketdir_unix.go:24-49`); over budget with every temp root also over budget/unwritable ⇒ `-o ControlMaster=no -o ControlPath=none` plus exactly one `warn` note naming both attempted paths, and the op still succeeds. Re-run the mux-reuse row through the fallback arm (still 1 auth entry) and the disabled arm (3 auth entries) |
+| ControlPath length rule (§4.2) | assert WHICH arm runs, parametrised by **home length** (the input that decided it and had never been varied) and by uid: for realistic homes ⇒ the owned-0700 per-user temp path `<tempRoot>/ac-<uid>/<isolationKey>`, asserting the chosen socket fits the budget, the dir is 0700 and uid-owned, and that a symlinked or foreign-owned temp dir is refused (`runner_socketdir_unix.go:24-49`); every temp root over budget or unwritable ⇒ `-o ControlMaster=no -o ControlPath=none` plus exactly one `warn` note naming every attempted path, and the op still succeeds. Re-run the mux-reuse row through the normal arm (still 1 auth entry) and the disabled arm (3 auth entries). A row asserting only that *some* arm was selected passed for the entire life of the dead hub-dir arm |
 | child env contract (§6.8) | launch remote serve in the harness; assert child env carries `AGENTCHUTE_CONTROL_REPO=<ssh URL>` and no `AGENTCHUTE_LOOP_DIR`; with networking blocked, run `guard --pre-tool-use` in hook context and assert it resolves the SHADOW latch (denies while armed — never fail-open); child `send` lands in the hub pool |
 | supervised relaunch — default path (§6.7, D5) | launch a remote lane with a BARE `agentchute serve` (no flag — this is the load-bearing default); kill sshd; restart sshd; assert the lane re-acquires with a NEW token and NEW child pid, exactly one lane instance, old child SIGTERM'd first. An implementation that kept relaunch opt-in fails this row |
 | relaunch opted out (`--relaunch=false`) | same drop; assert the old child is stopped, NO new child appears, and serve exits with `E_CHANNEL_LOST` echoing its own argv |

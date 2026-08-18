@@ -27,15 +27,14 @@ const (
 )
 
 type SSHBuildOptions struct {
-	Remote        *loop.RemoteConfig
-	AgentID       string
-	KeyPath       string
-	StateDir      string
-	Channel       bool
-	TempRoots     []string
-	EnsureOwned   func(string) error
-	PreferredRoot string
-	UserID        string
+	Remote      *loop.RemoteConfig
+	AgentID     string
+	KeyPath     string
+	StateDir    string
+	Channel     bool
+	TempRoots   []string
+	EnsureOwned func(string) error
+	UserID      string
 }
 
 type SSHInvocation struct {
@@ -112,9 +111,6 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 	if opts.Channel {
 		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
 	} else {
-		if opts.PreferredRoot == "" {
-			opts.PreferredRoot = stateDir
-		}
 		muxDir, attempted, err := selectMuxDir(opts, muxIsolationKey(opts.Remote, opts.AgentID, key))
 		if err != nil {
 			args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
@@ -131,22 +127,32 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 	return SSHInvocation{Args: args, Warnings: warnings}, nil
 }
 
+// selectMuxDir chooses the ControlPath directory. There is ONE arm: an owned
+// per-user directory under a temp root.
+//
+// A hub-dir-local arm used to be tried first, and it was DEAD — unreachable for
+// every possible home, including an empty one. The budget
+// (controlPathFits) leaves 34 bytes for the whole directory, while
+// `<home>/.agentchute/hub/<12hex>/mux/<12hex>` spends 46 before a single byte of
+// $HOME. It looked healthy only because the fallback covers it on every run:
+// the same shape as the uid arm that no real user could reach, one arm over.
+// No naming scheme rescues it — dropping the hub-id segment still leaves room
+// for a one-byte home — so the arm is gone rather than shortened or documented
+// as vestigial, which would only invite its restoration.
+//
+// The honest cost, stated because it is a real consequence and not a wrinkle:
+// mux sockets live OUTSIDE the hub dir, so removing a hub dir does not remove
+// them. That was already true — the preferred arm never ran — so this changes
+// nothing operationally; it only stops the code claiming a locality it did not
+// have. Stale sockets are harmless (ssh reconnects when a socket is dead) and a
+// migration reaps them explicitly before removing the directory, by
+// re-deriving the live path rather than assuming one.
 func selectMuxDir(opts SSHBuildOptions, isolationKey string) (string, []string, error) {
 	ensure := opts.EnsureOwned
 	if ensure == nil {
 		ensure = loop.EnsureOwnedSocketDir
 	}
-	preferredRoot := opts.Remote.HubDir
-	if opts.PreferredRoot != "" {
-		preferredRoot = opts.PreferredRoot
-	}
-	preferred := filepath.Join(preferredRoot, "mux", isolationKey)
-	attempted := []string{preferred}
-	if controlPathFits(preferred) {
-		if err := loop.EnsurePrivateDir(preferred); err == nil {
-			return preferred, attempted, nil
-		}
-	}
+	var attempted []string
 	roots := opts.TempRoots
 	if roots == nil {
 		roots = []string{os.TempDir(), "/tmp"}

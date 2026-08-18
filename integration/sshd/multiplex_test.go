@@ -22,29 +22,55 @@ import (
 )
 
 func TestSSHDControlPathLengthRuleAndMuxAuthCounts(t *testing.T) {
-	t.Run("preferred-within-budget", func(t *testing.T) {
+	// The row now asserts WHICH ARM RUNS under a realistic home, not merely that
+	// some arm was selected. That distinction is the whole finding: a hub-dir
+	// arm was tried first and could never fit — 46 fixed bytes before a single
+	// byte of $HOME against a 34-byte allowance — so every run silently used the
+	// fallback while the code and the docs described a choice. Selecting "some
+	// arm" passed throughout.
+	//
+	// Home LENGTH is the input that decided which arm ran, and it had never been
+	// varied; uid is the one we fixed after it bit us. Both are parametrised
+	// here so a reintroduced arm cannot pass unnoticed.
+	t.Run("real-home-uses-the-owned-temp-path", func(t *testing.T) {
 		h := newSSHDHarness(t)
-		preferred, err := os.MkdirTemp("/tmp", "h")
-		if err != nil {
-			t.Fatal(err)
+		uid := currentUID(t)
+		for _, home := range []string{
+			"/Users/alex",  // macOS runner and a real developer machine
+			"/home/runner", // ubuntu CI
+			"/root",        // shortest plausible real home
+			"",             // degenerate: not reachable in practice, included
+		} { // so the assertion is about the SHAPE, not one path
+			remote := uniqueMuxRemote(h)
+			remote.HubDir = filepath.Join(home, ".agentchute", "hub", "0123456789ab")
+			opts := hubclient.SSHBuildOptions{
+				Remote: remote, TempRoots: []string{"/tmp"},
+				UserID: uid, EnsureOwned: loop.EnsureOwnedSocketDir,
+			}
+			invocation := buildInvocation(t, h, opts)
+			muxDir := controlPathDirectory(t, invocation)
+			t.Cleanup(func() { _ = os.RemoveAll(muxDir) })
+			if filepath.Dir(muxDir) != filepath.Join("/tmp", "ac-"+uid) {
+				t.Fatalf("home %q selected %s, want the owned temp path", home, muxDir)
+			}
+			if len(invocation.Warnings) != 0 {
+				t.Fatalf("home %q warned: %v", home, invocation.Warnings)
+			}
+			// The socket must fit the budget it is chosen against, which is the
+			// property the dead arm violated.
+			socket := filepath.Join(muxDir, strings.Repeat("C", 64))
+			if len(socket) >= 100 {
+				t.Fatalf("home %q produced a %d-byte socket path %s", home, len(socket), socket)
+			}
 		}
-		t.Cleanup(func() { _ = os.RemoveAll(preferred) })
-		opts := hubclient.SSHBuildOptions{PreferredRoot: preferred}
-		invocation := buildInvocation(t, h, opts)
-		muxDir := controlPathDirectory(t, invocation)
-		if filepath.Dir(muxDir) != filepath.Join(preferred, "mux") || len(filepath.Base(muxDir)) != 12 || len(invocation.Warnings) != 0 {
-			t.Fatalf("preferred invocation = %v, warnings %v", invocation.Args, invocation.Warnings)
-		}
-		assertThreeHellosUseAuthCount(t, h, opts, 1)
 	})
 
 	t.Run("owned-temp-fallback", func(t *testing.T) {
 		h := newSSHDHarness(t)
 		remote := uniqueMuxRemote(h)
 		uid := currentUID(t)
-		deep := "/" + strings.Repeat("deep/", 30)
 		opts := hubclient.SSHBuildOptions{
-			Remote: remote, PreferredRoot: deep, TempRoots: []string{"/tmp"},
+			Remote: remote, TempRoots: []string{"/tmp"},
 			UserID: uid, EnsureOwned: loop.EnsureOwnedSocketDir,
 		}
 		invocation := buildInvocation(t, h, opts)
@@ -63,7 +89,7 @@ func TestSSHDControlPathLengthRuleAndMuxAuthCounts(t *testing.T) {
 		uid := currentUID(t)
 		candidate := ""
 		opts := hubclient.SSHBuildOptions{
-			Remote: remote, PreferredRoot: "/" + strings.Repeat("deep/", 30),
+			Remote:    remote,
 			TempRoots: []string{"/tmp"}, UserID: uid,
 			EnsureOwned: func(got string) error {
 				candidate = got
@@ -94,7 +120,7 @@ func TestSSHDControlPathLengthRuleAndMuxAuthCounts(t *testing.T) {
 		uid := currentUID(t)
 		candidate := ""
 		opts := hubclient.SSHBuildOptions{
-			Remote: remote, PreferredRoot: "/" + strings.Repeat("deep/", 30),
+			Remote:    remote,
 			TempRoots: []string{"/tmp"}, UserID: uid,
 			EnsureOwned: func(got string) error {
 				candidate = got
@@ -127,17 +153,22 @@ func TestSSHDControlPathLengthRuleAndMuxAuthCounts(t *testing.T) {
 	t.Run("all-paths-disabled", func(t *testing.T) {
 		h := newSSHDHarness(t)
 		remote := uniqueMuxRemote(h)
-		preferred := "/" + strings.Repeat("preferred-too-long/", 20)
+		// Two independent reasons the only arm can fail — over budget AND
+		// unwritable — so the row does not pass on whichever one happens to be
+		// checked first.
 		temp := "/" + strings.Repeat("temp-too-long/", 20)
 		opts := hubclient.SSHBuildOptions{
-			Remote: remote, PreferredRoot: preferred, TempRoots: []string{temp}, UserID: "0",
+			Remote: remote, TempRoots: []string{temp}, UserID: "0",
 			EnsureOwned: func(string) error { return errors.New("unwritable") },
 		}
 		invocation := buildInvocation(t, h, opts)
 		if !containsOption(invocation.Args, "ControlMaster=no") || !containsOption(invocation.Args, "ControlPath=none") {
 			t.Fatalf("disabled invocation = %v", invocation.Args)
 		}
-		if len(invocation.Warnings) != 1 || !strings.Contains(invocation.Warnings[0], filepath.Join(preferred, "mux")) || !strings.Contains(invocation.Warnings[0], filepath.Join(temp, "ac-0")) {
+		// Exactly one note, naming every path tried. There is one arm now, so
+		// "both attempted paths" is one path; the assertion is that the operator
+		// is told WHERE it failed, not how many places were tried.
+		if len(invocation.Warnings) != 1 || !strings.Contains(invocation.Warnings[0], filepath.Join(temp, "ac-0")) {
 			t.Fatalf("disabled warnings = %v", invocation.Warnings)
 		}
 		assertThreeHellosUseAuthCount(t, h, opts, 3)

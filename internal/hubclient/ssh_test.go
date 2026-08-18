@@ -22,7 +22,17 @@ func TestBuildSSHInvocationGolden(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(hubDir) })
 	remote := &loop.RemoteConfig{User: "alex", Host: "hub.example", Port: 2222, HubID: "0123456789ab", HubDir: hubDir}
-	got, err := BuildSSHInvocation(SSHBuildOptions{Remote: remote, AgentID: "codex", EnsureOwned: func(string) error { return nil }})
+	// The ControlPath is the owned per-user temp path, and that is the ONLY arm.
+	// This golden previously expected a hub-dir-local path and passed solely
+	// because the fixture's hubDir was a short /tmp temp dir; under any real
+	// home that arm exceeded the 100-byte socket budget and never ran. The
+	// golden agreed with the code and both were wrong about what shipped.
+	uid := currentUserID()
+	got, err := BuildSSHInvocation(SSHBuildOptions{
+		Remote: remote, AgentID: "codex",
+		TempRoots: []string{"/tmp"}, UserID: uid,
+		EnsureOwned: func(string) error { return nil },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +45,7 @@ func TestBuildSSHInvocationGolden(t *testing.T) {
 		"-o", "UserKnownHostsFile=" + filepath.Join(hubDir, "known_hosts"),
 		"-o", "IdentitiesOnly=yes", "-i", filepath.Join(hubDir, "keys", "codex_ed25519"),
 		"-o", "ClearAllForwardings=yes",
-		"-o", "ControlMaster=auto", "-o", "ControlPath=" + filepath.Join(hubDir, "mux", muxIsolationKey(remote, "codex", filepath.Join(hubDir, "keys", "codex_ed25519")), "%C"), "-o", "ControlPersist=60s",
+		"-o", "ControlMaster=auto", "-o", "ControlPath=" + filepath.Join("/tmp", "ac-"+uid, muxIsolationKey(remote, "codex", filepath.Join(hubDir, "keys", "codex_ed25519")), "%C"), "-o", "ControlPersist=60s",
 		"-o", "LogLevel=ERROR",
 		"-p", "2222", "alex@hub.example", "agentchute-hub",
 	}
