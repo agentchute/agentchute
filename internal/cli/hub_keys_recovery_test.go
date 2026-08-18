@@ -1,0 +1,145 @@
+package cli
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// A2 (first slice) / DESIGN §10.3 "staged rotation crash recovery (D4b/F3/H3)".
+//
+// The row specifies injecting failure at every transition of the staged
+// rotation. These are the two grok ranked as the ones that catch production —
+// the orphaned first key, and a half-finished promote — because both leave the
+// key directory in a state where the WRONG recovery silently changes which
+// credential the lane presents.
+//
+// Approach, as agreed: construct the post-crash STATE and assert convergence,
+// rather than injecting a crash. There is no failure seam in the key path, and
+// adding one would be a production change for a test. The trade is explicit:
+// this proves *state ⇒ converges*, not *crash at X ⇒ that state*. The second
+// half stays unproven, and a state-construction test derived from the
+// implementation can encode the same misunderstanding the implementation has —
+// which is the reason these want a reviewer who reads the code, not just the row.
+//
+// NOT sshd rows. They are filesystem-local key-state recovery and belong beside
+// the code they exercise; parking them under integration/sshd would report sshd
+// coverage that does not exist.
+
+// Transition: minted the first key, crashed BEFORE creating the active symlink.
+// Recovery must ADOPT the orphan, never mint over it — minting would strand a
+// key the hub may already have authorized and present a different one.
+func TestHubKeyRecoveryAdoptsOrphanedFirstKey(t *testing.T) {
+	dir := t.TempDir()
+	keysDir := filepath.Join(dir, "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The state a crash between keygen and symlink leaves: version files, no
+	// active symlink.
+	if _, _, err := prepareHubKey(dir, "codex-tiny"); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(keysDir, "codex-tiny_ed25519")
+	orphanPub := readKeyFile(t, active+".v1.pub")
+	if err := os.Remove(active); err != nil {
+		t.Fatalf("stage the orphan: %v", err)
+	}
+
+	state, minted, err := prepareHubKey(dir, "codex-tiny")
+	if err != nil {
+		t.Fatalf("recovery failed: %v", err)
+	}
+	if minted {
+		t.Fatal("recovery MINTED a new key over an adoptable orphan; the orphan may already be authorized on the hub")
+	}
+	if got := activeKeyBody(t, active); got != orphanPub {
+		t.Fatalf("active key material changed during recovery:\n orphan=%s\n active=%s", orphanPub, got)
+	}
+	if state.Active.Number != 1 {
+		t.Fatalf("adopted version = v%d, want v1", state.Active.Number)
+	}
+	// And no second version was created alongside it.
+	if versions := countKeyVersions(t, keysDir, "codex-tiny"); versions != 1 {
+		t.Fatalf("recovery left %d versions, want 1", versions)
+	}
+}
+
+// Transition: rotation crashed MID-PROMOTE — the temporary symlink exists, the
+// rename never happened. Recovery must leave the ACTIVE key unchanged: a
+// half-finished promote must not silently switch which credential the lane
+// presents, because the new one may not be authorized yet.
+func TestHubKeyRecoveryFromHalfFinishedPromoteKeepsActiveKey(t *testing.T) {
+	dir := t.TempDir()
+	keysDir := filepath.Join(dir, "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := prepareHubKey(dir, "codex-tiny"); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(keysDir, "codex-tiny_ed25519")
+	v1Pub := readKeyFile(t, active+".v1.pub")
+
+	// Mint v2 the way a rotation does, then stop just before the rename.
+	v2, err := mintHubKey(keysDir, "codex-tiny", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(v2.Private), active+".tmp"); err != nil {
+		t.Fatalf("stage the half-promote: %v", err)
+	}
+
+	state, minted, err := prepareHubKey(dir, "codex-tiny")
+	if err != nil {
+		t.Fatalf("recovery failed: %v", err)
+	}
+	if minted {
+		t.Fatal("recovery minted a key while two versions were already present")
+	}
+	if got := activeKeyBody(t, active); got != v1Pub {
+		t.Fatalf("a half-finished promote silently switched the active key:\n was=%s\n now=%s", v1Pub, got)
+	}
+	if state.Active.Number != 1 {
+		t.Fatalf("active = v%d after an incomplete promote, want v1", state.Active.Number)
+	}
+	// The stray temp symlink must not survive to be adopted later.
+	if _, err := os.Lstat(active + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temp promote symlink survived recovery (stat err = %v)", err)
+	}
+}
+
+// activeKeyBody resolves the active symlink and reads ITS public file — the
+// documented way to get the current pubkey. There is deliberately no
+// <agent>_ed25519.pub symlink, so reading beside the link finds nothing.
+func activeKeyBody(t *testing.T, active string) string {
+	t.Helper()
+	target, err := os.Readlink(active)
+	if err != nil {
+		t.Fatalf("read active symlink %s: %v", active, err)
+	}
+	return readKeyFile(t, filepath.Join(filepath.Dir(active), target+".pub"))
+}
+
+func readKeyFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 2 {
+		t.Fatalf("malformed key file %s: %q", path, data)
+	}
+	return fields[1]
+}
+
+func countKeyVersions(t *testing.T, keysDir, agentID string) int {
+	t.Helper()
+	versions, err := scanHubKeyVersions(keysDir, agentID)
+	if err != nil {
+		t.Fatalf("scan versions: %v", err)
+	}
+	return len(versions)
+}
