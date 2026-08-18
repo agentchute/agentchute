@@ -59,7 +59,16 @@ func TestSSHDFencedLaneRelaunchesExactlyOnce(t *testing.T) {
 	}
 	// EXACTLY once. A lane that relaunched once per tick would keep adding
 	// children while every assertion above still passed on the first two.
-	time.Sleep(2 * time.Second)
+	//
+	// The window has to OUTLAST the relaunch period it is looking for, and it is
+	// derived rather than chosen: wait for two further poll cycles to be
+	// OBSERVED — each tick renews the lease, so an advancing claim LastSeen is
+	// evidence a cycle ran — and only then count. The first version of this
+	// slept a flat 2s against a 5s interval, so a once-per-tick storm would have
+	// produced its third child after the count had already passed: the
+	// assertion written to catch that failure could not see it (codex and grok,
+	// PR #162 gate).
+	waitClaimTicks(t, h.cfg, agentID, 2, 45*time.Second)
 	if got := readChildEvents(t, childLog, "start"); len(got) != 2 {
 		t.Fatalf("fenced lane started %d children, want exactly 2: %+v", len(got), got)
 	}

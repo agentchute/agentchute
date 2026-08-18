@@ -236,9 +236,15 @@ func shellLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
+// serveTickInterval is the poll interval every serve fixture launches with.
+// Rows that must outlast a tick derive their window from THIS value rather than
+// hardcoding one: a constant that happens to be correct against today's
+// interval is one edit away from silently observing nothing.
+const serveTickInterval = 5 * time.Second
+
 func startServe(t *testing.T, h *sshdHarness, checkout string, optedOut bool) *serveProcess {
 	t.Helper()
-	args := []string{"serve", "--interval", "5"}
+	args := []string{"serve", "--interval", strconv.Itoa(int(serveTickInterval / time.Second))}
 	if optedOut {
 		args = append(args, "--relaunch=false")
 	}
@@ -432,4 +438,36 @@ func processExists(pid int) bool {
 func readFile(path string) string {
 	data, _ := os.ReadFile(path)
 	return string(data)
+}
+
+// waitClaimTicks blocks until the lane has completed `ticks` further poll
+// cycles, observed rather than assumed: every tick renews the serve lease, so a
+// change in the claim's LastSeen is direct evidence that a cycle ran. A row that
+// needs to outlast a relaunch period should wait on this instead of sleeping —
+// a sleep shorter than the period cannot see the failure it is checking for, and
+// a sleep longer than it is a flake waiting to happen.
+func waitClaimTicks(t *testing.T, cfg *loop.Config, id string, ticks int, timeout time.Duration) {
+	t.Helper()
+	claim, err := loop.ReadServeClaim(cfg, id)
+	if err != nil {
+		t.Fatalf("read serve claim for %s: %v", id, err)
+	}
+	last := claim.LastSeen
+	seen := 0
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		claim, err := loop.ReadServeClaim(cfg, id)
+		if err != nil {
+			continue
+		}
+		if claim.LastSeen.After(last) {
+			last = claim.LastSeen
+			seen++
+			if seen >= ticks {
+				return
+			}
+		}
+	}
+	t.Fatalf("observed %d of %d poll ticks for %s within %s", seen, ticks, id, timeout)
 }
