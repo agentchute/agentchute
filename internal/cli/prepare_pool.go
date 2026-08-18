@@ -64,7 +64,7 @@ func cmdPreparePool(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loop.Discover(loop.DiscoverOpts{
+	cfg, err := discoverConfig(loop.DiscoverOpts{
 		ControlRepoFlag: controlRepoFlag,
 		Cwd:             cwd,
 		EnvControlRepo:  os.Getenv("AGENTCHUTE_CONTROL_REPO"),

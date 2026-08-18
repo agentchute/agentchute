@@ -148,7 +148,7 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loop.Discover(loop.DiscoverOpts{
+	cfg, err := discoverConfig(loop.DiscoverOpts{
 		ControlRepoFlag: opts.ControlRepo,
 		LoopDirFlag:     opts.LoopDir,
 		Cwd:             cwd,

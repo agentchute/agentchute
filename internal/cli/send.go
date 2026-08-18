@@ -107,7 +107,7 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loop.Discover(loop.DiscoverOpts{
+	cfg, err := discoverConfig(loop.DiscoverOpts{
 		ControlRepoFlag: controlRepo,
 		LoopDirFlag:     loopDir,
 		Cwd:             cwd,

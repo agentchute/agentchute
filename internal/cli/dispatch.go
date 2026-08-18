@@ -222,7 +222,7 @@ func dispatchExecRun(plan dispatchPlan, shimDir string) error {
 	loopDir, g2, _ := extractGlobalFlag(g1, "--loop-dir")
 	_, forwardGlobal, _ := extractGlobalFlag(g2, "--vendor")
 	forwardGlobal = ensureDispatchIdentity(forwardGlobal, plan.Wrapper.AgentID, os.Getenv("AGENTCHUTE_AGENT_ID"))
-	cfg, err := loop.Discover(loop.DiscoverOpts{
+	cfg, err := discoverConfig(loop.DiscoverOpts{
 		ControlRepoFlag: ctlRepo,
 		LoopDirFlag:     loopDir,
 		Cwd:             cwd,

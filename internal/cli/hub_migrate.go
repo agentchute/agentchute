@@ -252,12 +252,22 @@ var hubMigrationVerify = verifyHubMigrationCopy
 // copied contents was simply not true across that window.
 //
 // What this DOES fix: the invariant. What gets deleted is now exactly what got
-// verified, because the tree is moved out of every resolvable path first. What it
-// does NOT fix, and must not be described as fixing: a concurrent lane is still
-// not safe. A racing write recreates the old path (ensurePrivateDir is
-// os.MkdirAll) and is then ORPHANED rather than deleted. That is strictly better
-// — recoverable instead of gone — but the real repair is the writer barrier in
-// issue #179. This closes the gap between what #162 claimed and what it did.
+// verified, because the tree is moved out of every resolvable path first.
+//
+// The three cases, stated as they now are rather than as they once were:
+//
+//   - A COMPLIANT holder cannot race at all. It holds the hub shared (§13.9a), so
+//     this migration never acquires exclusive: it refuses before touching
+//     anything.
+//   - A VIOLATOR that re-resolves the path after the freeze recreates it —
+//     ensurePrivateDir is os.MkdirAll — and is ORPHANED. Recoverable, not lost.
+//   - A VIOLATOR holding a descriptor opened BEFORE the freeze writes into the
+//     frozen inode and IS DELETED. That is the residual, it is exactly what
+//     §13.9a's MUST exists to prevent, and issue #179 is the structural repair.
+//
+// The third case is why this comment no longer says a racing write is merely
+// "orphaned". It said that when serve took no lock and every racing writer was a
+// violator by definition; both halves stopped being true.
 //
 // The reap MUST come first, and that is correctness rather than taste:
 // muxIsolationKey resolves the key path with EvalSymlinks UNDER oldDir, and falls

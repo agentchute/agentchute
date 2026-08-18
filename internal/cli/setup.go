@@ -659,7 +659,7 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		if err := cmdInit([]string{"--yes"}); err != nil {
 			return fmt.Errorf("init: %w", err)
 		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{
+		cfg, err := discoverConfig(loop.DiscoverOpts{
 			ControlRepoFlag: root,
 			Cwd:             root,
 			EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),

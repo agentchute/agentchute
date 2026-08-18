@@ -107,7 +107,7 @@ func hubJoinNameError(name string) error {
 
 func hubLockBusyError(lockPath string, mode hubLockMode) error {
 	if mode == hubLockShared {
-		return fmt.Errorf("serve: this hub is being migrated right now (lock %s held exclusively). The migration moves the directory this lane writes into, so serve will not start until it finishes; re-run in a moment.", displayHomePath(lockPath))
+		return fmt.Errorf("hub: this hub is being migrated right now (lock %s held exclusively). This command writes into the directory being moved, so it will not run until the migration finishes; re-run in a moment.", displayHomePath(lockPath))
 	}
 	return fmt.Errorf("hub join: this hub is busy (lock %s). Either another agentchute hub join/rotate is running, or a `serve` lane is live against it — a lane holds this lock for as long as it runs, and migrating underneath it would delete state it is still writing. Stop the lane (or wait for the other join), then re-run.", displayHomePath(lockPath))
 }

@@ -66,6 +66,9 @@ func Main(a Assets, args []string) int {
 		fmt.Fprintln(os.Stderr, "agentchute: internal error: build-time assets not injected (spec/templates/hooks missing); refusing to run")
 		return 1
 	}
+	// Everything discoverConfig locked for this command is released here, after
+	// the handler has returned. The lifetime is the command, not the dial.
+	defer releaseHubLocksHeldByCommand()
 	version = a.Version
 	embeddedSpecContent = a.Spec
 	enrollmentWrapperTemplate = a.WrapperTemplate

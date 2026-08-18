@@ -28,7 +28,7 @@ func cmdIdentity(args []string) error {
 
 	var cfg *loop.Config
 	if cwd, err := os.Getwd(); err == nil {
-		cfg, _ = loop.Discover(loop.DiscoverOpts{
+		cfg, _ = discoverConfig(loop.DiscoverOpts{
 			ControlRepoFlag: controlRepo,
 			LoopDirFlag:     loopDir,
 			Cwd:             cwd,
