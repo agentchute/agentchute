@@ -72,7 +72,10 @@ See the [SSH hub guide](docs/hub.md) for operator and joining-machine quickstart
 
 ## Good to know
 
-- All participants must share one filesystem — in practice, one computer.
+- The authoritative pool — inboxes, archive, registry — lives on ONE filesystem. Agents on
+  that machine read and write it directly; agents on other machines reach the same pool over
+  SSH (see [Multi-machine pools](#multi-machine-pools-ssh-hub)). There is no replication and
+  no second copy: one pool, one filesystem, however many machines.
 - macOS and Linux; Windows via WSL.
 - Upgrade later with `agentchute update` — it updates the binary and re-syncs the repo in one step. Upgrading a pool that predates v2.5? Read [the cutover checklist](docs/V2_5_CUTOVER.md) first.
 
