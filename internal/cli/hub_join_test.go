@@ -497,8 +497,12 @@ func TestHubJoinRecoveryBranchRefusesWhenTheCopyIsIncomplete(t *testing.T) {
 	withCwd(t, root, func() {
 		joinErr = cmdHubJoin([]string{newRemote.URL, "--name", "codex"})
 	})
-	assertOldHubKeyIntact(t, oldRemote, oldPub, oldTarget)
-	if joinErr == nil || !strings.Contains(joinErr.Error(), missing) {
+	// After the freeze reorder the bytes are under `<newDir>.migrating`, which is
+	// the refusal working as designed: the tree is moved out of every resolvable
+	// path BEFORE it is verified, and a failed verification leaves it there.
+	frozen := newRemote.HubDir + hubMigrationFrozenSuffix
+	assertOldHubKeyIntact(t, oldRemote, oldPub, oldTarget, frozen)
+	if joinErr == nil || !strings.Contains(joinErr.Error(), filepath.Base(missing)) {
 		t.Fatalf("refusal does not name the uncopied file %s: %v", missing, joinErr)
 	}
 }
@@ -713,20 +717,33 @@ func assertOldHubStatePreserved(t *testing.T, oldRemote, newRemote *loop.RemoteC
 
 // assertOldHubKeyIntact re-reads the old hub's active key and fails unless it is
 // byte-for-byte what the join started with.
-func assertOldHubKeyIntact(t *testing.T, oldRemote *loop.RemoteConfig, oldPub []byte, oldTarget string) {
+// assertOldHubKeyIntact: the key material must still EXIST, byte for byte. It may
+// live at the old hub dir or — once a refusal happens after the freeze — under
+// `<newDir>.migrating`. Which of the two is not the property; a refusal that
+// deletes is, and either location proves nothing was deleted. Naming both keeps
+// the row pinned to "the bytes survive" rather than to a path that the freeze
+// legitimately changed.
+func assertOldHubKeyIntact(t *testing.T, oldRemote *loop.RemoteConfig, oldPub []byte, oldTarget string, alsoLookIn ...string) {
 	t.Helper()
-	active := filepath.Join(oldRemote.HubDir, "keys", "codex-tiny_ed25519")
-	target, err := os.Readlink(active)
-	if err != nil {
-		t.Fatalf("old active key symlink: %v", err)
+	dirs := append([]string{oldRemote.HubDir}, alsoLookIn...)
+	var tried []string
+	for _, dir := range dirs {
+		active := filepath.Join(dir, "keys", "codex-tiny_ed25519")
+		target, err := os.Readlink(active)
+		if err != nil {
+			tried = append(tried, active)
+			continue
+		}
+		pub, err := os.ReadFile(filepath.Join(filepath.Dir(active), target+".pub"))
+		if err != nil {
+			t.Fatalf("read active pubkey under %s: %v", dir, err)
+		}
+		if target != oldTarget || string(pub) != string(oldPub) {
+			t.Fatalf("active key under %s changed: target %q -> %q", dir, oldTarget, target)
+		}
+		return
 	}
-	pub, err := os.ReadFile(filepath.Join(filepath.Dir(active), target+".pub"))
-	if err != nil {
-		t.Fatalf("read old active pubkey: %v", err)
-	}
-	if target != oldTarget || string(pub) != string(oldPub) {
-		t.Fatalf("old active key changed: target %q -> %q", oldTarget, target)
-	}
+	t.Fatalf("the authorized key exists nowhere — a refusal deleted it. Looked in: %v", tried)
 }
 
 func TestHubJoinSameHubMigrationPreservesStateAndKey(t *testing.T) {

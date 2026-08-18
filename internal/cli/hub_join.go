@@ -79,6 +79,12 @@ func cmdHubJoin(args []string) error {
 	var oldHubID string
 	completed := false
 	err = withHubLock(remote.HubID, func() error {
+		// Before anything else: finish a migration that was interrupted after it
+		// froze the old tree. Nothing else can see that state — the old directory
+		// is gone, so there is no candidate to find.
+		if sweepErr := sweepFrozenHubMigration(remote); sweepErr != nil {
+			return sweepErr
+		}
 		candidate, findErr := findHubMigrationCandidate(remote, opts)
 		if findErr != nil {
 			return findErr

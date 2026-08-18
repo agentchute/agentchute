@@ -192,31 +192,98 @@ func hubDirForMessage(hubID string) string {
 // above. Provenance says who created the directory; this says what is actually
 // in it. The RemoveAll is irreversible, so it is gated on the second question
 // rather than inferred from the first.
+// hubMigrationFrozenSuffix names the old tree once it has been moved out of the
+// path any lane can resolve. It is derived from the NEW hub id deliberately: the
+// surviving id is the one a later join can compute, so a crash after the freeze
+// leaves something findable. Named off the OLD id it would be unreachable —
+// findHubMigrationCandidate needs the old directory to exist to name it — and
+// would litter forever. `^[0-9a-f]{12}$` does not match a suffixed name, so the
+// frozen tree is never itself a migration candidate; the same property `.partial`
+// already relies on.
+const hubMigrationFrozenSuffix = ".migrating"
+
+// hubMigrationVerify is the verification seam. It is a package var so a test can
+// write into the window between verification and deletion, which is the only
+// place a racing lane can still reach.
+var hubMigrationVerify = verifyHubMigrationCopy
+
+// finishHubMigration: reap, point, FREEZE, verify, delete.
+//
+// The order is the fix, and each step is where it is for a reason.
+//
+// codex found that the previous order verified oldDir and then deleted it while
+// oldDir was still the path every lane resolves — serve and the shadow loop do
+// not take the hub locks — so state written in between was deleted having never
+// been verified. The DESIGN claim that the irreversible delete is gated on proven
+// copied contents was simply not true across that window.
+//
+// What this DOES fix: the invariant. What gets deleted is now exactly what got
+// verified, because the tree is moved out of every resolvable path first. What it
+// does NOT fix, and must not be described as fixing: a concurrent lane is still
+// not safe. A racing write recreates the old path (ensurePrivateDir is
+// os.MkdirAll) and is then ORPHANED rather than deleted. That is strictly better
+// — recoverable instead of gone — but the real repair is the writer barrier in
+// issue #179. This closes the gap between what #162 claimed and what it did.
+//
+// The reap MUST come first, and that is correctness rather than taste:
+// muxIsolationKey resolves the key path with EvalSymlinks UNDER oldDir, and falls
+// back to filepath.Clean silently when that fails. Reaping after the rename would
+// therefore compute a different isolation key and reap the wrong socket without
+// saying so.
 func finishHubMigration(root string, remote *loop.RemoteConfig, oldDir string, oldCfg *hubclient.HubConfig) error {
 	newDir := remote.HubDir
-	if err := verifyHubMigrationCopy(oldDir, newDir); err != nil {
-		return err
-	}
-	// Everything from here is post-commit cleanup: <new-id>/ already exists and
-	// carries the old directory's contents. A failure now leaves TWO hub dirs on
-	// disk, which is recoverable but does not look like anything from the
-	// outside — the operator sees a stray rename or unlink error and has no way
-	// to know a hub move is half-finished. Issue #165 lost data in exactly this
-	// window, so the message says where it stopped and that re-running finishes it.
+	hubMigrationReapMux(oldCfg, oldDir)
 	if err := writeHubJoinPointer(root, remote.URL); err != nil {
 		return halfFinishedMigration(oldDir, newDir, "writing the control-repo pointer", err)
 	}
-	hubMigrationReapMux(oldCfg, oldDir)
-	if err := os.RemoveAll(oldDir); err != nil {
-		return halfFinishedMigration(oldDir, newDir, "removing the old hub directory", err)
+	frozen := newDir + hubMigrationFrozenSuffix
+	if _, err := os.Stat(frozen); os.IsNotExist(err) {
+		if err := os.Rename(oldDir, frozen); err != nil {
+			return halfFinishedMigration(oldDir, newDir, "freezing the old hub directory", err)
+		}
+	} else if err != nil {
+		return halfFinishedMigration(oldDir, newDir, "checking for a frozen hub directory", err)
 	}
-	if err := fsyncHubDir(filepath.Dir(oldDir)); err != nil {
-		return halfFinishedMigration(oldDir, newDir, "flushing the hub directory", err)
+	if err := hubMigrationVerify(frozen, newDir); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(frozen); err != nil {
+		return halfFinishedMigration(frozen, newDir, "removing the frozen hub directory", err)
+	}
+	if err := fsyncHubDir(filepath.Dir(frozen)); err != nil {
+		return halfFinishedMigration(frozen, newDir, "flushing the hub directory", err)
 	}
 	if err := os.Remove(filepath.Join(newDir, hubMigrationMarker)); err != nil && !os.IsNotExist(err) {
-		return halfFinishedMigration(oldDir, newDir, "clearing the migration marker", err)
+		return halfFinishedMigration(frozen, newDir, "clearing the migration marker", err)
 	}
 	return fsyncHubDir(newDir)
+}
+
+// sweepFrozenHubMigration finishes a migration that was interrupted after the
+// freeze. That crash state is invisible to everything else: the old directory is
+// gone, so there is no migration candidate to find, and the frozen name is
+// excluded from the candidate scan by construction. This sweep is the only thing
+// that recovers it.
+//
+// It VERIFIES BEFORE DELETING, always. Deleting because a directory exists is
+// precisely the existence-keying that made issue #165 destroy an authorized key,
+// one directory over. If the new tree does not fully represent the frozen one,
+// this refuses and leaves every byte where it is.
+func sweepFrozenHubMigration(remote *loop.RemoteConfig) error {
+	frozen := remote.HubDir + hubMigrationFrozenSuffix
+	if _, err := os.Stat(frozen); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := hubMigrationVerify(frozen, remote.HubDir); err != nil {
+		return fmt.Errorf("hub join: a previous hub move was interrupted after it froze the old directory, and %s does not fully represent %s — so the frozen tree is NOT being deleted and nothing is lost. Resolve the difference (the bytes are all still in %s), then re-run this join: %w", remote.HubDir, frozen, frozen, err)
+	}
+	if err := os.RemoveAll(frozen); err != nil {
+		return err
+	}
+	return fsyncHubDir(filepath.Dir(frozen))
 }
 
 // halfFinishedMigration names the state the operator is actually in. Nothing is
