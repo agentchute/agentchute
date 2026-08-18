@@ -35,8 +35,11 @@ func TestHubJoinPointerIsSilentWhenNothingChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(second, "wrote pointer") || strings.Contains(second, "pointer replaced") {
-		t.Fatalf("re-writing the same value announced a change that did not happen: %q", second)
+	// Completely silent, not just free of the two announcements. The shadowed-binary
+	// warning used to be hoisted above the switch, so it fired on exactly these no-op
+	// writes and reported twice for one pointer again — one line above its own fix.
+	if strings.TrimSpace(second) != "" {
+		t.Fatalf("re-writing the same value produced output; a write that changes nothing must say nothing: %q", second)
 	}
 
 	changed, err := captureStdout(t, func() error { return writeHubJoinPointer(root, url+"-two") })
@@ -83,6 +86,23 @@ func TestHubJoinWarnsOnlyWhenAnotherBinaryShadowsThisOne(t *testing.T) {
 		}
 	}
 
+	// And through the real call site: a pointer write that CHANGES the value warns,
+	// which is what stops the gate above from being a way to silence it entirely.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git", "info"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hubJoinLookPath = func() (string, error) { return other, nil }
+	viaWrite, err := captureStdout(t, func() error {
+		return writeHubJoinPointer(root, "ssh://alex@hub.example/home/alex/pool")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(viaWrite, "warning") || !strings.Contains(viaWrite, "wrote pointer") {
+		t.Fatalf("a real pointer change must both warn and announce: %q", viaWrite)
+	}
+
 	hubJoinLookPath = func() (string, error) { return "", errors.New("not on PATH") }
 	absent, err := captureStdout(t, func() error { warnHubJoinShadowedBinary(); return nil })
 	if err != nil {
@@ -127,6 +147,18 @@ func TestHubJoinAutoAuthorizeBoundsConnectAndCapturesSSHOutput(t *testing.T) {
 	}
 	if !strings.Contains(string(argv), "ConnectTimeout=") {
 		t.Fatalf("probe has no ConnectTimeout, so a black-holed hub hangs the join unbounded: %q", argv)
+	}
+	// Two ABSENCES, pinned. Both are deliberate decisions currently held up by no
+	// code existing, which nothing would notice being reversed:
+	//   IdentitiesOnly — this path uses the operator's OWN credentials by design;
+	//                    pinning an identity here defeats its whole purpose.
+	//   BatchMode      — would remove the interactive password fallback. That is a
+	//                    behaviour change and a pending ruling, not a tidy-up.
+	if strings.Contains(string(argv), "IdentitiesOnly") {
+		t.Fatalf("probe pins an identity; this path deliberately uses the operator's own credentials: %q", argv)
+	}
+	if strings.Contains(string(argv), "BatchMode") {
+		t.Fatalf("probe sets BatchMode, removing the interactive fallback — a behaviour change that is a pending ruling, not a tidy-up: %q", argv)
 	}
 
 	// And the transcript must survive on the error, for the caller to print

@@ -37,6 +37,17 @@ func setupHubJoinTest(t *testing.T) (string, *loop.RemoteConfig) {
 	originalFingerprint := hubJoinFingerprint
 	originalDiscoverFingerprint := hubJoinDiscoverFingerprint
 	originalReapMux := hubMigrationReapMux
+	// Deterministic PATH resolution. The default runs exec.LookPath("agentchute"),
+	// so the shadowed-binary warning printed on a developer machine with agentchute
+	// installed and not on CI — output that depends on whose box ran the test, in a
+	// package whose subject IS output. The dedicated row overrides this itself.
+	originalLookPath := hubJoinLookPath
+	self, exeErr := os.Executable()
+	if exeErr != nil {
+		t.Fatal(exeErr)
+	}
+	hubJoinLookPath = func() (string, error) { return self, nil }
+	t.Cleanup(func() { hubJoinLookPath = originalLookPath })
 	hubJoinInstallShims = func() error { return nil }
 	hubJoinHostname = func() (string, error) { return "Tiny.local", nil }
 	hubJoinFingerprint = func(*loop.RemoteConfig) (string, error) { return "SHA256:host", nil }

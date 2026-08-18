@@ -515,7 +515,13 @@ func writeHubJoinPointer(root, url string) error {
 	} else if err := appendHubPointerExclude(root); err != nil {
 		return err
 	}
-	warnHubJoinShadowedBinary()
+	// Gated on a real change, and NOT hoisted above this switch. Unconditional, it
+	// fired on exactly the no-op writes the switch below exists to silence — so a
+	// migration-plus-join reported twice again, one line above its own fix. Its own
+	// doc is the rule: warn at the moment the pointer changes MEANING.
+	if old != url {
+		warnHubJoinShadowedBinary()
+	}
 	switch {
 	case old == url:
 		// Nothing changed, so say nothing. A migration writes the pointer and then the
