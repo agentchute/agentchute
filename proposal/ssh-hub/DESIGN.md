@@ -2386,13 +2386,17 @@ pinned, and no step is optional:
    copied — a ControlPath socket is bound to a path that no longer exists
    after the move.
 2. Write the new `config.json` (recorded URL updated, `joined_as`/`names`/
-   `pool`/`pool12` carried over) inside `.partial`, then fsync every
-   written file and fsync the `.partial` directory itself.
+   `pool`/`pool12` carried over) **and the provenance marker
+   `.migrated-from`, naming `<old-id>`,** inside `.partial`, then fsync
+   every written file and fsync the `.partial` directory itself.
 3. `rename("<new-id>.partial", "<new-id>")` — **this is the commit
    point**, atomic on every supported filesystem. Fsync the parent
    `~/.agentchute/hub/` afterwards.
-4. Rewrite the checkout's pointer file to the new URL.
-5. Delete the old hub dir.
+4. Verify the new dir really carries the old one's contents — every path
+   under `<old-id>/` present under `<new-id>/` with the same bytes,
+   `config.json` and `mux/` excepted.
+5. Rewrite the checkout's pointer file to the new URL.
+6. Delete the old hub dir, then remove `.migrated-from`.
 
 **The fingerprint scan only ever considers directories whose name is
 exactly 12 lowercase hex characters**, so `<new-id>.partial` (and
@@ -2405,9 +2409,25 @@ next run — which resolves the *new* URL to `<new-id>`, finds a complete
 config there recording that URL, and so never reaches the fingerprint scan
 at all — takes the ordinary joined-verify path, which sweeps for exactly
 this leftover (a sibling hub dir with the SAME recorded host-key
-fingerprint but a stale recorded URL) and finishes steps 4–5. Migration is
+fingerprint but a stale recorded URL) and finishes steps 5–6. Migration is
 thus idempotent from any interruption, with exactly one authoritative dir
 at every instant.
+
+**Erratum (#165): "after step 3 both dirs are complete" is a claim the
+implementation has to be able to CHECK, and the first one could not.** A
+`<new-id>/` that exists is not evidence of a committed rename — it is also
+what a failed fresh join leaves (keys are minted before the hub is ever
+contacted) and what a completed separate join to the new URL leaves.
+Reading existence as "I crashed after my own rename" meant the recovery
+path ran steps 5–6 against a directory holding none of the old dir's
+contents, deleting the authorized key with exit 0. Hence the two additions
+above, which answer two different questions and are deliberately
+independent: `.migrated-from` says who created the directory, and step 4
+says what is actually in it. The irreversible delete is gated on the
+second, never inferred from the first. Anything else — no marker, a marker
+naming another hub — is refused by name, including an operator's own
+hand-made copy, because nothing distinguishes it from a committed rename
+and nothing is lost by saying so.
 
 **Mux masters outlive the old dir by design; reap them (G4).** A one-shot
 op's `ControlPersist=60s` master (§4.2) can still be running against
