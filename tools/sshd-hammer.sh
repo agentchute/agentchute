@@ -27,7 +27,7 @@ while [ "$i" -le "$iterations" ]; do
 	printf '\n===== iteration %s/%s =====\n' "$i" "$iterations"
 	# Word-splitting $strip_env is intentional: it expands to the -u flags.
 	# shellcheck disable=SC2086
-	if env $strip_env AGENTCHUTE_SSHD_TEST=1 go test -tags sshd_integration \
+	if env $strip_env AGENTCHUTE_SSHD_TEST=1 AGENTCHUTE_SSHD_DUMP_ALWAYS=1 go test -tags sshd_integration \
 		-run TestSSHDChildEnvSendAndSupervisedRelaunchDefault \
 		-count=1 -v -timeout 300s ./integration/sshd/; then
 		printf 'iteration %s: PASS\n' "$i"

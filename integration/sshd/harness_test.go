@@ -430,7 +430,16 @@ func (h *sshdHarness) close() {
 		// a failure that only reproduces on a CI runner cannot be diagnosed from
 		// the run at all: you get the client's classification ("channel to the
 		// hub was lost") and nothing about the cause.
-		if h.t.Failed() {
+		// Normally only on failure. But dumping ONLY on failure means every
+		// observation drawn from this log is selected on the failure: "it appears
+		// only in failing runs" is guaranteed when failing runs are the only ones
+		// we read. That is how a normal record gets promoted to a defect
+		// signature, twice this milestone. Under the hammer job we take the
+		// passing logs too, so 16 greens and 4 reds from one round can be diffed
+		// rather than interpreted.
+		//
+		// It has to happen HERE, before RemoveAll below takes the log with it.
+		if h.t.Failed() || os.Getenv("AGENTCHUTE_SSHD_DUMP_ALWAYS") != "" {
 			h.dumpDiagnostics()
 		}
 		if err := os.RemoveAll(h.root); err != nil {
@@ -542,22 +551,27 @@ func (h *sshdHarness) stopMuxMasters() {
 	}
 	h.muxMu.Unlock()
 
-	// Everything above reaps only masters whose ControlPath this process can
-	// RECOMPUTE. A master opened by a child process — the fake codex running the
-	// real binary — is only reachable that way if every input to the isolation
-	// digest still resolves identically here and now. If any does not, the reap
-	// silently succeeds while reaping nothing, and the next one-shot multiplexes
-	// over the surviving master: two forced-command sessions on one port.
+	// Also reap the sockets that actually exist, not only the ones this process
+	// can name. The recomputed ControlPath ends in the literal `%C` token; the
+	// socket on disk carries ssh's EXPANSION of it. `ssh -O exit` expands the
+	// token so reaping through it works — but the two spellings can never compare
+	// equal, so any "is this socket in my computed set" test answers "no" every
+	// time and discriminates nothing. An earlier version of this code logged that
+	// non-answer on every reap, in both passing and failing runs, which is the
+	// template-versus-expansion trap it was written to detect.
 	//
-	// So also enumerate the sockets that actually exist on disk, and say plainly
-	// when one was found that the computed set did not know about. That line is
-	// the evidence for whether the recompute is the mechanism; without it a
-	// missed reap and a reap that had nothing to do look identical.
+	// Compare DIRECTORIES, which are the same string on both sides, and report
+	// only the case that is actually informative: a live socket in a directory
+	// this process did not know about at all.
+	known := map[string]struct{}{}
+	for path := range computed {
+		known[filepath.Dir(strings.TrimPrefix(path, "ControlPath="))] = struct{}{}
+	}
 	for _, found := range h.discoverMuxSockets() {
-		if _, known := computed[found]; !known {
-			h.t.Logf("mux reap: live master at %s was not in the recomputed set %v; reaping it too", found, paths)
-			paths = append(paths, found)
+		if _, ok := known[filepath.Dir(strings.TrimPrefix(found, "ControlPath="))]; !ok {
+			h.t.Logf("mux reap: live master in an unknown isolation dir: %s", found)
 		}
+		paths = append(paths, found)
 	}
 	for _, controlPath := range paths {
 		_ = h.muxControl(controlPath, "exit")
