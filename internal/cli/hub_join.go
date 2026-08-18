@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -31,6 +32,7 @@ var hubJoinProbe = func(remote *loop.RemoteConfig, agentID, keyPath string) (hub
 }
 
 var hubJoinAutoAuthorize = runHubJoinAutoAuthorize
+var hubJoinReapMux = hubclient.ReapSSHMux
 var hubJoinInstallShims = installHubJoinShims
 var hubJoinHostname = os.Hostname
 var hubJoinFingerprint = readHubJoinFingerprint
@@ -74,9 +76,42 @@ func cmdHubJoin(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Learn which ids the first scope must hold BEFORE taking anything. A frozen
+	// tree left by an interrupted move belongs to some OTHER hub id, and the
+	// sweep below deletes it — so that id has to be held too. Reading the marker
+	// inside a lock on the new id and then taking the old one would invert the
+	// sorted order the migration itself uses.
+	frozenOrigin, err := hubFrozenOrigin(remote)
+	if err != nil {
+		return err
+	}
+	firstScope := []string{remote.HubID}
+	if frozenOrigin != "" {
+		firstScope = append(firstScope, frozenOrigin)
+	}
 	var oldHubID string
 	completed := false
-	err = withHubLock(remote.HubID, func() error {
+	err = withHubLocks(firstScope, func() error {
+		// The pre-lock read chose WHICH locks to take, so it is a hint until it is
+		// confirmed under them. Narrow but real: two joins to the same new URL,
+		// the first crashing after its freeze — the second sees no frozen tree
+		// before the lock, waits on the new id, and would otherwise sweep a tree
+		// whose origin it never learned and whose hub it does not hold.
+		//
+		// Same discipline scope 2 already applies to the migration candidate.
+		confirmed, originErr := hubFrozenOrigin(remote)
+		if originErr != nil {
+			return originErr
+		}
+		if confirmed != frozenOrigin {
+			return fmt.Errorf("hub join: a frozen hub tree appeared or changed while locks were acquired (%q -> %q); nothing was touched, re-run", frozenOrigin, confirmed)
+		}
+		// Now finish a migration that was interrupted after it froze the old tree.
+		// Nothing else can see that state — the old directory is gone, so there is
+		// no candidate to find.
+		if sweepErr := sweepFrozenHubMigration(remote); sweepErr != nil {
+			return sweepErr
+		}
 		candidate, findErr := findHubMigrationCandidate(remote, opts)
 		if findErr != nil {
 			return findErr
@@ -352,10 +387,16 @@ func authorizeHubJoinKey(remote *loop.RemoteConfig, agentID string, key hubKeyVe
 	fmt.Print("authorizing via your own SSH access… ")
 	if err := hubJoinAutoAuthorize(remote, agentID, pubkey, replace); err != nil {
 		fmt.Println("not available")
+		printSSHProbeTranscript(err)
 		fmt.Println(hubAuthorizePaste(remote, agentID, pubkey, replace))
 		return false, nil
 	}
 	fmt.Println("ok")
+	if replace {
+		if err := hubJoinReapMux(remote, agentID, key.Private, remote.HubDir); err != nil {
+			return false, fmt.Errorf("hub join: authorization changed, but the local SSH master could not be reaped; stop this lane before retrying: %w", err)
+		}
+	}
 	return true, nil
 }
 
@@ -376,6 +417,12 @@ func hubAuthorizePaste(remote *loop.RemoteConfig, agentID, pubkey string, replac
 	return fmt.Sprintf("Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent %s --pool %s --key %s%s", agentID, remote.PoolPath, strconv.Quote(pubkey), replaceArg)
 }
 
+// hubAutoAuthorizeTimeout bounds the auto-authorize probe. Every other ssh this
+// package runs goes through BuildSSHInvocation, which sets ConnectTimeout=5;
+// this one used to set nothing at all, so a hub that black-holes packets hung
+// the join with no bound.
+const hubAutoAuthorizeTimeout = "5"
+
 func runHubJoinAutoAuthorize(remote *loop.RemoteConfig, agentID, pubkey string, replace bool) error {
 	values := []string{"agentchute", "hub", "authorize", "--agent", agentID, "--pool", remote.PoolPath, "--key", pubkey}
 	if replace {
@@ -388,14 +435,62 @@ func runHubJoinAutoAuthorize(remote *loop.RemoteConfig, agentID, pubkey string, 
 		}
 		quoted[i] = "'" + value + "'"
 	}
-	args := []string{}
+	args := []string{"-o", "ConnectTimeout=" + hubAutoAuthorizeTimeout}
 	if remote.Port != 22 {
 		args = append(args, "-p", strconv.Itoa(remote.Port))
 	}
 	args = append(args, remote.Destination(), strings.Join(quoted, " "))
 	cmd := exec.Command("ssh", args...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+	// stdin stays attached: this path deliberately uses the operator's OWN ssh
+	// access, so ssh may need to prompt. IdentitiesOnly is deliberately NOT set
+	// here for the same reason — pinning an identity would defeat the point.
+	//
+	// stderr is CAPTURED rather than wired straight through. The caller prints
+	// "authorizing via your own SSH access… " with no newline and completes the
+	// sentence with the outcome; streaming the child's stderr put ssh's own
+	// chatter between those two halves, so an operator read
+	//     authorizing via your own SSH access… Permission denied, please try again.
+	//     Received disconnect from ... Too many authentication failures
+	//     Disconnected from ...
+	//     not available
+	// and took "please try again" for an instruction. It is not one; the real
+	// instruction is four lines further down.
+	var stderr bytes.Buffer
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return &sshProbeError{err: err, transcript: stderr.String()}
+	}
+	return nil
+}
+
+// sshProbeError carries what ssh said so the CALLER can print it once its own
+// sentence is finished. Printing it here would only move the interleaving, not
+// remove it: the caller writes "authorizing via your own SSH access… " with no
+// newline and completes it with the outcome.
+type sshProbeError struct {
+	err        error
+	transcript string
+}
+
+func (e *sshProbeError) Error() string { return e.err.Error() }
+func (e *sshProbeError) Unwrap() error { return e.err }
+
+// printSSHProbeTranscript replays a failed probe's ssh output indented, so it
+// reads as a transcript rather than as agentchute talking. Nothing is printed
+// when ssh said nothing.
+func printSSHProbeTranscript(err error) {
+	var probe *sshProbeError
+	if !errors.As(err, &probe) {
+		return
+	}
+	out := strings.TrimRight(probe.transcript, "\n")
+	if strings.TrimSpace(out) == "" {
+		return
+	}
+	fmt.Println("  ssh said:")
+	for _, line := range strings.Split(out, "\n") {
+		fmt.Printf("    %s\n", line)
+	}
 }
 
 func updateHubJoinConfig(cfg *hubclient.HubConfig, remote *loop.RemoteConfig, agentID, localName, pool, pool12, fingerprint string) {
@@ -453,12 +548,64 @@ func writeHubJoinPointer(root, url string) error {
 	} else if err := appendHubPointerExclude(root); err != nil {
 		return err
 	}
-	if old != "" && old != url {
+	// Gated on a real change, and NOT hoisted above this switch. Unconditional, it
+	// fired on exactly the no-op writes the switch below exists to silence — so a
+	// migration-plus-join reported twice again, one line above its own fix. Its own
+	// doc is the rule: warn at the moment the pointer changes MEANING.
+	if old != url {
+		warnHubJoinShadowedBinary()
+	}
+	switch {
+	case old == url:
+		// Nothing changed, so say nothing. A migration writes the pointer and then the
+		// join that follows it writes the same value again; announcing both made a
+		// recovery run report "wrote pointer" twice for one pointer.
+	case old != "":
 		fmt.Printf("pointer replaced: %s -> %s\n", old, url)
-	} else {
+	default:
 		fmt.Printf("wrote pointer: %s (ignored via .git/info/exclude)\n", loop.PointerFileName)
 	}
 	return nil
+}
+
+// hubJoinLookPath is the PATH resolution used by the shadowed-copy warning. It
+// is a package var so the row can drive both arms without touching PATH.
+var hubJoinLookPath = func() (string, error) { return exec.LookPath("agentchute") }
+
+// warnHubJoinShadowedBinary warns when the agentchute PATH resolves to is not
+// the one performing the join.
+//
+// The pointer this join just wrote holds an `ssh://` URL, and an agentchute
+// old enough to predate hub support does not recognise those: it reads the URL
+// as a relative PATH and fails with a mangled lstat, e.g.
+//
+//	lstat /home/dmin/checkout/ssh:/alex@host/home/alex/pool: no such file or directory
+//
+// which says nothing about needing a newer binary. Two copies on one machine is
+// the ordinary state mid-upgrade, and the old copy's message cannot be fixed
+// from here — so the warning has to come from the side that still can, at the
+// moment the pointer changes meaning. Resolution only; the other binary is
+// never executed.
+func warnHubJoinShadowedBinary() {
+	resolved, err := hubJoinLookPath()
+	if err != nil {
+		return
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return
+	}
+	if selfResolved, err := filepath.EvalSymlinks(self); err == nil {
+		self = selfResolved
+	}
+	if resolvedReal, err := filepath.EvalSymlinks(resolved); err == nil {
+		resolved = resolvedReal
+	}
+	if resolved == self {
+		return
+	}
+	fmt.Printf("warning: `agentchute` on PATH resolves to %s, not the %s running this join\n", resolved, self)
+	fmt.Printf("  %s now holds an ssh:// hub URL. A copy that predates hub support reads that as a file path and fails with a confusing lstat error; upgrade or reorder the other copy.\n", loop.PointerFileName)
 }
 
 func appendHubPointerExclude(root string) error {
@@ -511,9 +658,9 @@ func installHubJoinShims() error {
 	if _, err := removeLegacyWrapperShims(dir); err != nil {
 		return err
 	}
-	if !pathContains(dir, os.Getenv("PATH")) {
-		fmt.Printf("warning: add %s to PATH, then start a new shell before using `ac serve`\n", dir)
-	}
+	// setupEnsureShimPath below says this itself, once, and says it AFTER it has
+	// tried to fix PATH. Warning here as well printed the same advice twice
+	// before either attempt had happened.
 	return setupEnsureShimPath(setupOptions{ShimDir: dir})
 }
 

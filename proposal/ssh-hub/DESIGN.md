@@ -736,7 +736,7 @@ ssh -T \
 `-o ServerAliveInterval=15 -o ServerAliveCountMax=2` and
 
 ```
-  -o ControlMaster=auto -o ControlPath=<hubdir>/mux/%C -o ControlPersist=60s
+  -o ControlMaster=auto -o ControlPath=<tempRoot>/ac-<uid>/<isolationKey>/%C -o ControlPersist=60s
 ```
 
 Rationale for the split (each verified against `ssh_config(5)`):
@@ -773,22 +773,37 @@ Rationale for the split (each verified against `ssh_config(5)`):
 
 **`ControlPath` length rule (normative).** A ControlPath is a Unix domain
 socket, so its expanded path is capped by `sun_path` — ~104 bytes on macOS,
-108 on Linux — and `<hubdir>/mux/%C` under a deep `$HOME` can silently exceed
-it, breaking multiplexing with an opaque ssh error. The codebase already
-solves exactly this for the runner socket and this design reuses that shape
-rather than inventing a second one (`Config.RunnerSocketPath`,
+108 on Linux — and a hub-dir-local `<hubdir>/mux/%C` exceeds it, breaking
+multiplexing with an opaque ssh error.
+
+**There is deliberately no hub-dir-local arm.** One was specified and shipped,
+and it was unreachable for EVERY home including an empty one: the budget leaves
+34 bytes for the whole directory, while `/.agentchute/hub/<12hex>/mux/<12hex>`
+spends 46 before a single byte of `$HOME`. It looked healthy only because the
+temp path covers every run. No shortening rescues it — dropping the hub-id
+segment still leaves room for a one-byte home — so it is removed rather than
+trimmed or kept as documented-vestigial, which would only invite its
+restoration. The one honest consequence: **mux sockets live outside the hub
+dir, so removing a hub dir does not remove them.** That was already true (the
+arm never ran); a migration reaps them explicitly before removal by re-deriving
+the live path, and a stale socket is harmless because ssh reconnects when a
+socket is dead.
+
+The codebase already solves the length problem for the runner socket and this
+design reuses that shape rather than inventing a second one (`Config.RunnerSocketPath`,
 `internal/loop/config.go:168-193 @ 1244ae4`):
 
-- **Threshold, the shipped one.** The builder refuses the preferred path when
+- **Threshold, the shipped one.** The builder refuses a candidate when
   `len(muxDir) + 1 + 64 >= 100`, where `100` is the literal
   `RunnerSocketPath` already uses (`config.go:170` — one number in the
   codebase, not two) and `64` is a deliberately conservative upper bound for
   `%C`'s expansion, which the client cannot compute itself. Over-triggering
   costs one extra authentication; under-triggering costs a broken mux.
-- **Preferred**: `muxDir = <hubdir>/mux` (§7.4).
-- **Fallback when it does not fit**: a per-user temp dir
-  `<tempRoot>/agentchute-hub-<uid>/<hub-id>`, trying `os.TempDir()` then
-  `/tmp` and taking the first that passes the same budget (macOS's `$TMPDIR`
+- **The path, and there is only one**: a per-user temp dir
+  `<tempRoot>/ac-<uid>/<isolationKey>` (§7.4), where `<isolationKey>` is the
+  opaque 12-hex digest over hub id, agent id, and resolved key version. The
+  socket is `<muxDir>/%C`. Candidates are `os.TempDir()` then
+  `/tmp`, taking the first that passes the budget (macOS's `$TMPDIR`
   is itself a long `/var/folders/…` path, so `/tmp` is a real second
   candidate). Created and checked through the shipped owned-0700 discipline —
   `EnsureRunnerSocketDir` → `ensureOwnedRunnerSocketDir`
@@ -797,7 +812,7 @@ rather than inventing a second one (`Config.RunnerSocketPath`,
   symlink reject, uid-ownership reject, `Chmod` 0700), generalized to a
   caller-supplied path rather than copied. The uid suffix plus the ownership
   check is what keeps a shared `/tmp` from being squattable.
-- **If neither fits (or the temp root is unusable)**: **disable multiplexing
+- **If no candidate fits (or every temp root is unusable)**: **disable multiplexing
   for this hub** — one-shots run `-o ControlMaster=no -o ControlPath=none`,
   as the channel already does — and emit exactly one `warn` note naming both
   attempted paths. Correctness is unaffected; only the per-op authentication
@@ -2371,13 +2386,17 @@ pinned, and no step is optional:
    copied — a ControlPath socket is bound to a path that no longer exists
    after the move.
 2. Write the new `config.json` (recorded URL updated, `joined_as`/`names`/
-   `pool`/`pool12` carried over) inside `.partial`, then fsync every
-   written file and fsync the `.partial` directory itself.
+   `pool`/`pool12` carried over) **and the provenance marker
+   `.migrated-from`, naming `<old-id>`,** inside `.partial`, then fsync
+   every written file and fsync the `.partial` directory itself.
 3. `rename("<new-id>.partial", "<new-id>")` — **this is the commit
    point**, atomic on every supported filesystem. Fsync the parent
    `~/.agentchute/hub/` afterwards.
-4. Rewrite the checkout's pointer file to the new URL.
-5. Delete the old hub dir.
+4. Verify the new dir really carries the old one's contents — every path
+   under `<old-id>/` present under `<new-id>/` with the same bytes,
+   `config.json` and `mux/` excepted.
+5. Rewrite the checkout's pointer file to the new URL.
+6. Delete the old hub dir, then remove `.migrated-from`.
 
 **The fingerprint scan only ever considers directories whose name is
 exactly 12 lowercase hex characters**, so `<new-id>.partial` (and
@@ -2390,9 +2409,25 @@ next run — which resolves the *new* URL to `<new-id>`, finds a complete
 config there recording that URL, and so never reaches the fingerprint scan
 at all — takes the ordinary joined-verify path, which sweeps for exactly
 this leftover (a sibling hub dir with the SAME recorded host-key
-fingerprint but a stale recorded URL) and finishes steps 4–5. Migration is
+fingerprint but a stale recorded URL) and finishes steps 5–6. Migration is
 thus idempotent from any interruption, with exactly one authoritative dir
 at every instant.
+
+**Erratum (#165): "after step 3 both dirs are complete" is a claim the
+implementation has to be able to CHECK, and the first one could not.** A
+`<new-id>/` that exists is not evidence of a committed rename — it is also
+what a failed fresh join leaves (keys are minted before the hub is ever
+contacted) and what a completed separate join to the new URL leaves.
+Reading existence as "I crashed after my own rename" meant the recovery
+path ran steps 5–6 against a directory holding none of the old dir's
+contents, deleting the authorized key with exit 0. Hence the two additions
+above, which answer two different questions and are deliberately
+independent: `.migrated-from` says who created the directory, and step 4
+says what is actually in it. The irreversible delete is gated on the
+second, never inferred from the first. Anything else — no marker, a marker
+naming another hub — is refused by name, including an operator's own
+hand-made copy, because nothing distinguishes it from a committed rename
+and nothing is lost by saying so.
 
 **Mux masters outlive the old dir by design; reap them (G4).** A one-shot
 op's `ControlPersist=60s` master (§4.2) can still be running against
@@ -2705,18 +2740,20 @@ Pointer lifecycle (all normative):
 
 ### 7.5 Error-message catalog (exact text)
 
+**Authorization lifetime (normative operator context for the catalog).** Identity pinning and authorization freshness are distinct: a live master stays bound to exactly its authenticated key and agent id, but sshd applies revoke, replace, and forced-command edits only at the next authentication. A serve channel retains that authorization until drop; a one-shot master retains it until close. `ControlPersist=60s` is idle-only, so an active lane can keep the authorization snapshot indefinitely. For an immediate cut or repoint, stop/relaunch the lane or reap the master on the joining machine; a hub operator cannot reap a master held by another host/account. Rotation is different: the mux isolation digest includes the resolved key version, so promotion forces a fresh authentication.
+
 Transport / client-side:
 
 | code | exact message |
 |---|---|
 | `E_CONNECT` | `hub: cannot reach hub.tail1234.ts.net:22 (connect failed after 5s). Check network/VPN/tailnet, then retry; `agentchute doctor` runs this same probe. (If this machine should no longer be joined to this hub, delete .agentchute-control-repo.)` |
-| `E_UNAUTHORIZED` | `hub: hub refused this key for alex@hub.tail1234.ts.net. Either it was never authorized or it was revoked. Run this ON THE HUB, then retry here:`<br>`  agentchute hub authorize --agent codex --pool /home/alex/code/agentchute --key "ssh-ed25519 AAAAC3Nz… agentchute:codex"`<br>(the client composes the complete ready-to-paste line from its own pubkey and the joined URL; authorize canonicalizes the pool and writes the authoritative `agentchute:codex:<pool12>` marker itself, D3) |
+| `E_UNAUTHORIZED` | `hub: hub refused this key for alex@hub.tail1234.ts.net. Either it was never authorized or it was revoked. Run this ON THE HUB, then retry here:`<br>`  agentchute hub authorize --agent codex --pool /home/alex/code/agentchute --key "ssh-ed25519 AAAAC3Nz… agentchute:codex"`<br>(the client composes the complete ready-to-paste line from its own pubkey and the joined URL; authorize canonicalizes the pool and writes the authoritative `agentchute:codex:<pool12>` marker itself, D3. A late revoke is observed at the next authentication, not by an already-established connection.) |
 | `E_HOSTKEY_CHANGED` | `hub: HOST KEY CHANGED for hub.tail1234.ts.net — refusing to connect. If the hub was reinstalled, confirm with its operator, then run: agentchute hub join --reset-hostkey. If not, treat this as a possible interception.` |
 | `E_HUB_NO_BINARY` | `hub: connected, but the hub could not run agentchute (remote exit 127 — command not found at /usr/local/bin/agentchute). Reinstall agentchute on the hub, or re-authorize this key so its line points at the current binary path.` (mapped immediately from the ssh child's exit status — never burns the 10 s hello timeout) |
 | `E_HELLO_TIMEOUT` | `hub: connected but no protocol answer in 10s. The hub-side agentchute may be hung or broken; on the hub run: agentchute doctor` |
 | `E_VERSION` | `hub: hub speaks agentchute-hub v1; this CLI needs v2. The hub always upgrades first — run `agentchute update` on the hub, then retry. This machine is not misconfigured and re-running `agentchute hub join` will NOT fix it: wait for the hub upgrade.` (P8 — the operator instinct on any hub error is to re-join; here that burns a key rotation and changes nothing, so the text forecloses it) |
 | `E_IDENTITY` | `hub: this key is authorized as "codex" but you are acting as "grok". Fix --as/AGENTCHUTE_AGENT_ID, or join this machine as grok: agentchute hub join <url> --as grok` |
-| `E_POOL_MISMATCH` (client arm, §4.4.2) | `hub: this key now serves pool /home/alex/other-pool (id 41d2…) on the hub, but this machine joined pool id 9c4e12ab77f0 (/home/alex/code/agentchute). The key line was re-pointed or the hub moved the pool. Re-join if the move is intended (agentchute hub join <url> --as codex), or re-authorize the key with the right --pool on the hub.` (compared against the pool id RECORDED at join, never raw URL text — a symlinked spelling of the same pool never trips this, D3) |
+| `E_POOL_MISMATCH` (client arm, §4.4.2) | `hub: this key now serves pool /home/alex/other-pool (id 41d2…) on the hub, but this machine joined pool id 9c4e12ab77f0 (/home/alex/code/agentchute). The key line was re-pointed or the hub moved the pool. Re-join if the move is intended (agentchute hub join <url> --as codex), or re-authorize the key with the right --pool on the hub.` (compared against the pool id RECORDED at join, never raw URL text — a symlinked spelling of the same pool never trips this, D3. A live master retains its old forced-command snapshot; this arm becomes reachable after that master closes and a fresh authentication observes the repoint.) |
 | `E_NOT_JOINED` | `hub: .agentchute-control-repo points at ssh://alex@hub…/home/alex/code/agentchute, but this machine never joined that hub (no ~/.agentchute/hub/3fa8c21b90de/config.json). If this machine IS the hub, a joined machine probably committed its pointer file — delete .agentchute-control-repo here (and `git rm` it if tracked). If this machine should be joined, run: agentchute hub join <that-url> --as <id>` |
 | `E_CHANNEL_LOST` | `hub: channel to the hub was lost; the wrapper was stopped (fenced). Relaunch with: <the exact command line this serve was started with, echoed from its own argv — never a hard-coded example>. (This lane was started with --relaunch=false; the default relaunches automatically, §6.7.)` |
 | `E_NO_SSH` | `hub: the `ssh` binary was not found on this machine. Install the OpenSSH client (macOS: preinstalled — check PATH; Debian/Ubuntu: apt install openssh-client), then retry.` |
@@ -2848,7 +2885,7 @@ pastes when you can SSH to the hub yourself).
 | 8 | version skew (a remote updated before the hub) | handshake | fail closed before any op; the remote WAITS for the hub upgrade — re-running `hub join` is explicitly not the fix (P8) | `E_VERSION` ("hub upgrades first"; text names the do-not-re-join rule) |
 | 9 | clock skew (either side) | n/a — hub clock owns all protocol state (§2); display ages corrected via `hub_time` offset | no protocol effect; spool/local log stamps may skew (cosmetic) | none |
 | 9b | hub wall clock STEPPED forward under a live lane (wrong RTC at boot, then an NTP step) | the live lane's `LastSeen` suddenly reads stale, so a would-be acquirer reaches the stale-claim branch | lease is **NOT stolen**: branch (d)'s same-host pid-proof holds, and the claim's `boot_ref` equals this host's (a clock step is not a boot), so the boot-ref rule never fires — equality, never ordering (§6.9, B6) | `E_LEASE_HELD` to the would-be acquirer; the live lane is unaffected |
-| 10 | key revoked while a session is up | sshd checks keys at auth only | live session survives until its connection ends; no *new* session can start | doctor/status show the still-live lease; docs: kill the `hub session --agent <id>` pid for immediate cut |
+| 10 | key revoked while a session is up | sshd checks keys at auth only | live serve and mux sessions survive until their connections end; no freshly-authenticated connection can start | stop/relaunch the joining lane or reap its local master for an immediate cut; the hub cannot reap a different host/account's master |
 | 11 | disk full on hub | any loop write fails | op fails loudly; a live channel's heartbeat/sweep failures ride back as `tick-ok.warnings` (§3.4) and are re-logged into the runner log, never fatal; delivery never partial (link is atomic) | `E_HUB_IO` with the ENOSPC text |
 | 12 | duplicate id join (2nd machine, same id) | `hub authorize` refuses a 2nd key for a marked id; if forced via `--replace-key`, the old machine's next auth fails; two live serves collide on the lease | fail closed at authorize time, else at lease time | duplicate-id refusal text (§7.5, spells the `codex-laptop` fork) / `E_LEASE_HELD` |
 | 13 | disconnect after `check` claimed, before display | client sees dead channel/deadline | mail sits in hub `.claimed/`; next `check` REDELIVERS with banner (`check.go:180-193`); local latch set on that next check | `E_CHANNEL_LOST`, then normal REDELIVERED flow |
@@ -2863,7 +2900,7 @@ pastes when you can SSH to the hub yourself).
 | 22 | remote laptop sleeps, later wakes | on wake, ServerAlive/tick deadline kill the dead channel ≤15 s | child fenced + stopped during sleep-detection; the lane relaunches within one backoff step of waking (relaunch default-on); hub side released at its 20 s read deadline back when the laptop slept | relaunch status line; with `--relaunch=false`, `E_CHANNEL_LOST` |
 | 23 | hub reboots (N remote lanes) | all channels drop at reboot; sshd returns minutes later | every remote serve (relaunch default-on) retries with capped backoff (≤60 s interval) and relaunches when sshd answers — zero human action on any machine; pre-reboot `serve.claim` files are long stale by then and reclaimable because their recorded `boot_ref` differs from the rebooted host's (§6.9; freshness floor still applies first, C8) | relaunch status lines; with `--relaunch=false`, N × `E_CHANNEL_LOST` |
 | 24 | hub `agentchute update`/`setup` invalidates all serve leases (`lease.go:371-376 @ 1244ae4`) | every channel's next `tick` → `E_FENCED` | fleet-wide fence by design (the update forcing function); lanes perform their single `E_FENCED` relaunch attempt (default-on) and come back under the new binary; note: a live hub session keeps executing its already-open old binary inode until it exits | `E_FENCED` text |
-| 25 | `<hubdir>/mux/%C` too long for `sun_path` (deep `$HOME`; ~104 B macOS / 108 B linux) | the ControlPath length budget in the ssh-invocation builder (§4.2), before ssh is spawned | one-shots move to the owned-0700 per-user temp mux dir; if that does not fit either, multiplexing is disabled for this hub (one extra authentication per op, correctness unaffected). Never a refusal; the channel never multiplexes anyway | none in the fallback arm; exactly one `warn` note naming both attempted paths in the mux-disabled arm |
+| 25 | the mux socket path too long for `sun_path` (~104 B macOS / 108 B linux) | the ControlPath length budget in the ssh-invocation builder (§4.2), before ssh is spawned | the owned-0700 per-user temp mux dir is the only arm; if no temp root fits or is usable, multiplexing is disabled for this hub (one extra authentication per op, correctness unaffected). Never a refusal; the channel never multiplexes anyway | none while a candidate fits; exactly one `warn` note naming every attempted path in the mux-disabled arm |
 
 ---
 
@@ -3091,7 +3128,7 @@ Matrix (each row asserts both sides' end state):
 | lease-held refusal | two serves same id; second gets `E_LEASE_HELD` |
 | host-key change | swap host key; assert `E_HOSTKEY_CHANGED` refusal |
 | mux reuse | 3 sequential one-shots; assert 1 sshd auth log entry (ControlMaster hit) |
-| ControlPath length rule (§4.2) | drive the invocation builder with an **injected** hub-dir length (deterministic — no real deep `$HOME`, no OS dependence; no CI runner has a home deep enough to trigger this naturally): within budget ⇒ `-o ControlPath=<hubdir>/mux/%C`; over budget ⇒ the owned-0700 per-user temp path (assert the dir is 0700 and uid-owned, and that a symlinked or foreign-owned temp dir is refused, `runner_socketdir_unix.go:24-49`); over budget with every temp root also over budget/unwritable ⇒ `-o ControlMaster=no -o ControlPath=none` plus exactly one `warn` note naming both attempted paths, and the op still succeeds. Re-run the mux-reuse row through the fallback arm (still 1 auth entry) and the disabled arm (3 auth entries) |
+| ControlPath length rule (§4.2) | assert WHICH arm runs, parametrised by **home length** (the input that decided it and had never been varied) and by uid: for realistic homes ⇒ the owned-0700 per-user temp path `<tempRoot>/ac-<uid>/<isolationKey>`, asserting the chosen socket fits the budget, the dir is 0700 and uid-owned, and that a symlinked or foreign-owned temp dir is refused (`runner_socketdir_unix.go:24-49`); every temp root over budget or unwritable ⇒ `-o ControlMaster=no -o ControlPath=none` plus exactly one `warn` note naming every attempted path, and the op still succeeds. Re-run the mux-reuse row through the normal arm (still 1 auth entry) and the disabled arm (3 auth entries). A row asserting only that *some* arm was selected passed for the entire life of the dead hub-dir arm |
 | child env contract (§6.8) | launch remote serve in the harness; assert child env carries `AGENTCHUTE_CONTROL_REPO=<ssh URL>` and no `AGENTCHUTE_LOOP_DIR`; with networking blocked, run `guard --pre-tool-use` in hook context and assert it resolves the SHADOW latch (denies while armed — never fail-open); child `send` lands in the hub pool |
 | supervised relaunch — default path (§6.7, D5) | launch a remote lane with a BARE `agentchute serve` (no flag — this is the load-bearing default); kill sshd; restart sshd; assert the lane re-acquires with a NEW token and NEW child pid, exactly one lane instance, old child SIGTERM'd first. An implementation that kept relaunch opt-in fails this row |
 | relaunch opted out (`--relaunch=false`) | same drop; assert the old child is stopped, NO new child appears, and serve exits with `E_CHANNEL_LOST` echoing its own argv |
@@ -3126,11 +3163,12 @@ Matrix (each row asserts both sides' end state):
 | name/pool-id shadowing refused, both orders (round 10) | (a) after `hub join --name codex` (⇒ `names["codex"]="codex-tiny"`), `hub join <url> --as codex` → refused before keygen/authorize with the mapping named; (b) after a verbatim `hub join --as codex`, `hub join <url> --name codex` on the same machine → refused likewise; in both cases no key, no authorize call, no config change |
 | env local-name warning (round 10) | with `AGENTCHUTE_AGENT_ID=codex` exported and `names["codex"]="codex-tiny"`, `doctor` and `hub join` each emit the §7.6 warning naming the resolution; with the env var set to an unmapped id, no warning |
 | negative cache covers SessionStart (D6) | with the hub down, hook-mode `boot` then `pending` inside 30 s ⇒ exactly one dial (one 5 s stall), both exit 0 |
-| join idempotence (G-B1) | run `hub join` twice → same pubkey fingerprint, exactly one authorized_keys line; `--rotate-key` → new key, old line replaced |
+| join idempotence + rotation mux invalidation (G-B1) | run `hub join` twice → same pubkey fingerprint, exactly one authorized_keys line; `--rotate-key` → new key, old line replaced, resolved-key mux digest changes, and the next one-shot authenticates with the new key rather than attaching to the retired-key master |
 | shell-safety refusals (C5) | authorize/join with values containing each metacharacter class (space, `'`, `"`, `` ` ``, `$()`, `;`, `\`, newline) in pool/binary paths → refused, never written; quoted-pubkey path round-trips |
 | same-path two-hosts vs true self-URL (C3) | harness "hub" and "remote" sharing one absolute pool path → join + ops work; a pointer to a hub-id with no local join config → `E_NOT_JOINED` |
 | `E_FENCED` single relaunch attempt | invalidate the lease under a bare (default-relaunch) lane → assert exactly one relaunch attempt succeeds; repeat with a rival holding the lease → assert the lane stops on `E_LEASE_HELD` |
-| pool mismatch, consistent re-point (§4.3, D3/F1; `E_POOL_MISMATCH` **client arm**, F9) | after a completed join, re-point the key line's `--pool` AND `--pool-id` together at another validly-authorized pool → session start passes (its pool.id matches) and a `hello-ok` IS returned, but the CLIENT fails closed on `hello-ok.pool12` ≠ the RECORDED pool12, rendering the client-arm text (§7.5), no op executed; a symlinked spelling of the joined pool does NOT trip either arm |
+| pool mismatch, consistent re-point (§4.3, D3/F1; `E_POOL_MISMATCH` **client arm**, F9) | after a completed join, keep a one-shot master live, then re-point the key line's `--pool` AND `--pool-id` together at another valid pool → the live master retains the old forced-command snapshot and does NOT observe the edit; reap it, retry, and assert the fresh session's `hello-ok.pool12` differs from the RECORDED pool12, so the client renders the client-arm text and executes no op. A symlinked spelling of the joined pool does NOT trip either arm |
+| hub-side reap boundary | keep a one-shot master under a separate client hub-state directory, run hub-side `authorize --replace-key` to repoint that key, and assert the client master remains live with its old forced-command snapshot and no new authentication. This is the documented cross-host/account limit: only the joining machine can reap its master; the hub operator must stop/relaunch that remote lane for immediate effect |
 | authorize validation (§7.1) | authorize with a non-pool path / non-executable binary path → loud refusal; `--list` shows FAIL for a hand-broken line |
 
 ### 10.4 CI wiring

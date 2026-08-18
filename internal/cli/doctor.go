@@ -108,7 +108,7 @@ func cmdDoctor(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loop.Discover(loop.DiscoverOpts{
+	cfg, err := discoverConfig(loop.DiscoverOpts{
 		ControlRepoFlag: controlRepo,
 		LoopDirFlag:     loopDir,
 		Cwd:             cwd,
@@ -1301,7 +1301,11 @@ func emitDoctorText(r doctorReport) {
 	fmt.Println()
 	switch {
 	case r.Blockers > 0:
-		fmt.Printf("summary: %d blocker(s), %d warning(s); exit 1\n", r.Blockers, r.Warnings)
+		// exit 2, not 1. Blockers make doctor return errBlocked, and entry.go maps the
+		// lifecycle-gate sentinels to 2 while reserving 1 for "the command itself failed"
+		// — the same split gate, turn-end, ack and boot rely on. The exit code was right
+		// and this line was wrong; a script parsing it disagreed with one checking $?.
+		fmt.Printf("summary: %d blocker(s), %d warning(s); exit 2\n", r.Blockers, r.Warnings)
 	case r.Warnings > 0:
 		fmt.Printf("summary: clear of blockers; %d warning(s) for operator attention\n", r.Warnings)
 	default:

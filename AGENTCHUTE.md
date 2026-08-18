@@ -436,6 +436,10 @@ The latch clears only after the commit is confirmed. If the hub is unreachable a
 | sweep throttle | 10 min — unchanged | hub session |
 | lease reclaim protection | stale ≥10 s **and** (hub-pid dead **or** the claim's recorded `boot_ref` differs from this host's current one) | hub |
 
+**SSH authorization lifetime.** Identity binding and authorization freshness are separate properties. A multiplexed master remains authenticated as exactly its pinned key and agent id — `--as`/`--from` enforcement and the no-actor-field wire remain unchanged — but sshd does not re-read `authorized_keys` for new session channels on an established connection. Revocation and re-authorization therefore take effect at the next authentication: a serve channel retains its authorization until the channel drops, and a persistent one-shot master retains it until the master closes. `ControlPersist=60s` is an idle timeout, not a wall-clock bound; an active lane can keep a master alive indefinitely. For an immediate cut, stop or relaunch the remote lane (or reap its master with `ssh -O exit` on the joining machine). A hub-side operator cannot reap a master held on another host or account. Repointing is especially sensitive: until the old master closes, its forced-command snapshot can continue targeting the old pool, so do not treat a successful hub-side edit as proof that an active remote lane moved.
+
+One-shot masters are isolated by an opaque 12-hex digest over the hub id, agent id, and **resolved key version**. The hub id already hashes the canonical URL, including user, host, port, and pool path. Resolving the stable active-key symlink makes rotation self-invalidating: promotion changes the digest and the next operation authenticates with the new key. `%C` alone is insufficient because it omits `IdentityFile`. All invocations sharing a master MUST keep the same connection-affecting SSH options; an attached session inherits the master's forwarding, host-key, and route decisions. User `ssh_config` alias changes are deliberately not reimplemented in this digest, so a live master retains its previously resolved route until close.
+
 ### 13.9 Identity pinning
 
 One authorized key = one agent id. The `authorized_keys` line **is** the mapping — no side database.
@@ -447,6 +451,24 @@ restrict,command="/usr/local/bin/agentchute hub session --agent <id> --pool <abs
 - `restrict` + forced command: no shell, no PTY, no forwarding. The client's exec request is discarded. The wire carries **no actor field**. A `--as`/`--from` mismatch is rejected at hello (`E_IDENTITY`), never silently rewritten.
 - `state/pool.id` is the pool's durable identity: one regular, non-symlink, 0600 file whose entire content matches `^[0-9a-f]{12}\n$`. `hello-ok.pool12` always carries the value **read from that file**, never an argv echo.
 - A compromised remote key can act fully as that one id (send, claim/ack its inbox, hold its serve lease, read the roster) and poison peers with message content. It cannot get a shell, act as another id, read another agent's `state/` or mail, or tamper with pool state outside the protocol. Co-tenants on the hub itself remain under §15 cooperative trust; bodies remain untrusted data.
+
+### 13.9a Writers under a migrated hub tree
+
+A joined machine's shadow loop dir lives **inside** the hub directory, and a same-hub
+migration (an alias/URL change for the same pool) renames that directory. A descriptor
+follows the inode, not the name, so renaming does not detach a writer that already has one
+open: a write issued after the migration has verified the copy lands in the moved-aside tree
+and is destroyed with it.
+
+**Any process that opens a descriptor under a hub tree MUST hold that hub's shared lock for
+as long as the descriptor lives, and a migration MUST hold the same lock exclusively for both
+the old and new hub ids.** The lock file lives beside the hub directories, never inside one,
+so it survives the rename. A migration that cannot take the lock MUST refuse rather than
+proceed; it MUST NOT wait indefinitely, and it MUST NOT delete a tree it has not verified.
+
+Implementations that keep no state inside the hub directory are unaffected. This constrains
+where state may live as much as how it is written: putting a writer's state inside the
+migrated tree is what creates the requirement.
 
 ### 13.10 Error-code registry
 

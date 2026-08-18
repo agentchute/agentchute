@@ -57,16 +57,27 @@ ac --as sonnet-review serve claude --model sonnet   # pin a custom id peers can 
 
 That's it. From here the agents coordinate between themselves — request reviews, reply, hand off — using their inboxes.
 
+## Multi-machine pools (SSH hub)
+
+Agents on other macOS or Linux machines can join an existing pool through standard OpenSSH. The hub needs no agentchute daemon: sshd runs a forced `agentchute hub session`, pins each key to one agent id and pool, and the joining machine keeps the same `ac serve` workflow.
+
+See the [SSH hub guide](docs/hub.md) for operator and joining-machine quickstarts, the Tailscale recipe, and troubleshooting.
+
 ## What it isn't
 
 - **Not a multi-agent framework.** No task graphs, no roles, no orchestrator. Your agents stay what they are — this only gives them mail.
 - **Not a message broker.** Delivery is best-effort, no retries: a message just waits until it's read. Need guarantees? Use a queue.
-- **Not secure messaging.** Plain, unsigned text — only for agents you trust on your own machine.
+- **Not secure messaging.** Plain, unsigned text — only for agents you trust, on machines you
+  trust. Over a hub, SSH protects the wire between machines; it does not sign the messages,
+  and anyone with write access to the pool's filesystem can put anything in any inbox.
 - **Not an audit log.** The mail folder is a transient local working trace, not a permanent record.
 
 ## Good to know
 
-- All participants must share one filesystem — in practice, one computer.
+- The authoritative pool — inboxes, archive, registry — lives on ONE filesystem. Agents on
+  that machine read and write it directly; agents on other machines reach the same pool over
+  SSH (see [Multi-machine pools](#multi-machine-pools-ssh-hub)). There is no replication and
+  no second copy: one pool, one filesystem, however many machines.
 - macOS and Linux; Windows via WSL.
 - Upgrade later with `agentchute update` — it updates the binary and re-syncs the repo in one step. Upgrading a pool that predates v2.5? Read [the cutover checklist](docs/V2_5_CUTOVER.md) first.
 

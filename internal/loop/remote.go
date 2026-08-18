@@ -25,14 +25,29 @@ func isRemoteLocator(raw string) bool {
 // RemoteConfig is the pure-local derivation of an ssh:// control-repo locator.
 // Pool and Pool12 come from hello-ok via config.json, never from URL text.
 type RemoteConfig struct {
-	URL           string
-	User          string
-	Host          string
-	Port          int
-	PoolPath      string
-	HubID         string
-	HubDir        string
-	ConfigPath    string
+	URL        string
+	User       string
+	Host       string
+	Port       int
+	PoolPath   string
+	HubID      string
+	HubDir     string
+	ConfigPath string
+
+	// ShadowLoopDir is INSIDE HubDir, and a hub migration renames HubDir out from
+	// under whatever is running.
+	//
+	// CONTRACT: any process that opens a descriptor under this directory must
+	// first hold the hub's SHARED lock (~/.agentchute/hub/.locks/<hub-id>.lock)
+	// for as long as that descriptor lives. A descriptor follows the INODE, not
+	// the name, so the migration's freeze does NOT detach it — a write after the
+	// migration verifies lands in the frozen tree and is deleted with it. The
+	// lock is what excludes the process; `serve` takes it in runWrapper before it
+	// opens runner.log.
+	//
+	// This is a convention, not yet a structural guarantee (issue #179), so a new
+	// writer here reopens the hole silently if it skips the lock. AGENTCHUTE.md
+	// §13.9 carries the normative statement.
 	ShadowLoopDir string
 }
 

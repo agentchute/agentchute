@@ -24,6 +24,7 @@ type runningHubSession struct {
 	reader *hubwire.Reader
 	writer *hubwire.Writer
 	done   <-chan error
+	exited <-chan struct{}
 	cancel context.CancelFunc
 }
 
@@ -85,17 +86,38 @@ func startHubSession(t *testing.T, pool, agent string, timing hubSessionTiming, 
 	server, client := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	// exited is closed after the session returns. It exists because `done` is a
+	// single value that tests consume; cleanup needs a signal that stays readable.
+	exited := make(chan struct{})
 	var transport hubSessionTransport = server
 	if mutate != nil {
 		transport = mutate(server)
 	}
 	go func() {
+		defer close(exited)
 		done <- serveHubSession(ctx, transport, hubSessionOptions{Agent: agent, Pool: pool, PoolID: fixturePoolID, HubBin: "test", Timing: timing, afterAcquire: afterAcquire})
 	}()
-	s := &runningHubSession{conn: client, reader: hubwire.NewReader(client), writer: hubwire.NewWriter(client), done: done, cancel: cancel}
+	s := &runningHubSession{conn: client, reader: hubwire.NewReader(client), writer: hubwire.NewWriter(client), done: done, exited: exited, cancel: cancel}
 	t.Cleanup(func() {
 		cancel()
 		_ = client.Close()
+		// JOIN the session goroutine before returning, so it cannot still be
+		// running while t.TempDir removes the pool underneath it. A hub session's
+		// deferred ReleaseLease re-enters withAgentLock, which RECREATES
+		// state/<id>/.lock — so an unjoined session races the cleanup and the
+		// cleanup loses: "TempDir RemoveAll cleanup: unlinkat .../state/codex:
+		// directory not empty". internal/spectest hit exactly this and fixed it
+		// by joining; this harness never got the same treatment.
+		//
+		// Wait on `exited`, NOT on `done`: `done` carries one value and several
+		// tests consume it themselves, so a second receive here would block
+		// forever. A closed channel stays readable, which is the property a
+		// cleanup needs.
+		select {
+		case <-s.exited:
+		case <-time.After(10 * time.Second):
+			t.Errorf("hub session for %s did not return 10s after cancel; it may still be writing to the pool being torn down", agent)
+		}
 	})
 	return s
 }
@@ -530,6 +552,11 @@ type failingWriteTransport struct {
 	failAt int
 }
 
+type noDeadlineTransport struct{ net.Conn }
+
+func (t *noDeadlineTransport) SetReadDeadline(time.Time) error  { return os.ErrNoDeadline }
+func (t *noDeadlineTransport) SetWriteDeadline(time.Time) error { return os.ErrNoDeadline }
+
 func (t *failingWriteTransport) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -741,6 +768,43 @@ func TestHubSessionDeadlines(t *testing.T) {
 		case <-s.done:
 		case <-time.After(time.Second):
 			t.Fatal("write deadline did not close")
+		}
+	})
+	t.Run("pipe read watchdog releases lease", func(t *testing.T) {
+		pool, cfg := newHubPool(t)
+		s := startHubSession(t, pool, "codex", hubSessionTiming{ChannelRead: 20 * time.Millisecond, Write: 10 * time.Millisecond}, func(conn net.Conn) hubSessionTransport {
+			return &noDeadlineTransport{Conn: conn}
+		}, nil)
+		helloHub(t, s, "codex", 1)
+		if err := s.writer.Write(hubwire.LeaseAcquire{RequestBase: hubwire.RequestBase{T: "lease-acquire", ID: 2}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if raw, err := s.reader.Read(); err != nil || raw.T != "lease-ok" {
+			t.Fatalf("lease = %s, %v", raw.T, err)
+		}
+		select {
+		case <-s.done:
+		case <-time.After(time.Second):
+			t.Fatal("pipe read watchdog did not close")
+		}
+		if _, err := os.Stat(filepath.Join(cfg.AgentStateDir("codex"), "serve.claim")); !os.IsNotExist(err) {
+			t.Fatalf("pipe read watchdog left lease: %v", err)
+		}
+	})
+	t.Run("pipe write watchdog", func(t *testing.T) {
+		pool, cfg := newHubPool(t)
+		enrollHubAgent(t, cfg, "codex")
+		s := startHubSession(t, pool, "codex", hubSessionTiming{Write: 20 * time.Millisecond}, func(conn net.Conn) hubSessionTransport {
+			return &noDeadlineTransport{Conn: conn}
+		}, nil)
+		helloHub(t, s, "codex", 1)
+		if err := s.writer.Write(hubwire.Status{RequestBase: hubwire.RequestBase{T: "status", ID: 2}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-s.done:
+		case <-time.After(time.Second):
+			t.Fatal("pipe write watchdog did not close")
 		}
 	})
 }

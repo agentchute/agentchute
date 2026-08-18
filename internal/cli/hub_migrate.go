@@ -1,16 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/agentchute/agentchute/internal/hubclient"
@@ -111,16 +110,16 @@ func migrateHubJoinState(root, oldHubID string, remote *loop.RemoteConfig) error
 	newDir := remote.HubDir
 	partial := newDir + ".partial"
 	if _, err := os.Stat(newDir); err == nil {
-		// A committed new directory means this is post-rename recovery: only the
-		// pointer and old-directory cleanup remain.
-		if err := writeHubJoinPointer(root, remote.URL); err != nil {
+		// The new directory exists. That is post-rename recovery ONLY if this
+		// migration is the thing that created it (issue #165): existence alone
+		// is also what a failed fresh join and a completed separate join leave
+		// behind, and neither of those carries the old directory's contents.
+		// Taking the recovery path against one of those deleted the old hub dir
+		// — including the authorized key — without copying anything first.
+		if err := checkHubMigrationProvenance(newDir, oldHubID); err != nil {
 			return err
 		}
-		hubMigrationReapMux(oldCfg, oldDir)
-		if err := os.RemoveAll(oldDir); err != nil {
-			return err
-		}
-		return fsyncHubDir(filepath.Dir(oldDir))
+		return finishHubMigration(root, remote, oldDir, oldCfg)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
@@ -135,6 +134,12 @@ func migrateHubJoinState(root, oldHubID string, remote *loop.RemoteConfig) error
 	if err := writeHubMigrationConfig(filepath.Join(partial, "config.json"), &newCfg); err != nil {
 		return err
 	}
+	// Written BEFORE the rename, so the directory carries its own provenance the
+	// moment it exists under its final name. A marker written afterwards would
+	// leave exactly the window this fix is about.
+	if err := os.WriteFile(filepath.Join(partial, hubMigrationMarker), []byte(oldHubID+"\n"), 0o600); err != nil {
+		return err
+	}
 	if err := fsyncHubDir(partial); err != nil {
 		return err
 	}
@@ -144,14 +149,278 @@ func migrateHubJoinState(root, oldHubID string, remote *loop.RemoteConfig) error
 	if err := fsyncHubDir(filepath.Dir(newDir)); err != nil {
 		return err
 	}
-	if err := writeHubJoinPointer(root, remote.URL); err != nil {
+	return finishHubMigration(root, remote, oldDir, oldCfg)
+}
+
+// hubMigrationMarker records, inside the new directory, which old hub directory
+// this one was renamed out of. It is the rename provenance the recovery branch
+// keys on, and it is removed once the migration is complete.
+const hubMigrationMarker = ".migrated-from"
+
+// checkHubMigrationProvenance answers one question: did THIS migration create
+// newDir? Only a marker naming oldHubID says yes. Anything else — no marker, an
+// unreadable one, or one naming a different hub — means the directory came from
+// somewhere else and its contents are not the old directory's, so the migration
+// refuses instead of deleting state it cannot reproduce.
+func checkHubMigrationProvenance(newDir, oldHubID string) error {
+	data, err := os.ReadFile(filepath.Join(newDir, hubMigrationMarker))
+	if err == nil && strings.TrimSpace(string(data)) == oldHubID {
+		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	return fmt.Errorf("hub join: %s already exists and was not created by this migration, so migrating into it would delete %s — including its authorized key — without copying anything. Nothing was changed. If that directory is left over from a failed join to this same hub, remove it and re-run; if it is a real join in its own right, finish or undo that one first", newDir, hubDirForMessage(oldHubID))
+}
+
+// hubDirForMessage renders a hub id for an error message, falling back to the
+// bare id when the path cannot be built — a message is never worth failing a
+// refusal over. Not named oldDir: that is a local variable throughout this file,
+// and a function it shadows in some scopes but not others is a trap.
+func hubDirForMessage(hubID string) string {
+	if dir, err := loop.HubDir(hubID); err == nil {
+		return dir
+	}
+	return hubID
+}
+
+// finishHubMigration performs the steps that are shared by the first pass and by
+// post-rename recovery: prove the new directory really carries the old one's
+// contents, then point at it, reap the old mux sockets and delete the old tree.
+//
+// verifyHubMigrationCopy is deliberately INDEPENDENT of the provenance check
+// above. Provenance says who created the directory; this says what is actually
+// in it. The RemoveAll is irreversible, so it is gated on the second question
+// rather than inferred from the first.
+// hubFrozenOrigin is a seam so a row can make the pre-lock and under-lock reads
+// disagree, which is the whole point of re-verifying.
+var hubFrozenOrigin = frozenHubMigrationOrigin
+
+// frozenHubMigrationOrigin reports the old hub id a frozen tree came from, read
+// from the marker the migration wrote before the rename. Empty means there is no
+// frozen tree.
+//
+// It is deliberately a READ, done before any lock is taken, so the caller can
+// acquire both ids in ONE sorted acquisition. Reading the marker inside a lock on
+// the new id and then taking the old one would be a lock-order inversion against
+// the migration's own sorted acquire.
+//
+// A frozen tree with no readable marker is an ERROR, not an invitation to sweep.
+// finishHubMigration removes the marker only AFTER the tree is gone, so
+// frozen-exists implies marker-exists; if it does not, we cannot know which
+// processes to exclude, and deleting a tree without knowing whom to exclude is
+// the whole class of defect this file has been fixing.
+func frozenHubMigrationOrigin(remote *loop.RemoteConfig) (string, error) {
+	frozen := remote.HubDir + hubMigrationFrozenSuffix
+	if _, err := os.Stat(frozen); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(remote.HubDir, hubMigrationMarker))
+	oldID := strings.TrimSpace(string(data))
+	if err != nil || !hubDirNameRE.MatchString(oldID) {
+		return "", fmt.Errorf("hub join: %s holds a hub tree from an interrupted move, but %s does not say which hub it came from, so this cannot tell which lanes to exclude before deleting it. NOTHING has been deleted — every byte is still in %s. Inspect it, and remove it by hand once you are sure nothing is running against it", frozen, filepath.Join(remote.HubDir, hubMigrationMarker), frozen)
+	}
+	return oldID, nil
+}
+
+// hubMigrationFrozenSuffix names the old tree once it has been moved out of the
+// path any lane can resolve. It is derived from the NEW hub id deliberately: the
+// surviving id is the one a later join can compute, so a crash after the freeze
+// leaves something findable. Named off the OLD id it would be unreachable —
+// findHubMigrationCandidate needs the old directory to exist to name it — and
+// would litter forever. `^[0-9a-f]{12}$` does not match a suffixed name, so the
+// frozen tree is never itself a migration candidate; the same property `.partial`
+// already relies on.
+const hubMigrationFrozenSuffix = ".migrating"
+
+// hubMigrationVerify is the verification seam. It is a package var so a test can
+// write into the window between verification and deletion, which is the only
+// place a racing lane can still reach.
+var hubMigrationVerify = verifyHubMigrationCopy
+
+// finishHubMigration: reap, point, FREEZE, verify, delete.
+//
+// The order is the fix, and each step is where it is for a reason.
+//
+// codex found that the previous order verified oldDir and then deleted it while
+// oldDir was still the path every lane resolves — serve and the shadow loop do
+// not take the hub locks — so state written in between was deleted having never
+// been verified. The DESIGN claim that the irreversible delete is gated on proven
+// copied contents was simply not true across that window.
+//
+// What this DOES fix: the invariant. What gets deleted is now exactly what got
+// verified, because the tree is moved out of every resolvable path first.
+//
+// The three cases, stated as they now are rather than as they once were:
+//
+//   - A COMPLIANT holder cannot race at all. It holds the hub shared (§13.9a), so
+//     this migration never acquires exclusive: it refuses before touching
+//     anything.
+//   - A VIOLATOR that re-resolves the path after the freeze recreates it —
+//     ensurePrivateDir is os.MkdirAll — and is ORPHANED. Recoverable, not lost.
+//   - A VIOLATOR holding a descriptor opened BEFORE the freeze writes into the
+//     frozen inode and IS DELETED. That is the residual, it is exactly what
+//     §13.9a's MUST exists to prevent, and issue #179 is the structural repair.
+//
+// The third case is why this comment no longer says a racing write is merely
+// "orphaned". It said that when serve took no lock and every racing writer was a
+// violator by definition; both halves stopped being true.
+//
+// The reap MUST come first, and that is correctness rather than taste:
+// muxIsolationKey resolves the key path with EvalSymlinks UNDER oldDir, and falls
+// back to filepath.Clean silently when that fails. Reaping after the rename would
+// therefore compute a different isolation key and reap the wrong socket without
+// saying so.
+func finishHubMigration(root string, remote *loop.RemoteConfig, oldDir string, oldCfg *hubclient.HubConfig) error {
+	newDir := remote.HubDir
 	hubMigrationReapMux(oldCfg, oldDir)
-	if err := os.RemoveAll(oldDir); err != nil {
+	if err := writeHubJoinPointer(root, remote.URL); err != nil {
+		return halfFinishedMigration(oldDir, newDir, "writing the control-repo pointer", err)
+	}
+	// Unconditional. There is no "frozen already exists, carry on" branch, and
+	// that is deliberate: sweepFrozenHubMigration runs first under the same lock,
+	// so a leftover frozen tree is already resolved before this function is
+	// reached. Recovery lives in ONE place. A branch here would also be wrong if
+	// it ever did fire — it would skip the rename, verify and delete the OTHER
+	// migration's frozen tree, and report success having never migrated oldDir at
+	// all.
+	//
+	// If a frozen tree somehow exists anyway the rename fails, and it fails for a
+	// stronger reason than "the directory is non-empty": os.Rename Lstats the
+	// target and returns a synthetic EEXIST for ANY directory, without calling
+	// rename(2) at all (os/file_unix.go). So the freeze can never silently adopt
+	// a leftover tree, empty or not. halfFinishedMigration then tells the
+	// operator to re-run, which is exactly right — the re-run's sweep clears it.
+	frozen := newDir + hubMigrationFrozenSuffix
+	if err := os.Rename(oldDir, frozen); err != nil {
+		return halfFinishedMigration(oldDir, newDir, "freezing the old hub directory", err)
+	}
+	if err := hubMigrationVerify(frozen, newDir); err != nil {
 		return err
 	}
-	return fsyncHubDir(filepath.Dir(oldDir))
+	if err := os.RemoveAll(frozen); err != nil {
+		return halfFinishedMigration(frozen, newDir, "removing the frozen hub directory", err)
+	}
+	if err := fsyncHubDir(filepath.Dir(frozen)); err != nil {
+		return halfFinishedMigration(frozen, newDir, "flushing the hub directory", err)
+	}
+	if err := os.Remove(filepath.Join(newDir, hubMigrationMarker)); err != nil && !os.IsNotExist(err) {
+		return halfFinishedMigration(frozen, newDir, "clearing the migration marker", err)
+	}
+	return fsyncHubDir(newDir)
+}
+
+// sweepFrozenHubMigration finishes a migration that was interrupted after the
+// freeze. That crash state is invisible to everything else: the old directory is
+// gone, so there is no migration candidate to find, and the frozen name is
+// excluded from the candidate scan by construction. This sweep is the only thing
+// that recovers it.
+//
+// It VERIFIES BEFORE DELETING, always. Deleting because a directory exists is
+// precisely the existence-keying that made issue #165 destroy an authorized key,
+// one directory over. If the new tree does not fully represent the frozen one,
+// this refuses and leaves every byte where it is.
+func sweepFrozenHubMigration(remote *loop.RemoteConfig) error {
+	frozen := remote.HubDir + hubMigrationFrozenSuffix
+	if _, err := os.Stat(frozen); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	// The caller holds the locks. If it could not learn WHICH ids to hold, it
+	// must not have called us — see frozenHubMigrationOrigin.
+	if err := hubMigrationVerify(frozen, remote.HubDir); err != nil {
+		return fmt.Errorf("hub join: a previous hub move was interrupted after it froze the old directory, and %s does not fully represent %s — so the frozen tree is NOT being deleted and nothing is lost. Resolve the difference (the bytes are all still in %s), then re-run this join: %w", remote.HubDir, frozen, frozen, err)
+	}
+	if err := os.RemoveAll(frozen); err != nil {
+		return err
+	}
+	// The marker as well. finishHubMigration clears it as its last step, so a
+	// crash before that leaves it behind forever — harmless since it is exempt
+	// from the copy check, but it was the one state that never converged.
+	if err := os.Remove(filepath.Join(remote.HubDir, hubMigrationMarker)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return fsyncHubDir(filepath.Dir(frozen))
+}
+
+// halfFinishedMigration names the state the operator is actually in. Nothing is
+// lost at any of these points: the new directory is complete and the old one is
+// either intact or already gone, so re-running the same join resumes.
+func halfFinishedMigration(oldDir, newDir, step string, cause error) error {
+	return fmt.Errorf("hub join: the hub move is HALF FINISHED — %s already holds this hub's state, and %s failed. Nothing was lost; re-run the same `agentchute hub join` command to finish it. If it keeps failing, fix the underlying error first: %w", newDir, step, cause)
+}
+
+// verifyHubMigrationCopy fails unless every path under oldDir is present under
+// newDir with the same content. Three exemptions, each because the migration
+// itself is what makes the two copies differ: config.json (its URL is rewritten
+// by design), mux (sockets, never copied), and the provenance marker.
+//
+// The marker exemption is not cosmetic. A crash between the RemoveAll and the
+// marker removal leaves a stale marker in a directory that is now a perfectly
+// ordinary hub dir — and if that hub is later aliased AGAIN, the old dir carries
+// a marker naming a hub two moves back while the new dir carries the correct
+// one. Comparing them would refuse the migration for a difference the migration
+// created, with a message pointing at no remedy: fail-safe, but wedged, and the
+// operator has nothing to act on.
+func verifyHubMigrationCopy(oldDir, newDir string) error {
+	return filepath.WalkDir(oldDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(oldDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." || rel == "config.json" || rel == hubMigrationMarker {
+			return nil
+		}
+		if rel == "mux" || strings.HasPrefix(rel, "mux"+string(filepath.Separator)) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		target := filepath.Join(newDir, rel)
+		missing := fmt.Errorf("hub join: refusing to delete %s: %s was not copied to %s. Nothing was changed", oldDir, path, target)
+		if entry.Type()&os.ModeSymlink != 0 {
+			was, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			now, err := os.Readlink(target)
+			if err != nil || now != was {
+				return missing
+			}
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if stat, err := os.Lstat(target); err != nil || !stat.IsDir() {
+				return missing
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		was, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		now, err := os.ReadFile(target)
+		if err != nil || !bytes.Equal(was, now) {
+			return missing
+		}
+		return nil
+	})
 }
 
 func refuseLiveHubMigration(root, oldDir string, cfg *hubclient.HubConfig) error {
@@ -316,10 +585,9 @@ func reapHubMigrationMux(cfg *hubclient.HubConfig, oldDir string) {
 	if err != nil || len(cfg.JoinedAs) == 0 {
 		return
 	}
-	args := []string{"-O", "exit", "-o", "ControlPath=" + filepath.Join(oldDir, "mux", "%C")}
-	if remote.Port != 22 {
-		args = append(args, "-p", strconv.Itoa(remote.Port))
+	remote.HubDir = oldDir
+	for _, agentID := range cfg.JoinedAs {
+		keyPath := filepath.Join(oldDir, "keys", agentID+"_ed25519")
+		_ = hubclient.ReapSSHMux(remote, agentID, keyPath, oldDir)
 	}
-	args = append(args, remote.Destination())
-	_ = exec.Command("ssh", args...).Run()
 }

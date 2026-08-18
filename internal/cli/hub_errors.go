@@ -105,8 +105,11 @@ func hubJoinNameError(name string) error {
 	return fmt.Errorf("hub join: --name %s does not name a wrapper this machine can launch (known: claude, codex, gemini, grok). --name is the LOCAL name you launch the lane with (ac serve <name>), so it must be a wrapper token — a lane named %q would have no launch form at all. For an arbitrary pool id, use --as instead and launch with an explicit wrapper: agentchute hub join <url> --as work-tiny, then ac --as work-tiny serve claude.", name, name)
 }
 
-func hubJoinBusyError(lockPath string) error {
-	return fmt.Errorf("hub join: another agentchute hub join/rotate is already running for this hub (lock %s). Wait for it to finish and re-run.", displayHomePath(lockPath))
+func hubLockBusyError(lockPath string, mode hubLockMode) error {
+	if mode == hubLockShared {
+		return fmt.Errorf("hub: this hub is being migrated right now (lock %s held exclusively). This command writes into the directory being moved, so it will not run until the migration finishes; re-run in a moment.", displayHomePath(lockPath))
+	}
+	return fmt.Errorf("hub join: this hub is busy (lock %s). Either another agentchute hub join/rotate is running, or a `serve` lane is live against it — a lane holds this lock for as long as it runs, and migrating underneath it would delete state it is still writing. Stop the lane (or wait for the other join), then re-run.", displayHomePath(lockPath))
 }
 
 func hubJoinKeyVersionError(name string) error {

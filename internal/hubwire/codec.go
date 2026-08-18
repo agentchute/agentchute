@@ -44,7 +44,15 @@ func (r *Reader) Read() (RawFrame, error) {
 		if errors.Is(err, io.EOF) && len(line) == 0 {
 			return RawFrame{}, io.EOF
 		}
-		return RawFrame{}, protocolError(CodeMalformedFrame, "truncated control frame")
+		// Say WHICH read failure this was. Only a clean EOF at a frame boundary
+		// takes the branch above; everything else lands here — a partial line at
+		// EOF, a reset, a use-of-closed-connection, an i/o timeout — and the
+		// underlying error used to be discarded, so one sentence stood for
+		// several distinguishable causes. That cost M6 a diagnostic round: the
+		// message reads as "the frame was truncated" when it actually means
+		// "the read did not end at a boundary", which is a much weaker claim.
+		// Same defect as the E_CHANNEL_LOST arm one layer up (#167, #169).
+		return RawFrame{}, protocolError(CodeMalformedFrame, "truncated control frame: "+err.Error())
 	}
 	if len(line) > MaxControlLine {
 		return RawFrame{}, protocolError(CodeTooLarge, "control frame exceeds 64 KiB")

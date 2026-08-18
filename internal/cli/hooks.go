@@ -390,7 +390,7 @@ Flags:
 // cascade so --scope repo anchors at the repo root, not the user's
 // current subdir. Mirrors init/boot/check's loop.Discover call shape.
 func discoverConfigForHooks(cwd string) (*loop.Config, error) {
-	return loop.Discover(loop.DiscoverOpts{
+	return discoverConfig(loop.DiscoverOpts{
 		Cwd:            cwd,
 		EnvControlRepo: os.Getenv("AGENTCHUTE_CONTROL_REPO"),
 		EnvLoopDir:     os.Getenv("AGENTCHUTE_LOOP_DIR"),

@@ -659,7 +659,7 @@ func applySetup(root string, opts setupOptions, wrappers []string) error {
 		if err := cmdInit([]string{"--yes"}); err != nil {
 			return fmt.Errorf("init: %w", err)
 		}
-		cfg, err := loop.Discover(loop.DiscoverOpts{
+		cfg, err := discoverConfig(loop.DiscoverOpts{
 			ControlRepoFlag: root,
 			Cwd:             root,
 			EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
@@ -897,18 +897,19 @@ func runInDir(dir string, fn func() error) error {
 }
 
 func setupEnsureShimPath(opts setupOptions) error {
-	pathEnv := os.Getenv("PATH")
-
-	if !pathContains(opts.ShimDir, pathEnv) {
-		fmt.Printf("warning: add %s to PATH\n", opts.ShimDir)
-	}
-
-	if opts.NoProfile {
-		return nil
-	}
+	// The PATH advice is emitted AFTER the profile work, not before it. It used
+	// to come first, so a run that was about to fix PATH itself opened with
+	//     warning: add /Users/alex/.agentchute/bin to PATH
+	// and then two lines later said it had updated the profile — telling the
+	// operator to do the thing it was in the middle of doing, and reading like a
+	// failure that then succeeded.
+	onPath := pathContains(opts.ShimDir, os.Getenv("PATH"))
 
 	profiles := setupPlausibleProfiles(opts.Profile)
-	if len(profiles) == 0 {
+	if opts.NoProfile || len(profiles) == 0 {
+		if !onPath {
+			fmt.Printf("warning: add %s to PATH\n", opts.ShimDir)
+		}
 		return nil
 	}
 
@@ -916,6 +917,9 @@ func setupEnsureShimPath(opts setupOptions) error {
 		if err := setupWritePathBlock(profile, opts.ShimDir); err != nil {
 			return err
 		}
+	}
+	if !onPath {
+		fmt.Printf("%s is now on PATH in your shell profile; start a new shell (or source it) before using `ac serve`\n", opts.ShimDir)
 	}
 	return nil
 }

@@ -819,7 +819,7 @@ var setupRunWipeState = func(root string, cfg *loop.Config, wrappers []string, o
 // setup has no loop yet), validates the paths, prints the delete plan, and runs
 // the READ-ONLY live-bus detector (without stopping anything).
 func printWipeStateDryRun(w io.Writer, root string) {
-	cfg, err := loop.Discover(loop.DiscoverOpts{
+	cfg, err := discoverConfig(loop.DiscoverOpts{
 		ControlRepoFlag: root,
 		Cwd:             root,
 		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),

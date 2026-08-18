@@ -60,7 +60,7 @@ func cmdSelfCheck(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loop.Discover(loop.DiscoverOpts{
+	cfg, err := discoverConfig(loop.DiscoverOpts{
 		ControlRepoFlag: controlRepo,
 		LoopDirFlag:     loopDir,
 		Cwd:             cwd,

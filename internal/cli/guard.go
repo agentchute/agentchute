@@ -176,7 +176,7 @@ func evaluateGuardInvocation(agentIDFlag, controlRepo, loopDir, toolCmd string) 
 	if err != nil {
 		return guardDecision{Allowed: true}
 	}
-	cfg, err := loop.Discover(loop.DiscoverOpts{
+	cfg, err := discoverConfig(loop.DiscoverOpts{
 		ControlRepoFlag: controlRepo,
 		LoopDirFlag:     loopDir,
 		Cwd:             cwd,

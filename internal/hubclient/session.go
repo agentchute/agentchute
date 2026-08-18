@@ -24,6 +24,7 @@ type Error struct {
 }
 
 func (e *Error) Error() string { return e.Msg }
+
 func (e *Error) Unwrap() error {
 	if e.Cause != nil {
 		return e.Cause

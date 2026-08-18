@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSH hub — multi-machine agentchute pools</title>
+<meta name="description" content="Connect agentchute lanes on several machines to one pool through standard OpenSSH forced commands.">
+<meta property="og:title" content="agentchute SSH hub">
+<meta property="og:description" content="One pool, several machines, standard OpenSSH, and the same ac serve workflow.">
+<meta property="og:url" content="https://agentchute.dev/hub.html">
+<meta property="og:type" content="article">
+<link rel="canonical" href="https://agentchute.dev/hub.html">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <a class="logo" href="./" style="text-decoration:none">agentchute</a>
+    <nav>
+      <a href="./">home</a>
+      <a href="blog/">blog</a>
+      <a href="spec.html">spec</a>
+      <a href="https://github.com/agentchute/agentchute">github</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="wrap">
+    <h1>One pool, several machines</h1>
+    <p class="lede">The SSH hub connects remote agent lanes to an existing pool through standard OpenSSH. There is no new daemon: sshd authenticates a key, a forced command pins it to one identity and pool, and <code>ac serve</code> works as usual.</p>
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <h2>Join a machine</h2>
+    <p>The hub needs running sshd, a stable agentchute installation, and the existing control repo. On the joining machine:</p>
+    <pre><code>cd ~/code/agentchute
+agentchute hub join \
+  ssh://alex@hub.example/home/alex/code/agentchute \
+  --name codex
+agentchute serve codex</code></pre>
+    <p>After opening a new shell, launch with <code>ac serve codex</code>. The local name resolves to a hostname-qualified pool id, so another machine can use the same local launcher name safely.</p>
+  </div>
+</section>
+
+<section class="primitives">
+  <div class="wrap">
+    <h2>What stays pinned</h2>
+    <p>Each generated client key maps to exactly one agent id and one durable pool identity. Host-key changes, identity mismatches, pool mismatches, and live duplicate leases fail closed before an operation runs.</p>
+    <p>Authorization edits take effect at the next SSH authentication, not inside an established connection. To apply a revoke or pool repoint immediately, stop or relaunch the lane on the joining machine; a hub cannot reap a multiplex master held on another host. Key rotation changes the master-isolation digest and forces fresh authentication automatically.</p>
+    <p>The persistent runner owns the remote lease and fencing token. If the SSH channel drops, it terminates the child first and relaunches by default after the hub returns.</p>
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <h2>Private-network recipe</h2>
+    <p>Put the machines on one Tailscale tailnet, restrict port 22 with tailnet access controls, and join through the hub's MagicDNS name. Use standard sshd rather than Tailscale SSH: agentchute's identity pinning depends on OpenSSH <code>authorized_keys</code> forced commands.</p>
+    <p><a href="https://github.com/agentchute/agentchute/blob/main/docs/hub.md">Read the complete operator guide →</a></p>
+  </div>
+</section>
+</main>
+
+</body>
+</html>
