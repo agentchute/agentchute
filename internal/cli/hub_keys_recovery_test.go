@@ -108,6 +108,38 @@ func TestHubKeyRecoveryFromHalfFinishedPromoteKeepsActiveKey(t *testing.T) {
 	if _, err := os.Lstat(active + ".tmp"); !os.IsNotExist(err) {
 		t.Fatalf("temp promote symlink survived recovery (stat err = %v)", err)
 	}
+
+	// "Did not switch the active key" is only HALF the property. The other half
+	// is that the rotation is still RESUMABLE — recovery must not silently
+	// abandon it. Nothing above can tell the difference: a change that made
+	// recovery ignore versions above active (which reads like hardening) would
+	// keep this row green while v2 became unreachable. v2 would then survive on
+	// disk forever, since pruneOlderHubKeys only removes versions BELOW active,
+	// and a later --rotate-key would mint v3 — stranding a key the hub may
+	// already have authorized. That is the same failure this row exists to
+	// catch, one step later.
+	if state.Staged == nil {
+		t.Fatal("recovery abandoned the rotation: Staged = nil, want the staged v2")
+	}
+	if state.Staged.Number != 2 {
+		t.Fatalf("staged v%d, want v2", state.Staged.Number)
+	}
+	if state.Staged.Private != v2.Private {
+		t.Fatalf("staged names %s, want the minted %s", state.Staged.Private, v2.Private)
+	}
+
+	// And prove it by finishing the job: drive the RECOVERED state through the
+	// same promote the interrupted rotation was in the middle of. This is what
+	// makes the row prove its stated `state => converges` claim rather than only
+	// `state => nothing was destroyed`. finishHubJoinKey is the production
+	// caller, but it probes the key over SSH; promoteHubKey is the step that
+	// actually resumes, and it is reached with exactly this argument.
+	if err := promoteHubKey(dir, "codex-tiny", *state.Staged); err != nil {
+		t.Fatalf("the rotation did not resume from the recovered state: %v", err)
+	}
+	if got := activeKeyBody(t, active); got != readKeyFile(t, v2.Public) {
+		t.Fatalf("resumed promote did not land on v2:\n active=%s", got)
+	}
 }
 
 // The NEGATIVE arm of the orphan row above, and the one that decides whether
