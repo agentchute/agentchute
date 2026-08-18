@@ -113,6 +113,13 @@ func TestSSHDHostKeyChangeRefused(t *testing.T) {
 
 func parseRemoteForHome(t *testing.T, h *sshdHarness) *loop.RemoteConfig {
 	t.Helper()
+	return parseRemoteURLForHome(t, h, h.remote.URL)
+}
+
+// parseRemoteURLForHome resolves any hub URL against the harness client HOME,
+// which is what decides the hub dir the CLI will use.
+func parseRemoteURLForHome(t *testing.T, h *sshdHarness, url string) *loop.RemoteConfig {
+	t.Helper()
 	old, present := os.LookupEnv("HOME")
 	if err := os.Setenv("HOME", h.clientHome); err != nil {
 		t.Fatal(err)
@@ -124,7 +131,7 @@ func parseRemoteForHome(t *testing.T, h *sshdHarness) *loop.RemoteConfig {
 			_ = os.Unsetenv("HOME")
 		}
 	}()
-	remote, err := loop.ParseRemoteURL(h.remote.URL)
+	remote, err := loop.ParseRemoteURL(url)
 	if err != nil {
 		t.Fatal(err)
 	}

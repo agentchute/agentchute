@@ -242,6 +242,44 @@ func runCommand(t *testing.T, dir, name string, args ...string) []byte {
 	return out
 }
 
+// seedHubKnownHosts writes the hub-dir known_hosts a REAL join would have
+// written for itself.
+//
+// Production reaches it as a side effect: BuildSSHInvocation passes
+// `-o UserKnownHostsFile=<stateDir>/known_hosts` with
+// StrictHostKeyChecking=accept-new, so the join's own first connect records the
+// host key there, and `hub join` then reads the fingerprint back out of it into
+// config.json. This harness forces its own UserKnownHostsFile through the ssh
+// wrapper — an earlier -o wins in ssh — so that file is never written and the
+// join records no fingerprint at all.
+//
+// That matters beyond tidiness: a config with no `host_key_fingerprint` can
+// never be a migration candidate (hub_migrate.go), so an alias rejoin silently
+// degrades into a fresh join. Seeding it here makes migration rows exercise the
+// NORMAL path. The degraded state is separately reachable in production — where
+// it also means TOFU did not persist, so host-key change detection is off for
+// that hub — and belongs in its own row asserting that consequence, not this
+// one.
+func (h *sshdHarness) seedHubKnownHosts(t *testing.T, url string) {
+	t.Helper()
+	remote := parseRemoteURLForHome(t, h, url)
+	if err := os.MkdirAll(remote.HubDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pub, err := os.ReadFile(h.hostKey + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(string(pub))
+	if len(fields) < 2 {
+		t.Fatal("invalid host public key")
+	}
+	line := fmt.Sprintf("[127.0.0.1]:%d %s %s\n", remote.Port, fields[0], fields[1])
+	if err := os.WriteFile(filepath.Join(remote.HubDir, "known_hosts"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // aliasURL is the same hub reached on its second port: a different canonical
 // URL, hence a different hub id, with an identical host key and pool.
 func (h *sshdHarness) aliasURL() string {
@@ -309,32 +347,6 @@ func (h *sshdHarness) addAdminKey() {
 	}
 }
 
-// addKnownHostAlias records the harness host key under a SECOND name for the
-// same daemon, which is what makes an alias rejoin a real migration rather than
-// a fixture trick: migration is detected by host-key fingerprint, so the two
-// URLs must genuinely reach one host. A hub reachable by two names has both
-// lines in known_hosts for exactly this reason.
-func (h *sshdHarness) addKnownHostAlias(alias string) {
-	h.t.Helper()
-	pub, err := os.ReadFile(h.hostKey + ".pub")
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	fields := strings.Fields(string(pub))
-	if len(fields) < 2 {
-		h.t.Fatal("invalid host public key")
-	}
-	line := fmt.Sprintf("[%s]:%d %s %s\n", alias, h.port, fields[0], fields[1])
-	f, err := os.OpenFile(h.knownHosts, os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.WriteString(line); err != nil {
-		h.t.Fatal(err)
-	}
-}
-
 func (h *sshdHarness) writeKnownHosts() {
 	h.t.Helper()
 	pub, err := os.ReadFile(h.hostKey + ".pub")
@@ -358,10 +370,6 @@ func (h *sshdHarness) writeSSHWrapper() {
 	if err := os.MkdirAll(h.clientBin, 0o700); err != nil {
 		h.t.Fatal(err)
 	}
-	// -4 forces IPv4: this fixture's sshd binds 127.0.0.1 only, so a hostname
-	// alias like `localhost` would otherwise resolve to ::1 first on macOS and
-	// fail to connect — a resolver-order dependency that makes any host-alias
-	// row flaky by platform rather than testing what it names.
 	script := fmt.Sprintf(`#!/bin/sh
 has_identity=0
 previous=
@@ -369,7 +377,7 @@ for argument in "$@"; do
   if [ "$previous" = "-i" ]; then has_identity=1; fi
   previous=$argument
 done
-set -- -4 -F /dev/null -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s "$@"
+set -- -F /dev/null -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s "$@"
 if [ "$has_identity" -eq 0 ]; then set -- -i %s "$@"; fi
 exec %s "$@"
 `, h.knownHosts, h.adminKey, h.ssh)
