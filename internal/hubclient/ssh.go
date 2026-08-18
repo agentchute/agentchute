@@ -227,34 +227,62 @@ type processTransport struct {
 func startSSH(ctx context.Context, invocation SSHInvocation) (Transport, error) {
 	childCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(childCtx, "ssh", invocation.Args...)
-	stdinPipe, err := cmd.StdinPipe()
+	p, err := startProcessTransport(cmd, cancel)
 	if err != nil {
-		cancel()
-		return nil, err
-	}
-	stdin, ok := stdinPipe.(*os.File)
-	if !ok {
-		cancel()
-		return nil, fmt.Errorf("ssh stdin is not an os.File")
-	}
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	stdout, ok := stdoutPipe.(*os.File)
-	if !ok {
-		cancel()
-		return nil, fmt.Errorf("ssh stdout is not an os.File")
-	}
-	p := &processTransport{cmd: cmd, stdin: stdin, stdout: stdout, cancel: cancel, waitCh: make(chan error, 1), closeDone: make(chan struct{})}
-	cmd.Stderr = &p.stderr
-	if err := cmd.Start(); err != nil {
-		cancel()
 		if errors.Is(err, exec.ErrNotFound) {
 			return nil, &Error{Code: "E_NO_SSH", Msg: "hub: the `ssh` binary was not found on this machine. Install the OpenSSH client (macOS: preinstalled — check PATH; Debian/Ubuntu: apt install openssh-client), then retry."}
 		}
 		return nil, err
+	}
+	return p, nil
+}
+
+// startProcessTransport wires the child's stdio to pipes THIS PROCESS OWNS, then
+// starts it and reaps it in the background.
+//
+// It must not use cmd.StdinPipe/cmd.StdoutPipe. Go documents the reason on
+// StdoutPipe itself: "Wait will close the pipe after seeing the command exit...
+// it is thus incorrect to call Wait before all reads from the pipe have
+// completed." We reap in a goroutine from the moment we start, so Wait returns
+// the instant ssh exits — and closed the read end out from under a reader that
+// had not drained the OS pipe buffer yet. Every byte still in flight was lost,
+// and the loss looked like nothing: ssh exit 0, empty stderr, and a read error
+// the wire reported as a truncated frame. That is M6 red #3, and it cost the
+// TERMINAL frame preferentially because the last write is the one most likely to
+// still be buffered when the process exits.
+//
+// Owning the fds removes the whole class: os/exec closes only the descriptors it
+// created, so nothing but this transport's own Close ever touches the read end,
+// and it happens after the caller is done reading. The child's ends are closed
+// here so the reader still sees a real EOF when ssh exits.
+func startProcessTransport(cmd *exec.Cmd, cancel context.CancelFunc) (*processTransport, error) {
+	childStdin, stdin, err := os.Pipe()
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	stdout, childStdout, err := os.Pipe()
+	if err != nil {
+		cancel()
+		_ = childStdin.Close()
+		_ = stdin.Close()
+		return nil, err
+	}
+	cmd.Stdin = childStdin
+	cmd.Stdout = childStdout
+	p := &processTransport{cmd: cmd, stdin: stdin, stdout: stdout, cancel: cancel, waitCh: make(chan error, 1), closeDone: make(chan struct{})}
+	cmd.Stderr = &p.stderr
+	startErr := cmd.Start()
+	// Ours to close either way: os/exec closes the child's ends after a
+	// successful Start, and a second Close on an *os.File is a no-op, but on a
+	// FAILED start nothing has closed them at all.
+	_ = childStdin.Close()
+	_ = childStdout.Close()
+	if startErr != nil {
+		cancel()
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, startErr
 	}
 	go func() { p.waitCh <- cmd.Wait() }()
 	return p, nil
@@ -277,6 +305,10 @@ func (p *processTransport) Close() error {
 			p.err = <-p.waitCh
 		}
 		p.cancel()
+		// This process owns the read end, so this is the only thing that ever
+		// closes it — and it happens here, after the caller is finished reading,
+		// rather than the moment the child exits.
+		_ = p.stdout.Close()
 	})
 	<-p.closeDone
 	return p.err
