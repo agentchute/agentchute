@@ -45,6 +45,7 @@ type sshdHarness struct {
 	keygen      string
 	user        string
 	port        int
+	aliasPort   int
 	hostKey     string
 	knownHosts  string
 	authorized  string
@@ -174,6 +175,18 @@ func newSSHDHarness(t *testing.T) *sshdHarness {
 		h.addAgent(id)
 	}
 	h.port = freePort(t)
+	// A SECOND port on the SAME daemon. Two ports give two different canonical
+	// URLs and therefore two different hub ids, while the host key, the pool and
+	// authorized_keys stay identical — which is exactly what an alias rejoin
+	// needs, since migration is detected by host-key fingerprint plus pool.
+	//
+	// The alternatives all cost more: a host-NAME alias needs `localhost`, which
+	// resolves to ::1 first on macOS while this fixture binds IPv4 only, and a
+	// second 127.x address is Linux-only. Spelling aliases do not work at all —
+	// ParseRemoteURL canonicalizes `127.1` and a trailing-slash pool path back to
+	// the joined URL, which is correct production behaviour (it is what makes
+	// pool identity durable) and means they produce the SAME hub id.
+	h.aliasPort = freePort(t)
 	h.knownHosts = filepath.Join(h.clientState, "known_hosts")
 	h.writeKnownHosts()
 	h.writeSSHWrapper()
@@ -227,6 +240,12 @@ func runCommand(t *testing.T, dir, name string, args ...string) []byte {
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
 	return out
+}
+
+// aliasURL is the same hub reached on its second port: a different canonical
+// URL, hence a different hub id, with an identical host key and pool.
+func (h *sshdHarness) aliasURL() string {
+	return "ssh://" + h.user + "@127.0.0.1:" + fmt.Sprint(h.aliasPort) + h.pool
 }
 
 func freePort(t *testing.T) int {
@@ -326,7 +345,8 @@ func (h *sshdHarness) writeKnownHosts() {
 	if len(fields) < 2 {
 		h.t.Fatal("invalid host public key")
 	}
-	line := fmt.Sprintf("[127.0.0.1]:%d %s %s\n", h.port, fields[0], fields[1])
+	line := fmt.Sprintf("[127.0.0.1]:%d %s %s\n[127.0.0.1]:%d %s %s\n",
+		h.port, fields[0], fields[1], h.aliasPort, fields[0], fields[1])
 	if err := os.WriteFile(h.knownHosts, []byte(line), 0o600); err != nil {
 		h.t.Fatal(err)
 	}
@@ -361,6 +381,7 @@ exec %s "$@"
 func (h *sshdHarness) writeConfig() {
 	h.t.Helper()
 	config := fmt.Sprintf(`Port %d
+Port %d
 ListenAddress 127.0.0.1
 HostKey %s
 PidFile %s
@@ -378,7 +399,7 @@ LogLevel VERBOSE
 MaxAuthTries 2
 MaxSessions 20
 SetEnv HOME=%s PATH=%s:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-`, h.port, h.hostKey, filepath.Join(h.root, "sshd.pid"), h.authorized, h.user, h.clientHome, filepath.Dir(h.binary))
+`, h.port, h.aliasPort, h.hostKey, filepath.Join(h.root, "sshd.pid"), h.authorized, h.user, h.clientHome, filepath.Dir(h.binary))
 	if err := os.WriteFile(h.config, []byte(config), 0o600); err != nil {
 		h.t.Fatal(err)
 	}

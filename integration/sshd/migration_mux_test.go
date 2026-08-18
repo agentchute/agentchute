@@ -3,7 +3,6 @@
 package sshd
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +40,6 @@ import (
 // never silently degrade into testing nothing.
 func TestSSHDMuxIsReapedAcrossMigration(t *testing.T) {
 	h := newSSHDHarness(t)
-	h.addKnownHostAlias("localhost")
 	checkout := h.newCheckout()
 
 	if stdout, stderr, err := h.runCLI(checkout, "hub", "join", h.remote.URL, "--as", "work-tiny"); err != nil {
@@ -72,7 +70,7 @@ func TestSSHDMuxIsReapedAcrossMigration(t *testing.T) {
 		t.Fatalf("no live master to reap: auth count %d -> %d across two one-shots", afterFirst, got)
 	}
 
-	aliasURL := "ssh://" + h.user + "@localhost:" + fmt.Sprint(h.port) + h.pool
+	aliasURL := h.aliasURL()
 	if stdout, stderr, err := h.runCLI(checkout, "hub", "join", aliasURL, "--as", "work-tiny"); err != nil {
 		t.Fatalf("alias rejoin: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
 	}
