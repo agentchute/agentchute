@@ -63,6 +63,11 @@ func acquireHubLocks(hubIDs []string, mode hubLockMode) (func(), error) {
 			release()
 			return nil, err
 		}
+		// LOAD-BEARING: the lock lives in <parent of HubDir>/.locks, a SIBLING of
+		// the hub dirs, never inside one. A migration renames the hub dir out from
+		// under everything that is running, so a lock kept inside it would be
+		// renamed away mid-hold and the exclusion would silently stop working.
+		// Do not "tidy" this into the hub dir.
 		lockDir := filepath.Join(filepath.Dir(dir), ".locks")
 		if err := loop.EnsurePrivateDir(lockDir); err != nil {
 			release()

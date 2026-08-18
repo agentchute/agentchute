@@ -61,6 +61,10 @@ func acquireHubLocks(hubIDs []string, mode hubLockMode) (func(), error) {
 			release()
 			return nil, err
 		}
+		// LOAD-BEARING: a SIBLING of the hub dirs, never inside one — see the
+		// unix implementation. A migration renames the hub dir out from under
+		// everything running; a lock kept inside it would be renamed away
+		// mid-hold and the exclusion would silently stop working.
 		lockDir := filepath.Join(filepath.Dir(dir), ".locks")
 		if err := loop.EnsurePrivateDir(lockDir); err != nil {
 			release()

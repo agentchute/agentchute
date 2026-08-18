@@ -184,3 +184,58 @@ func TestServeTakesTheSharedHubLockBeforeItRuns(t *testing.T) {
 		t.Fatal("runWrapper neither took the lock nor returned; it proceeded past the point the lock protects")
 	}
 }
+
+// A LOCAL config must take no hub lock at all.
+//
+// Observed as "no lock FILE appears", not as "the lane did not block". Blocking
+// only happens when the lock is contended, so a row that holds one specific id
+// and waits to be blocked passes against a lane that locks any OTHER id —
+// checked, and my first version of this row did exactly that. Every acquisition
+// creates its lock file under <hub>/.locks, so counting them catches all of them.
+func TestLocalServeTakesNoHubLock(t *testing.T) {
+	shortenHubLockTimeout(t)
+	_, remote := setupHubJoinTest(t)
+	locksDir := filepath.Join(filepath.Dir(remote.HubDir), ".locks")
+
+	before := lockFileNames(t, locksDir)
+
+	root := t.TempDir()
+	cfg := &loop.Config{ControlRepo: root, LoopDir: filepath.Join(root, ".agentchute", "loop")}
+	if cfg.Remote != nil {
+		t.Fatal("fixture is not local")
+	}
+	opts := runnerOptions{
+		AgentID:     "codex",
+		Vendor:      "anthropic",
+		WrapperArgs: []string{filepath.Join(t.TempDir(), "no-such-wrapper")},
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- runWrapper(cfg, opts, root) }()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("a local lane hung")
+	}
+
+	after := lockFileNames(t, locksDir)
+	if len(after) != len(before) {
+		t.Fatalf("a LOCAL lane created hub lock files %v (before: %v); a local pool must carry no hub dependency at all", after, before)
+	}
+}
+
+func lockFileNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
