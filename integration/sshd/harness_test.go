@@ -593,41 +593,44 @@ func (h *sshdHarness) stopMuxMasters() {
 	}
 }
 
-// discoverMuxSockets returns ControlPath= arguments for every mux socket present
-// under the roots BuildSSHInvocation would consider. It looks at what IS rather
-// than at what should be, which is the only way to see a master the recompute
-// cannot address.
+// discoverMuxSockets returns ControlPath= arguments for the mux sockets that
+// actually exist in THIS harness's isolation directories. It looks at what is on
+// disk rather than at what should be, which is the only way to address a master
+// whose socket name this process cannot reconstruct — the name is ssh's `%C`
+// expansion, not something the harness computes.
+//
+// Scoped to directories this harness computed, deliberately. The obvious version
+// scans the whole /tmp/ac-<uid> tree, and under `-count=N` or a parallel package
+// that means one iteration observing another's sockets — an instrument that
+// reports failures belonging to someone else. The isolation directory already
+// binds hub id, agent id and resolved key, so it is harness-specific; only the
+// socket name inside it is not.
 func (h *sshdHarness) discoverMuxSockets() []string {
-	uid := "unknown"
-	if u, err := user.Current(); err == nil && u.Uid != "" {
-		uid = u.Uid
+	h.muxMu.Lock()
+	dirs := make(map[string]struct{}, len(h.muxPaths))
+	for path := range h.muxPaths {
+		dirs[filepath.Dir(strings.TrimPrefix(path, "ControlPath="))] = struct{}{}
 	}
+	h.muxMu.Unlock()
+
 	seen := map[string]struct{}{}
 	var found []string
-	for _, root := range []string{os.TempDir(), "/tmp"} {
-		base := filepath.Join(root, "ac-"+uid)
-		entries, err := os.ReadDir(base)
+	for dir := range dirs {
+		socks, err := os.ReadDir(dir)
 		if err != nil {
 			continue
 		}
-		for _, entry := range entries {
-			dir := filepath.Join(base, entry.Name())
-			socks, err := os.ReadDir(dir)
-			if err != nil {
+		for _, sock := range socks {
+			info, err := sock.Info()
+			if err != nil || info.Mode()&os.ModeSocket == 0 {
 				continue
 			}
-			for _, sock := range socks {
-				info, err := sock.Info()
-				if err != nil || info.Mode()&os.ModeSocket == 0 {
-					continue
-				}
-				arg := "ControlPath=" + filepath.Join(dir, sock.Name())
-				if _, dup := seen[arg]; dup {
-					continue
-				}
-				seen[arg] = struct{}{}
-				found = append(found, arg)
+			arg := "ControlPath=" + filepath.Join(dir, sock.Name())
+			if _, dup := seen[arg]; dup {
+				continue
 			}
+			seen[arg] = struct{}{}
+			found = append(found, arg)
 		}
 	}
 	return found

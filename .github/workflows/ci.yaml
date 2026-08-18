@@ -55,6 +55,24 @@ jobs:
       - name: real-sshd integration
         run: sh tools/sshd-test.sh
 
+  # TEMPORARY diagnostic job — DELETE with tools/sshd-hammer.sh before gating.
+  # TestSSHDChildEnvSendAndSupervisedRelaunchDefault fails ~15% of ubuntu runs
+  # and 0% of macOS runs, so one run per head cannot tell a real fix from luck.
+  # This runs the row 20 times in one round (~96% chance of provoking it) with
+  # the post-reap diagnostic line live. Its own job, and always exits 0, so it
+  # can never mask or redden the real suite above.
+  sshd-hammer:
+    name: red-3 hammer (temporary, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+          check-latest: true
+      - name: hammer the flaky row
+        run: sh tools/sshd-hammer.sh
+
   shell:
     name: install.sh shellcheck + tests
     runs-on: ubuntu-latest
