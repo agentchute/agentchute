@@ -5,4 +5,8 @@
 # reach the live pool.
 set -u
 strip_env=$(env | awk -F= '/^AGENTCHUTE_/{print "-u " $1}')
-exec env $strip_env AGENTCHUTE_SSHD_TEST=1 go test -tags sshd_integration ./integration/sshd/...
+# -race, deliberately. This milestone exists because in-process coverage hid
+# defects the real transport exposed; the harness itself runs sshd, a serve
+# lane, mux masters and the client concurrently, which is precisely the shape
+# the detector is for. Measured cost is a few seconds on a ~100s suite.
+exec env $strip_env AGENTCHUTE_SSHD_TEST=1 go test -race -tags sshd_integration ./integration/sshd/...
