@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,16 +110,16 @@ func migrateHubJoinState(root, oldHubID string, remote *loop.RemoteConfig) error
 	newDir := remote.HubDir
 	partial := newDir + ".partial"
 	if _, err := os.Stat(newDir); err == nil {
-		// A committed new directory means this is post-rename recovery: only the
-		// pointer and old-directory cleanup remain.
-		if err := writeHubJoinPointer(root, remote.URL); err != nil {
+		// The new directory exists. That is post-rename recovery ONLY if this
+		// migration is the thing that created it (issue #165): existence alone
+		// is also what a failed fresh join and a completed separate join leave
+		// behind, and neither of those carries the old directory's contents.
+		// Taking the recovery path against one of those deleted the old hub dir
+		// — including the authorized key — without copying anything first.
+		if err := checkHubMigrationProvenance(newDir, oldHubID); err != nil {
 			return err
 		}
-		hubMigrationReapMux(oldCfg, oldDir)
-		if err := os.RemoveAll(oldDir); err != nil {
-			return err
-		}
-		return fsyncHubDir(filepath.Dir(oldDir))
+		return finishHubMigration(root, remote, oldDir, oldCfg)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
@@ -133,6 +134,12 @@ func migrateHubJoinState(root, oldHubID string, remote *loop.RemoteConfig) error
 	if err := writeHubMigrationConfig(filepath.Join(partial, "config.json"), &newCfg); err != nil {
 		return err
 	}
+	// Written BEFORE the rename, so the directory carries its own provenance the
+	// moment it exists under its final name. A marker written afterwards would
+	// leave exactly the window this fix is about.
+	if err := os.WriteFile(filepath.Join(partial, hubMigrationMarker), []byte(oldHubID+"\n"), 0o600); err != nil {
+		return err
+	}
 	if err := fsyncHubDir(partial); err != nil {
 		return err
 	}
@@ -142,6 +149,54 @@ func migrateHubJoinState(root, oldHubID string, remote *loop.RemoteConfig) error
 	if err := fsyncHubDir(filepath.Dir(newDir)); err != nil {
 		return err
 	}
+	return finishHubMigration(root, remote, oldDir, oldCfg)
+}
+
+// hubMigrationMarker records, inside the new directory, which old hub directory
+// this one was renamed out of. It is the rename provenance the recovery branch
+// keys on, and it is removed once the migration is complete.
+const hubMigrationMarker = ".migrated-from"
+
+// checkHubMigrationProvenance answers one question: did THIS migration create
+// newDir? Only a marker naming oldHubID says yes. Anything else — no marker, an
+// unreadable one, or one naming a different hub — means the directory came from
+// somewhere else and its contents are not the old directory's, so the migration
+// refuses instead of deleting state it cannot reproduce.
+func checkHubMigrationProvenance(newDir, oldHubID string) error {
+	data, err := os.ReadFile(filepath.Join(newDir, hubMigrationMarker))
+	if err == nil && strings.TrimSpace(string(data)) == oldHubID {
+		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return fmt.Errorf("hub join: %s already exists and was not created by this migration, so migrating into it would delete %s — including its authorized key — without copying anything. Nothing was changed. If that directory is left over from a failed join to this same hub, remove it and re-run; if it is a real join in its own right, finish or undo that one first", newDir, hubDirForMessage(oldHubID))
+}
+
+// hubDirForMessage renders a hub id for an error message, falling back to the
+// bare id when the path cannot be built — a message is never worth failing a
+// refusal over. Not named oldDir: that is a local variable throughout this file,
+// and a function it shadows in some scopes but not others is a trap.
+func hubDirForMessage(hubID string) string {
+	if dir, err := loop.HubDir(hubID); err == nil {
+		return dir
+	}
+	return hubID
+}
+
+// finishHubMigration performs the steps that are shared by the first pass and by
+// post-rename recovery: prove the new directory really carries the old one's
+// contents, then point at it, reap the old mux sockets and delete the old tree.
+//
+// verifyHubMigrationCopy is deliberately INDEPENDENT of the provenance check
+// above. Provenance says who created the directory; this says what is actually
+// in it. The RemoveAll is irreversible, so it is gated on the second question
+// rather than inferred from the first.
+func finishHubMigration(root string, remote *loop.RemoteConfig, oldDir string, oldCfg *hubclient.HubConfig) error {
+	newDir := remote.HubDir
+	if err := verifyHubMigrationCopy(oldDir, newDir); err != nil {
+		return err
+	}
 	if err := writeHubJoinPointer(root, remote.URL); err != nil {
 		return err
 	}
@@ -149,7 +204,72 @@ func migrateHubJoinState(root, oldHubID string, remote *loop.RemoteConfig) error
 	if err := os.RemoveAll(oldDir); err != nil {
 		return err
 	}
-	return fsyncHubDir(filepath.Dir(oldDir))
+	if err := fsyncHubDir(filepath.Dir(oldDir)); err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(newDir, hubMigrationMarker)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return fsyncHubDir(newDir)
+}
+
+// verifyHubMigrationCopy fails unless every path under oldDir is present under
+// newDir with the same content. config.json is exempt because the migration
+// rewrites its URL by design, and mux is exempt because it is sockets.
+func verifyHubMigrationCopy(oldDir, newDir string) error {
+	return filepath.WalkDir(oldDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(oldDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." || rel == "config.json" {
+			return nil
+		}
+		if rel == "mux" || strings.HasPrefix(rel, "mux"+string(filepath.Separator)) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		target := filepath.Join(newDir, rel)
+		missing := fmt.Errorf("hub join: refusing to delete %s: %s was not copied to %s. Nothing was changed", oldDir, path, target)
+		if entry.Type()&os.ModeSymlink != 0 {
+			was, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			now, err := os.Readlink(target)
+			if err != nil || now != was {
+				return missing
+			}
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if stat, err := os.Lstat(target); err != nil || !stat.IsDir() {
+				return missing
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		was, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		now, err := os.ReadFile(target)
+		if err != nil || !bytes.Equal(was, now) {
+			return missing
+		}
+		return nil
+	})
 }
 
 func refuseLiveHubMigration(root, oldDir string, cfg *hubclient.HubConfig) error {
