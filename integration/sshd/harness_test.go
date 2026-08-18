@@ -523,26 +523,43 @@ func (h *sshdHarness) open(ctx context.Context, pinned, requested string, opts h
 	h.rememberMuxPath(invocation)
 	invocation.Args[len(invocation.Args)-1] = requested
 	cmd := exec.CommandContext(ctx, h.ssh, invocation.Args...)
-	stdinPipe, err := cmd.StdinPipe()
+	// Pipes THIS process owns, not cmd.StdinPipe/cmd.StdoutPipe — the harness
+	// carried the identical defect the production transport was just fixed for
+	// (red #3). Wait closes the pipes IT created as soon as the child exits, and
+	// this reaps in a goroutine from the moment it starts, so ssh exiting
+	// normally could close the read end while the TERMINAL frame was still
+	// undrained in the OS pipe buffer. The instrument then reported "channel to
+	// the hub was lost" for a session in which nothing had gone wrong — which is
+	// the exact false signature that cost this milestone two diagnostic rounds,
+	// coming from the thing that is supposed to be measuring.
+	//
+	// It surfaced when the suite went under -race: slower scheduling is all it
+	// took to make the reader late on a macOS runner. os/exec closes only the
+	// descriptors it opened, so an *os.File assigned to cmd.Stdin/cmd.Stdout is
+	// closed by nothing but the two calls below and this session's own Close.
+	childStdin, stdin, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	stdoutPipe, err := cmd.StdoutPipe()
+	stdout, childStdout, err := os.Pipe()
 	if err != nil {
+		_ = childStdin.Close()
+		_ = stdin.Close()
 		return nil, err
 	}
-	stdin, ok := stdinPipe.(*os.File)
-	if !ok {
-		return nil, errors.New("ssh stdin is not an os.File")
-	}
-	stdout, ok := stdoutPipe.(*os.File)
-	if !ok {
-		return nil, errors.New("ssh stdout is not an os.File")
-	}
+	cmd.Stdin = childStdin
+	cmd.Stdout = childStdout
 	session := &sshProcessSession{cmd: cmd, stdin: stdin, stdout: stdout, done: make(chan struct{}), requested: requested, warnings: invocation.Warnings, maxRead: h.maxRead}
 	cmd.Stderr = &session.stderr
-	if err := cmd.Start(); err != nil {
-		return nil, err
+	startErr := cmd.Start()
+	// Load-bearing on both paths: without these the reader never sees EOF when
+	// ssh exits, because this process would still hold the write end open.
+	_ = childStdin.Close()
+	_ = childStdout.Close()
+	if startErr != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return nil, startErr
 	}
 	go func() {
 		session.waitErr = cmd.Wait()
@@ -770,6 +787,10 @@ func (s *sshProcessSession) Close() error {
 			_ = s.cmd.Process.Kill()
 			<-s.done
 		}
+		// This process owns the read end now that Wait no longer holds it, so
+		// this is the only thing that closes it — after the reader is done,
+		// rather than the moment the child exits.
+		_ = s.stdout.Close()
 	})
 	if s.forced.Load() {
 		return nil
