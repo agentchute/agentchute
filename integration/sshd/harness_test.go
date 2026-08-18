@@ -290,6 +290,32 @@ func (h *sshdHarness) addAdminKey() {
 	}
 }
 
+// addKnownHostAlias records the harness host key under a SECOND name for the
+// same daemon, which is what makes an alias rejoin a real migration rather than
+// a fixture trick: migration is detected by host-key fingerprint, so the two
+// URLs must genuinely reach one host. A hub reachable by two names has both
+// lines in known_hosts for exactly this reason.
+func (h *sshdHarness) addKnownHostAlias(alias string) {
+	h.t.Helper()
+	pub, err := os.ReadFile(h.hostKey + ".pub")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	fields := strings.Fields(string(pub))
+	if len(fields) < 2 {
+		h.t.Fatal("invalid host public key")
+	}
+	line := fmt.Sprintf("[%s]:%d %s %s\n", alias, h.port, fields[0], fields[1])
+	f, err := os.OpenFile(h.knownHosts, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(line); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
 func (h *sshdHarness) writeKnownHosts() {
 	h.t.Helper()
 	pub, err := os.ReadFile(h.hostKey + ".pub")
@@ -312,6 +338,10 @@ func (h *sshdHarness) writeSSHWrapper() {
 	if err := os.MkdirAll(h.clientBin, 0o700); err != nil {
 		h.t.Fatal(err)
 	}
+	// -4 forces IPv4: this fixture's sshd binds 127.0.0.1 only, so a hostname
+	// alias like `localhost` would otherwise resolve to ::1 first on macOS and
+	// fail to connect — a resolver-order dependency that makes any host-alias
+	// row flaky by platform rather than testing what it names.
 	script := fmt.Sprintf(`#!/bin/sh
 has_identity=0
 previous=
@@ -319,7 +349,7 @@ for argument in "$@"; do
   if [ "$previous" = "-i" ]; then has_identity=1; fi
   previous=$argument
 done
-set -- -F /dev/null -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s "$@"
+set -- -4 -F /dev/null -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s "$@"
 if [ "$has_identity" -eq 0 ]; then set -- -i %s "$@"; fi
 exec %s "$@"
 `, h.knownHosts, h.adminKey, h.ssh)
