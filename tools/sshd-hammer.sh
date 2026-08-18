@@ -38,6 +38,22 @@ while [ "$i" -le "$iterations" ]; do
 	i=$((i + 1))
 done
 printf '\n===== %s failure(s) in %s iterations =====\n' "$failures" "$iterations"
+
+# Stage 2: the contention probe. It drives 32 concurrent one-shots for ONE agent
+# with a serve lane polling the same hub, which is the condition hypothesised to
+# end a hub session's channel. It stays green on macOS — but macOS never
+# reproduces red #3 at all, so that proves nothing. Ubuntu is the only place this
+# can discriminate: if contention between concurrent sessions is the mechanism,
+# this reproduces it far faster than one-in-five whole-test runs.
+printf '\n===== contention probe (ubuntu discriminator) =====\n'
+# shellcheck disable=SC2086
+if env $strip_env AGENTCHUTE_SSHD_TEST=1 AGENTCHUTE_SSHD_DUMP_ALWAYS=1 go test -tags sshd_integration \
+	-run TestSSHDConcurrentOneShotsForOneAgentProbe \
+	-count=3 -v -timeout 600s ./integration/sshd/; then
+	printf 'contention probe: PASS (concurrency alone does not reproduce)\n'
+else
+	printf 'contention probe: FAIL (concurrency alone REPRODUCES)\n'
+fi
 # Always exit 0. A failure here is the POINT of the job, and this is a
 # diagnostic job — it must not turn the branch red and make the real suite's
 # verdict ambiguous, which is the exact problem it exists to resolve.
