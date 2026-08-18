@@ -214,8 +214,17 @@ func finishHubMigration(root string, remote *loop.RemoteConfig, oldDir string, o
 }
 
 // verifyHubMigrationCopy fails unless every path under oldDir is present under
-// newDir with the same content. config.json is exempt because the migration
-// rewrites its URL by design, and mux is exempt because it is sockets.
+// newDir with the same content. Three exemptions, each because the migration
+// itself is what makes the two copies differ: config.json (its URL is rewritten
+// by design), mux (sockets, never copied), and the provenance marker.
+//
+// The marker exemption is not cosmetic. A crash between the RemoveAll and the
+// marker removal leaves a stale marker in a directory that is now a perfectly
+// ordinary hub dir — and if that hub is later aliased AGAIN, the old dir carries
+// a marker naming a hub two moves back while the new dir carries the correct
+// one. Comparing them would refuse the migration for a difference the migration
+// created, with a message pointing at no remedy: fail-safe, but wedged, and the
+// operator has nothing to act on.
 func verifyHubMigrationCopy(oldDir, newDir string) error {
 	return filepath.WalkDir(oldDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -225,7 +234,7 @@ func verifyHubMigrationCopy(oldDir, newDir string) error {
 		if err != nil {
 			return err
 		}
-		if rel == "." || rel == "config.json" {
+		if rel == "." || rel == "config.json" || rel == hubMigrationMarker {
 			return nil
 		}
 		if rel == "mux" || strings.HasPrefix(rel, "mux"+string(filepath.Separator)) {

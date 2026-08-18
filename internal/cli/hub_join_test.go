@@ -536,6 +536,70 @@ func TestHubJoinRecoveryBranchWithUnmarkedCompleteCopyPreservesOldKey(t *testing
 	}
 }
 
+// A stale marker must not wedge the NEXT move. If the process dies between the
+// RemoveAll and the marker removal, the new directory is a perfectly ordinary
+// hub dir that happens to still name the hub it came from. Alias that hub again
+// and the old dir carries a marker naming a hub two moves back while the new one
+// carries the correct id — so a copy check that compared them would refuse a
+// migration because of a difference the migration itself created, and the
+// refusal would name a file the operator has no reason to touch.
+//
+// The residue is written directly here, unlike crashAfterHubMigrationRename
+// below. That is deliberate and not a shortcut: the marker WRITE is already
+// pinned by three rows, and the crash this models is in the window after the old
+// directory is gone, which the production path offers no way to stop inside.
+// What is under test is the next migration's tolerance of the leftover.
+func TestHubJoinMigrationToleratesAStaleMarkerFromAnEarlierMove(t *testing.T) {
+	root, firstRemote := setupHubJoinTest(t)
+	oldPub, oldTarget := seedJoinedHub(t, root, firstRemote)
+
+	secondRemote, err := loop.ParseRemoteURL("ssh://alex@hub-alias.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root, func() {
+		if err := cmdHubJoin([]string{secondRemote.URL, "--name", "codex"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(firstRemote.HubDir); !os.IsNotExist(err) {
+		t.Fatalf("precondition: the first move must have completed: %v", err)
+	}
+	// The crash: the old dir is already gone, the marker never got removed.
+	marker := filepath.Join(secondRemote.HubDir, hubMigrationMarker)
+	if err := os.WriteFile(marker, []byte(firstRemote.HubID+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	thirdRemote, err := loop.ParseRemoteURL("ssh://alex@hub-third.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root, func() {
+		if err := cmdHubJoin([]string{thirdRemote.URL, "--name", "codex"}); err != nil {
+			t.Fatalf("a leftover marker from an earlier move wedged the next one: %v", err)
+		}
+	})
+	if _, err := os.Stat(secondRemote.HubDir); !os.IsNotExist(err) {
+		t.Fatalf("second hub dir survived the move: %v", err)
+	}
+	active := filepath.Join(thirdRemote.HubDir, "keys", "codex-tiny_ed25519")
+	target, err := os.Readlink(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := os.ReadFile(filepath.Join(filepath.Dir(active), target+".pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != oldTarget || string(pub) != string(oldPub) {
+		t.Fatalf("the second move changed the active key: %q -> %q", oldTarget, target)
+	}
+	if _, err := os.Stat(filepath.Join(thirdRemote.HubDir, hubMigrationMarker)); !os.IsNotExist(err) {
+		t.Fatalf("marker survived a completed migration: %v", err)
+	}
+}
+
 // crashAfterHubMigrationRename leaves the state a crash between the rename and
 // the pointer write leaves behind. It drives the PRODUCTION first pass to build
 // it rather than writing the directory by hand: the marker is the thing under

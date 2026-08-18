@@ -312,6 +312,15 @@ func (h *sshdHarness) writeSSHWrapper() {
 	if err := os.MkdirAll(h.clientBin, 0o700); err != nil {
 		h.t.Fatal(err)
 	}
+	// IdentitiesOnly=yes is load-bearing, not tidiness. Injecting `-i` does NOT
+	// stop ssh also offering every key in the caller's agent, and the fixture's
+	// sshd runs MaxAuthTries 2 — so on a machine with a populated SSH_AUTH_SOCK
+	// the agent's keys are offered first, the limit is hit before the identity
+	// this harness meant to use is ever tried, and the whole suite fails with
+	// "Too many authentication failures" plus srclimit_penalise noise that reads
+	// like a sick machine. It passed on CI only because runners have empty
+	// agents. Every real invocation through BuildSSHInvocation already sets this;
+	// the wrapper was the one path that did not.
 	script := fmt.Sprintf(`#!/bin/sh
 has_identity=0
 previous=
@@ -319,7 +328,7 @@ for argument in "$@"; do
   if [ "$previous" = "-i" ]; then has_identity=1; fi
   previous=$argument
 done
-set -- -F /dev/null -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s "$@"
+set -- -F /dev/null -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s "$@"
 if [ "$has_identity" -eq 0 ]; then set -- -i %s "$@"; fi
 exec %s "$@"
 `, h.knownHosts, h.adminKey, h.ssh)
@@ -421,31 +430,46 @@ func (h *sshdHarness) stop() {
 
 func (h *sshdHarness) close() {
 	h.closeOnce.Do(func() {
+		// BOTH of these are deferred, and that is the whole point. stop() ->
+		// stopMuxMasters() ends in a t.Fatalf when a master survives the reap,
+		// which is a runtime.Goexit: everything written AFTER the stop() call
+		// simply never ran. So the single failure that most needs the daemon's
+		// own account of the session was the one failure that got no dump at
+		// all, and it leaked the fixture tree on the way out. Deferred calls DO
+		// run during a Goexit, so both now happen on every path — including any
+		// future assertion added anywhere in the teardown chain. This is the
+		// milestone's own lesson applied to its instrument: collect the evidence
+		// where the failure is, not only where it is convenient.
+		defer func() {
+			if err := os.RemoveAll(h.root); err != nil {
+				h.t.Errorf("remove sshd fixture: %v", err)
+			}
+		}()
+		defer func() {
+			// Dump the daemon's own account of the session BEFORE deleting the
+			// fixture. sshd runs at LogLevel VERBOSE and records who authenticated,
+			// when each channel opened, and — the part that matters when a stream
+			// ends early — which SIDE disconnected and why. Without this the log is
+			// written, read once for authCount(), and then removed with the root, so
+			// a failure that only reproduces on a CI runner cannot be diagnosed from
+			// the run at all: you get the client's classification ("channel to the
+			// hub was lost") and nothing about the cause.
+			// Normally only on failure. But dumping ONLY on failure means every
+			// observation drawn from this log is selected on the failure: "it appears
+			// only in failing runs" is guaranteed when failing runs are the only ones
+			// we read. That is how a normal record gets promoted to a defect
+			// signature, twice this milestone. AGENTCHUTE_SSHD_DUMP_ALWAYS=1 takes the
+			// passing logs too, so a repeated run gives greens to diff the reds
+			// against rather than a red to interpret alone. No CI job sets it; it is
+			// there for the next hunt.
+			//
+			// It has to happen HERE, before the deferred RemoveAll takes the log
+			// with it — deferred calls run in LIFO order, so this one runs first.
+			if h.t.Failed() || os.Getenv("AGENTCHUTE_SSHD_DUMP_ALWAYS") != "" {
+				h.dumpDiagnostics()
+			}
+		}()
 		h.stop()
-		// Dump the daemon's own account of the session BEFORE deleting the
-		// fixture. sshd runs at LogLevel VERBOSE and records who authenticated,
-		// when each channel opened, and — the part that matters when a stream
-		// ends early — which SIDE disconnected and why. Without this the log is
-		// written, read once for authCount(), and then removed with the root, so
-		// a failure that only reproduces on a CI runner cannot be diagnosed from
-		// the run at all: you get the client's classification ("channel to the
-		// hub was lost") and nothing about the cause.
-		// Normally only on failure. But dumping ONLY on failure means every
-		// observation drawn from this log is selected on the failure: "it appears
-		// only in failing runs" is guaranteed when failing runs are the only ones
-		// we read. That is how a normal record gets promoted to a defect
-		// signature, twice this milestone. AGENTCHUTE_SSHD_DUMP_ALWAYS=1 takes the
-		// passing logs too, so a repeated run gives greens to diff the reds
-		// against rather than a red to interpret alone. No CI job sets it; it is
-		// there for the next hunt.
-		//
-		// It has to happen HERE, before RemoveAll below takes the log with it.
-		if h.t.Failed() || os.Getenv("AGENTCHUTE_SSHD_DUMP_ALWAYS") != "" {
-			h.dumpDiagnostics()
-		}
-		if err := os.RemoveAll(h.root); err != nil {
-			h.t.Errorf("remove sshd fixture: %v", err)
-		}
 	})
 }
 

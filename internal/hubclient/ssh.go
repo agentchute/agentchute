@@ -254,7 +254,7 @@ func startSSH(ctx context.Context, invocation SSHInvocation) (Transport, error) 
 // Owning the fds removes the whole class: os/exec closes only the descriptors it
 // created, so nothing but this transport's own Close ever touches the read end,
 // and it happens after the caller is done reading. The child's ends are closed
-// here so the reader still sees a real EOF when ssh exits.
+// here, by us, so the reader still sees a real EOF when ssh exits.
 func startProcessTransport(cmd *exec.Cmd, cancel context.CancelFunc) (*processTransport, error) {
 	childStdin, stdin, err := os.Pipe()
 	if err != nil {
@@ -273,9 +273,13 @@ func startProcessTransport(cmd *exec.Cmd, cancel context.CancelFunc) (*processTr
 	p := &processTransport{cmd: cmd, stdin: stdin, stdout: stdout, cancel: cancel, waitCh: make(chan error, 1), closeDone: make(chan struct{})}
 	cmd.Stderr = &p.stderr
 	startErr := cmd.Start()
-	// Ours to close either way: os/exec closes the child's ends after a
-	// successful Start, and a second Close on an *os.File is a no-op, but on a
-	// FAILED start nothing has closed them at all.
+	// Load-bearing, on BOTH paths, and not a belt-and-braces double close.
+	// os/exec only closes descriptors IT opened: an *os.File the caller assigns
+	// to cmd.Stdin/cmd.Stdout goes to neither childIOFiles nor parentIOPipes
+	// (exec.go, "opened by the Cmd itself (not supplied by the caller)"), so
+	// nothing else ever closes these. Leaving the child's write end open in this
+	// process would mean the read end never sees EOF when ssh exits — the reader
+	// would block forever instead of finishing.
 	_ = childStdin.Close()
 	_ = childStdout.Close()
 	if startErr != nil {
