@@ -110,6 +110,94 @@ func TestHubKeyRecoveryFromHalfFinishedPromoteKeepsActiveKey(t *testing.T) {
 	}
 }
 
+// The NEGATIVE arm of the orphan row above, and the one that decides whether
+// "adopt what you find" is safe: an orphan that FAILS its passphrase-free probe
+// must be retired to `.invalid.<stamp>` and replaced, never adopted.
+//
+// Adopting an unusable key would produce a lane that authenticates with nothing
+// and reports no error until the first connect; silently deleting it would
+// destroy material an operator may need to inspect. The retire-and-remint path
+// is what makes the adopt path in the row above safe to have at all.
+func TestHubKeyRecoveryRetiresAnUnusableOrphanAndRemints(t *testing.T) {
+	dir := t.TempDir()
+	keysDir := filepath.Join(dir, "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := prepareHubKey(dir, "codex-tiny"); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(keysDir, "codex-tiny_ed25519")
+	orphanPub := readKeyFile(t, active+".v1.pub")
+	if err := os.Remove(active); err != nil {
+		t.Fatal(err)
+	}
+	// Make the orphan fail its probe. Corrupting the private key is the same
+	// observable a passphrase-protected one produces — ssh-keygen -y -P "" fails
+	// — without needing to mint an encrypted key in a test.
+	if err := os.WriteFile(active+".v1", []byte("not a key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	state, minted, err := prepareHubKey(dir, "codex-tiny")
+	if err != nil {
+		t.Fatalf("recovery failed: %v", err)
+	}
+	if !minted {
+		t.Fatal("recovery adopted an orphan that cannot be used; the lane would authenticate with nothing")
+	}
+	if got := activeKeyBody(t, active); got == orphanPub {
+		t.Fatal("recovery kept the unusable key material")
+	}
+	// Deliberately NOT asserting the reminted version number. The retired file
+	// leaves the `.vN` namespace entirely (it becomes `.invalid.<stamp>`), so
+	// reusing v1 collides with nothing and no contract says otherwise. Asserting
+	// it would have pinned an invention of mine rather than a documented rule —
+	// which is exactly the hazard of a test built from the implementation.
+	_ = state
+
+	// Retired, not deleted: the operator can still inspect it.
+	entries, err := os.ReadDir(keysDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired := 0
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".invalid.") {
+			retired++
+		}
+	}
+	if retired == 0 {
+		t.Fatalf("unusable key was destroyed rather than retired; keys dir = %v", names(entries))
+	}
+	// The retired file carries the unusable MATERIAL. Asserting the .v1 NAME is
+	// gone would be wrong: the remint legitimately reuses it, so the name says
+	// nothing about which bytes are where.
+	var retiredBody string
+	for _, e := range entries {
+		// The retired PUBLIC file is `<name>.pub.invalid.<stamp>`, so it does not
+		// end in .pub — match on the substring anywhere in the name.
+		if strings.Contains(e.Name(), ".invalid.") && !strings.Contains(e.Name(), ".pub") {
+			data, rerr := os.ReadFile(filepath.Join(keysDir, e.Name()))
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			retiredBody = string(data)
+		}
+	}
+	if retiredBody != "not a key\n" {
+		t.Fatalf("the retired file does not hold the unusable key material: %q", retiredBody)
+	}
+}
+
+func names(entries []os.DirEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Name())
+	}
+	return out
+}
+
 // activeKeyBody resolves the active symlink and reads ITS public file — the
 // documented way to get the current pubkey. There is deliberately no
 // <agent>_ed25519.pub symlink, so reading beside the link finds nothing.
