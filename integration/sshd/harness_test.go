@@ -434,9 +434,10 @@ func (h *sshdHarness) close() {
 		// observation drawn from this log is selected on the failure: "it appears
 		// only in failing runs" is guaranteed when failing runs are the only ones
 		// we read. That is how a normal record gets promoted to a defect
-		// signature, twice this milestone. Under the hammer job we take the
-		// passing logs too, so 16 greens and 4 reds from one round can be diffed
-		// rather than interpreted.
+		// signature, twice this milestone. AGENTCHUTE_SSHD_DUMP_ALWAYS=1 takes the
+		// passing logs too, so a repeated run gives greens to diff the reds
+		// against rather than a red to interpret alone. No CI job sets it; it is
+		// there for the next hunt.
 		//
 		// It has to happen HERE, before RemoveAll below takes the log with it.
 		if h.t.Failed() || os.Getenv("AGENTCHUTE_SSHD_DUMP_ALWAYS") != "" {
