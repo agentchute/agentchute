@@ -534,11 +534,31 @@ func (h *sshdHarness) stopMuxMasters() {
 	}
 	h.rememberJoinedMuxPaths()
 	h.muxMu.Lock()
+	computed := make(map[string]struct{}, len(h.muxPaths))
 	paths := make([]string, 0, len(h.muxPaths))
 	for path := range h.muxPaths {
+		computed[path] = struct{}{}
 		paths = append(paths, path)
 	}
 	h.muxMu.Unlock()
+
+	// Everything above reaps only masters whose ControlPath this process can
+	// RECOMPUTE. A master opened by a child process — the fake codex running the
+	// real binary — is only reachable that way if every input to the isolation
+	// digest still resolves identically here and now. If any does not, the reap
+	// silently succeeds while reaping nothing, and the next one-shot multiplexes
+	// over the surviving master: two forced-command sessions on one port.
+	//
+	// So also enumerate the sockets that actually exist on disk, and say plainly
+	// when one was found that the computed set did not know about. That line is
+	// the evidence for whether the recompute is the mechanism; without it a
+	// missed reap and a reap that had nothing to do look identical.
+	for _, found := range h.discoverMuxSockets() {
+		if _, known := computed[found]; !known {
+			h.t.Logf("mux reap: live master at %s was not in the recomputed set %v; reaping it too", found, paths)
+			paths = append(paths, found)
+		}
+	}
 	for _, controlPath := range paths {
 		_ = h.muxControl(controlPath, "exit")
 		deadline := time.Now().Add(2 * time.Second)
@@ -549,6 +569,68 @@ func (h *sshdHarness) stopMuxMasters() {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+
+	// The positive control, and the reason this function used to report success
+	// while doing nothing. `-O check` fails for a socket that does not exist and
+	// for one that was just closed, so the loop above cannot tell "I reaped the
+	// master" from "I addressed a name that was never there" — which is exactly
+	// what it was doing: reaping through the literal `%C` token, whose expansion
+	// is ssh's own connection hash and did not name the live socket.
+	//
+	// Assert on the filesystem instead: after a reap, no mux socket may remain.
+	// This is the only assertion here that can fail, and it must stay that way.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		remaining := h.discoverMuxSockets()
+		if len(remaining) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("mux reap did not close every master; still live: %v\n"+
+				"A surviving master means the next one-shot multiplexes over it — two forced-command sessions on one connection.", remaining)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// discoverMuxSockets returns ControlPath= arguments for every mux socket present
+// under the roots BuildSSHInvocation would consider. It looks at what IS rather
+// than at what should be, which is the only way to see a master the recompute
+// cannot address.
+func (h *sshdHarness) discoverMuxSockets() []string {
+	uid := "unknown"
+	if u, err := user.Current(); err == nil && u.Uid != "" {
+		uid = u.Uid
+	}
+	seen := map[string]struct{}{}
+	var found []string
+	for _, root := range []string{os.TempDir(), "/tmp"} {
+		base := filepath.Join(root, "ac-"+uid)
+		entries, err := os.ReadDir(base)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			dir := filepath.Join(base, entry.Name())
+			socks, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			for _, sock := range socks {
+				info, err := sock.Info()
+				if err != nil || info.Mode()&os.ModeSocket == 0 {
+					continue
+				}
+				arg := "ControlPath=" + filepath.Join(dir, sock.Name())
+				if _, dup := seen[arg]; dup {
+					continue
+				}
+				seen[arg] = struct{}{}
+				found = append(found, arg)
+			}
+		}
+	}
+	return found
 }
 
 func (h *sshdHarness) muxControl(controlPath, operation string) error {

@@ -50,6 +50,15 @@ func TestSSHDChildEnvSendAndSupervisedRelaunchDefault(t *testing.T) {
 	if err := h.State().Deliver("sshd-fixture-peer", agentID, "arm remote shadow latch"); err != nil {
 		t.Fatal(err)
 	}
+	// Reaping is not the same as staying reaped: serve is still running and
+	// polling, so it can open a fresh master between the reap and this check,
+	// which would multiplex the check over it regardless of how well the reap
+	// worked. On a green run this logs nothing. If ubuntu fails here again, this
+	// line separates "the reap missed a master" from "serve opened a new one" —
+	// the two hypotheses currently indistinguishable in the CI log.
+	if live := h.discoverMuxSockets(); len(live) > 0 {
+		t.Logf("a master exists again after the reap, before the check runs: %v", live)
+	}
 	stdout, stderr, err := runWithChildEnv(h, checkout, first, nil, "check")
 	if err != nil || !strings.Contains(stdout, "CLAIMED") {
 		t.Fatalf("remote check = %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
