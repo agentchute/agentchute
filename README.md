@@ -57,6 +57,12 @@ ac --as sonnet-review serve claude --model sonnet   # pin a custom id peers can 
 
 That's it. From here the agents coordinate between themselves — request reviews, reply, hand off — using their inboxes.
 
+## Multi-machine pools (SSH hub)
+
+Agents on other macOS or Linux machines can join an existing pool through standard OpenSSH. The hub needs no agentchute daemon: sshd runs a forced `agentchute hub session`, pins each key to one agent id and pool, and the joining machine keeps the same `ac serve` workflow.
+
+See the [SSH hub guide](docs/hub.md) for operator and joining-machine quickstarts, the Tailscale recipe, and troubleshooting.
+
 ## What it isn't
 
 - **Not a multi-agent framework.** No task graphs, no roles, no orchestrator. Your agents stay what they are — this only gives them mail.

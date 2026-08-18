@@ -1,0 +1,703 @@
+//go:build sshd_integration
+
+package sshd
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/agentchute/agentchute/internal/hubclient"
+	"github.com/agentchute/agentchute/internal/hubwire"
+	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
+	"github.com/agentchute/agentchute/internal/spectest"
+)
+
+const sshdPoolID = "0123456789ab"
+
+type sshdHarness struct {
+	t           *testing.T
+	root        string
+	repo        string
+	pool        string
+	cfg         *loop.Config
+	remote      *loop.RemoteConfig
+	binary      string
+	sshd        string
+	ssh         string
+	keygen      string
+	user        string
+	port        int
+	hostKey     string
+	knownHosts  string
+	authorized  string
+	config      string
+	log         string
+	clientHome  string
+	clientBin   string
+	clientState string
+	adminKey    string
+	keys        map[string]string
+	maxRead     int
+
+	processMu sync.Mutex
+	process   *exec.Cmd
+	done      chan struct{}
+	waitErr   error
+	closeOnce sync.Once
+}
+
+func requireSSHDTest(t *testing.T) {
+	t.Helper()
+	if os.Getenv("AGENTCHUTE_SSHD_TEST") != "1" {
+		t.Skip("set AGENTCHUTE_SSHD_TEST=1 through tools/sshd-test.sh")
+	}
+	if err := validateSSHDTestEnvironment(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validateSSHDTestEnvironment() error {
+	for _, key := range []string{"AGENTCHUTE_CONTROL_REPO", "AGENTCHUTE_LOOP_DIR"} {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value == "" {
+			continue
+		}
+		if isRealPoolPath(key, value) {
+			return fmt.Errorf("sshd integration refuses %s=%s: points at a real agentchute pool", key, value)
+		}
+	}
+	return nil
+}
+
+func isRealPoolPath(key, path string) bool {
+	if key == "AGENTCHUTE_CONTROL_REPO" {
+		if info, err := os.Stat(filepath.Join(path, "AGENTCHUTE.md")); err == nil && info.Mode().IsRegular() {
+			return true
+		}
+		if info, err := os.Stat(filepath.Join(path, ".agentchute", "loop")); err == nil && info.IsDir() {
+			return true
+		}
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func newSSHDHarness(t *testing.T) *sshdHarness {
+	t.Helper()
+	requireSSHDTest(t)
+	root, err := os.MkdirTemp("/tmp", "agentchute-sshd-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &sshdHarness{t: t, root: root, repo: sshdRepoRoot(t), keys: make(map[string]string)}
+	if strings.Contains(t.Name(), "/W1/") {
+		// Keep the first msg frame out of bufio's read-ahead so W1 can sever
+		// the real SSH transport at the vector's exact failure boundary.
+		h.maxRead = 1
+	}
+	t.Cleanup(h.close)
+	h.sshd = requireTool(t, "/usr/sbin/sshd", "sshd")
+	h.ssh = requireTool(t, "", "ssh")
+	h.keygen = requireTool(t, "", "ssh-keygen")
+	current, err := user.Current()
+	if err != nil || current.Username == "" {
+		t.Fatalf("resolve current user: %v", err)
+	}
+	h.user = current.Username
+	h.binary = filepath.Join(root, "bin", "agentchute")
+	if err := os.MkdirAll(filepath.Dir(h.binary), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runCommand(t, h.repo, "go", "build", "-o", h.binary, ".")
+
+	h.pool = filepath.Join(root, "pool")
+	loopDir := filepath.Join(h.pool, ".agentchute", "loop")
+	if err := os.MkdirAll(filepath.Join(loopDir, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.pool, "AGENTCHUTE.md"), []byte("# sshd integration pool\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(loopDir, "state", "pool.id"), []byte(sshdPoolID+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.pool, err = filepath.EvalSymlinks(h.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopDir = filepath.Join(h.pool, ".agentchute", "loop")
+	h.cfg = &loop.Config{ControlRepo: h.pool, LoopDir: loopDir, Vendor: "agentchute"}
+	vendor := "test"
+	for _, id := range []string{"codex", "grok"} {
+		if _, err := op.Register(h.cfg, op.Context{ActorID: id}, op.RegisterReq{Vendor: &vendor, Host: "sshd-fixture"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h.clientHome = filepath.Join(root, "home")
+	h.clientState = filepath.Join(root, "client")
+	if err := os.MkdirAll(filepath.Join(h.clientState, "keys"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(h.clientHome, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h.hostKey = filepath.Join(root, "host_ed25519")
+	runCommand(t, "", h.keygen, "-q", "-t", "ed25519", "-N", "", "-f", h.hostKey)
+	h.authorized = filepath.Join(h.clientHome, ".ssh", "authorized_keys")
+	if err := os.WriteFile(h.authorized, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.addAdminKey()
+	for _, id := range []string{"codex", "grok"} {
+		h.addAgent(id)
+	}
+	h.port = freePort(t)
+	h.knownHosts = filepath.Join(h.clientState, "known_hosts")
+	h.writeKnownHosts()
+	h.writeSSHWrapper()
+	h.config = filepath.Join(root, "sshd_config")
+	h.log = filepath.Join(root, "sshd.log")
+	h.writeConfig()
+	h.remote = &loop.RemoteConfig{
+		URL:  "ssh://" + h.user + "@127.0.0.1:" + fmt.Sprint(h.port) + h.pool,
+		User: h.user, Host: "127.0.0.1", Port: h.port, PoolPath: h.pool,
+		HubID: sshdPoolID, HubDir: h.clientState,
+		ConfigPath:    filepath.Join(h.clientState, "config.json"),
+		ShadowLoopDir: filepath.Join(h.clientState, ".agentchute", "loop"),
+	}
+	h.start()
+	return h
+}
+
+func sshdRepoRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate sshd harness source")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+}
+
+func requireTool(t *testing.T, preferred, name string) string {
+	t.Helper()
+	if preferred != "" {
+		if info, err := os.Stat(preferred); err == nil && !info.IsDir() {
+			return preferred
+		}
+	}
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatalf("%s is required for sshd integration: %v", name, err)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
+}
+
+func runCommand(t *testing.T, dir, name string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
+	}
+	return out
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func (h *sshdHarness) addAgent(id string) {
+	h.t.Helper()
+	key := filepath.Join(h.clientState, "keys", id+"_ed25519")
+	runCommand(h.t, "", h.keygen, "-q", "-t", "ed25519", "-N", "", "-C", "agentchute:"+id, "-f", key)
+	pub, err := os.ReadFile(key + ".pub")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	fields := strings.Fields(string(pub))
+	if len(fields) < 2 {
+		h.t.Fatalf("invalid public key for %s", id)
+	}
+	line := fmt.Sprintf("restrict,command=\"%s hub session --agent %s --pool %s --pool-id %s\" %s %s agentchute:%s:%s\n", h.binary, id, h.pool, sshdPoolID, fields[0], fields[1], id, sshdPoolID)
+	file, err := os.OpenFile(h.authorized, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if _, err := file.WriteString(line); err != nil {
+		_ = file.Close()
+		h.t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		h.t.Fatal(err)
+	}
+	h.keys[id] = key
+}
+
+func (h *sshdHarness) addAdminKey() {
+	h.t.Helper()
+	h.adminKey = filepath.Join(h.root, "admin_ed25519")
+	runCommand(h.t, "", h.keygen, "-q", "-t", "ed25519", "-N", "", "-C", "agentchute:sshd-admin", "-f", h.adminKey)
+	pub, err := os.ReadFile(h.adminKey + ".pub")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	file, err := os.OpenFile(h.authorized, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if _, err := file.Write(pub); err != nil {
+		_ = file.Close()
+		h.t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *sshdHarness) writeKnownHosts() {
+	h.t.Helper()
+	pub, err := os.ReadFile(h.hostKey + ".pub")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	fields := strings.Fields(string(pub))
+	if len(fields) < 2 {
+		h.t.Fatal("invalid host public key")
+	}
+	line := fmt.Sprintf("[127.0.0.1]:%d %s %s\n", h.port, fields[0], fields[1])
+	if err := os.WriteFile(h.knownHosts, []byte(line), 0o600); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *sshdHarness) writeSSHWrapper() {
+	h.t.Helper()
+	h.clientBin = filepath.Join(h.root, "client-bin")
+	if err := os.MkdirAll(h.clientBin, 0o700); err != nil {
+		h.t.Fatal(err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+has_identity=0
+previous=
+for argument in "$@"; do
+  if [ "$previous" = "-i" ]; then has_identity=1; fi
+  previous=$argument
+done
+set -- -F /dev/null -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s "$@"
+if [ "$has_identity" -eq 0 ]; then set -- -i %s "$@"; fi
+exec %s "$@"
+`, h.knownHosts, h.adminKey, h.ssh)
+	if err := os.WriteFile(filepath.Join(h.clientBin, "ssh"), []byte(script), 0o700); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *sshdHarness) writeConfig() {
+	h.t.Helper()
+	config := fmt.Sprintf(`Port %d
+ListenAddress 127.0.0.1
+HostKey %s
+PidFile %s
+AuthorizedKeysFile %s
+StrictModes no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+UsePAM no
+PermitRootLogin prohibit-password
+AllowUsers %s
+LogLevel VERBOSE
+MaxAuthTries 2
+MaxSessions 20
+SetEnv HOME=%s PATH=%s:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+`, h.port, h.hostKey, filepath.Join(h.root, "sshd.pid"), h.authorized, h.user, h.clientHome, filepath.Dir(h.binary))
+	if err := os.WriteFile(h.config, []byte(config), 0o600); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *sshdHarness) start() {
+	h.t.Helper()
+	h.processMu.Lock()
+	defer h.processMu.Unlock()
+	if h.process != nil {
+		h.t.Fatal("sshd already running")
+	}
+	check := exec.Command(h.sshd, "-t", "-f", h.config)
+	if out, err := check.CombinedOutput(); err != nil {
+		h.t.Fatalf("sshd config check: %v\n%s", err, out)
+	}
+	cmd := exec.Command(h.sshd, "-D", "-f", h.config, "-E", h.log)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		h.t.Fatal(err)
+	}
+	h.process = cmd
+	h.done = make(chan struct{})
+	h.waitErr = nil
+	go func() {
+		err := cmd.Wait()
+		h.processMu.Lock()
+		h.waitErr = err
+		h.processMu.Unlock()
+		close(h.done)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", h.port), 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		select {
+		case <-h.done:
+			h.t.Fatalf("sshd exited before readiness: %v\n%s", h.waitErr, stderr.String())
+		default:
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	h.t.Fatalf("sshd did not listen on port %d\n%s", h.port, stderr.String())
+}
+
+func (h *sshdHarness) stop() {
+	h.processMu.Lock()
+	cmd, done := h.process, h.done
+	h.processMu.Unlock()
+	if cmd == nil {
+		return
+	}
+	_ = cmd.Process.Kill()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		h.t.Errorf("sshd did not exit")
+	}
+	h.processMu.Lock()
+	h.process = nil
+	h.processMu.Unlock()
+}
+
+func (h *sshdHarness) close() {
+	h.closeOnce.Do(func() {
+		h.stop()
+		if err := os.RemoveAll(h.root); err != nil {
+			h.t.Errorf("remove sshd fixture: %v", err)
+		}
+	})
+}
+
+func (h *sshdHarness) Open(ctx context.Context, pinned string) (spectest.Session, error) {
+	return h.open(ctx, pinned, "agentchute-hub", hubclient.SSHBuildOptions{})
+}
+
+func (h *sshdHarness) open(ctx context.Context, pinned, requested string, opts hubclient.SSHBuildOptions) (*sshProcessSession, error) {
+	key, ok := h.keys[pinned]
+	if !ok {
+		return nil, fmt.Errorf("no client key for %s", pinned)
+	}
+	if opts.Remote == nil {
+		opts.Remote = h.remote
+	}
+	opts.AgentID = pinned
+	opts.KeyPath = key
+	opts.StateDir = h.clientState
+	invocation, err := hubclient.BuildSSHInvocation(opts)
+	if err != nil {
+		return nil, err
+	}
+	invocation.Args[len(invocation.Args)-1] = requested
+	cmd := exec.CommandContext(ctx, h.ssh, invocation.Args...)
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdin, ok := stdinPipe.(*os.File)
+	if !ok {
+		return nil, errors.New("ssh stdin is not an os.File")
+	}
+	stdout, ok := stdoutPipe.(*os.File)
+	if !ok {
+		return nil, errors.New("ssh stdout is not an os.File")
+	}
+	session := &sshProcessSession{cmd: cmd, stdin: stdin, stdout: stdout, done: make(chan struct{}), requested: requested, warnings: invocation.Warnings, maxRead: h.maxRead}
+	cmd.Stderr = &session.stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	go func() {
+		session.waitErr = cmd.Wait()
+		close(session.done)
+	}()
+	return session, nil
+}
+
+func (h *sshdHarness) State() spectest.StateProbe { return (*sshdState)(h) }
+
+type sshProcessSession struct {
+	cmd       *exec.Cmd
+	stdin     *os.File
+	stdout    *os.File
+	stderr    bytes.Buffer
+	done      chan struct{}
+	waitErr   error
+	requested string
+	warnings  []string
+	maxRead   int
+	forced    atomic.Bool
+	closeOnce sync.Once
+}
+
+func (s *sshProcessSession) Read(p []byte) (int, error) {
+	if s.maxRead > 0 && len(p) > s.maxRead {
+		p = p[:s.maxRead]
+	}
+	return s.stdout.Read(p)
+}
+func (s *sshProcessSession) Write(p []byte) (int, error)        { return s.stdin.Write(p) }
+func (s *sshProcessSession) SetReadDeadline(t time.Time) error  { return s.stdout.SetReadDeadline(t) }
+func (s *sshProcessSession) SetWriteDeadline(t time.Time) error { return s.stdin.SetWriteDeadline(t) }
+func (s *sshProcessSession) ForceDisconnect() error {
+	s.forced.Store(true)
+	_ = s.stdin.Close()
+	_ = s.stdout.Close()
+	if err := s.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	return nil
+}
+func (s *sshProcessSession) Wait(ctx context.Context) error {
+	select {
+	case <-s.done:
+		if s.forced.Load() {
+			return io.ErrClosedPipe
+		}
+		return s.waitErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (s *sshProcessSession) Close() error {
+	s.closeOnce.Do(func() {
+		_ = s.stdin.Close()
+		select {
+		case <-s.done:
+		case <-time.After(time.Second):
+			_ = s.cmd.Process.Kill()
+			<-s.done
+		}
+	})
+	if s.forced.Load() {
+		return nil
+	}
+	return s.waitErr
+}
+
+type sshdState sshdHarness
+
+func (s *sshdState) Deliver(from, to, body string) error {
+	_, _, err := loop.SendTsMessageWithCommit(s.cfg, from, to, loop.ComposeMessage(from, "", body), "")
+	return err
+}
+
+func (s *sshdState) InboxCount(agent string) (int, error) {
+	msgs, _, err := loop.ListInboxMessagesWithSkipped(s.cfg.AgentInboxDir(agent))
+	if errors.Is(err, loop.ErrInboxMissing) {
+		return 0, nil
+	}
+	return len(msgs), err
+}
+
+func (s *sshdState) ClaimedCount(agent string) (int, error) {
+	msgs, err := loop.ListClaimedMessages(s.cfg.AgentClaimedDir(agent))
+	return len(msgs), err
+}
+
+func (s *sshdState) ReplaceLeaseToken(agent, token string) error {
+	path := filepath.Join(s.cfg.AgentStateDir(agent), "serve.claim")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var claim loop.ServeClaim
+	if err := json.Unmarshal(b, &claim); err != nil {
+		return err
+	}
+	claim.ServeToken = token
+	b, err = json.MarshalIndent(claim, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o600)
+}
+
+func (s *sshdState) StageUnreadableClaim(agent string) (func() error, error) {
+	msgs, _, err := loop.ListInboxMessagesWithSkipped(s.cfg.AgentInboxDir(agent))
+	if err != nil {
+		return nil, err
+	}
+	if len(msgs) != 1 {
+		return nil, fmt.Errorf("expected one inbox message, got %d", len(msgs))
+	}
+	path, err := loop.ClaimMessage(msgs[0], s.cfg.AgentClaimedDir(agent))
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		return nil, err
+	}
+	return func() error { return os.Chmod(path, 0o600) }, nil
+}
+
+func (h *sshdHarness) authCount() int {
+	b, _ := os.ReadFile(h.log)
+	return strings.Count(string(b), "Accepted publickey for")
+}
+
+func (h *sshdHarness) commandEnv(extra ...string) []string {
+	env := make([]string, 0, len(os.Environ())+3+len(extra))
+	for _, value := range os.Environ() {
+		if strings.HasPrefix(value, "HOME=") || strings.HasPrefix(value, "AGENTCHUTE_") {
+			continue
+		}
+		env = append(env, value)
+	}
+	env = append(env, "HOME="+h.clientHome, "PATH="+h.clientBin+":"+filepath.Dir(h.binary)+":"+os.Getenv("PATH"))
+	env = append(env, extra...)
+	return env
+}
+
+func (h *sshdHarness) runCLI(dir string, args ...string) (string, string, error) {
+	cmd := exec.Command(h.binary, args...)
+	cmd.Dir = dir
+	cmd.Env = h.commandEnv()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
+func (h *sshdHarness) newCheckout() string {
+	h.t.Helper()
+	dir := filepath.Join(h.root, fmt.Sprintf("checkout-%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(filepath.Join(dir, ".agentchute", "loop"), 0o700); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "AGENTCHUTE.md"), []byte("# client checkout\n"), 0o600); err != nil {
+		h.t.Fatal(err)
+	}
+	runCommand(h.t, dir, "git", "init", "-q")
+	return dir
+}
+
+func helloOverSession(t *testing.T, h *sshdHarness, pinned string, opts hubclient.SSHBuildOptions) hubwire.HelloOK {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	raw, err := h.open(ctx, pinned, "discard-this-command", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := hubclient.OpenOneShotTransport(raw, h.remote, pinned, "sshd-integration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello := client.Hello()
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return hello
+}
+
+func TestHarnessAuthenticatesForcesCommandAndCleansUp(t *testing.T) {
+	h := newSSHDHarness(t)
+	hello := helloOverSession(t, h, "codex", hubclient.SSHBuildOptions{})
+	if hello.Agent != "codex" || hello.Pool != h.pool || hello.Pool12 != sshdPoolID {
+		t.Fatalf("hello = %+v", hello)
+	}
+	if h.authCount() != 1 {
+		t.Fatalf("auth entries = %d, want 1", h.authCount())
+	}
+	root, port := h.root, h.port
+	h.close()
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("temp tree survived teardown: %v", err)
+	}
+	conn, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("sshd socket survived teardown")
+	}
+}
+
+func TestHarnessRefusesRealPoolEnvironmentWithoutWrites(t *testing.T) {
+	requireSSHDTest(t)
+	for _, key := range []string{"AGENTCHUTE_CONTROL_REPO", "AGENTCHUTE_LOOP_DIR"} {
+		t.Run(key, func(t *testing.T) {
+			pool := t.TempDir()
+			loopDir := filepath.Join(pool, ".agentchute", "loop")
+			if err := os.MkdirAll(loopDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(pool, "AGENTCHUTE.md"), []byte("sentinel\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			value := pool
+			if key == "AGENTCHUTE_LOOP_DIR" {
+				value = loopDir
+			}
+			t.Setenv(key, value)
+			if err := validateSSHDTestEnvironment(); err == nil || !strings.Contains(err.Error(), "refuses") {
+				t.Fatalf("containment error = %v", err)
+			}
+			b, err := os.ReadFile(filepath.Join(pool, "AGENTCHUTE.md"))
+			if err != nil || string(b) != "sentinel\n" {
+				t.Fatalf("real pool changed: %q, %v", b, err)
+			}
+			entries, err := os.ReadDir(loopDir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("real loop changed: %v, %v", entries, err)
+			}
+		})
+	}
+}
