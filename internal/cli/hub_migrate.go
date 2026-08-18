@@ -197,20 +197,33 @@ func finishHubMigration(root string, remote *loop.RemoteConfig, oldDir string, o
 	if err := verifyHubMigrationCopy(oldDir, newDir); err != nil {
 		return err
 	}
+	// Everything from here is post-commit cleanup: <new-id>/ already exists and
+	// carries the old directory's contents. A failure now leaves TWO hub dirs on
+	// disk, which is recoverable but does not look like anything from the
+	// outside — the operator sees a stray rename or unlink error and has no way
+	// to know a hub move is half-finished. Issue #165 lost data in exactly this
+	// window, so the message says where it stopped and that re-running finishes it.
 	if err := writeHubJoinPointer(root, remote.URL); err != nil {
-		return err
+		return halfFinishedMigration(oldDir, newDir, "writing the control-repo pointer", err)
 	}
 	hubMigrationReapMux(oldCfg, oldDir)
 	if err := os.RemoveAll(oldDir); err != nil {
-		return err
+		return halfFinishedMigration(oldDir, newDir, "removing the old hub directory", err)
 	}
 	if err := fsyncHubDir(filepath.Dir(oldDir)); err != nil {
-		return err
+		return halfFinishedMigration(oldDir, newDir, "flushing the hub directory", err)
 	}
 	if err := os.Remove(filepath.Join(newDir, hubMigrationMarker)); err != nil && !os.IsNotExist(err) {
-		return err
+		return halfFinishedMigration(oldDir, newDir, "clearing the migration marker", err)
 	}
 	return fsyncHubDir(newDir)
+}
+
+// halfFinishedMigration names the state the operator is actually in. Nothing is
+// lost at any of these points: the new directory is complete and the old one is
+// either intact or already gone, so re-running the same join resumes.
+func halfFinishedMigration(oldDir, newDir, step string, cause error) error {
+	return fmt.Errorf("hub join: the hub move is HALF FINISHED — %s already holds this hub's state, and %s failed. Nothing was lost; re-run the same `agentchute hub join` command to finish it. If it keeps failing, fix the underlying error first: %w", newDir, step, cause)
 }
 
 // verifyHubMigrationCopy fails unless every path under oldDir is present under

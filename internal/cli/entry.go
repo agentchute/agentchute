@@ -110,15 +110,24 @@ func Main(a Assets, args []string) int {
 			fmt.Println(msg)
 			return 0
 		}
-		// Exit code 2 for lifecycle-gate sentinels in ordinary text/--json
-		// modes. Hook-envelope modes such as --codex-hook Stop return nil and
-		// carry block/allow in their JSON payload. Exit code 1 is reserved for
-		// actual command failures.
-		if err == errFailIfAny || err == errBlocked {
-			return 2
+		if code := exitCodeForError(err); code != 1 {
+			return code
 		}
 		fmt.Fprintf(os.Stderr, "agentchute %s: %v\n", cmd, err)
 		return 1
 	}
 	return 0
+}
+
+// exitCodeForError is the process exit contract, in one place so it can be
+// asserted rather than restated. Exit code 2 for lifecycle-gate sentinels in
+// ordinary text/--json modes; hook-envelope modes such as --codex-hook Stop
+// return nil and carry block/allow in their JSON payload instead. Exit code 1 is
+// reserved for actual command failures — doctor's summary line used to print
+// "exit 1" for a blocker, which is a gate verdict, not a failure.
+func exitCodeForError(err error) int {
+	if err == errFailIfAny || err == errBlocked {
+		return 2
+	}
+	return 1
 }

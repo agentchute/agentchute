@@ -102,3 +102,21 @@ Common failures are actionable and fail closed:
 - `E_CHANNEL_LOST`: the runner stops the child before relaunching. Remote serve relaunch is enabled by default; pass `--relaunch=false` only when an operator should restart it manually.
 
 The complete error-code registry is in [AGENTCHUTE.md §13.10](../AGENTCHUTE.md#1310-error-code-registry).
+
+## Upgrading a machine that has two copies of agentchute
+
+Joining a hub rewrites the checkout's `.agentchute-control-repo` pointer to an `ssh://`
+URL. A copy of agentchute old enough to predate hub support does not recognise that
+locator — it reads the URL as a relative file path and fails with a mangled `lstat`:
+
+```
+agentchute status: pointer file discovery: /home/dmin/checkout/.agentchute-control-repo ->
+"ssh://alex@hub.example/home/alex/pool":
+lstat /home/dmin/checkout/ssh:/alex@hub.example/home/alex/pool: no such file or directory
+```
+
+Nothing is lost — the old copy fails closed — but the message does not say the binary is
+the problem. Two copies on one machine is the ordinary state mid-upgrade, so `hub join`
+warns when the `agentchute` on `PATH` is not the one performing the join. If you see that
+warning, upgrade or reorder the other copy before relying on bare `agentchute`: hooks and
+the runner both invoke it by name, so whichever copy `PATH` resolves is the one they get.

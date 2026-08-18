@@ -625,6 +625,14 @@ func crashAfterHubMigrationRename(t *testing.T, root string, oldRemote, newRemot
 	if err == nil {
 		t.Fatal("the seeded crash did not fail the join")
 	}
+	// The operator must be told a hub MOVE is half finished, not handed a stray
+	// rename error. Two hub dirs exist at this instant and issue #165 is what
+	// happens when nobody realises that.
+	for _, want := range []string{"HALF FINISHED", newRemote.HubDir, "re-run the same", "Nothing was lost"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("crash error does not say %q — an operator cannot tell a half-finished migration from a stray file error: %v", want, err)
+		}
+	}
 	if err := os.Remove(pointer); err != nil {
 		t.Fatal(err)
 	}
