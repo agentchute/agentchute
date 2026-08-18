@@ -236,13 +236,21 @@ func finishHubMigration(root string, remote *loop.RemoteConfig, oldDir string, o
 	if err := writeHubJoinPointer(root, remote.URL); err != nil {
 		return halfFinishedMigration(oldDir, newDir, "writing the control-repo pointer", err)
 	}
+	// Unconditional. There is no "frozen already exists, carry on" branch, and
+	// that is deliberate: sweepFrozenHubMigration runs first under the same lock,
+	// so a leftover frozen tree is already resolved before this function is
+	// reached. Recovery lives in ONE place. A branch here would also be wrong if
+	// it ever did fire — it would skip the rename, verify and delete the OTHER
+	// migration's frozen tree, and report success having never migrated oldDir at
+	// all.
+	//
+	// If a frozen tree somehow exists anyway, the rename fails (a non-empty
+	// directory cannot be renamed onto) and halfFinishedMigration tells the
+	// operator to re-run — which is exactly right, because the re-run's sweep is
+	// what clears it.
 	frozen := newDir + hubMigrationFrozenSuffix
-	if _, err := os.Stat(frozen); os.IsNotExist(err) {
-		if err := os.Rename(oldDir, frozen); err != nil {
-			return halfFinishedMigration(oldDir, newDir, "freezing the old hub directory", err)
-		}
-	} else if err != nil {
-		return halfFinishedMigration(oldDir, newDir, "checking for a frozen hub directory", err)
+	if err := os.Rename(oldDir, frozen); err != nil {
+		return halfFinishedMigration(oldDir, newDir, "freezing the old hub directory", err)
 	}
 	if err := hubMigrationVerify(frozen, newDir); err != nil {
 		return err
@@ -281,6 +289,12 @@ func sweepFrozenHubMigration(remote *loop.RemoteConfig) error {
 		return fmt.Errorf("hub join: a previous hub move was interrupted after it froze the old directory, and %s does not fully represent %s — so the frozen tree is NOT being deleted and nothing is lost. Resolve the difference (the bytes are all still in %s), then re-run this join: %w", remote.HubDir, frozen, frozen, err)
 	}
 	if err := os.RemoveAll(frozen); err != nil {
+		return err
+	}
+	// The marker as well. finishHubMigration clears it as its last step, so a
+	// crash before that leaves it behind forever — harmless since it is exempt
+	// from the copy check, but it was the one state that never converged.
+	if err := os.Remove(filepath.Join(remote.HubDir, hubMigrationMarker)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return fsyncHubDir(filepath.Dir(frozen))

@@ -182,6 +182,61 @@ func TestHubJoinSweepsAFrozenTreeOnlyAfterVerifyingIt(t *testing.T) {
 	if _, err := os.Stat(frozen); !os.IsNotExist(err) {
 		t.Fatalf("frozen tree survived a verified sweep: %v", err)
 	}
+	// The marker too. finishHubMigration clears it as its last step, so a crash
+	// before that left it behind forever — harmless, but the one state that never
+	// converged.
+	if _, err := os.Stat(filepath.Join(newRemote.HubDir, hubMigrationMarker)); !os.IsNotExist(err) {
+		t.Fatalf("the sweep left %s behind, so a sweep-recovered crash never converges: %v", hubMigrationMarker, err)
+	}
+}
+
+// There is no "the frozen tree already exists, carry on" branch, and there must
+// not be one: recovery lives in the sweep, in one place. A branch here would skip
+// the rename, verify and delete somebody else's frozen tree, and report success
+// having never migrated oldDir at all.
+//
+// This calls finishHubMigration DIRECTLY, because through cmdHubJoin the branch is
+// unreachable — sweepFrozenHubMigration clears the frozen tree first, under the
+// same lock — so a row driving the join cannot tell the two versions apart. My
+// first attempt did exactly that and the mutation passed.
+//
+// The fixture is an EMPTY frozen directory, deliberately: it verifies trivially
+// (nothing in it is missing from newDir) and an empty directory CAN be renamed
+// onto. So the correct code renames over it and completes, while the branch skips
+// the rename, "verifies" nothing, deletes it, and returns success with oldDir
+// still sitting there. A non-empty fixture would make the branch fail on
+// verification instead — the right answer for the wrong reason.
+func TestHubMigrationNeverSucceedsWithoutMigratingTheOldDirectory(t *testing.T) {
+	root, oldRemote := setupHubJoinTest(t)
+	_, _ = seedJoinedHub(t, root, oldRemote)
+	newRemote, err := loop.ParseRemoteURL("ssh://alex@hub-alias.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashAfterHubMigrationRename(t, root, oldRemote, newRemote)
+
+	frozen := newRemote.HubDir + hubMigrationFrozenSuffix
+	if err := os.MkdirAll(frozen, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldCfg, err := hubclient.ReadHubConfig(oldRemote.HubID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var finishErr error
+	withCwd(t, root, func() {
+		finishErr = finishHubMigration(root, newRemote, oldRemote.HubDir, oldCfg)
+	})
+
+	_, statErr := os.Stat(oldRemote.HubDir)
+	migrated := os.IsNotExist(statErr)
+	if finishErr == nil && !migrated {
+		t.Fatal("finishHubMigration reported SUCCESS while the old hub directory is still there — it adopted a frozen tree it did not create and never migrated anything")
+	}
+	if finishErr != nil && migrated {
+		t.Fatalf("reported failure after migrating: %v", finishErr)
+	}
 }
 
 // ROW D — the frozen name can never be mistaken for a hub to migrate FROM.

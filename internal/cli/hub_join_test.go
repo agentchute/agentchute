@@ -502,7 +502,12 @@ func TestHubJoinRecoveryBranchRefusesWhenTheCopyIsIncomplete(t *testing.T) {
 	// path BEFORE it is verified, and a failed verification leaves it there.
 	frozen := newRemote.HubDir + hubMigrationFrozenSuffix
 	assertOldHubKeyIntact(t, oldRemote, oldPub, oldTarget, frozen)
-	if joinErr == nil || !strings.Contains(joinErr.Error(), filepath.Base(missing)) {
+	// Full path, not the basename. verifyHubMigrationCopy renders its target as
+	// filepath.Join(newDir, rel) — exactly this var — and the freeze changed only
+	// the SOURCE side, so nothing here needed loosening. A basename-only
+	// assertion would accept a refusal naming the WRONG directory, and directory
+	// confusion is what #165 was.
+	if joinErr == nil || !strings.Contains(joinErr.Error(), missing) {
 		t.Fatalf("refusal does not name the uncopied file %s: %v", missing, joinErr)
 	}
 }
