@@ -348,6 +348,151 @@ func TestHubJoinLockBusyIsBounded(t *testing.T) {
 	}
 }
 
+// Issue #165 — the migration RECOVERY branch destroys the authorized key.
+//
+// These two rows are the partner of TestHubJoinSameHubMigrationPreservesStateAndKey
+// below: that one drives the COPY path and asserts the active key survives;
+// these drive the RECOVERY path and assert the same property. The recovery
+// branch (hub_migrate.go) returns early when the new hub dir already exists —
+// treating it as "I crashed after my own rename" — and so writes the pointer,
+// reaps the mux and deletes the old dir WITHOUT copying anything. It keys on
+// nothing but the directory's existence, so a dir created by anything else is
+// indistinguishable from a half-finished migration.
+//
+// Both rows FAIL until #165 lands, deliberately: they assert the post-fix
+// contract, and the defect is a silent data-loss path that should be pinned by
+// a failing test rather than a comment.
+//
+// The load-bearing assertion is the SURVIVING KEY, not the error. An error-only
+// row would pass against a fix that refuses for the wrong reason, or that
+// refuses after deleting — so the key is checked first and the error second.
+
+// Arm 1: a FAILED fresh join left the new dir behind with a key and no
+// config.json. This is the severe sub-case and the likely one in practice:
+// prepareHubKey mints before the join ever contacts the hub, so any failure at
+// or after the hello leaves exactly this state — and retrying is the first thing
+// an operator does. findHubMigrationCandidate then probes with the OLD key and
+// returns the old id BECAUSE that probe succeeded: the code proves the key works
+// and then deletes it.
+func TestHubJoinRecoveryBranchWithUnrecognizedDirPreservesOldKey(t *testing.T) {
+	root, oldRemote := setupHubJoinTest(t)
+	oldPub, oldTarget := seedJoinedHub(t, root, oldRemote)
+
+	newRemote, err := loop.ParseRemoteURL("ssh://alex@hub-alias.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The failed-join residue: a minted key, no config.json.
+	if _, _, err := prepareHubKey(newRemote.HubDir, "codex-tiny"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(newRemote.HubDir, "config.json")); !os.IsNotExist(err) {
+		t.Fatalf("precondition: new dir must have no config.json, got %v", err)
+	}
+
+	var joinErr error
+	withCwd(t, root, func() {
+		joinErr = cmdHubJoin([]string{newRemote.URL, "--name", "codex"})
+	})
+	assertOldHubStatePreserved(t, oldRemote, newRemote, oldPub, oldTarget, joinErr)
+}
+
+// Arm 2: a COMPLETED fresh join to the new URL. The new dir has a valid config
+// carrying the new URL and the same pool, so findHubMigrationCandidate takes its
+// other arm and still returns the old id — reaching the same destructive branch.
+// Access survives here because the new key was authorized, but the old key is
+// orphaned in the hub's authorized_keys and everything under the old hub dir is
+// still deleted uncopied. Covering only arm 1 would leave this free to regress.
+func TestHubJoinRecoveryBranchWithCompletedFreshJoinPreservesOldKey(t *testing.T) {
+	root, oldRemote := setupHubJoinTest(t)
+	oldPub, oldTarget := seedJoinedHub(t, root, oldRemote)
+
+	newRemote, err := loop.ParseRemoteURL("ssh://alex@hub-alias.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A complete, ordinary join to the new URL: config.json and all.
+	if err := runHubJoin(root, newRemote, hubJoinOptions{URL: newRemote.URL, Name: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(newRemote.HubDir, "config.json")); err != nil {
+		t.Fatalf("precondition: new dir must have a config.json: %v", err)
+	}
+
+	var joinErr error
+	withCwd(t, root, func() {
+		joinErr = cmdHubJoin([]string{newRemote.URL, "--name", "codex"})
+	})
+	assertOldHubStatePreserved(t, oldRemote, newRemote, oldPub, oldTarget, joinErr)
+}
+
+// seedJoinedHub completes a normal join against oldRemote and returns the active
+// key's public material and symlink target, which is the state the recovery
+// branch must not destroy.
+func seedJoinedHub(t *testing.T, root string, oldRemote *loop.RemoteConfig) ([]byte, string) {
+	t.Helper()
+	hubJoinProbe = func(_ *loop.RemoteConfig, agentID, _ string) (hubwire.HelloOK, []string, error) {
+		return successfulHubHello(agentID), nil, nil
+	}
+	hubJoinAutoAuthorize = func(*loop.RemoteConfig, string, string, bool) error { return nil }
+	if err := runHubJoin(root, oldRemote, hubJoinOptions{URL: oldRemote.URL, Name: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(oldRemote.HubDir, "keys", "codex-tiny_ed25519")
+	target, err := os.Readlink(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := os.ReadFile(filepath.Join(filepath.Dir(active), target+".pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub, target
+}
+
+// assertOldHubStatePreserved checks the property first and the symptom second.
+func assertOldHubStatePreserved(t *testing.T, oldRemote, newRemote *loop.RemoteConfig, oldPub []byte, oldTarget string, joinErr error) {
+	t.Helper()
+	_, statErr := os.Stat(oldRemote.HubDir)
+	oldGone := os.IsNotExist(statErr)
+
+	// Report the actual consequence when it happens, rather than "expected an
+	// error, got nil" — a regression here is data loss and should read as such.
+	if oldGone {
+		newActive := filepath.Join(newRemote.HubDir, "keys", "codex-tiny_ed25519")
+		newTarget, _ := os.Readlink(newActive)
+		newPub, _ := os.ReadFile(filepath.Join(filepath.Dir(newActive), newTarget+".pub"))
+		if string(oldPub) != string(newPub) {
+			t.Fatalf("DATA LOSS: the old hub dir was deleted without being copied, so the authorized key %q no longer exists anywhere (the new dir holds an unrelated key %q)", oldTarget, newTarget)
+		}
+		t.Fatalf("the old hub dir was deleted by a migration that copied nothing (key material happened to match)")
+	}
+	if statErr != nil {
+		t.Fatalf("stat old hub dir: %v", statErr)
+	}
+	active := filepath.Join(oldRemote.HubDir, "keys", "codex-tiny_ed25519")
+	target, err := os.Readlink(active)
+	if err != nil {
+		t.Fatalf("old active key symlink: %v", err)
+	}
+	pub, err := os.ReadFile(filepath.Join(filepath.Dir(active), target+".pub"))
+	if err != nil {
+		t.Fatalf("read old active pubkey: %v", err)
+	}
+	if target != oldTarget || string(pub) != string(oldPub) {
+		t.Fatalf("old active key changed: target %q -> %q", oldTarget, target)
+	}
+
+	// Only now the symptom. Naming the directory keeps an unrelated failure from
+	// satisfying the row.
+	if joinErr == nil {
+		t.Fatal("alias join succeeded against an unrecognized new hub dir; it must refuse rather than migrate into it")
+	}
+	if !strings.Contains(joinErr.Error(), newRemote.HubDir) {
+		t.Fatalf("refusal does not name the unrecognized directory %s: %v", newRemote.HubDir, joinErr)
+	}
+}
+
 func TestHubJoinSameHubMigrationPreservesStateAndKey(t *testing.T) {
 	root, oldRemote := setupHubJoinTest(t)
 	hubJoinProbe = func(_ *loop.RemoteConfig, agentID, _ string) (hubwire.HelloOK, []string, error) {
