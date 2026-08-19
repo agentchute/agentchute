@@ -3,12 +3,14 @@
 package sshd
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentchute/agentchute/internal/hubclient"
 	"github.com/agentchute/agentchute/internal/loop"
@@ -31,6 +33,33 @@ func TestSSHDPinnedSessionServes(t *testing.T) {
 	hello := helloOverSession(t, h, "codex", hubclient.SSHBuildOptions{})
 	if hello.Agent != "codex" {
 		t.Fatalf("hello = %+v", hello)
+	}
+}
+
+// Row 8 — the predicate accepts any NON-EMPTY original command, not the sentinel
+// string. A hub that string-matched `agentchute-hub` would be coupled to the
+// client version that sends it, and every older or newer client would be refused
+// by a check that is supposed to be about pinning. helloOverSession already
+// requests a non-sentinel string; this row says so out loud and picks one that
+// could not be mistaken for the sentinel.
+func TestSSHDPinnedSessionServesForAnyRequestedCommand(t *testing.T) {
+	h := newSSHDHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	raw, err := h.open(ctx, "codex", "definitely-not-the-sentinel-v99", hubclient.SSHBuildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := hubclient.OpenOneShotTransport(raw, h.remote, "codex", "sshd-integration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello := client.Hello()
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if hello.Agent != "codex" {
+		t.Fatalf("a pinned session was refused for requesting a non-sentinel command: %+v", hello)
 	}
 }
 
@@ -281,6 +310,16 @@ func addUnrestrictedAgent(t *testing.T, h *sshdHarness, id string) {
 
 // Rows 10/11/15 — the probes themselves, against real sshd.
 //
+// SPEC INCONSISTENCY, reported rather than papered over. The spec calls a
+// `command=`-less authorized_keys line "producer 1, modelled" (rows 9-11) and
+// expects row 10 to yield the NOT PINNED text — but the same spec's 2c attribution
+// decides producer 1 vs 2 by whether an UNAUTHORIZABLE throwaway key still runs
+// the command. On real sshd that key is refused, so this fixture attributes as
+// producer 2, always. The two halves of the spec cannot both hold. The classifier
+// is the half that is right: attribution follows what was observed, and the spec's
+// own "honest limit" paragraph already concedes this fixture does not model
+// Tailscale's identity layer. Row 10 below asserts what actually happens.
+//
 // SECOND DEVIATION, flagged for the fidelity review alongside row 12's. Producer 1
 // — an intercepting layer such as Tailscale SSH — is NOT reproducible here, and I
 // would rather say so than fake it. Producer 1 is defined by sshd being bypassed,
@@ -376,4 +415,54 @@ func probeRemote(h *sshdHarness) *loop.RemoteConfig {
 	remote := *h.remote
 	remote.HubDir = h.clientState
 	return &remote
+}
+
+// Row 12 — the re-classification itself, BOTH ARMS, through the production dial.
+//
+// One arm alone would only trade one wrong message for another: an
+// unconditional "unpinned" would fix the operator-fallback case and start
+// telling operators with a genuinely missing binary to go disable Tailscale.
+// So both, on the same real sshd, differing only in which cause is present.
+func TestSSHDExit127IsReclassifiedByCauseNotByGuess(t *testing.T) {
+	t.Run("arm A — unpinned host: E_HUB_UNPINNED", func(t *testing.T) {
+		h := newSSHDHarness(t)
+		addUnrestrictedAgent(t, h, "drifter")
+		rememberProbeMux(t, h, "drifter")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		_, _, err := hubclient.Probe(ctx, probeRemote(h), "drifter", "sshd-integration", h.keys["drifter"])
+		if err == nil {
+			t.Fatal("an unpinned host served a session")
+		}
+		if got := hubclient.ErrorCode(err); got != "E_HUB_UNPINNED" {
+			t.Fatalf("exit 127 on an UNPINNED host classified as %s, want E_HUB_UNPINNED:\n%v", got, err)
+		}
+	})
+
+	// The control. Same harness, same sentinel, same exit 127 — but the forced
+	// command IS applied and the binary it names is gone. Without this arm the
+	// change could report "unpinned" for every 127 and still pass arm A.
+	t.Run("arm B — pinned host, binary renamed away: still E_HUB_NO_BINARY", func(t *testing.T) {
+		h := newSSHDHarness(t)
+		rememberProbeMux(t, h, "codex")
+		moved := h.binary + ".moved-away"
+		if err := os.Rename(h.binary, moved); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Rename(moved, h.binary) })
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		_, _, err := hubclient.Probe(ctx, probeRemote(h), "codex", "sshd-integration", h.keys["codex"])
+		if err == nil {
+			t.Fatal("the hub served a session with its binary renamed away")
+		}
+		if got := hubclient.ErrorCode(err); got != "E_HUB_NO_BINARY" {
+			t.Fatalf("a genuinely missing binary on a PINNED host classified as %s, want E_HUB_NO_BINARY:\n%v", got, err)
+		}
+		if strings.Contains(err.Error(), "tailscale") {
+			t.Fatalf("a missing binary sent the operator to disable an interception that is not happening:\n%v", err)
+		}
+	})
 }
