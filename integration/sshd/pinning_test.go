@@ -119,6 +119,7 @@ func sshDirect(t *testing.T, h *sshdHarness, key, remoteCommand string) (string,
 		"-o", "UserKnownHostsFile=" + h.knownHosts,
 		"-o", "IdentitiesOnly=yes",
 		"-o", "IdentityAgent=none",
+		"-o", "IdentitiesOnly=yes",
 		"-i", key,
 		"-p", strconv.Itoa(h.port),
 		h.user + "@127.0.0.1",
@@ -192,6 +193,24 @@ func TestSSHDOperatorFallbackIsSeenAsUnpinnedNotAsAMissingBinary(t *testing.T) {
 	if strings.Contains(out, "E_UNPINNED") {
 		t.Fatalf("the hub session ran at all; producer 2 means it never started:\n%s", out)
 	}
+
+	// WHY THE CLASSIFIER IS NOT DRIVEN FROM THIS ROW, measured rather than
+	// assumed. The review asked for it here. Production never passes -F, so the
+	// only way to make ssh read an operator config is to move HOME — and `ssh -v`
+	// under a moved HOME shows it reading /Users/<me>/.ssh/config and offering
+	// /Users/<me>/.ssh/id_ed25519 anyway: on macOS ssh resolves ~ through getpwuid,
+	// not $HOME. The row would then pass or fail on whether the machine running it
+	// happens to have an ssh config, and would silently test the developer's own
+	// key. That is the isolation failure this milestone has already been bitten
+	// by, so it is refused here.
+	//
+	// The classifier is driven instead where the fixture CAN be deterministic:
+	// TestSSHDExit127IsReclassifiedByCauseNotByGuess dials the production path
+	// against an unrestricted authorized line and asserts E_HUB_UNPINNED with the
+	// producer-2 remedy. Same classifier, same real sshd, no dependency on
+	// whatever ssh config the host machine keeps. What THIS row pins is the half
+	// that needs a config: ssh widening the identity set past what the caller
+	// named, under production's own IdentitiesOnly=yes.
 }
 
 // Row 14 — the control. Same authorized_keys, same operator config, but codex's
@@ -216,9 +235,14 @@ func TestSSHDOperatorConfigDoesNotBreakAPinnedSession(t *testing.T) {
 }
 
 // sshWithOperatorConfig runs ssh with an EXPLICIT -F pointing at an operator
-// config, deliberately NOT through the harness wrapper. IdentitiesOnly is left
-// unset, because the whole condition under test is ssh widening the identity set
-// beyond what the caller named.
+// config, deliberately NOT through the harness wrapper.
+//
+// IdentitiesOnly=yes is SET, matching production BuildSSHInvocation, and that is
+// the point rather than a detail: the defect being reproduced is that
+// IdentitiesOnly does not do what its name suggests. It excludes the agent and
+// the default identity files, but a config-named IdentityFile is still offered.
+// Leaving it unset would have reproduced something weaker than production and let
+// a "fix" that merely sets IdentitiesOnly look like it closed the hole.
 func sshWithOperatorConfig(t *testing.T, h *sshdHarness, config, key, remoteCommand string) (string, error) {
 	t.Helper()
 	args := []string{
@@ -402,8 +426,16 @@ func TestSSHDPinningProbeVerdicts(t *testing.T) {
 // meant to cost no extra authentication — and that is worth keeping.
 func rememberProbeMux(t *testing.T, h *sshdHarness, agentID string) {
 	t.Helper()
+	rememberProbeMuxKey(t, h, agentID, h.keys[agentID])
+}
+
+// rememberProbeMuxKey is the same for a key the harness did not mint — the mux
+// isolation key includes the RESOLVED key path, so a probe run with a different
+// identity lands in a directory the harness never computed and its reap misses.
+func rememberProbeMuxKey(t *testing.T, h *sshdHarness, agentID, keyPath string) {
+	t.Helper()
 	invocation, err := hubclient.BuildSSHInvocation(hubclient.SSHBuildOptions{
-		Remote: probeRemote(h), AgentID: agentID, KeyPath: h.keys[agentID], StateDir: h.clientState,
+		Remote: probeRemote(h), AgentID: agentID, KeyPath: keyPath, StateDir: h.clientState,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -437,6 +469,17 @@ func TestSSHDExit127IsReclassifiedByCauseNotByGuess(t *testing.T) {
 		}
 		if got := hubclient.ErrorCode(err); got != "E_HUB_UNPINNED" {
 			t.Fatalf("exit 127 on an UNPINNED host classified as %s, want E_HUB_UNPINNED:\n%v", got, err)
+		}
+		// The producer-2 remedy, which row 13 cannot assert without reading the
+		// host machine's own ssh config. Getting the code right while sending the
+		// operator to the wrong fix would trade one wrong message for another.
+		for _, want := range []string{"hub authorize --agent drifter", "The binary on the hub is fine"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("the producer-2 message is missing %q:\n%v", want, err)
+			}
+		}
+		if strings.Contains(err.Error(), "tailscale") {
+			t.Fatalf("producer 2 was blamed on an intercepting layer:\n%v", err)
 		}
 	})
 

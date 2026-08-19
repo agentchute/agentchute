@@ -64,7 +64,7 @@ var Emitters = map[string]string{
 }
 
 // ProtocolError is a named session/codec failure. Operation errors keep their
-// mapping in op.CodeFor; the codec contributes only the eight codes above.
+// mapping in op.CodeFor; the codec contributes only the nine codes above.
 type ProtocolError struct {
 	Code        string
 	Msg         string

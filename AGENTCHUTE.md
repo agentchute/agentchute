@@ -494,6 +494,7 @@ Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable"
 | `E_UNSUPPORTED` | hub | unknown `t` (session survives) |
 | `E_ORDER` | hub | request out of order (session survives) |
 | `E_POOL_ID_INVALID` | hub | `state/pool.id` fails the regular-0600 / `[0-9a-f]{12}`+LF contract (session start) |
+| `E_UNPINNED` | hub | the session was reached with no `authorized_keys` forced command, so the agent id and pool were chosen by the caller rather than pinned by sshd (session start; the hub refuses to serve) |
 | `E_POOL_MISMATCH` | **both** | this key is not serving the pool it is supposed to serve |
 
 **`E_POOL_MISMATCH` is emitted by both sides**, deliberately one code with two emitters and two exact texts — not client-only:

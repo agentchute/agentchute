@@ -1,9 +1,14 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
+	"github.com/agentchute/agentchute/internal/hubwire"
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
@@ -67,4 +72,139 @@ func swapPinningVerdict(t *testing.T, fn func(*loop.RemoteConfig, string) (strin
 	prev := hubPinningVerdict
 	hubPinningVerdict = fn
 	return func() { hubPinningVerdict = prev }
+}
+
+// P2a — the hub_pinning row must be PRESENT on the connect failure that proves
+// the hub is unpinned.
+//
+// Every connect failure returns before the probe, and two of those codes are the
+// proof itself: E_UNPINNED from the hub's own Site 1, and E_HUB_UNPINNED from
+// this machine's classification of an exit 127. Reporting only hub_connect there
+// omits the named check in the exact report an operator — or a script keyed on
+// the check name — would look at first.
+func TestDoctorReportsHubPinningOnAnUnpinnedConnectFailure(t *testing.T) {
+	rows := []struct {
+		name     string
+		err      error
+		wantRow  bool
+		wantCode string
+	}{
+		{
+			name:     "E_UNPINNED — the hub refused, on its own evidence",
+			err:      &hubclient.Error{Code: hubwire.CodeUnpinned, Msg: "hub: this hub did not apply an authorized_keys forced command"},
+			wantRow:  true,
+			wantCode: hubwire.CodeUnpinned,
+		},
+		{
+			name:     "E_HUB_UNPINNED — this machine's probes concluded it",
+			err:      &hubclient.Error{Code: "E_HUB_UNPINNED", Msg: "hub: NOT PINNED — hub44 ran a command this machine chose"},
+			wantRow:  true,
+			wantCode: "E_HUB_UNPINNED",
+		},
+		// The control. An ordinary unreachable hub says nothing about pinning, and
+		// a hub_pinning row there would be a verdict nothing measured.
+		{
+			name:    "E_CONNECT — unreachable says NOTHING about pinning",
+			err:     &hubclient.Error{Code: "E_CONNECT", Msg: "hub: cannot reach hub44"},
+			wantRow: false,
+		},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			cfg := newDoctorHubFixture(t)
+			original := openRemoteOneShot
+			openRemoteOneShot = func(*loop.Config, string) (*hubclient.OneShot, error) { return nil, row.err }
+			t.Cleanup(func() { openRemoteOneShot = original })
+
+			report := runRemoteDoctorChecks(cfg, "opus-high", time.Now().UTC())
+			connect, hasConnect := doctorCheckNamed(report, "hub_connect")
+			if !hasConnect || connect.Severity != severityBlocker {
+				t.Fatalf("hub_connect = %+v, want a blocker", connect)
+			}
+			pinning, has := doctorCheckNamed(report, "hub_pinning")
+			if has != row.wantRow {
+				t.Fatalf("hub_pinning present = %v, want %v; checks = %v", has, row.wantRow, doctorCheckNames(report))
+			}
+			if !row.wantRow {
+				return
+			}
+			if pinning.Severity != severityBlocker {
+				t.Fatalf("hub_pinning severity = %v, want BLOCKER", pinning.Severity)
+			}
+			if !strings.Contains(pinning.Message, row.wantCode) {
+				t.Fatalf("hub_pinning message does not name %s: %q", row.wantCode, pinning.Message)
+			}
+		})
+	}
+}
+
+// The probe must NOT run again on this path: the verdict is already in hand, and
+// re-probing a host that was just refused costs two more round trips to say what
+// the operator was told a line earlier.
+func TestDoctorDoesNotReprobeAfterAnUnpinnedConnectFailure(t *testing.T) {
+	cfg := newDoctorHubFixture(t)
+	probes := 0
+	defer swapPinningVerdict(t, func(*loop.RemoteConfig, string) (string, bool) {
+		probes++
+		return "", true
+	})()
+	original := openRemoteOneShot
+	openRemoteOneShot = func(*loop.Config, string) (*hubclient.OneShot, error) {
+		return nil, &hubclient.Error{Code: hubwire.CodeUnpinned, Msg: "hub: refused"}
+	}
+	t.Cleanup(func() { openRemoteOneShot = original })
+
+	runRemoteDoctorChecks(cfg, "opus-high", time.Now().UTC())
+	if probes != 0 {
+		t.Fatalf("the behavioural probe ran %d time(s) on a path that already had the verdict", probes)
+	}
+}
+
+func doctorCheckNamed(r doctorReport, name string) (doctorCheck, bool) {
+	for _, check := range r.Checks {
+		if check.Name == name {
+			return check, true
+		}
+	}
+	return doctorCheck{}, false
+}
+
+func doctorCheckNames(r doctorReport) []string {
+	names := make([]string, 0, len(r.Checks))
+	for _, check := range r.Checks {
+		names = append(names, check.Name+"/"+string(check.Severity))
+	}
+	return names
+}
+
+// newDoctorHubFixture builds the least state runRemoteDoctorChecks needs to
+// reach the connect attempt: a hub config under a temp HOME, and an active-key
+// symlink at 0600.
+func newDoctorHubFixture(t *testing.T) *loop.Config {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	const hubID = "abcdef123456"
+	hubDir := filepath.Join(home, "hubdir")
+	if err := os.MkdirAll(filepath.Join(hubDir, "keys"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(hubDir, "keys", "opus-high_ed25519.1")
+	if err := os.WriteFile(target, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(hubDir, "keys", "opus-high_ed25519")); err != nil {
+		t.Fatal(err)
+	}
+	if err := hubclient.WriteHubConfig(hubID, &hubclient.HubConfig{
+		URL:      "ssh://alex@hub44/srv/pool",
+		JoinedAs: []string{"opus-high"},
+		Pool:     "/srv/pool",
+		Pool12:   hubID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return &loop.Config{Remote: &loop.RemoteConfig{
+		Host: "hub44", HubID: hubID, HubDir: hubDir, PoolPath: "/srv/pool",
+	}}
 }

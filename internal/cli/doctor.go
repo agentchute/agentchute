@@ -249,6 +249,22 @@ func runRemoteDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doct
 			code = "E_CONNECT"
 		}
 		add(doctorCheck{Name: "hub_connect", Severity: severityBlocker, Message: fmt.Sprintf("%s: %v", code, err)})
+		// The hub_pinning row must appear in exactly the case it exists for.
+		//
+		// Every connect failure returns here, and that includes the two codes that
+		// PROVE the hub is unpinned: E_UNPINNED, which Site 1 emits on the hub
+		// itself, and E_HUB_UNPINNED, which this machine's probes concluded while
+		// classifying an exit 127. Without this, `doctor --json` on a freshly
+		// authorized but unpinned hub reports a hub_connect blocker and no
+		// hub_pinning check at all — the one report where an operator, or a script
+		// keyed on the check name, is most entitled to find it.
+		//
+		// It reuses the verdict rather than re-running the behavioural probe: the
+		// answer is already in hand, and probing again would cost two more round
+		// trips to a host that has just been refused.
+		if code == hubwire.CodeUnpinned || code == "E_HUB_UNPINNED" {
+			add(doctorCheck{Name: "hub_pinning", Severity: severityBlocker, Message: fmt.Sprintf("%s: %v", code, err)})
+		}
 		return report
 	}
 	hello := session.Hello()

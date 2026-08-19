@@ -98,10 +98,119 @@ const (
 // hubProbeRunner is the seam rows swap. Production runs ssh.
 var hubProbeRunner = runProbeCommand
 
+// probeStderrLimit is how much of the probe's stderr is retained. Only the TAIL
+// is kept: both consumers care about the end — ssh prints "Permission denied
+// (publickey)" as its last word, and lastStderrLine wants the final non-empty
+// line.
+const probeStderrLimit = 8 << 10
+
+// nonceLineScanner answers one question — did a WHOLE line equal the nonce? —
+// in constant memory, by scanning the stream as it arrives.
+//
+// This is not a size optimisation. The host being probed is the potentially
+// hostile party, and it is being asked to run a command of our choosing: it can
+// stream for the whole timeout. Buffering that costs the client its memory, and
+// the obvious repair — keep the first N bytes — is worse than the bug, because a
+// host that floods N bytes and THEN echoes the nonce would be reported PINNED.
+// That hands the hostile party the verdict. So nothing is buffered: a candidate
+// line is held only while it can still match, which is at most len(nonce)+1
+// bytes, and any longer line is discarded to its newline without being kept.
+type nonceLineScanner struct {
+	nonce []byte
+	line  []byte
+	over  bool
+	found bool
+}
+
+func (s *nonceLineScanner) Write(p []byte) (int, error) {
+	n := len(p)
+	for {
+		i := bytes.IndexByte(p, '\n')
+		chunk := p
+		if i >= 0 {
+			chunk = p[:i]
+		}
+		if !s.over {
+			if len(s.line)+len(chunk) > len(s.nonce)+1 {
+				// Too long to be the nonce even with a trailing CR. Stop keeping
+				// it; the rest of this line is read and dropped.
+				s.over = true
+				s.line = s.line[:0]
+			} else {
+				s.line = append(s.line, chunk...)
+			}
+		}
+		if i < 0 {
+			// No newline yet: this line continues into the next Write.
+			return n, nil
+		}
+		if !s.over && bytes.Equal(bytes.TrimRight(s.line, "\r"), s.nonce) {
+			s.found = true
+		}
+		s.line, s.over = s.line[:0], false
+		p = p[i+1:]
+	}
+}
+
+// matchedLine renders what the caller reads as "stdout". It is NOT a transcript
+// and must not be treated as one: it is the matching line if one occurred, and
+// nothing otherwise, so nonceEchoed keeps working unchanged on both sides of the
+// seam while nothing unbounded is ever held.
+func (s *nonceLineScanner) matchedLine() string {
+	if !s.found {
+		return ""
+	}
+	return string(s.nonce) + "\n"
+}
+
+// tailCapWriter keeps the last limit bytes and drops the rest. It keeps reading
+// rather than blocking: a probe that stalls the remote would turn this into a
+// different failure and tell us nothing.
+type tailCapWriter struct {
+	buf   []byte
+	limit int
+}
+
+func (w *tailCapWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if len(p) >= w.limit {
+		w.buf = append(w.buf[:0], p[len(p)-w.limit:]...)
+		return n, nil
+	}
+	if len(w.buf)+len(p) > w.limit {
+		drop := len(w.buf) + len(p) - w.limit
+		copy(w.buf, w.buf[drop:])
+		w.buf = w.buf[:len(w.buf)-drop]
+	}
+	w.buf = append(w.buf, p...)
+	return n, nil
+}
+
+func (w *tailCapWriter) String() string { return string(w.buf) }
+
 func runProbeCommand(args []string, timeout time.Duration) (string, string, error) {
+	return runProbeCommandForNonce(args, nonceFromProbeArgs(args), timeout)
+}
+
+// nonceFromProbeArgs recovers the nonce from the invocation the probe just built.
+// The last argument is always `echo <nonce>`; anything else means the caller did
+// not come from buildPinningProbe, and an empty nonce can never match a line.
+func nonceFromProbeArgs(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	last := args[len(args)-1]
+	if !strings.HasPrefix(last, "echo ") {
+		return ""
+	}
+	return strings.TrimPrefix(last, "echo ")
+}
+
+func runProbeCommandForNonce(args []string, nonce string, timeout time.Duration) (string, string, error) {
 	cmd := exec.Command("ssh", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	scanner := &nonceLineScanner{nonce: []byte(nonce)}
+	stderr := &tailCapWriter{limit: probeStderrLimit}
+	cmd.Stdout, cmd.Stderr = scanner, stderr
 	cmd.Stdin = nil
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {
@@ -116,7 +225,7 @@ func runProbeCommand(args []string, timeout time.Duration) (string, string, erro
 		<-done
 		runErr = errProbeTimeout
 	}
-	return stdout.String(), stderr.String(), runErr
+	return scanner.matchedLine(), stderr.String(), runErr
 }
 
 var errProbeTimeout = &Error{Code: "E_PROBE_TIMEOUT", Msg: "hub: the pinning probe did not return"}
