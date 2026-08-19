@@ -264,21 +264,26 @@ func sshWithOperatorConfig(t *testing.T, h *sshdHarness, config, key, remoteComm
 // actually does. Both arms, because one alone trades one wrong message for
 // another.
 //
-// DEVIATION FROM THE SPEC'S ROW WORDING, flagged here so the fidelity review reads
-// it in place. The spec's row 12 asks for the classifier's verdict on both arms in
-// the sshd harness. This row asserts what the HOST does instead, and the verdict
-// itself is pinned by the unit table in internal/hubclient — four verdicts, both
-// classifier arms, every mutation red. Reasoning below; the call was reviewed and
-// provisionally accepted, and opus-xhigh judges it.
+// WHERE THE CLASSIFICATION ITSELF IS COVERED — read this before deleting either
+// row as redundant. This row covers only the HOST's behaviour: what sshd does
+// with the sentinel, pinned and unpinned. The end-to-end classification of that
+// behaviour into an error code lives in
+// TestSSHDExit127IsReclassifiedByCauseNotByGuess, which dials the production path
+// on the same real sshd and asserts E_HUB_UNPINNED for an unpinned host and
+// E_HUB_NO_BINARY for a pinned host whose binary is gone. The verdict enum and its
+// three-way attribution are pinned separately by the unit table in
+// internal/hubclient.
 //
-// What this row does NOT do, deliberately: it does not call PinningVerdict. That
-// runs the probes, which open their own ssh connections with ControlPersist by
-// design, and a master surviving the row makes the fixture report "sshd did not
-// exit" during teardown. The row's assertions passed; the harness's shutdown did
-// not. Rather than weaken the probe to suit a fixture, the verdict logic is
-// pinned by the unit table in internal/hubclient (four verdicts, both arms of the
-// classifier, each mutation red), and this row pins the thing only real sshd can
-// show: WHAT THE HOST DOES with the sentinel.
+// This comment previously said the verdict was pinned ONLY by that unit table.
+// That stopped being true when the arms-A/B row landed, and a stale
+// coverage-lives-elsewhere claim is how a row gets deleted for being redundant
+// when it is not. It is the third time in this program that a comment outlived
+// the arrangement it described.
+//
+// This row does not call PinningVerdict, and that is now a choice rather than a
+// constraint: the ControlPersist master that made the fixture report "sshd did
+// not exit" is handled by rememberProbeMux, which the rows that do run the probes
+// use. Keeping this row probe-free keeps it a statement about sshd alone.
 func TestSSHDExit127HasTwoCausesRealSSHDCanTellApart(t *testing.T) {
 	t.Run("unpinned: the sentinel reaches a login shell", func(t *testing.T) {
 		h := newSSHDHarness(t)
@@ -334,7 +339,9 @@ func addUnrestrictedAgent(t *testing.T, h *sshdHarness, id string) {
 
 // Rows 10/11/15 — the probes themselves, against real sshd.
 //
-// SPEC INCONSISTENCY, reported rather than papered over. The spec calls a
+// SPEC INCONSISTENCY, reported rather than papered over, and since ratified as
+// the spec's rather than this row's — the spec paragraph is being amended after
+// merge. The spec calls a
 // `command=`-less authorized_keys line "producer 1, modelled" (rows 9-11) and
 // expects row 10 to yield the NOT PINNED text — but the same spec's 2c attribution
 // decides producer 1 vs 2 by whether an UNAUTHORIZABLE throwaway key still runs
@@ -344,7 +351,8 @@ func addUnrestrictedAgent(t *testing.T, h *sshdHarness, id string) {
 // own "honest limit" paragraph already concedes this fixture does not model
 // Tailscale's identity layer. Row 10 below asserts what actually happens.
 //
-// SECOND DEVIATION, flagged for the fidelity review alongside row 12's. Producer 1
+// DEVIATION FROM THE SPEC'S ROWS, ratified by the fidelity review as tautological
+// rather than effort: producer 1
 // — an intercepting layer such as Tailscale SSH — is NOT reproducible here, and I
 // would rather say so than fake it. Producer 1 is defined by sshd being bypassed,
 // so a fixture sshd cannot exhibit it: reproducing its predicate (an arbitrary
