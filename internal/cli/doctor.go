@@ -266,6 +266,19 @@ func runRemoteDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doct
 	// accepts — and a check that only fires alongside another failure is a check
 	// selected on the failure it reports. This is also the state an operator is in
 	// right after `hub authorize` told them they were protected.
+	//
+	// Why this is not dead code after a successful hello, which is the first thing
+	// a reader will ask. Site 1's predicate is SSH_ORIGINAL_COMMAND — an
+	// ENVIRONMENT reading, and an interceptor that sets the variable satisfies it
+	// while pinning nothing. Site 3 is BEHAVIOURAL: it asks the hub to run a
+	// command this machine chose. A hello that succeeded proves the hub spoke the
+	// protocol, not that sshd chose the agent id. That is the gap, and it is the
+	// only one this check exists for.
+	//
+	// Placed AFTER the connect/hello early returns on purpose: when the connection
+	// fails with exit 127, classifyExit127 has already run these same probes and
+	// reported the verdict as hub_connect. Probing again there would double the
+	// round trips to say what the operator was just told.
 	add(hubPinningCheck(cfg.Remote, agentID))
 	if hello.Pool != hubCfg.Pool || hello.Pool12 != hubCfg.Pool12 {
 		add(doctorCheck{Name: "hub_pool", Severity: severityBlocker, Message: "E_POOL_MISMATCH: " + hubClientPoolMismatchMessage(hello.Pool, hello.Pool12, hubCfg.Pool12, hubCfg.Pool, agentID)})
