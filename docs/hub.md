@@ -89,7 +89,7 @@ Use Tailscale only as the network layer:
 
 4. Keep standard `sshd` and `~/.ssh/authorized_keys` enabled on the hub.
 
-Do not use Tailscale SSH for this connection. Agentchute relies on OpenSSH `authorized_keys` forced commands to pin a key to one identity and pool; Tailscale SSH uses its own authentication path. Tailscale still provides the private network, stable name, and access controls.
+Do not use Tailscale SSH for this connection. Agentchute relies on OpenSSH `authorized_keys` forced commands to pin a key to one identity and pool; Tailscale SSH uses its own authentication path. Tailscale still provides the private network, stable name, and access controls. If you do it anyway, agentchute now finds out rather than trusting the setup — see [When pinning is not applied](#when-pinning-is-not-applied), which also covers a second way to end up unpinned that involves no Tailscale at all.
 
 ## Failures and recovery
 
