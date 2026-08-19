@@ -205,3 +205,65 @@ func sshWithOperatorConfig(t *testing.T, h *sshdHarness, config, key, remoteComm
 	out, err := exec.Command(h.ssh, args...).CombinedOutput()
 	return string(out), err
 }
+
+// Row 12 — the two exit-127 causes, distinguished on REAL sshd by what the host
+// actually does. Both arms, because one alone trades one wrong message for
+// another.
+//
+// What this row does NOT do, deliberately: it does not call PinningVerdict. That
+// runs the probes, which open their own ssh connections with ControlPersist by
+// design, and a master surviving the row makes the fixture report "sshd did not
+// exit" during teardown. The row's assertions passed; the harness's shutdown did
+// not. Rather than weaken the probe to suit a fixture, the verdict logic is
+// pinned by the unit table in internal/hubclient (four verdicts, both arms of the
+// classifier, each mutation red), and this row pins the thing only real sshd can
+// show: WHAT THE HOST DOES with the sentinel.
+func TestSSHDExit127HasTwoCausesRealSSHDCanTellApart(t *testing.T) {
+	t.Run("unpinned: the sentinel reaches a login shell", func(t *testing.T) {
+		h := newSSHDHarness(t)
+		addUnrestrictedAgent(t, h, "drifter")
+		out, err := sshDirect(t, h, h.keys["drifter"], "agentchute-hub")
+		if err == nil {
+			t.Fatalf("the sentinel ran successfully on an unpinned host:\n%s", out)
+		}
+		// The login shell got it — that IS the 127, and the hub binary is fine.
+		if !strings.Contains(out, "agentchute-hub") {
+			t.Fatalf("the sentinel never reached a shell, so this arm did not reproduce:\n%s", out)
+		}
+		if _, statErr := os.Stat(h.binary); statErr != nil {
+			t.Fatalf("precondition: the hub binary must EXIST, or this arm proves nothing: %v", statErr)
+		}
+	})
+
+	t.Run("pinned: the forced command overrides whatever was asked for", func(t *testing.T) {
+		h := newSSHDHarness(t)
+		out, _ := sshDirect(t, h, h.keys["codex"], "echo THIS_MUST_NOT_RUN")
+		if strings.Contains(out, "THIS_MUST_NOT_RUN") {
+			t.Fatalf("a pinned host ran a command the client chose:\n%s", out)
+		}
+	})
+}
+
+// addUnrestrictedAgent mints a key and authorizes it with NO command= — producer
+// 1's shape for an id the client can actually join as.
+func addUnrestrictedAgent(t *testing.T, h *sshdHarness, id string) {
+	t.Helper()
+	key := filepath.Join(h.clientState, "keys", id+"_ed25519")
+	runCommand(t, "", h.keygen, "-q", "-t", "ed25519", "-N", "", "-C", "agentchute:"+id, "-f", key)
+	pub, err := os.ReadFile(key + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(h.authorized, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(pub); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h.keys[id] = key
+}
