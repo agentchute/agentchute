@@ -119,7 +119,6 @@ func sshDirect(t *testing.T, h *sshdHarness, key, remoteCommand string) (string,
 		"-o", "UserKnownHostsFile=" + h.knownHosts,
 		"-o", "IdentitiesOnly=yes",
 		"-o", "IdentityAgent=none",
-		"-o", "IdentitiesOnly=yes",
 		"-i", key,
 		"-p", strconv.Itoa(h.port),
 		h.user + "@127.0.0.1",
@@ -251,13 +250,29 @@ func sshWithOperatorConfig(t *testing.T, h *sshdHarness, config, key, remoteComm
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + h.knownHosts,
 		"-o", "IdentityAgent=none",
+		"-o", "IdentitiesOnly=yes",
 		"-i", key,
 		"-p", strconv.Itoa(h.port),
 		h.user + "@127.0.0.1",
 		remoteCommand,
 	}
+	// The comment above claims IdentitiesOnly=yes is set, and a comment cannot
+	// enforce itself: this helper shipped for one round with the option in the
+	// WRONG function while the comment here said otherwise, and every row still
+	// passed. Assert the claim instead of asserting it in prose.
+	assertHasOption(t, args, "IdentitiesOnly=yes")
 	out, err := exec.Command(h.ssh, args...).CombinedOutput()
 	return string(out), err
+}
+
+func assertHasOption(t *testing.T, args []string, option string) {
+	t.Helper()
+	for _, arg := range args {
+		if arg == option {
+			return
+		}
+	}
+	t.Fatalf("invocation is missing -o %s, so it is not production-equivalent: %q", option, args)
 }
 
 // Row 12 — the two exit-127 causes, distinguished on REAL sshd by what the host
