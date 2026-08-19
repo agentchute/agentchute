@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/agentchute/agentchute/internal/hubclient"
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 // Rows 6-9: the predicate against REAL sshd, on both CI platforms.
@@ -210,6 +211,13 @@ func sshWithOperatorConfig(t *testing.T, h *sshdHarness, config, key, remoteComm
 // actually does. Both arms, because one alone trades one wrong message for
 // another.
 //
+// DEVIATION FROM THE SPEC'S ROW WORDING, flagged here so the fidelity review reads
+// it in place. The spec's row 12 asks for the classifier's verdict on both arms in
+// the sshd harness. This row asserts what the HOST does instead, and the verdict
+// itself is pinned by the unit table in internal/hubclient — four verdicts, both
+// classifier arms, every mutation red. Reasoning below; the call was reviewed and
+// provisionally accepted, and opus-xhigh judges it.
+//
 // What this row does NOT do, deliberately: it does not call PinningVerdict. That
 // runs the probes, which open their own ssh connections with ControlPersist by
 // design, and a master surviving the row makes the fixture report "sshd did not
@@ -244,8 +252,11 @@ func TestSSHDExit127HasTwoCausesRealSSHDCanTellApart(t *testing.T) {
 	})
 }
 
-// addUnrestrictedAgent mints a key and authorizes it with NO command= — producer
-// 1's shape for an id the client can actually join as.
+// addUnrestrictedAgent mints a key and authorizes it with NO command= — PRODUCER
+// 2's shape: sshd authenticates the connection, but no forced command applies, so
+// the request reaches a login shell. (Producer 1 is sshd being bypassed entirely;
+// see the note above TestSSHDPinningProbeVerdicts for why real sshd cannot show
+// it.)
 func addUnrestrictedAgent(t *testing.T, h *sshdHarness, id string) {
 	t.Helper()
 	key := filepath.Join(h.clientState, "keys", id+"_ed25519")
@@ -266,4 +277,103 @@ func addUnrestrictedAgent(t *testing.T, h *sshdHarness, id string) {
 		t.Fatal(err)
 	}
 	h.keys[id] = key
+}
+
+// Rows 10/11/15 — the probes themselves, against real sshd.
+//
+// SECOND DEVIATION, flagged for the fidelity review alongside row 12's. Producer 1
+// — an intercepting layer such as Tailscale SSH — is NOT reproducible here, and I
+// would rather say so than fake it. Producer 1 is defined by sshd being bypassed,
+// so a fixture sshd cannot exhibit it: reproducing its predicate (an arbitrary
+// unknown key authenticates AND the client's command runs) needs either
+// AuthorizedKeysCommand, which OpenSSH refuses unless every parent directory is
+// unwritable by group and other — the harness root lives under /tmp, mode 1777, so
+// sshd logs "bad ownership or modes" and the row would pass only on machines with
+// a private TMPDIR — or an in-process SSH server, which means a new dependency on
+// the last change before a tag. Both were tried and rejected in that order.
+//
+// So producer 1 is pinned where it can be pinned honestly: the classifier arm in
+// internal/hubclient (hubProbeRunner is a seam, and the nonce-echoed branch is
+// mutation-red there), and the doctor severity in internal/cli. What real sshd
+// contributes is the arm it genuinely decides — producer 2 — below.
+//
+// These DO run PinningVerdict, and they handle the ControlPersist master row 12
+// avoided: the probe's mux path is registered with the harness first, so the
+// harness's own reap finds and closes it before teardown. Without that
+// registration the isolation directory is one the harness never computed, the reap
+// misses it, and the fixture reports "sshd did not exit".
+func TestSSHDPinningProbeVerdicts(t *testing.T) {
+	t.Run("row 11 — a pinned host: no nonce comes back, and the probe mutates nothing", func(t *testing.T) {
+		h := newSSHDHarness(t)
+		rememberProbeMux(t, h, "codex")
+		before := poolTree(t, h.pool)
+		authBefore := h.authCount()
+
+		verdict, pinned := hubclient.PinningVerdict(probeRemote(h), "codex")
+		if !pinned {
+			t.Fatalf("a pinned host was reported unpinned: %s", verdict)
+		}
+		if after := poolTree(t, h.pool); after != before {
+			t.Fatalf("the probe wrote into the pool:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+		// A pinned host starts a real hub session which hits EOF at the hello read
+		// and returns before touching registration, lease or inbox. One
+		// authentication, and nothing else.
+		if got := h.authCount() - authBefore; got > 1 {
+			t.Fatalf("the probe cost %d authentications; it is meant to reuse the master", got)
+		}
+	})
+
+	t.Run("row 10 — an unpinned host: the nonce comes back, and the verdict is a blocker attributed to producer 2", func(t *testing.T) {
+		h := newSSHDHarness(t)
+		addUnrestrictedAgent(t, h, "drifter")
+		rememberProbeMux(t, h, "drifter")
+
+		verdict, pinned := hubclient.PinningVerdict(probeRemote(h), "drifter")
+		if pinned {
+			t.Fatalf("an unpinned host was reported pinned; sshd applies no forced command for that key")
+		}
+		// Row 15 on real sshd. The throwaway key the probe mints is authorized
+		// nowhere, so sshd refuses it — and that refusal is precisely what
+		// separates producer 2 from producer 1. The verdict must send the
+		// operator to AUTHORIZE a key, not to disable an interception that is
+		// not happening.
+		for _, want := range []string{
+			"NOT with the key agentchute pinned",
+			"fell back to another identity",
+			"hub authorize --agent drifter",
+		} {
+			if !strings.Contains(verdict, want) {
+				t.Fatalf("verdict does not attribute this to producer 2 (missing %q):\n%s", want, verdict)
+			}
+		}
+		// The defect this whole change exists to remove: exit 127 read as a
+		// missing binary. The binary is right there, and the row above proves it.
+		if !strings.Contains(verdict, "The binary on the hub is fine") {
+			t.Fatalf("verdict still lets exit 127 read as a missing binary:\n%s", verdict)
+		}
+		if strings.Contains(verdict, "tailscale") || strings.Contains(verdict, "NOT PINNED —") {
+			t.Fatalf("verdict misattributes producer 2 as an intercepting layer:\n%s", verdict)
+		}
+	})
+}
+
+// rememberProbeMux tells the harness about the ControlPath the probe will use, so
+// its existing reap closes the master. The probe multiplexes by design — it is
+// meant to cost no extra authentication — and that is worth keeping.
+func rememberProbeMux(t *testing.T, h *sshdHarness, agentID string) {
+	t.Helper()
+	invocation, err := hubclient.BuildSSHInvocation(hubclient.SSHBuildOptions{
+		Remote: probeRemote(h), AgentID: agentID, KeyPath: h.keys[agentID], StateDir: h.clientState,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.rememberMuxPath(invocation)
+}
+
+func probeRemote(h *sshdHarness) *loop.RemoteConfig {
+	remote := *h.remote
+	remote.HubDir = h.clientState
+	return &remote
 }

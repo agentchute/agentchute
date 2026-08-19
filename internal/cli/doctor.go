@@ -1362,8 +1362,12 @@ Flags:
 // hubPinningCheck is doctor's pinning probe. Blocker when the hub runs a command
 // this machine chose, because that means identity and pool pinning are not in
 // effect at all.
+// hubPinningVerdict is the seam. Tests swap it to pin the verdict-to-severity
+// mapping without opening an ssh connection; production never reassigns it.
+var hubPinningVerdict = hubclient.PinningVerdict
+
 func hubPinningCheck(remote *loop.RemoteConfig, agentID string) doctorCheck {
-	message, pinned := hubclient.PinningVerdict(remote, agentID)
+	message, pinned := hubPinningVerdict(remote, agentID)
 	if pinned {
 		return doctorCheck{Name: "hub_pinning", Severity: severityOK, Message: "forced command applied; agent id and pool are pinned by sshd"}
 	}
