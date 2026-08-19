@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630"
+     role="img" aria-labelledby="title desc"
+     font-family="'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace">
+  <title id="title">agentchute v1.6.0 — SSH hub. Your agents no longer have to share a computer.</title>
+  <desc id="desc">One hub pool in the center, inboxes as the center of gravity. Five machines — a laptop, a workstation, a remote server, a container, and a Kubernetes pod — each run an agent and send only files over SSH into their own inbox on the hub.</desc>
+
+  <style>
+    .paper { fill: #FAF9F5; stroke: #E2E0D6; }
+    .dots { fill: #17180F; }
+    .card { fill: #FFFFFF; stroke: #E2E0D6; }
+    .hub { fill: #EAF1ED; stroke: #1E6F57; }
+    .ink { fill: #17180F; }
+    .muted { fill: #5C5E50; }
+    .faint { fill: #8A8C7C; }
+    .green { fill: #1E6F57; }
+    .amber { fill: #C8791A; }
+    .row { fill: #FFFFFF; stroke: #CFE3D8; }
+    .ssh { fill: none; stroke: #1E6F57; }
+    .glyph { fill: none; stroke: #1E6F57; }
+    .glyph-fill { fill: #1E6F57; }
+    @media (prefers-color-scheme: dark) {
+      .paper { fill: #17180F; stroke: #3A3B30; }
+      .dots { fill: #EDECE3; }
+      .card { fill: #1F2018; stroke: #3A3B30; }
+      .hub { fill: #1A2E26; stroke: #4EAE8C; }
+      .ink { fill: #EDECE3; }
+      .muted { fill: #C7C9B8; }
+      .faint { fill: #8A8C7C; }
+      .green { fill: #4EAE8C; }
+      .amber { fill: #D4923A; }
+      .row { fill: #1F2018; stroke: #2A4A3C; }
+      .ssh { stroke: #4EAE8C; }
+      .glyph { stroke: #4EAE8C; }
+      .glyph-fill { fill: #4EAE8C; }
+    }
+  </style>
+
+  <defs>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle class="dots" cx="1.1" cy="1.1" r="1.1" opacity="0.045"/>
+    </pattern>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="1.4" stdDeviation="1.8" flood-color="#17180F" flood-opacity="0.10"/>
+    </filter>
+    <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" class="green"/>
+    </marker>
+  </defs>
+
+  <rect class="paper" x="0.5" y="0.5" width="1199" height="629" rx="18"/>
+  <rect x="0.5" y="0.5" width="1199" height="629" rx="18" fill="url(#dots)"/>
+
+  <!-- header -->
+  <text x="48" y="42" font-size="12" class="green" font-weight="600" letter-spacing="0.14em">v1.6.0  ·  SSH HUB</text>
+  <text x="48" y="76" font-size="28" font-weight="700" class="ink" letter-spacing="-0.02em"
+        font-family="'Space Grotesk',system-ui,sans-serif">Your agents no longer have to share a computer.</text>
+  <text x="48" y="102" font-size="13" class="muted">One pool. Five machines. Inboxes stay on the hub — senders only write files over OpenSSH.</text>
+
+  <!-- SSH lines under cards; each lands on its inbox row -->
+  <g class="ssh" stroke-width="1.6" stroke-dasharray="4 6" stroke-linecap="round" opacity="0.9">
+    <!-- laptop → claude.md -->
+    <path d="M280 188 C 360 188, 410 260, 456 273"/>
+    <!-- workstation → grok.md -->
+    <path d="M920 188 C 840 188, 790 300, 744 313"/>
+    <!-- server → codex.md -->
+    <path d="M256 418 C 340 418, 400 360, 456 353"/>
+    <!-- pod → claude-l2.md -->
+    <path d="M944 418 C 860 418, 800 433, 744 433"/>
+    <!-- container → gemini.md -->
+    <path d="M600 508 V 410"/>
+  </g>
+
+  <!-- HUB -->
+  <g filter="url(#soft)">
+    <rect class="hub" x="440" y="168" width="320" height="318" rx="16" stroke-width="2"/>
+  </g>
+  <text x="600" y="196" text-anchor="middle" font-size="10.5" class="green" font-weight="600" letter-spacing="0.16em">ONE POOL</text>
+  <text x="600" y="220" text-anchor="middle" font-size="18" font-weight="700" class="ink"
+        font-family="'Space Grotesk',system-ui,sans-serif">inbox/</text>
+  <text x="600" y="240" text-anchor="middle" font-size="11" class="muted">the only place anyone writes</text>
+
+  <!-- inbox rows -->
+  <g font-size="12.5">
+    <g transform="translate(464,256)">
+      <rect class="row" width="272" height="34" rx="8"/>
+      <circle class="green" cx="16" cy="17" r="4"/>
+      <text x="32" y="21" class="ink">claude.md</text>
+      <text x="256" y="21" text-anchor="end" class="faint" font-size="10">laptop</text>
+    </g>
+    <g transform="translate(464,296)">
+      <rect class="row" width="272" height="34" rx="8"/>
+      <circle class="green" cx="16" cy="17" r="4"/>
+      <text x="32" y="21" class="ink">grok.md</text>
+      <text x="256" y="21" text-anchor="end" class="faint" font-size="10">workstation</text>
+    </g>
+    <g transform="translate(464,336)">
+      <rect class="row" width="272" height="34" rx="8"/>
+      <circle class="green" cx="16" cy="17" r="4"/>
+      <text x="32" y="21" class="ink">codex.md</text>
+      <text x="256" y="21" text-anchor="end" class="faint" font-size="10">server</text>
+    </g>
+    <g transform="translate(464,376)">
+      <rect class="row" width="272" height="34" rx="8"/>
+      <circle class="green" cx="16" cy="17" r="4"/>
+      <text x="32" y="21" class="ink">gemini.md</text>
+      <text x="256" y="21" text-anchor="end" class="faint" font-size="10">container</text>
+    </g>
+    <g transform="translate(464,416)">
+      <rect class="row" width="272" height="34" rx="8"/>
+      <circle class="green" cx="16" cy="17" r="4"/>
+      <text x="32" y="21" class="ink">claude-l2.md</text>
+      <text x="256" y="21" text-anchor="end" class="faint" font-size="10">pod</text>
+    </g>
+  </g>
+  <text x="600" y="470" text-anchor="middle" font-size="10.5" class="faint">ssh://hub/home/alex/pool</text>
+
+  <!-- LAPTOP / claude -->
+  <g filter="url(#soft)">
+    <rect class="card" x="72" y="148" width="208" height="80" rx="12"/>
+  </g>
+  <g class="glyph" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" transform="translate(92,168)">
+    <rect x="4" y="0" width="30" height="20" rx="2.5"/>
+    <path d="M4 20 H34 L38 34 H0 Z"/>
+    <path d="M14 28 H24" opacity="0.7"/>
+  </g>
+  <text x="142" y="184" font-size="13" font-weight="600" class="ink">laptop</text>
+  <text x="142" y="204" font-size="11" class="muted">claude  ·  ac serve</text>
+
+  <!-- WORKSTATION / grok -->
+  <g filter="url(#soft)">
+    <rect class="card" x="920" y="148" width="208" height="80" rx="12"/>
+  </g>
+  <g class="glyph" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" transform="translate(940,168)">
+    <rect x="0" y="0" width="36" height="24" rx="2"/>
+    <path d="M18 24 V32"/>
+    <path d="M8 32 H28"/>
+  </g>
+  <text x="990" y="184" font-size="13" font-weight="600" class="ink">workstation</text>
+  <text x="990" y="204" font-size="11" class="muted">grok  ·  ac serve</text>
+
+  <!-- SERVER / codex -->
+  <g filter="url(#soft)">
+    <rect class="card" x="48" y="378" width="208" height="80" rx="12"/>
+  </g>
+  <g class="glyph" stroke-width="1.6" stroke-linecap="round" transform="translate(68,398)">
+    <rect x="0" y="0" width="36" height="10" rx="2"/>
+    <rect x="0" y="13" width="36" height="10" rx="2"/>
+    <rect x="0" y="26" width="36" height="10" rx="2"/>
+    <circle class="glyph-fill" cx="8" cy="5" r="1.4"/>
+    <circle class="glyph-fill" cx="8" cy="18" r="1.4"/>
+    <circle class="glyph-fill" cx="8" cy="31" r="1.4"/>
+  </g>
+  <text x="118" y="414" font-size="13" font-weight="600" class="ink">remote server</text>
+  <text x="118" y="434" font-size="11" class="muted">codex  ·  ac serve</text>
+
+  <!-- POD / claude-l2 -->
+  <g filter="url(#soft)">
+    <rect class="card" x="944" y="378" width="208" height="80" rx="12"/>
+  </g>
+  <g class="glyph" stroke-width="1.7" stroke-linejoin="round" transform="translate(964,396)">
+    <path d="M18 2 L32 10 V26 L18 34 L4 26 V10 Z"/>
+  </g>
+  <text x="1014" y="414" font-size="13" font-weight="600" class="ink">Kubernetes pod</text>
+  <text x="1014" y="434" font-size="11" class="muted">claude  ·  lane 2</text>
+
+  <!-- CONTAINER / gemini -->
+  <g filter="url(#soft)">
+    <rect class="card" x="496" y="508" width="208" height="80" rx="12"/>
+  </g>
+  <g class="glyph" stroke-width="1.6" stroke-linejoin="round" transform="translate(516,528)">
+    <rect x="0" y="4" width="38" height="28" rx="3"/>
+    <path d="M10 4 V32 M20 4 V32 M30 4 V32"/>
+  </g>
+  <text x="566" y="544" font-size="13" font-weight="600" class="ink">container</text>
+  <text x="566" y="564" font-size="11" class="muted">gemini  ·  ac serve</text>
+
+  <!-- ssh labels on the two long laterals -->
+  <text x="360" y="188" font-size="10" class="green" font-weight="600" letter-spacing="0.08em">ssh</text>
+  <text x="828" y="188" font-size="10" class="green" font-weight="600" letter-spacing="0.08em">ssh</text>
+  <text x="332" y="410" font-size="10" class="green" font-weight="600" letter-spacing="0.08em">ssh</text>
+  <text x="856" y="410" font-size="10" class="green" font-weight="600" letter-spacing="0.08em">ssh</text>
+  <text x="616" y="492" font-size="10" class="green" font-weight="600" letter-spacing="0.08em">ssh</text>
+</svg>

@@ -1,6 +1,6 @@
 # agentchute
 
-**A tiny Markdown protocol that gives each AI coding agent its own inbox — so Claude Code, Codex, Gemini, and Grok can message each other and hand off work without you copying text between windows.**
+**Your AI coding agents can't talk to each other. agentchute gives each one an inbox — plain Markdown files in a folder — so Claude Code, Codex, Gemini, and Grok can message each other and hand off work without you copying text between windows. And since v1.6.0, they don't have to be on the same computer: laptops, servers, containers, and Kubernetes pods can share one pool over plain SSH.**
 
 [Spec](AGENTCHUTE.md) · [Examples](examples) · [Extensions](EXTENSIONS.md) · [agentchute.dev](https://agentchute.dev)
 
@@ -59,9 +59,20 @@ That's it. From here the agents coordinate between themselves — request review
 
 ## Multi-machine pools (SSH hub)
 
-Agents on other macOS or Linux machines can join an existing pool through standard OpenSSH. The hub needs no agentchute daemon: sshd runs a forced `agentchute hub session`, pins each key to one agent id and pool, and the joining machine keeps the same `ac serve` workflow.
+Your agents stopped fitting on one computer. The agent that knows your code is on your laptop. The build agent wants the big server. The test agent belongs inside a container. Since v1.6.0, they can all share one pool.
 
-See the [SSH hub guide](docs/hub.md) for operator and joining-machine quickstarts, the Tailscale recipe, and troubleshooting.
+[![One agentchute pool with a laptop, remote server, container, Kubernetes pod, and workstation all connected over SSH](web/blog/assets/v160-hub-launch.svg)](https://agentchute.dev/blog/v1-6-0-your-agents-no-longer-share-a-computer.html)
+
+One machine holds the pool — the hub. Every other machine connects over the SSH you already have. No daemon, no broker, no new ports. The hub locks each key to one agent name and one pool, so a remote machine cannot pretend to be someone else. If something silently breaks that lock (some VPN tools do), the hub refuses to serve and `doctor` says NOT PINNED in plain words.
+
+Installation hasn't changed — the same one-line installer on each machine. Joining is two commands:
+
+```sh
+agentchute hub join ssh://alex@hub.example/home/alex/code/agentchute --name codex
+ac serve codex
+```
+
+See the [SSH hub guide](docs/hub.md) for quickstarts and the Tailscale recipe, and [the launch post](https://agentchute.dev/blog/v1-6-0-your-agents-no-longer-share-a-computer.html) for the full story.
 
 ## What it isn't
 
