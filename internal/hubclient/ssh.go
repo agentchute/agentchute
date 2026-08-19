@@ -345,7 +345,20 @@ func classifySSHFailure(remote *loop.RemoteConfig, agentID, stage string, cause 
 	}
 	var exitErr *exec.ExitError
 	if errors.As(waitErr, &exitErr) && exitErr.ExitCode() == 127 {
-		return &Error{Code: "E_HUB_NO_BINARY", Msg: "hub: connected, but the hub could not run agentchute (remote exit 127 — command not found at /usr/local/bin/agentchute). Reinstall agentchute on the hub, or re-authorize this key so its line points at the current binary path."}
+		// Exit 127 has TWO causes and they need opposite remedies. Either the hub's
+		// binary really is missing behind a working forced command, or no forced
+		// command was applied at all and the sentinel `agentchute-hub` reached a
+		// login shell. The old message assumed the first and sent operators to
+		// reinstall a binary that was fine.
+		//
+		// The discriminator is the PROBE, not the stderr text. That text is the
+		// remote LOGIN SHELL's and already has two spellings in hand — zsh's
+		// "command not found: agentchute-hub" and fish's "Unknown command:
+		// agentchute-hub" — and a genuinely missing binary under a pinned host
+		// produces the same shape from the same shell, differing only in which
+		// string it names. Matching that across shells and locales is the brittle
+		// half of a check whose deterministic half already exists.
+		return classifyExit127(remote, agentID, stderr)
 	}
 	if stage == "hello-timeout" {
 		return &Error{Code: "E_HELLO_TIMEOUT", Msg: "hub: connected but no protocol answer in 10s. The hub-side agentchute may be hung or broken; on the hub run: agentchute doctor"}
@@ -422,4 +435,42 @@ func readActivePublicKey(remote *loop.RemoteConfig, agentID string) (string, err
 		return "", fmt.Errorf("active public key is empty")
 	}
 	return pubkey, nil
+}
+
+// classifyExit127 runs the pinning probes to tell a missing hub binary from a hub
+// that never applied a forced command. One or two extra ssh round trips, only on
+// a path that has already failed.
+func classifyExit127(remote *loop.RemoteConfig, agentID, stderr string) error {
+	opts := SSHBuildOptions{Remote: remote, AgentID: agentID}
+	if remote != nil {
+		opts.StateDir = remote.HubDir
+	}
+	switch hubPinningProbe(opts) {
+	case pinningIntercepted:
+		return &Error{Code: "E_HUB_UNPINNED", Msg: hubUnpinnedInterceptedMessage(remote) + lastStderrLine(stderr)}
+	case pinningOperatorFallback:
+		return &Error{Code: "E_HUB_UNPINNED", Msg: hubUnpinnedOperatorFallbackMessage(remote, agentID) + lastStderrLine(stderr)}
+	case pinningUnpinnedUnattributed:
+		return &Error{Code: "E_HUB_UNPINNED", Msg: hubUnpinnedInterceptedMessage(remote) + " " + hubUnpinnedBothRemediesSuffix() + lastStderrLine(stderr)}
+	default:
+		return &Error{Code: "E_HUB_NO_BINARY", Msg: "hub: connected, and the hub DOES apply a forced command, but it could not run the agentchute binary that command names (remote exit 127). Reinstall agentchute on the hub, or re-authorize this key so its line points at the current binary path." + lastStderrLine(stderr)}
+	}
+}
+
+// hubPinningProbe is a seam so rows can drive the classifier's arms without an
+// sshd.
+var hubPinningProbe = probeHubPinning
+
+// lastStderrLine appends the remote's own last word as CORROBORATION, never as
+// the discriminator. Capped, like the E_CHANNEL_LOST arm already does.
+func lastStderrLine(stderr string) string {
+	lines := strings.Split(strings.TrimRight(stderr, "\n"), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last == "" {
+		return ""
+	}
+	if len(last) > 200 {
+		last = last[:200] + "…"
+	}
+	return " (the hub said: " + last + ")"
 }

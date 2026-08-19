@@ -48,15 +48,19 @@ var Emitters = map[string]string{
 	CodeTooLarge:             EmitterHub,
 	CodeUnsupported:          EmitterHub,
 	CodeUnpinned:             EmitterHub,
-	"E_CONNECT":              EmitterClient,
-	"E_UNAUTHORIZED":         EmitterClient,
-	"E_HOSTKEY_CHANGED":      EmitterClient,
-	"E_CHANNEL_LOST":         EmitterClient,
-	"E_SEND_UNKNOWN":         EmitterClient,
-	"E_HELLO_TIMEOUT":        EmitterClient,
-	"E_HUB_NO_BINARY":        EmitterClient,
-	"E_NOT_JOINED":           EmitterClient,
-	"E_NO_SSH":               EmitterClient,
+	// Client-emitted: only the CLIENT can run the behavioural probe that
+	// distinguishes an unpinned hub from a missing binary. The hub-side
+	// E_UNPINNED is what a pinned-but-bypassed hub reports about itself.
+	"E_HUB_UNPINNED":    EmitterClient,
+	"E_CONNECT":         EmitterClient,
+	"E_UNAUTHORIZED":    EmitterClient,
+	"E_HOSTKEY_CHANGED": EmitterClient,
+	"E_CHANNEL_LOST":    EmitterClient,
+	"E_SEND_UNKNOWN":    EmitterClient,
+	"E_HELLO_TIMEOUT":   EmitterClient,
+	"E_HUB_NO_BINARY":   EmitterClient,
+	"E_NOT_JOINED":      EmitterClient,
+	"E_NO_SSH":          EmitterClient,
 }
 
 // ProtocolError is a named session/codec failure. Operation errors keep their

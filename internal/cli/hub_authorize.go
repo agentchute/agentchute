@@ -178,7 +178,14 @@ func authorizeHubKey(opts hubAuthorizeOptions, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "authorized: %s -> pool %s (canonical; marker %s)\n", opts.Agent, pool.Path, marker)
+	// The CLAIM changes, not the machinery. authorize runs ON the hub, where it
+	// cannot observe either producer without a round trip it has no key for — and
+	// a guess-based warning (sniffing tailscaled, parsing `tailscale status`)
+	// would be vendor-specific, brittle, and fire on healthy hosts. But this is
+	// where the false belief is manufactured: an operator reads "authorized" and
+	// believes the key is now pinned, which is untrue on an intercepting host and
+	// untrue again if the joining machine never presents this key.
+	fmt.Fprintf(out, "authorized: %s pinned to %s (%s) — effective only if this host's sshd applies authorized_keys and the joining machine actually presents this key. Confirm with `agentchute doctor` from the joining machine.\n", opts.Agent, pool.Path, marker)
 	destination := "in"
 	if action == "appended" {
 		destination = "to"

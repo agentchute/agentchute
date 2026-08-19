@@ -226,7 +226,7 @@ func TestStatusProducerBudgetsAndPrefix(t *testing.T) {
 func TestRegistryCompleteness(t *testing.T) {
 	opCodes := []string{"E_NOT_REGISTERED", "E_RECIPIENT_UNKNOWN", "E_RECIPIENT_UNREADABLE", "E_RECIPIENT_STALE", "E_RECIPIENT_RACING", "E_FENCED", "E_LEASE_HELD", "E_ORDER", "E_HUB_IO"}
 	codecCodes := []string{CodeVersion, CodeIdentity, CodePoolNotFound, CodePoolIDInvalid, CodePoolMismatch, CodeMalformedFrame, CodeTooLarge, CodeUnsupported, CodeUnpinned}
-	clientOnly := []string{"E_CONNECT", "E_UNAUTHORIZED", "E_HOSTKEY_CHANGED", "E_CHANNEL_LOST", "E_SEND_UNKNOWN", "E_HELLO_TIMEOUT", "E_HUB_NO_BINARY", "E_NOT_JOINED", "E_NO_SSH"}
+	clientOnly := []string{"E_CONNECT", "E_UNAUTHORIZED", "E_HOSTKEY_CHANGED", "E_CHANNEL_LOST", "E_SEND_UNKNOWN", "E_HELLO_TIMEOUT", "E_HUB_NO_BINARY", "E_NOT_JOINED", "E_NO_SSH", "E_HUB_UNPINNED"}
 	seen := map[string]bool{}
 	opErrors := []error{
 		op.ErrNotRegistered, op.ErrRecipientUnknown, op.ErrRecipientUnreadable,
@@ -260,8 +260,8 @@ func TestRegistryCompleteness(t *testing.T) {
 	if Emitters[CodePoolMismatch] != EmitterBoth {
 		t.Fatalf("pool mismatch emitter = %q", Emitters[CodePoolMismatch])
 	}
-	if len(Emitters) != 27 {
-		t.Fatalf("emitter registry = %d rows, want 27", len(Emitters))
+	if len(Emitters) != 28 {
+		t.Fatalf("emitter registry = %d rows, want 28", len(Emitters))
 	}
 }
 

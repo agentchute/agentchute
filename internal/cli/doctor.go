@@ -259,6 +259,14 @@ func runRemoteDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doct
 	} else {
 		add(doctorCheck{Name: "hub_identity", Severity: severityOK, Message: fmt.Sprintf("key pinned to %s; protocol %s v%d; hub binary %s", hello.Agent, hubwire.Protocol, hello.V, hello.HubBin)})
 	}
+	// Site 3: probe pinning on EVERY run, not only when something else broke.
+	//
+	// A hub can become unpinned long after a successful join — someone enables an
+	// intercepting layer, or an operator's ssh config grows an identity the hub
+	// accepts — and a check that only fires alongside another failure is a check
+	// selected on the failure it reports. This is also the state an operator is in
+	// right after `hub authorize` told them they were protected.
+	add(hubPinningCheck(cfg.Remote, agentID))
 	if hello.Pool != hubCfg.Pool || hello.Pool12 != hubCfg.Pool12 {
 		add(doctorCheck{Name: "hub_pool", Severity: severityBlocker, Message: "E_POOL_MISMATCH: " + hubClientPoolMismatchMessage(hello.Pool, hello.Pool12, hubCfg.Pool12, hubCfg.Pool, agentID)})
 	} else if !hello.Writable {
@@ -1349,4 +1357,15 @@ Flags:
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --json                structured JSON output
 `)
+}
+
+// hubPinningCheck is doctor's pinning probe. Blocker when the hub runs a command
+// this machine chose, because that means identity and pool pinning are not in
+// effect at all.
+func hubPinningCheck(remote *loop.RemoteConfig, agentID string) doctorCheck {
+	message, pinned := hubclient.PinningVerdict(remote, agentID)
+	if pinned {
+		return doctorCheck{Name: "hub_pinning", Severity: severityOK, Message: "forced command applied; agent id and pool are pinned by sshd"}
+	}
+	return doctorCheck{Name: "hub_pinning", Severity: severityBlocker, Message: message}
 }
