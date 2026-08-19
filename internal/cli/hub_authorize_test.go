@@ -371,7 +371,16 @@ func TestHubAuthorizeCommandDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout, "authorized: codex -> pool") {
+	if !strings.Contains(stdout, "authorized: codex pinned to") {
 		t.Fatalf("stdout = %q", stdout)
+	}
+	// authorize runs on the hub and cannot observe whether sshd will apply the
+	// line, or whether the joining machine will present this key. It used to state
+	// the outcome as fact; it now states the condition, because that sentence is
+	// where the false belief was manufactured.
+	for _, want := range []string{"effective only if", "presents this key", "agentchute doctor"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("authorize no longer qualifies its claim (%q missing): %q", want, stdout)
+		}
 	}
 }

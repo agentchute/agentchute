@@ -15,6 +15,10 @@ const (
 	CodeMalformedFrame = "E_MALFORMED_FRAME"
 	CodeTooLarge       = "E_TOO_LARGE"
 	CodeUnsupported    = "E_UNSUPPORTED"
+	// CodeUnpinned: the hub was reached WITHOUT an authorized_keys forced
+	// command, so the agent id and pool for the session were chosen by the caller
+	// rather than pinned by sshd. Hub-emitted: only the hub can observe it.
+	CodeUnpinned = "E_UNPINNED"
 )
 
 const (
@@ -43,19 +47,24 @@ var Emitters = map[string]string{
 	CodeMalformedFrame:       EmitterHub,
 	CodeTooLarge:             EmitterHub,
 	CodeUnsupported:          EmitterHub,
-	"E_CONNECT":              EmitterClient,
-	"E_UNAUTHORIZED":         EmitterClient,
-	"E_HOSTKEY_CHANGED":      EmitterClient,
-	"E_CHANNEL_LOST":         EmitterClient,
-	"E_SEND_UNKNOWN":         EmitterClient,
-	"E_HELLO_TIMEOUT":        EmitterClient,
-	"E_HUB_NO_BINARY":        EmitterClient,
-	"E_NOT_JOINED":           EmitterClient,
-	"E_NO_SSH":               EmitterClient,
+	CodeUnpinned:             EmitterHub,
+	// Client-emitted: only the CLIENT can run the behavioural probe that
+	// distinguishes an unpinned hub from a missing binary. The hub-side
+	// E_UNPINNED is what a pinned-but-bypassed hub reports about itself.
+	"E_HUB_UNPINNED":    EmitterClient,
+	"E_CONNECT":         EmitterClient,
+	"E_UNAUTHORIZED":    EmitterClient,
+	"E_HOSTKEY_CHANGED": EmitterClient,
+	"E_CHANNEL_LOST":    EmitterClient,
+	"E_SEND_UNKNOWN":    EmitterClient,
+	"E_HELLO_TIMEOUT":   EmitterClient,
+	"E_HUB_NO_BINARY":   EmitterClient,
+	"E_NOT_JOINED":      EmitterClient,
+	"E_NO_SSH":          EmitterClient,
 }
 
 // ProtocolError is a named session/codec failure. Operation errors keep their
-// mapping in op.CodeFor; the codec contributes only the eight codes above.
+// mapping in op.CodeFor; the codec contributes only the nine codes above.
 type ProtocolError struct {
 	Code        string
 	Msg         string

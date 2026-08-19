@@ -89,7 +89,7 @@ Use Tailscale only as the network layer:
 
 4. Keep standard `sshd` and `~/.ssh/authorized_keys` enabled on the hub.
 
-Do not use Tailscale SSH for this connection. Agentchute relies on OpenSSH `authorized_keys` forced commands to pin a key to one identity and pool; Tailscale SSH uses its own authentication path. Tailscale still provides the private network, stable name, and access controls.
+Do not use Tailscale SSH for this connection. Agentchute relies on OpenSSH `authorized_keys` forced commands to pin a key to one identity and pool; Tailscale SSH uses its own authentication path. Tailscale still provides the private network, stable name, and access controls. If you do it anyway, agentchute now finds out rather than trusting the setup — see [When pinning is not applied](#when-pinning-is-not-applied), which also covers a second way to end up unpinned that involves no Tailscale at all.
 
 ## Failures and recovery
 
@@ -102,6 +102,46 @@ Common failures are actionable and fail closed:
 - `E_CHANNEL_LOST`: the runner stops the child before relaunching. Remote serve relaunch is enabled by default; pass `--relaunch=false` only when an operator should restart it manually.
 
 The complete error-code registry is in [AGENTCHUTE.md §13.10](../AGENTCHUTE.md#1310-error-code-registry).
+
+## When pinning is not applied
+
+The hub's identity and pool pinning is one `authorized_keys` line, and sshd applies it. Two
+situations break that, and they look identical from the joining machine while needing opposite
+fixes:
+
+- **An ssh-intercepting layer.** Tailscale SSH, or an ssh proxy, terminates the connection
+  itself and never consults `authorized_keys`. `agentchute hub authorize` then writes a line
+  that grants nothing, and removing a key revokes nothing. Anyone the layer's ACL admits can
+  run any command as the hub user, including claiming another agent's id and another pool.
+  Note this needs no Tailscale on the JOINING machine — it is the hub's configuration.
+- **The joining machine authenticates as somebody else.** ssh offers identities from the
+  operator's `ssh_config` and agent as well as the one agentchute named. If one of those is
+  also authorized on the hub — commonly the operator's own key, unrestricted, because that is
+  how they administer it — ssh may authenticate with it instead. No forced command applies,
+  and the request for `agentchute-hub` reaches a login shell. **This one needs no intercepting
+  layer at all.**
+
+agentchute detects both rather than trusting either:
+
+- A hub reached WITHOUT a forced command **refuses to serve** (`E_UNPINNED`) instead of
+  quietly accepting an agent id the caller chose.
+- `agentchute doctor` runs a `hub_pinning` check on **every** run — not only when something
+  else has already broken — by asking the hub to run a command of the client's choosing. A
+  pinned host cannot; an unpinned one will. When that check fails it is a blocker.
+- The old "command not found at /usr/local/bin/agentchute — reinstall agentchute on the hub"
+  is gone. That message named a path nothing used and sent operators to fix a working binary.
+
+If `doctor` reports NOT PINNED, the fix is on the hub: disable the interception
+(`tailscale set --ssh=false`, or run a separate sshd for the hub), or authorize the joining
+machine's own agentchute key so ssh stops falling back. `agentchute hub authorize` now says so
+in its own output — it cannot verify either condition from the hub side, so it states what
+must be true rather than claiming the key is pinned.
+
+What this does NOT do: it does not make an intercepting host secure. Once something other than
+sshd terminates the connection, the caller controls the command line and the environment there,
+and no check agentchute ships can change that. What it removes is the SILENT version — an
+operator believing a key is pinned when it grants nothing, and a revocation that cuts off
+nothing.
 
 ## A live lane blocks a migration, by design
 

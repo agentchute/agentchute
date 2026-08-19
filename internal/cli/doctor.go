@@ -249,6 +249,22 @@ func runRemoteDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doct
 			code = "E_CONNECT"
 		}
 		add(doctorCheck{Name: "hub_connect", Severity: severityBlocker, Message: fmt.Sprintf("%s: %v", code, err)})
+		// The hub_pinning row must appear in exactly the case it exists for.
+		//
+		// Every connect failure returns here, and that includes the two codes that
+		// PROVE the hub is unpinned: E_UNPINNED, which Site 1 emits on the hub
+		// itself, and E_HUB_UNPINNED, which this machine's probes concluded while
+		// classifying an exit 127. Without this, `doctor --json` on a freshly
+		// authorized but unpinned hub reports a hub_connect blocker and no
+		// hub_pinning check at all — the one report where an operator, or a script
+		// keyed on the check name, is most entitled to find it.
+		//
+		// It reuses the verdict rather than re-running the behavioural probe: the
+		// answer is already in hand, and probing again would cost two more round
+		// trips to a host that has just been refused.
+		if code == hubwire.CodeUnpinned || code == "E_HUB_UNPINNED" {
+			add(doctorCheck{Name: "hub_pinning", Severity: severityBlocker, Message: fmt.Sprintf("%s: %v", code, err)})
+		}
 		return report
 	}
 	hello := session.Hello()
@@ -259,6 +275,27 @@ func runRemoteDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doct
 	} else {
 		add(doctorCheck{Name: "hub_identity", Severity: severityOK, Message: fmt.Sprintf("key pinned to %s; protocol %s v%d; hub binary %s", hello.Agent, hubwire.Protocol, hello.V, hello.HubBin)})
 	}
+	// Site 3: probe pinning on EVERY run, not only when something else broke.
+	//
+	// A hub can become unpinned long after a successful join — someone enables an
+	// intercepting layer, or an operator's ssh config grows an identity the hub
+	// accepts — and a check that only fires alongside another failure is a check
+	// selected on the failure it reports. This is also the state an operator is in
+	// right after `hub authorize` told them they were protected.
+	//
+	// Why this is not dead code after a successful hello, which is the first thing
+	// a reader will ask. Site 1's predicate is SSH_ORIGINAL_COMMAND — an
+	// ENVIRONMENT reading, and an interceptor that sets the variable satisfies it
+	// while pinning nothing. Site 3 is BEHAVIOURAL: it asks the hub to run a
+	// command this machine chose. A hello that succeeded proves the hub spoke the
+	// protocol, not that sshd chose the agent id. That is the gap, and it is the
+	// only one this check exists for.
+	//
+	// Placed AFTER the connect/hello early returns on purpose: when the connection
+	// fails with exit 127, classifyExit127 has already run these same probes and
+	// reported the verdict as hub_connect. Probing again there would double the
+	// round trips to say what the operator was just told.
+	add(hubPinningCheck(cfg.Remote, agentID))
 	if hello.Pool != hubCfg.Pool || hello.Pool12 != hubCfg.Pool12 {
 		add(doctorCheck{Name: "hub_pool", Severity: severityBlocker, Message: "E_POOL_MISMATCH: " + hubClientPoolMismatchMessage(hello.Pool, hello.Pool12, hubCfg.Pool12, hubCfg.Pool, agentID)})
 	} else if !hello.Writable {
@@ -1349,4 +1386,19 @@ Flags:
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --json                structured JSON output
 `)
+}
+
+// hubPinningCheck is doctor's pinning probe. Blocker when the hub runs a command
+// this machine chose, because that means identity and pool pinning are not in
+// effect at all.
+// hubPinningVerdict is the seam. Tests swap it to pin the verdict-to-severity
+// mapping without opening an ssh connection; production never reassigns it.
+var hubPinningVerdict = hubclient.PinningVerdict
+
+func hubPinningCheck(remote *loop.RemoteConfig, agentID string) doctorCheck {
+	message, pinned := hubPinningVerdict(remote, agentID)
+	if pinned {
+		return doctorCheck{Name: "hub_pinning", Severity: severityOK, Message: "forced command applied; agent id and pool are pinned by sshd"}
+	}
+	return doctorCheck{Name: "hub_pinning", Severity: severityBlocker, Message: message}
 }

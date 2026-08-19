@@ -187,11 +187,19 @@ func TestClassifySSHFailureCodes(t *testing.T) {
 	}{
 		{name: "changed host key", stage: "connect", stderr: "REMOTE HOST IDENTIFICATION HAS CHANGED", want: "E_HOSTKEY_CHANGED", wantMsg: "hub: HOST KEY CHANGED for hub.tail1234.ts.net — refusing to connect. If the hub was reinstalled, confirm with its operator, then run: agentchute hub join --reset-hostkey. If not, treat this as a possible interception."},
 		{name: "authentication refused", stage: "connect", stderr: "Permission denied (publickey).", want: "E_UNAUTHORIZED", wantMsg: "hub: hub refused this key for alex@hub.tail1234.ts.net. Either it was never authorized or it was revoked."},
-		{name: "remote binary absent", stage: "connect", waitErr: exit127, want: "E_HUB_NO_BINARY", wantMsg: "hub: connected, but the hub could not run agentchute (remote exit 127 — command not found at /usr/local/bin/agentchute). Reinstall agentchute on the hub, or re-authorize this key so its line points at the current binary path."},
+		{name: "remote binary absent on a PINNED host", stage: "connect", waitErr: exit127, want: "E_HUB_NO_BINARY", wantMsg: "hub: connected, and the hub DOES apply a forced command, but it could not run the agentchute binary that command names (remote exit 127). Reinstall agentchute on the hub, or re-authorize this key so its line points at the current binary path."},
 		{name: "hello timeout", stage: "hello-timeout", want: "E_HELLO_TIMEOUT", wantMsg: "hub: connected but no protocol answer in 10s. The hub-side agentchute may be hung or broken; on the hub run: agentchute doctor"},
 		{name: "connect failed", stage: "connect", want: "E_CONNECT", wantMsg: "hub: cannot reach hub.tail1234.ts.net:22 (connect failed after 5s). Check network/VPN/tailnet, then retry; `agentchute doctor` runs this same probe. (If this machine should no longer be joined to this hub, delete .agentchute-control-repo.)"},
 		{name: "established channel lost", stage: "operation", want: "E_CHANNEL_LOST"},
 	}
+	// Exit 127 now asks the pinning probe which of its two causes this is, so the
+	// table pins the PINNED arm and stubs the probe rather than shelling out to a
+	// real ssh from a unit row. The unpinned arms have their own table in
+	// pinning_test.go, where the verdict is the parameter.
+	originalProbe := hubPinningProbe
+	t.Cleanup(func() { hubPinningProbe = originalProbe })
+	hubPinningProbe = func(SSHBuildOptions) pinningVerdict { return pinningPinned }
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stdin, err := os.CreateTemp(t.TempDir(), "ssh-stdin")

@@ -494,6 +494,7 @@ Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable"
 | `E_UNSUPPORTED` | hub | unknown `t` (session survives) |
 | `E_ORDER` | hub | request out of order (session survives) |
 | `E_POOL_ID_INVALID` | hub | `state/pool.id` fails the regular-0600 / `[0-9a-f]{12}`+LF contract (session start) |
+| `E_UNPINNED` | hub | the session was reached with no `authorized_keys` forced command, so the agent id and pool were chosen by the caller rather than pinned by sshd (session start; the hub refuses to serve) |
 | `E_POOL_MISMATCH` | **both** | this key is not serving the pool it is supposed to serve |
 
 **`E_POOL_MISMATCH` is emitted by both sides**, deliberately one code with two emitters and two exact texts — not client-only:
@@ -503,7 +504,13 @@ Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable"
 
 The two arms are ordered and non-overlapping: the hub arm runs before `hello-ok` exists; the client arm only on a `hello-ok` the hub arm already let through.
 
-Client-side only (never on the wire): `E_CONNECT`, `E_UNAUTHORIZED`, `E_HOSTKEY_CHANGED`, `E_CHANNEL_LOST`, `E_SEND_UNKNOWN`, `E_HELLO_TIMEOUT`, `E_HUB_NO_BINARY`, `E_NOT_JOINED`, `E_NO_SSH`. (`E_POOL_MISMATCH` is **not** in this list.)
+Client-side only (never on the wire): `E_CONNECT`, `E_UNAUTHORIZED`, `E_HOSTKEY_CHANGED`, `E_CHANNEL_LOST`, `E_SEND_UNKNOWN`, `E_HELLO_TIMEOUT`, `E_HUB_NO_BINARY`, `E_HUB_UNPINNED`, `E_NOT_JOINED`, `E_NO_SSH`. (`E_POOL_MISMATCH` is **not** in this list.)
+
+`E_UNPINNED` is hub-emitted and travels on the wire: a hub reached WITHOUT an
+`authorized_keys` forced command refuses to serve, because the agent id and pool for that
+session were chosen by the caller rather than pinned by sshd. `E_HUB_UNPINNED` is its
+client-side counterpart, reported when the client's own probe establishes the same thing
+about a host that never got as far as a session.
 
 ## 14. Namespace
 State lives under the fixed `.agentchute/loop` directory. `AGENTCHUTE.md` is shared; reference-implementation notes live in `.agentchute/loop/README.md`. (Earlier drafts used a vendor-namespaced `.<vendor>/loop/` dotdir and a `.rehumanlabs/` legacy namespace; both are gone — the namespace is now fixed. `reHuman Labs` remains the maker's credit in `README.md`; that's brand, not a namespace.)
