@@ -193,7 +193,24 @@ func runHubJoin(root string, remote *loop.RemoteConfig, opts hubJoinOptions) err
 	if err != nil {
 		return err
 	}
-	fingerprint, _ := hubJoinFingerprint(remote)
+	fingerprint, readErr := hubJoinFingerprint(remote)
+	if fingerprint == "" {
+		// known_hosts yielded nothing usable. MIGRATION has had an ssh-keyscan
+		// fallback for exactly this since it shipped; join had none, recorded an
+		// empty fingerprint, and discarded the error that said why — and nothing
+		// re-records it, so findHubMigrationCandidate skips that hub forever
+		// (#164). The path that RECORDS a value has to be at least as robust as
+		// the path that CONSUMES it.
+		//
+		// Only when known_hosts fails, deliberately: ssh-keyscan is a second
+		// connection to a host this join has already reached, and a healthy join
+		// should not pay for a probe it does not need.
+		if scanned, scanErr := hubJoinDiscoverFingerprint(remote); scanErr == nil && scanned != "" {
+			fingerprint = scanned
+		} else {
+			warnHubJoinNoFingerprint(remote, readErr, scanErr)
+		}
+	}
 	if fingerprint != "" {
 		fmt.Printf("hub key recorded: %s\n", fingerprint)
 	}
@@ -662,6 +679,27 @@ func installHubJoinShims() error {
 	// tried to fix PATH. Warning here as well printed the same advice twice
 	// before either attempt had happened.
 	return setupEnsureShimPath(setupOptions{ShimDir: dir})
+}
+
+// warnHubJoinNoFingerprint is the other half of #164: the read error used to be
+// discarded outright, so a hub that could never be migrated was recorded in
+// silence.
+//
+// It warns rather than refusing. By this point the join has authenticated,
+// written its key and been accepted; stranding a working machine over a
+// diagnostic value would be a worse outcome than the one being fixed. What it
+// must not do is stay quiet, and it must say what actually breaks — an operator
+// has no reason to care about a fingerprint field, and the symptom shows up much
+// later wearing someone else's remedy.
+func warnHubJoinNoFingerprint(remote *loop.RemoteConfig, readErr, scanErr error) {
+	fmt.Fprintln(os.Stderr, "warning: joined, but this hub's host-key fingerprint could not be recorded.")
+	if readErr != nil {
+		fmt.Fprintf(os.Stderr, "  %s: %v\n", displayHomePath(filepath.Join(remote.HubDir, "known_hosts")), readErr)
+	}
+	if scanErr != nil {
+		fmt.Fprintf(os.Stderr, "  ssh-keyscan %s: %v\n", remote.Host, scanErr)
+	}
+	fmt.Fprintln(os.Stderr, "  The join itself is complete; what this costs you is later. Migrating this hub to a new URL needs the recorded fingerprint to recognise the two directories as the same hub, and with none recorded the move is never offered: a `hub join` at the new URL is treated as a FRESH join and refused for having an authorized key already. Re-run the same `hub join` command once the hub is reachable and this records itself.")
 }
 
 func readHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
