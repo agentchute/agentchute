@@ -45,6 +45,24 @@ func TestWithAgentLock_SerializesConcurrentLedgerAppends(t *testing.T) {
 	cfg := newLockTestConfig(t)
 	const agentID = "claude-code"
 	const n = 50
+	// #175 sightings 1/2/4: this row failed on ubuntu CI at 5.19s and 5.01s —
+	// the package's own agentLockTimeout, to two decimal places. It is not a
+	// lost-update bug and not scheduler noise.
+	//
+	// MEASURED (macOS, GOMAXPROCS=2, -race, 25 runs): this test takes 1.32s,
+	// stable to ±0.03s. 50 contenders times agentLockRetryInterval's 25ms poll
+	// is 1.25s, so the runtime IS the poll cadence; the critical section barely
+	// registers. That leaves under 4x headroom against a 5s bound, and a
+	// poll-based lock is unfair — a goroutine can lose round after round — so a
+	// slower, loaded runner reaches the bound and RecordOwed returns the
+	// timeout error this test then reports as a failure.
+	//
+	// The property under test is that no update is LOST under concurrency, not
+	// how long the lock waits. So the bound is lifted here rather than the
+	// contention lowered: dropping n would weaken the thing being proven, and
+	// leaving it would keep a correctness row hostage to how busy a runner is.
+	withGenerousAgentLockTimeout(t)
+
 	now := time.Date(2026, 5, 19, 17, 54, 30, 0, time.UTC)
 	by := now.Add(30 * time.Minute)
 
@@ -290,5 +308,62 @@ func TestAtomicWrite_SyncDirFailureAfterRenameNotReportedAsWriteFail(t *testing.
 		if strings.HasPrefix(e.Name(), ".tmp_") {
 			t.Fatalf("leftover temp file %q after atomic write", e.Name())
 		}
+	}
+}
+
+// withGenerousAgentLockTimeout lifts the per-agent lock's bounded wait for the
+// duration of one test. agentLockTimeout is already a package var for exactly
+// this reason — the comment on it says tests lower it to keep the bounded-wait
+// row fast; these two need the opposite, and for the same reason: neither is
+// testing the bound.
+func withGenerousAgentLockTimeout(t *testing.T) {
+	t.Helper()
+	original := agentLockTimeout
+	agentLockTimeout = 60 * time.Second
+	t.Cleanup(func() { agentLockTimeout = original })
+}
+
+// The mechanism, pinned rather than left in an issue comment: with the bound
+// set below what the poll cadence costs, contention produces the timeout error
+// — which is the failure CI was reporting.
+func TestAgentLockBoundIsWhatFiftyContendersHit(t *testing.T) {
+	cfg := newLockTestConfig(t)
+	original := agentLockTimeout
+	agentLockTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { agentLockTimeout = original })
+
+	now := time.Date(2026, 5, 19, 17, 54, 30, 0, time.UTC)
+	by := now.Add(30 * time.Minute)
+	const n = 50
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := MsgID{To: "codex", From: "claude-code", Seq: uint64(i + 1)}
+			if err := RecordOwed(cfg, "claude-code", key, by, now); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+
+	failed := 0
+	for range errs {
+		failed++
+	}
+	if failed == 0 {
+		t.Skip("40ms was enough on this machine; the cadence-versus-bound relationship is what the row documents")
+	}
+	// The point: the failure is the BOUND, not corruption. Whatever did get
+	// recorded is intact and distinct — a timed-out acquirer writes nothing.
+	ledger, err := LoadOwedLedger(cfg, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Owed)+failed != n {
+		t.Fatalf("%d recorded + %d timed out != %d; a timed-out acquire lost or corrupted an update", len(ledger.Owed), failed, n)
 	}
 }

@@ -101,6 +101,13 @@ func TestMintSendStampAdvancesWithClock(t *testing.T) {
 func TestMintSendStampConcurrentMintsDistinct(t *testing.T) {
 	cfg := newSeqTestConfig(t)
 	const n = 50
+	// #175 sighting 2: this row failed on ubuntu CI at 5.01s, the package's own
+	// agentLockTimeout. Same mechanism as
+	// TestWithAgentLock_SerializesConcurrentLedgerAppends, measured there: 50
+	// contenders times the 25ms poll cadence is the runtime, leaving under 4x
+	// headroom against the bound. What this row proves is that concurrent mints
+	// are DISTINCT, not how long the lock waits.
+	withGenerousAgentLockTimeout(t)
 	now := time.Date(2026, 5, 9, 16, 8, 36, 0, time.UTC)
 	var (
 		mu   sync.Mutex
