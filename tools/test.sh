@@ -19,6 +19,20 @@ say "go test ./..."
 # shellcheck disable=SC2086
 env $strip_env go test ./... || { say "FAIL: go test"; exit 1; }
 
+# -race, because CI and the release job both run it and this ritual is what lanes
+# are told to run before pushing. Without it the local gate is strictly weaker
+# than the one judging the push, and weaker in exactly the class that is
+# invisible locally and intermittent on a loaded runner. It has already cost a
+# red that way (#148), and release.yaml runs -race too — so the same race could
+# fail the release job AFTER the tag was pushed.
+#
+# It roughly doubles wall-clock. That is the price of the local gate matching the
+# real one; anyone who wants a fast path should add an explicit skip flag rather
+# than let the default quietly differ from CI again.
+say "go test -race ./..."
+# shellcheck disable=SC2086
+env $strip_env go test -race ./... || { say "FAIL: go test -race"; exit 1; }
+
 say "cd conformance && go test ./..."
 # shellcheck disable=SC2086
 (cd conformance && env $strip_env go test ./...) || { say "FAIL: conformance go test"; exit 1; }
