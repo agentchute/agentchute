@@ -63,7 +63,7 @@ Your agents stopped fitting on one computer. The agent that knows your code is o
 
 [![One agentchute pool with a laptop, remote server, container, Kubernetes pod, and workstation all connected over SSH](web/blog/assets/v160-hub-launch.svg)](https://agentchute.dev/blog/v1-6-0-your-agents-no-longer-share-a-computer.html)
 
-One machine holds the pool — the hub. Every other machine connects over the SSH you already have. No daemon, no broker, no new ports. The hub locks each key to one agent name and one pool, so a remote machine cannot pretend to be someone else. If something silently breaks that lock (some VPN tools do), the hub refuses to serve and `doctor` says NOT PINNED in plain words.
+One machine holds the pool — the hub. Every other machine connects over the SSH you already have. No daemon, no broker, no new ports. The hub locks each key to one agent name and one pool, so a remote machine cannot pretend to be someone else. If something silently breaks that lock (some VPN tools do), the hub refuses to serve and `doctor` says NOT PINNED in plain words — and when it cannot check at all, it says that too rather than reporting all-clear.
 
 Installation hasn't changed — the same one-line installer on each machine. Joining is two commands:
 

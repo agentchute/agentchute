@@ -113,10 +113,16 @@ These rules apply to every agent. They are the discipline that keeps agentchute 
 gofmt -w .
 go vet ./...
 go test ./...
+go test -race ./...
+(cd conformance && go test ./...)
 go build ./...
 ```
 
-All four must pass. Currently runs on Go 1.21+; tested up to Go 1.26.
+All six must pass — run them through `tools/test.sh`, which is this list, env-stripped (E10).
+`-race` and the conformance module are not optional extras: `ci.yaml` and `release.yaml` both
+run `-race`, so a ritual without it is weaker than the gate that judges the push, and weaker
+in exactly the class that is invisible locally. A race can therefore fail the release job
+*after* a tag is pushed. Currently runs on Go 1.21+; tested up to Go 1.26.
 
 **5. No unauthorized destructive or external actions.** Apply the tiered authority rule below: a current inbox task may authorize only its enumerated lane-local and repository-additive scopes; operator-reserved actions require direct operator confirmation in the acting lane's current user turn. "You mentioned this earlier" is not confirmation.
 
@@ -201,7 +207,9 @@ Measured basis: the 2026-07-04 fleet retrospective (`docs/internal/retro-2026-07
 - **E7 Reply obligations stay scarce.** Send `--ask` only when the reply is genuinely needed to proceed; always reply with `--reply-to` so the asker's obligation discharges. When `pending` accumulates stale entries, run the owed-audit playbook — a mostly-overdue ledger is a dead warning signal.
 - **E8 One bus-turn per cue.** On a wake cue: `check` once, drain fully, act/reply, then commit in the same turn — `ack`, then `pending`, then `gate`. Wrapper Stop hooks are a backstop, not the primary commit path (`check` only CLAIMS; a crash before `ack` redelivers). No speculative checks between cues; batch all state verification into one upfront pass. **A cue is not proof of freshness**: delivery is pull-only, so mail queued while a lane was down arrives the instant it returns — anything `pending` or `check` marks `[stale]` (older than 24h) is history, not a live instruction, and you confirm with the sender before acting on it.
 - **E9 AUTHORIZATION line for repository-additive work.** A task that authorizes a repository-additive action carries `AUTHORIZATION:` naming the exact commands and targets (e.g. `push new branch X; open PR from X to main; comment on PR #N`). The line never authorizes an operator-reserved scope such as merging, changing shared refs or data, tags/releases, credentials/accounts, or writes outside the named repository; those require direct operator confirmation to the acting lane (Rule 3). No `AUTHORIZATION:` line means local-only work.
-- **E10 Test-environment hygiene.** Run `tools/test.sh` instead of raw `go test`/`gofmt`/`go vet`/`go build` — it strips leaked `AGENTCHUTE_*` env vars first (they cause false "serve lease fenced" failures when run from a lane under the runner), then runs the §4 ritual. One canonical invocation for every vendor. CI is the clean authority when local results look haunted. Scratch and proposal directories stay outside `go test ./...` reach (own `go.mod`, or a gitignored top-level dir).
+- **E10 Test-environment hygiene.** Run `tools/test.sh` instead of raw `go test`/`gofmt`/`go vet`/`go build` — it strips leaked `AGENTCHUTE_*` env vars first (they cause false "serve lease fenced" failures when run from a lane under the runner), then runs the §4 ritual in full — including `go test -race ./...` and the conformance
+module, which are what CI and the release job actually gate on. One canonical invocation for
+every vendor. CI is the clean authority when local results look haunted. Scratch and proposal directories stay outside `go test ./...` reach (own `go.mod`, or a gitignored top-level dir).
 
 **Lane strengths (routing default, not a cage):** codex — implementation, deterministic gates, release mechanics when explicitly authorized · sonnet — senior design/security/runtime gates, not routine one-line diffs · gemini — prose/docs/web copy, no git mechanics · grok — optional bench, narrow pinned targets only · claude — integrator: merge/release authority, synthesis, delegates pair loops per E2.
 
