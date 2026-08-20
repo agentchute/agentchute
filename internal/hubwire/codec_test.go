@@ -260,8 +260,12 @@ func TestRegistryCompleteness(t *testing.T) {
 	if Emitters[CodePoolMismatch] != EmitterBoth {
 		t.Fatalf("pool mismatch emitter = %q", Emitters[CodePoolMismatch])
 	}
-	if len(Emitters) != 28 {
-		t.Fatalf("emitter registry = %d rows, want 28", len(Emitters))
+	// 29 with E_HUB_PINNING_UNVERIFIED, the fourth outcome of the exit-127 arm.
+	// The count is asserted on purpose: a code added to the map and forgotten in
+	// the spec's table is exactly the drift this row exists to catch, so it must
+	// be moved deliberately rather than grow on its own.
+	if len(Emitters) != 29 {
+		t.Fatalf("emitter registry = %d rows, want 29", len(Emitters))
 	}
 }
 

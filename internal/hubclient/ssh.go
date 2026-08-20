@@ -473,7 +473,10 @@ func classifyExit127(remote *loop.RemoteConfig, agentID, stderr string) error {
 	if remote != nil {
 		opts.StateDir = remote.HubDir
 	}
-	switch hubPinningProbe(opts) {
+	verdict, reason := hubPinningProbe(opts)
+	switch verdict {
+	case pinningUnverified:
+		return &Error{Code: "E_HUB_PINNING_UNVERIFIED", Msg: hubPinningUnverifiedExitMessage(reason) + lastStderrLine(stderr), Retriable: true}
 	case pinningIntercepted:
 		return &Error{Code: "E_HUB_UNPINNED", Msg: hubUnpinnedInterceptedMessage(remote) + lastStderrLine(stderr)}
 	case pinningOperatorFallback:

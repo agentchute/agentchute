@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,6 +94,9 @@ const (
 	// pinningUnpinnedUnattributed: the host is unpinned, and the second probe could
 	// not say which producer. NARROWS NOTHING and names both remedies.
 	pinningUnpinnedUnattributed
+	// pinningUnverified: the probe COULD NOT RUN, so nothing about this host was
+	// observed. Distinct from pinned, which is a finding.
+	pinningUnverified
 )
 
 // hubProbeRunner is the seam rows swap. Production runs ssh.
@@ -238,17 +242,64 @@ var errProbeTimeout = &Error{Code: "E_PROBE_TIMEOUT", Msg: "hub: the pinning pro
 // because it can make a ProxyJump-only hub unreachable, and that applies to a
 // diagnostic just as much — so a second probe that fails to connect must never be
 // the thing that decides an operator is at fault.
-func probeHubPinning(opts SSHBuildOptions) pinningVerdict {
+func probeHubPinning(opts SSHBuildOptions) (pinningVerdict, string) {
 	invocation, nonce, err := buildPinningProbe(opts)
 	if err != nil {
-		return pinningPinned
+		// A local failure: the probe demonstrably never left this machine, so it
+		// observed nothing. This line used to return pinningPinned — printing
+		// the reassuring sentence for a verification that had not happened.
+		return pinningUnverified, err.Error()
 	}
-	stdout, _, _ := hubProbeRunner(invocation.Args, 15*time.Second)
-	if !nonceEchoed(stdout, nonce) {
-		return pinningPinned
+	stdout, stderr, runErr := hubProbeRunner(invocation.Args, 15*time.Second)
+	if nonceEchoed(stdout, nonce) {
+		return attributeUnpinnedHub(opts), ""
 	}
-	return attributeUnpinnedHub(opts)
+	// "No nonce" has two causes and they are opposites. A host that was REACHED
+	// and refused to run our command is PINNED — that is the finding. A probe
+	// that never ran observed nothing.
+	if reason, failed := sshItselfFailed(runErr, stderr); failed {
+		return pinningUnverified, reason
+	}
+	return pinningPinned, ""
 }
+
+// sshItselfFailed reports whether SSH failed, as opposed to the remote command
+// failing — and getting the difference wrong trades a false assurance for a
+// false alarm in either direction.
+//
+// A genuinely pinned host whose binary is missing exits 127: the probe ran
+// perfectly and correctly found no nonce, and calling that "unverified" would
+// break every missing-binary host. So err != nil is NOT the discriminator.
+//
+// Three things mean ssh itself failed: it could not be started at all (not on
+// PATH), our timeout fired, or it exited 255 — ssh's own reserved status, as
+// distinct from the remote command's status that it otherwise passes through
+// unchanged. Anything else, remote exit 127 included, means the probe ran.
+func sshItselfFailed(runErr error, stderr string) (string, bool) {
+	if runErr == nil {
+		return "", false
+	}
+	detail := strings.TrimSpace(lastStderrLine(stderr))
+	if detail == "" {
+		detail = runErr.Error()
+	}
+	if errors.Is(runErr, errProbeTimeout) {
+		return "the probe did not return within its timeout", true
+	}
+	var execErr *exec.Error
+	if errors.As(runErr, &execErr) {
+		return "could not run ssh: " + execErr.Err.Error(), true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) && exitErr.ExitCode() == sshSelfFailureExit {
+		return detail, true
+	}
+	return "", false
+}
+
+// sshSelfFailureExit is 255, which ssh reserves for its own failures. Every
+// other status ssh returns is the remote command's, passed through.
+const sshSelfFailureExit = 255
 
 // attributeUnpinnedHub is 2c: probe on an identity that CANNOT be authorized.
 //
@@ -316,19 +367,58 @@ func hubUnpinnedBothRemediesSuffix() string {
 // Exported because doctor lives in internal/cli and the probes need
 // BuildSSHInvocation. It reports the narrowed message when the second probe could
 // narrow, and the both-remedies message when it could not.
-func PinningVerdict(remote *loop.RemoteConfig, agentID string) (string, bool) {
+func PinningVerdict(remote *loop.RemoteConfig, agentID string) (string, PinningState) {
 	opts := SSHBuildOptions{Remote: remote, AgentID: agentID}
 	if remote != nil {
 		opts.StateDir = remote.HubDir
 	}
-	switch hubPinningProbe(opts) {
+	verdict, reason := hubPinningProbe(opts)
+	switch verdict {
 	case pinningIntercepted:
-		return hubUnpinnedInterceptedMessage(remote), false
+		return hubUnpinnedInterceptedMessage(remote), PinningNotPinned
 	case pinningOperatorFallback:
-		return hubUnpinnedOperatorFallbackMessage(remote, agentID), false
+		return hubUnpinnedOperatorFallbackMessage(remote, agentID), PinningNotPinned
 	case pinningUnpinnedUnattributed:
-		return hubUnpinnedInterceptedMessage(remote) + " " + hubUnpinnedBothRemediesSuffix(), false
+		return hubUnpinnedInterceptedMessage(remote) + " " + hubUnpinnedBothRemediesSuffix(), PinningNotPinned
+	case pinningUnverified:
+		return hubPinningUnverifiedMessage(remote, reason), PinningUnverified
 	default:
-		return "", true
+		return "", PinningPinned
 	}
+}
+
+// PinningState is the three-way answer, exported because doctor renders all
+// three differently and a bool cannot carry the third.
+type PinningState int
+
+const (
+	PinningPinned PinningState = iota
+	PinningNotPinned
+	PinningUnverified
+)
+
+// hubPinningUnverifiedMessage says which way to lean while the answer is
+// unknown, and leans the safe way. "I could not check" must never read as "I
+// checked and it is fine".
+func hubPinningUnverifiedMessage(remote *loop.RemoteConfig, reason string) string {
+	host := "this hub"
+	if remote != nil {
+		host = remote.Host
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "no reason reported"
+	}
+	return "could not verify pinning — the probe did not reach " + host + " (" + reason + "). This check has NOT confirmed that sshd applies a forced command; re-run `agentchute doctor`, and if it keeps failing treat the hub as unverified rather than pinned."
+}
+
+// hubPinningUnverifiedExitMessage is the exit-127 arm's fourth outcome. It is
+// its own code rather than a reuse of either neighbour, because a code's name
+// IS its claim: E_HUB_NO_BINARY asserts a working forced command, and the
+// unpinned arm opens "NOT PINNED —". When the probe could not run, neither is
+// known, and reusing either swaps a false assurance for a false alarm.
+func hubPinningUnverifiedExitMessage(reason string) string {
+	if strings.TrimSpace(reason) == "" {
+		reason = "no reason reported"
+	}
+	return "hub: connected, but the hub did not run `agentchute-hub` (remote exit 127). That has two causes with opposite remedies — the binary the forced command names is missing, or no forced command was applied at all — and the check that tells them apart could not run (" + reason + "). Re-run; if it persists, check both: that agentchute exists at the path the `authorized_keys` line names, and that this host applies `authorized_keys` at all (`agentchute doctor` from the joining machine)."
 }

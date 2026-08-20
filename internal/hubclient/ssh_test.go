@@ -198,7 +198,7 @@ func TestClassifySSHFailureCodes(t *testing.T) {
 	// pinning_test.go, where the verdict is the parameter.
 	originalProbe := hubPinningProbe
 	t.Cleanup(func() { hubPinningProbe = originalProbe })
-	hubPinningProbe = func(SSHBuildOptions) pinningVerdict { return pinningPinned }
+	hubPinningProbe = func(SSHBuildOptions) (pinningVerdict, string) { return pinningPinned, "" }
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
