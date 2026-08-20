@@ -4,14 +4,44 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
-## Unreleased — operation seam
+## v1.6.0 (2026-08-18) — multi-machine pools over SSH
 
-**The seam is an internal refactor only:** no behavior change, no new command or flag, and no hub capability in this material. Nothing to do on any lane for the seam itself — no cutover, no forced update. Protocol v2.5, registration wire `v: 3`, and the enrollment marker are unchanged; every command's text, `--json`, and exit codes are byte-identical to v1.5.7.
+One pool, one filesystem, however many machines. Remote agents join a hub over plain SSH: the hub pins each agent's identity and pool in a forced-command `authorized_keys` line, the client discovers remoteness from an `ssh://` locator, and every command works identically on the hub and on a joining machine — there is no `--hub` or `--remote` spelling.
 
-**Operation seam**
+**The hub is opt-in and additive:** a single-machine pool behaves exactly as it did in v1.5.7. Protocol v2.5 and registration wire `v: 3` are unchanged. Joining machines and the hub must run the same version — a mismatch is refused with `E_VERSION`, and the hub upgrades first.
+
+**Hub lifecycle**
+- `agentchute hub join <ssh://user@host/abs/pool>` enrolls a checkout from the joining machine: it mints a key, pins the hub's host key, and prints the `hub authorize` command for the hub operator when it cannot authorize through the operator's own SSH access. `hub authorize` runs on the hub, refuses a non-pool path or a non-executable binary, writes the forced-command line, and enforces the SSH directory and file modes ([#161](https://github.com/agentchute/agentchute/pull/161)).
+- Key rotation is staged and self-invalidating: the multiplex identity includes the resolved key version, so promoting a new key forces the next operation to authenticate again rather than riding an old connection's forced-command snapshot ([#161](https://github.com/agentchute/agentchute/pull/161)).
+- Moving a hub to a new URL (alias migration) freezes the old directory, verifies the copy, and only then deletes — so an irreversible delete rests on an invariant rather than on an argument. A crash mid-move leaves a state that says what happened and how to finish it, and the next join sweeps it ([#162](https://github.com/agentchute/agentchute/pull/162)).
+- **A live lane blocks a migration, by design.** `serve` holds the hub lock shared for its lifetime, every remote one-shot holds it shared for the command, and a migration takes both hub ids exclusively and refuses while any holder lives. Two data-loss windows closed with it: a write landing between verify and delete, and a serve-held append into the tree being moved ([#162](https://github.com/agentchute/agentchute/pull/162), §13.9a).
+
+**Pinning that proves itself**
+- A hub reached **without** an `authorized_keys` forced command refuses to serve (`E_UNPINNED`) instead of accepting an agent id and pool the caller chose ([#181](https://github.com/agentchute/agentchute/pull/181)).
+- Exit 127 is re-classified into the two causes that actually produce it — an ssh-intercepting layer, or authentication as some other identity the hub accepts unrestricted — by a behavioural nonce probe rather than by matching shell text. The old advice to reinstall the binary at a path nothing used is gone ([#181](https://github.com/agentchute/agentchute/pull/181)).
+- `agentchute doctor` checks pinning on **every** run, not only alongside another failure, and says NOT PINNED in plain terms when a layer such as Tailscale SSH never consults `authorized_keys`. `hub authorize` no longer claims a pinning it cannot verify from the hub side ([#181](https://github.com/agentchute/agentchute/pull/181)).
+
+**Failure honesty**
+- A send whose channel is severed reports DELIVERY UNKNOWN, preserves the body, and forbids the blind resend ([#160](https://github.com/agentchute/agentchute/pull/160)).
+- The real-sshd matrix surfaced a transport race that silently truncated final frames — `cmd.StdoutPipe` with `Wait` in a goroutine could close the read end while the last frame sat undrained — so a session in which nothing had gone wrong reported a lost channel. Fixed, and the test harness carried the identical defect ([#162](https://github.com/agentchute/agentchute/pull/162)).
+
+**Wire and spec**
+- `AGENTCHUTE.md` §13 specifies the hub wire session and lifecycle: framing, the hello handshake, the error-code registry, and the write-lock contract ([#146](https://github.com/agentchute/agentchute/pull/146), [#162](https://github.com/agentchute/agentchute/pull/162)).
+- The wire codec, `hub session`, and conformance vectors ([#159](https://github.com/agentchute/agentchute/pull/159)); the client transport and remote discovery ([#160](https://github.com/agentchute/agentchute/pull/160)).
+
+**Operation seam** — an internal refactor with no behavior change, no new command or flag, and nothing to do on any lane
 - Each coordination operation — `send`, `check`, `ack`, `gate`, `status`, `register`, the runner's tick, and owed-ledger cleanup — moved out of `internal/cli` into a new `internal/op` package behind a request/response shape per operation. `internal/cli` keeps flag parsing, terminal rendering, and process concerns and calls the op layer for the work. `internal/loop` has a zero-byte diff ([#148](https://github.com/agentchute/agentchute/pull/148)).
 - `internal/op` must not import `internal/cli`, enforced by a test that parses the package's own imports rather than by convention. That one-way constraint is the point of the seam: an operation that cannot reach into the CLI is one that can later be driven by something other than a local terminal ([#148](https://github.com/agentchute/agentchute/pull/148)).
 - Streamed output is delivered as events the caller renders, so an operation no longer writes to a stream directly; display-only code stayed in `internal/cli`. Moved helpers kept a thin alias or adapter behind their old name and signature, so the existing suite passes essentially unmodified — three test files needed one edit site each (a reassigned package-level variable's set/restore pair in two, one struct literal in the third) plus an import line, only because a struct literal and a reassigned package-level variable cannot be aliased. 77 test cases cover the op layer directly; the suite is 849 passing cases plus one skipped, both counts including subtests and counting `pass` events only, measured at `7d08654` ([#148](https://github.com/agentchute/agentchute/pull/148)).
+
+**Docs and site**
+- Published spec links point at the latest release tag rather than `main` ([#156](https://github.com/agentchute/agentchute/pull/156)), release notes stopped presenting v1.6.0 as already shipped while it was still in flight ([#155](https://github.com/agentchute/agentchute/pull/155)), and the SSH-hub design and plan landed with an erratum pass ([#144](https://github.com/agentchute/agentchute/pull/144), [#158](https://github.com/agentchute/agentchute/pull/158)). `docs/hub.md` covers the operator path, including what happens when pinning is not applied.
+
+**Validation**
+- A real-sshd integration matrix runs on both CI platforms under `-race`, driving actual `sshd` with real forced-command `authorized_keys` lines rather than a mock ([#162](https://github.com/agentchute/agentchute/pull/162)).
+- Beyond CI: three machines, three hub topologies, version skew against a genuine v1.0.0 peer, forced mid-migration crashes and their recovery, and severed-channel delivery — all exercised at this release's code.
+
+**Known follow-ups at release:** [#164](https://github.com/agentchute/agentchute/issues/164) (join records no host-key fingerprint when `known_hosts` yields nothing), [#175](https://github.com/agentchute/agentchute/issues/175) (`internal/loop` test races), [#176](https://github.com/agentchute/agentchute/issues/176), [#179](https://github.com/agentchute/agentchute/issues/179), [#180](https://github.com/agentchute/agentchute/issues/180).
 
 ## v1.5.7 (2026-08-13) — a reply that fits, a cue that says when
 
