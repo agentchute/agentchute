@@ -470,6 +470,18 @@ Implementations that keep no state inside the hub directory are unaffected. This
 where state may live as much as how it is written: putting a writer's state inside the
 migrated tree is what creates the requirement.
 
+**What this does and does not enforce.** The requirement is enforced at acquisition: a process
+that takes the lock cannot have a migration run underneath it, and a migration refuses while
+any holder lives. It is **not** enforced at write time, and cannot be — a descriptor follows
+the inode, so a writer that never took the lock is invisible to it. Two consequences follow
+and both are accepted, not overlooked. A violator that re-resolves its path after the freeze
+has its write **orphaned** in a recreated directory; a violator holding a descriptor from
+before the freeze has its write **destroyed** with the frozen tree. Neither is reachable from
+agentchute's own code paths, which acquire the lock at a single seam; both remain reachable
+for a binary older than this contract and for any process outside agentchute. The structural
+repair is to keep lane state out of the hub-id-keyed directory entirely, so that a URL change
+renames nothing a writer can hold open.
+
 ### 13.10 Error-code registry
 
 Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable":false}`
