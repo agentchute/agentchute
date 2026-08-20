@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -152,11 +153,28 @@ func marshalClaim(c *ServeClaim) ([]byte, error) {
 // closing this external-exclusion gap — so unifying the two paths costs one
 // extra (uncontended, cheap) lock acquisition on the common case and changes
 // no observable behavior otherwise.
+// leaseHostname is os.Hostname behind a seam, so the failure path can be driven
+// by a row. Production never reassigns it.
+var leaseHostname = os.Hostname
+
 func AcquireServeLease(cfg *Config, id string) (*ServeLease, error) {
 	if err := ValidateAgentID(id); err != nil {
 		return nil, err
 	}
-	host, _ := os.Hostname()
+	host, err := leaseHostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		// The claim records this host, and the liveness rules read it back: a
+		// STALE claim whose pid is still alive is kept only when it belongs to
+		// THIS host, because a pid on another machine says nothing about ours.
+		// With the error discarded, host became "" — which matches no real
+		// hostname, so a frozen-but-alive lane on this very machine looked
+		// cross-host and its id was stolen out from under it. Writing "" also
+		// poisons the record for every later acquirer.
+		//
+		// There is no safe default here: an unknown host cannot be compared,
+		// only guessed at. Fail the acquire.
+		return nil, fmt.Errorf("acquire serve lease %s: cannot determine this host's name (%v); the serve claim records it and the liveness rules compare it", id, err)
+	}
 	token, err := mintServeToken()
 	if err != nil {
 		return nil, err
@@ -251,7 +269,14 @@ func AcquireServeLease(cfg *Config, id string) (*ServeLease, error) {
 		// A differing, non-empty per-boot reference proves the recorded process
 		// belonged to a prior boot even when its pid has since been recycled. An
 		// absent or matching reference preserves the pid-only fail-closed rule.
-		if existing.Host == host && pidAlive(existing.PID) &&
+		//
+		// An EMPTY recorded host is treated as "cannot prove it is elsewhere",
+		// not as "elsewhere". Claims written by a binary that discarded the
+		// os.Hostname error carry "", and reading that as a foreign host is what
+		// let a live lane be stolen; the whole point of this guard is that it
+		// refuses when it cannot prove the process is dead.
+		if pidAlive(existing.PID) &&
+			(existing.Host == "" || existing.Host == host) &&
 			(existing.BootRef == "" || bootRef == "" || existing.BootRef == bootRef) {
 			return ErrLeaseHeld
 		}

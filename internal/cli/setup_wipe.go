@@ -514,25 +514,41 @@ func recreateWipeDirs(loopDir string) error {
 }
 
 // rescanWipeLeftovers re-scans for runtime entries that REappeared after the
-// wipe — evidence that a process recreated state mid-wipe. Returns the offending
-// relative paths (empty == clean).
-func rescanWipeLeftovers(loopDir string) []string {
-	var leftovers []string
-	for _, name := range []string{"inbox", "archive", "malformed", "live"} {
-		entries, _ := os.ReadDir(filepath.Join(loopDir, name))
+// wipe — evidence that a process recreated state mid-wipe.
+//
+// It returns two lists, and the second one is the point. Leftovers are what it
+// SAW; unverifiable are the directories it could not read. Those were previously
+// one list, because the ReadDir errors were discarded — so a directory that
+// could not be read contributed nothing and the post-wipe check reported CLEAN.
+// "I looked and found nothing" and "I could not look" are opposite answers to
+// the question being asked, and the caller was given the reassuring one.
+func rescanWipeLeftovers(loopDir string) (leftovers, unverifiable []string) {
+	scan := func(name string, keep func(entry string) bool) {
+		entries, err := os.ReadDir(filepath.Join(loopDir, name))
+		if err != nil {
+			// Not-exist is NOT excused here, unlike in the pre-wipe scan: the
+			// wipe recreates these directories immediately before this runs, so
+			// one missing now means something removed it mid-wipe — which is
+			// exactly the condition this rescan exists to detect.
+			unverifiable = append(unverifiable, fmt.Sprintf("%s (%v)", name, err))
+			return
+		}
 		for _, e := range entries {
+			if keep != nil && !keep(e.Name()) {
+				continue
+			}
 			leftovers = append(leftovers, filepath.Join(name, e.Name()))
 		}
 	}
-	stateEntries, _ := os.ReadDir(filepath.Join(loopDir, "state"))
-	for _, e := range stateEntries {
-		if e.Name() == "setup.json" || e.Name() == "pool.id" {
-			continue
-		}
-		leftovers = append(leftovers, filepath.Join("state", e.Name()))
+	for _, name := range []string{"inbox", "archive", "malformed", "live"} {
+		scan(name, nil)
 	}
+	scan("state", func(entry string) bool {
+		return entry != "setup.json" && entry != "pool.id"
+	})
 	sort.Strings(leftovers)
-	return leftovers
+	sort.Strings(unverifiable)
+	return leftovers, unverifiable
 }
 
 // ---------- live-bus refusal ----------
@@ -614,7 +630,17 @@ func scanWipeLiveSignals(cfg *loop.Config, agentIDs []string) []string {
 // one would — mirroring the ambiguous-process fail-closed discipline above.
 func scanWipeServeClaims(cfg *loop.Config, localHost string, now time.Time) []string {
 	var out []string
-	entries, _ := os.ReadDir(filepath.Join(cfg.LoopDir, "state"))
+	stateDir := filepath.Join(cfg.LoopDir, "state")
+	entries, err := os.ReadDir(stateDir)
+	if err != nil && !os.IsNotExist(err) {
+		// The directory this function reads its evidence from could not be read,
+		// and the error was being discarded — so an unreadable state/ produced an
+		// empty entry list, which is indistinguishable here from "no claims at
+		// all", and the wipe proceeded. The doc above already promises an
+		// unreadable CLAIM fails closed; an unreadable claim DIRECTORY is the
+		// same argument one level up, and it was the one case that failed open.
+		return append(out, fmt.Sprintf("serve-claim directory %s is unreadable (%v); refusing (fail closed) — a live serve cannot be ruled out", displayHomePath(stateDir), err))
+	}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -797,8 +823,14 @@ var setupRunWipeState = func(root string, cfg *loop.Config, wrappers []string, o
 	if err := recreateWipeDirs(cfg.LoopDir); err != nil {
 		return fmt.Errorf("wipe-state: %w", err)
 	}
-	if leftovers := rescanWipeLeftovers(cfg.LoopDir); len(leftovers) > 0 {
+	leftovers, unverifiable := rescanWipeLeftovers(cfg.LoopDir)
+	if len(leftovers) > 0 {
 		return fmt.Errorf("wipe-state: runtime files reappeared during the wipe (a live process may be writing): %s", strings.Join(leftovers, ", "))
+	}
+	// Reported separately and never folded into "clean": this is the check
+	// saying it could not answer, which is not the same as answering no.
+	if len(unverifiable) > 0 {
+		return fmt.Errorf("wipe-state: the post-wipe check could not read %s, so it cannot confirm nothing reappeared; resolve the directory permissions and re-run", strings.Join(unverifiable, ", "))
 	}
 
 	// Apply the guarded clean-all removals (re-checks every guard before each
