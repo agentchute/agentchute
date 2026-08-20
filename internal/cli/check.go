@@ -135,8 +135,15 @@ func cmdCheck(args []string) error {
 		case ev.Owed != nil:
 			// C19: print-only. The explicit, human-triggered prune command is
 			// what actually removes an obligation.
-			fmt.Printf("stale reply obligation (%s, expired %s ago) — prune with: agentchute clean --owed --as %s\n",
-				ev.Owed.Ref, now.Sub(ev.Owed.By).Round(time.Second), agentID)
+			//
+			// This hint is the exact text #174 was about: `check` arms the guard
+			// latch and then prints a command the latch used to deny, so a lane
+			// following its own tooling's advice hit a wall every time. The guard
+			// now exempts `clean --owed`, and guardStaleOwedHintCommand is what
+			// keeps the two in step — a row feeds this same string to the guard
+			// and asserts it is allowed, so changing either side alone fails.
+			fmt.Printf("stale reply obligation (%s, expired %s ago) — prune with: %s\n",
+				ev.Owed.Ref, now.Sub(ev.Owed.By).Round(time.Second), guardStaleOwedHintCommand(agentID))
 		}
 		return nil
 	}

@@ -96,7 +96,65 @@ var guardDispatchPrefixRE = regexp.MustCompile(`\bdispatch\b(?:[ \t]+--shim-dir(
 // non-word character and a boundary can never hold between two non-word
 // characters (e.g. string-start immediately followed by `$`) — caught by
 // this file's own test suite once both forms were exercised together.
-var guardAgentchuteSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+(?:ack|check|turn-end|update|setup|clean)\b`)
+var guardAgentchuteSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+(ack|check|turn-end|update|setup|clean)\b`)
+
+// guardStaleOwedHintCommand is the command `check` tells a lane to run when it
+// holds a stale reply obligation. It lives here, next to the deny rule that has
+// to permit it, because the two drifting apart is the whole of #174 — the hint
+// named a command that was denied at the moment it was printed.
+func guardStaleOwedHintCommand(agentID string) string {
+	return "agentchute clean --owed --as " + agentID
+}
+
+// guardFlagRE matches a flag by name in either spelling Go's flag package
+// accepts. `--mailbox` and `-mailbox` are the same flag, so a check that only
+// knows the double-dash form is a check with a one-character bypass.
+func guardFlagRE(name string) *regexp.Regexp {
+	return regexp.MustCompile(`(^|[ \t])--?` + name + `\b`)
+}
+
+var (
+	guardOwedFlagRE    = guardFlagRE("owed")
+	guardMailboxFlagRE = guardFlagRE("mailbox")
+)
+
+// guardCleanOwedExempt reports whether every sensitive subcommand in this
+// command text is `clean`, scoped to `--owed`.
+//
+// #174, a deadlock the guard created and could not get out of. `check` arms the
+// latch and prints, in the same breath, "prune with: agentchute clean --owed" —
+// which the latch then denied. turn-end clears the latch at the END of the turn
+// and the next turn opens with another injected `check`, so a lane never had a
+// moment where it both knew about the obligation and was allowed to act on it.
+// Two lanes hit it independently in one session and neither could clear it.
+//
+// The deny was protecting nothing there. This guard exists for the claimed-mail
+// pipeline; `clean` has exactly two modes and they are mutually exclusive.
+// `--mailbox` DELETES a peer's inbox and stays denied. `--owed` prunes this
+// agent's own expired reply obligations, which are asker-owned, non-blocking,
+// and not mail.
+//
+// Three properties, each of which is a row:
+//
+//   - It is scoped to the whole COMMAND TEXT, not to one occurrence. A compound
+//     that also runs `clean --mailbox` is denied whole, or `--owed` becomes a
+//     prefix that launders whatever follows it.
+//   - It is clean-only. An `--owed` flag next to `ack` or `check` exempts
+//     nothing; those subcommands still match and still deny.
+//   - It exempts this rule only. The pipeline substrings (curl, rm -rf, hook
+//     config writes) are checked afterwards and are unaffected.
+func guardCleanOwedExempt(normalized string) bool {
+	matches := guardAgentchuteSubcmdRE.FindAllStringSubmatch(normalized, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	for _, match := range matches {
+		if match[1] != "clean" {
+			return false
+		}
+	}
+	return guardOwedFlagRE.MatchString(normalized) && !guardMailboxFlagRE.MatchString(normalized)
+}
 
 // resolveGuardSession returns the session key guard operations should latch
 // against, or "" if the guard is disabled for this process (C22). The guard
@@ -232,7 +290,7 @@ func guardCommandDenied(toolCmd string) bool {
 	}
 	lower := strings.ToLower(toolCmd)
 	normalized := guardDispatchPrefixRE.ReplaceAllString(lower, "")
-	if guardAgentchuteSubcmdRE.MatchString(normalized) {
+	if guardAgentchuteSubcmdRE.MatchString(normalized) && !guardCleanOwedExempt(normalized) {
 		return true
 	}
 	for _, pattern := range guardPipelineDenySubstrings {
