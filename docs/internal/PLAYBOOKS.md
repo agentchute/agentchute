@@ -33,6 +33,31 @@ Companion to the **Working efficiently on this bus** rules in [`AGENTS.md`](../.
 4. Same checkout-cleanup obligation as gate-review step 4: if this re-gate needed its own pinned-SHA checkout, remove it before the verdict too.
 5. Verdict with the delta range cited — and re-check `headRefOid` right before sending, per gate-review step 5. A re-gate is the likeliest place for the head to move again while you work.
 
+## release-notes (before every tag)
+
+The release workflow uses `docs/releases/<tag>.md` **as the GitHub release body**, and smokes
+`test -s` on it before publishing. Two things follow, and both have bitten:
+
+1. **The file must exist before the tag is pushed.** A tag without one fails the release job at
+   its smoke gate, after the tag exists. That is recoverable only because nothing was published
+   yet — delete the tag, add the file, re-tag.
+2. **The file must be final at tag time, not a working draft.** Whatever it says becomes the
+   published release body verbatim. `docs/releases/v1.6.0.md` opened with "**In progress.** …it
+   is not a published release" and that sentence went live on the GitHub release, because the
+   file was written as an accumulating scratchpad during the milestone and nobody finalised it.
+
+So, before pushing any `v*` tag:
+
+1. `test -s docs/releases/<tag>.md` — the same check the workflow runs, run where it is cheap.
+2. Read the first paragraph as an operator would, on the release page. Strip any in-progress or
+   accumulating-notes framing; it is a published document the moment the tag lands.
+3. Confirm it states the upgrade obligation explicitly — what an operator must do, and what is
+   unchanged (protocol, wire version, whether hub and joiners must match).
+4. Only then tag.
+
+If a milestone wants a scratchpad, keep it somewhere that is not the notes file the workflow
+publishes.
+
 ## owed-audit (when `pending` grows stale — E7)
 
 1. `agentchute pending --as $ID` — list outstanding obligations with their `by` deadlines.
