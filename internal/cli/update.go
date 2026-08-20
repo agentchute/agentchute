@@ -307,8 +307,16 @@ func cmdUpdate(args []string) error {
 	// into hooks that might still be broken: leaving supervisors running on
 	// the OLD binary is strictly safer than fencing them into an unverified
 	// new one (2026-08-11 hook-refresh-reliability follow-up, codex vector 2).
-	if err := updateRunResync(target, setupArgs, cfg.ControlRepo); err != nil {
+	if childStderr, err := updateRunResync(target, setupArgs, cfg.ControlRepo); err != nil {
 		fmt.Fprintf(os.Stderr, "\nWARNING: binary updated to %s but `setup` re-sync FAILED: %v\n", targetTag, err)
+		// Quote what the child said, right here. It already streamed past on its
+		// way through, but by the time this WARNING prints it is a dozen lines up
+		// and the operator's eye is on the line that names only an exit status.
+		// That is issue #183: the first v1.6.0 field report spent a manual re-run
+		// to read a message that had already been printed.
+		if detail := resyncFailureDetail(childStderr); detail != "" {
+			fmt.Fprintf(os.Stderr, "re-sync said:\n%s", detail)
+		}
 		fmt.Fprintf(os.Stderr, "Finish the re-sync manually from this repo:\n  %s %s\n", target, setupCmd)
 		fmt.Fprintln(os.Stderr, "Serve leases were NOT invalidated; existing supervisors keep running on the prior binary until the re-sync succeeds.")
 		return errors.New("setup re-sync after update failed (see warning above)")
@@ -329,13 +337,84 @@ func cmdUpdate(args []string) error {
 // NEW version's templates/hooks/shims and performs the bus reset. It is a package
 // var so tests can assert the --no-resync path never invokes it. The apply path
 // runs this only when --no-resync is absent.
-var updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
-	setup := exec.Command(target, setupArgs...)
-	setup.Stdout = os.Stdout
-	setup.Stderr = os.Stderr
-	setup.Stdin = os.Stdin
-	setup.Dir = controlRepo
-	return setup.Run()
+// It TEES the child's stderr rather than capturing it: the child keeps writing
+// to the terminal as it always has — a slow re-sync must not go silent until it
+// finishes — and a bounded tail is kept so the failure path can quote the end.
+// Only the last resyncStderrTailBytes are retained, because the child is the
+// thing that just failed and an unbounded buffer is one more way for a bad run
+// to hurt.
+var updateRunResync = func(target string, setupArgs []string, controlRepo string) (string, error) {
+	child := exec.Command(target, setupArgs...)
+	tail := &tailBytesWriter{limit: resyncStderrTailBytes}
+	child.Stdout = os.Stdout
+	child.Stderr = io.MultiWriter(os.Stderr, tail)
+	child.Stdin = os.Stdin
+	child.Dir = controlRepo
+	err := child.Run()
+	return tail.String(), err
+}
+
+const (
+	// resyncStderrTailLines is how many lines of the child's stderr the WARNING
+	// quotes. The quote is a pointer to the cause, not a transcript: past a
+	// dozen lines it buries the manual command printed underneath it.
+	resyncStderrTailLines = 10
+	resyncStderrTailBytes = 8 << 10
+)
+
+// tailBytesWriter keeps the last limit bytes written and drops the rest, without
+// ever blocking the writer.
+type tailBytesWriter struct {
+	buf   []byte
+	limit int
+}
+
+func (w *tailBytesWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if len(p) >= w.limit {
+		w.buf = append(w.buf[:0], p[len(p)-w.limit:]...)
+		return n, nil
+	}
+	if len(w.buf)+len(p) > w.limit {
+		drop := len(w.buf) + len(p) - w.limit
+		copy(w.buf, w.buf[drop:])
+		w.buf = w.buf[:len(w.buf)-drop]
+	}
+	w.buf = append(w.buf, p...)
+	return n, nil
+}
+
+func (w *tailBytesWriter) String() string { return string(w.buf) }
+
+// resyncFailureDetail renders the child's last words as an indented block, or
+// "" when it said nothing worth printing. It keeps the END: a command that fails
+// says why last, and the beginning is progress chatter.
+//
+// A trim is announced. Silent truncation reads as "that was all it said", which
+// is exactly how an operator stops looking for the rest of the cause.
+func resyncFailureDetail(stderr string) string {
+	var lines []string
+	for _, line := range strings.Split(stderr, "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, strings.TrimRight(line, "\r"))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	trimmed := 0
+	if len(lines) > resyncStderrTailLines {
+		trimmed = len(lines) - resyncStderrTailLines
+		lines = lines[trimmed:]
+	}
+	var b strings.Builder
+	if trimmed > 0 {
+		fmt.Fprintf(&b, "  (%d earlier line(s) not shown; they scrolled past above)\n", trimmed)
+	}
+	for _, line := range lines {
+		b.WriteString("  " + line + "\n")
+	}
+	return b.String()
 }
 
 // installedHookWrappers reports the wrappers whose hook files exist on disk in
