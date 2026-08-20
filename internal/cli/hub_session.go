@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync/atomic"
 	"time"
 
 	"github.com/agentchute/agentchute/internal/hubwire"
@@ -102,6 +103,10 @@ func (t hubSessionTiming) withDefaults() hubSessionTiming {
 }
 
 type hubSession struct {
+	// writeInFlight is true while a frame is being written. Asynchronous closes
+	// read it to avoid cutting a control line in half; see closeAfterWriteIdle.
+	writeInFlight atomic.Bool
+
 	transport    hubSessionTransport
 	reader       *hubwire.Reader
 	writer       *hubwire.Writer
@@ -153,11 +158,11 @@ func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hu
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = transport.Close()
+			s.closeAfterWriteIdle()
 		case <-done:
 		}
 	}()
-	s.oneShotTimer = time.AfterFunc(timing.OneShotLifetime, func() { _ = transport.Close() })
+	s.oneShotTimer = time.AfterFunc(timing.OneShotLifetime, func() { s.closeAfterWriteIdle() })
 	defer s.oneShotTimer.Stop()
 
 	raw, err := s.read(timing.Hello)
@@ -514,15 +519,57 @@ func (s *hubSession) prepareWriteDeadline() error {
 // returns a deadline error even if the OS does not interrupt that call, so the
 // session reaches its single defer path; that existing path remains the only
 // place a held lease is released.
+// hubSessionCloseGrace is how long an asynchronous close waits for an in-flight
+// write to finish before closing anyway.
+//
+// #176: serveHubSession's ctx.Done goroutine and its one-shot timer both closed
+// the transport with nothing coordinating against a write in progress, and in
+// production ctx is signal.NotifyContext(SIGTERM, SIGHUP). sshd SIGHUPs a
+// forced command when its channel goes away, so an ordinary disconnect at the
+// wrong microsecond cut a control line in half and the peer reported a
+// truncated control frame — "the hub looks broken" for a hub that is fine.
+//
+// Why a GRACE and not a mutex: those closers ARE the unwedging mechanism. A
+// lock that makes Close wait for the write can hang a SIGTERM'd session
+// forever, and the deadline that would bound it is not reliably available —
+// stdioHubTransport wraps inherited os.Stdin/os.Stdout, which are typically not
+// pollable, so SetWriteDeadline returns ErrNoDeadline. A bounded wait keeps the
+// unwedge and buys the common case, where the write is milliseconds from done.
+//
+// Polling rather than signalling, deliberately: at 5ms it is at most 50 wakeups
+// on a path that runs once per session, and it cannot miss a wakeup or deadlock
+// the way a condition variable racing a Close can.
+const (
+	hubSessionCloseGrace     = 250 * time.Millisecond
+	hubSessionCloseGracePoll = 5 * time.Millisecond
+)
+
+// closeAfterWriteIdle closes the transport, giving an in-flight write a bounded
+// chance to finish first. It always closes.
+func (s *hubSession) closeAfterWriteIdle() {
+	deadline := s.now().Add(hubSessionCloseGrace)
+	for s.writeInFlight.Load() && s.now().Before(deadline) {
+		time.Sleep(hubSessionCloseGracePoll)
+	}
+	_ = s.transport.Close()
+}
+
 func (s *hubSession) watchIO(after time.Duration, operation func() error) error {
 	done := make(chan error, 1)
-	go func() { done <- operation() }()
+	go func() {
+		s.writeInFlight.Store(true)
+		defer s.writeInFlight.Store(false)
+		done <- operation()
+	}()
 	timer := time.NewTimer(after)
 	defer timer.Stop()
 	select {
 	case err := <-done:
 		return err
 	case <-timer.C:
+		// Deliberately the RAW close, not the graceful one: this fires because
+		// the write is stuck, so waiting for it to become idle would wait for
+		// exactly the thing that is not happening.
 		_ = s.transport.Close()
 		return os.ErrDeadlineExceeded
 	}
