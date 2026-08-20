@@ -265,6 +265,12 @@ func runRemoteDoctorChecks(cfg *loop.Config, agentID string, now time.Time) doct
 		if code == hubwire.CodeUnpinned || code == "E_HUB_UNPINNED" {
 			add(doctorCheck{Name: "hub_pinning", Severity: severityBlocker, Message: fmt.Sprintf("%s: %v", code, err)})
 		}
+		// The probe could not run, so nothing was observed. Reported for the same
+		// reason as the two above — the named check must appear — but as a WARN,
+		// because an unreachable probe is not evidence of an unpinned hub.
+		if code == "E_HUB_PINNING_UNVERIFIED" {
+			add(doctorCheck{Name: "hub_pinning", Severity: severityWarn, Message: fmt.Sprintf("%s: %v", code, err)})
+		}
 		return report
 	}
 	hello := session.Hello()
@@ -1395,10 +1401,25 @@ Flags:
 // mapping without opening an ssh connection; production never reassigns it.
 var hubPinningVerdict = hubclient.PinningVerdict
 
+// The severity is three-way, and the third one is the point.
+//
+// NOT PINNED is a blocker. Pinned is OK. UNVERIFIED is a WARN carrying the
+// reason — not OK, which was the defect: a probe that never ran printed the
+// sentence for a verification that had not happened. Not a blocker either,
+// because a transient probe failure would exit doctor non-zero and train
+// operators to ignore it. And explicitly not INFO: an operator scanning a report
+// for problems skims past info, which makes it functionally identical to OK for
+// the only purpose that matters.
+//
+// "I could not check" must never read as "I checked and it is fine".
 func hubPinningCheck(remote *loop.RemoteConfig, agentID string) doctorCheck {
-	message, pinned := hubPinningVerdict(remote, agentID)
-	if pinned {
+	message, state := hubPinningVerdict(remote, agentID)
+	switch state {
+	case hubclient.PinningPinned:
 		return doctorCheck{Name: "hub_pinning", Severity: severityOK, Message: "forced command applied; agent id and pool are pinned by sshd"}
+	case hubclient.PinningUnverified:
+		return doctorCheck{Name: "hub_pinning", Severity: severityWarn, Message: message}
+	default:
+		return doctorCheck{Name: "hub_pinning", Severity: severityBlocker, Message: message}
 	}
-	return doctorCheck{Name: "hub_pinning", Severity: severityBlocker, Message: message}
 }

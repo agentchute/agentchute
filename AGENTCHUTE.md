@@ -504,7 +504,7 @@ Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable"
 
 The two arms are ordered and non-overlapping: the hub arm runs before `hello-ok` exists; the client arm only on a `hello-ok` the hub arm already let through.
 
-Client-side only (never on the wire): `E_CONNECT`, `E_UNAUTHORIZED`, `E_HOSTKEY_CHANGED`, `E_CHANNEL_LOST`, `E_SEND_UNKNOWN`, `E_HELLO_TIMEOUT`, `E_HUB_NO_BINARY`, `E_HUB_UNPINNED`, `E_NOT_JOINED`, `E_NO_SSH`. (`E_POOL_MISMATCH` is **not** in this list.)
+Client-side only (never on the wire): `E_CONNECT`, `E_UNAUTHORIZED`, `E_HOSTKEY_CHANGED`, `E_CHANNEL_LOST`, `E_SEND_UNKNOWN`, `E_HELLO_TIMEOUT`, `E_HUB_NO_BINARY`, `E_HUB_UNPINNED`, `E_HUB_PINNING_UNVERIFIED`, `E_NOT_JOINED`, `E_NO_SSH`. (`E_POOL_MISMATCH` is **not** in this list.)
 
 `E_UNPINNED` is hub-emitted and travels on the wire: a hub reached WITHOUT an
 `authorized_keys` forced command refuses to serve, because the agent id and pool for that

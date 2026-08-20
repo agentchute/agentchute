@@ -196,8 +196,8 @@ func TestPinnedHubNeverReachesTheSecondProbe(t *testing.T) {
 		// writes nothing.
 		return "", "", nil
 	}
-	if got := probeHubPinning(opts); got != pinningPinned {
-		t.Fatalf("verdict = %v, want pinned", got)
+	if got, reason := probeHubPinning(opts); got != pinningPinned {
+		t.Fatalf("verdict = %v (%s), want pinned", got, reason)
 	}
 	if calls != 1 {
 		t.Fatalf("ran %d probes against a pinned hub; the second one is for narrowing an unpinned verdict", calls)
@@ -261,7 +261,7 @@ func TestExit127IsClassifiedByTheProbeNotTheShellText(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			original := hubPinningProbe
 			t.Cleanup(func() { hubPinningProbe = original })
-			hubPinningProbe = func(SSHBuildOptions) pinningVerdict { return row.verdict }
+			hubPinningProbe = func(SSHBuildOptions) (pinningVerdict, string) { return row.verdict, "" }
 
 			err := classifyExit127(remote, "codex", "zsh:1: command not found: agentchute-hub\n")
 			if got := ErrorCode(err); got != row.wantCode {
@@ -291,7 +291,7 @@ func TestExit127NeverNamesAHardcodedInstallPath(t *testing.T) {
 	}
 	for _, verdict := range []pinningVerdict{pinningPinned, pinningIntercepted, pinningOperatorFallback, pinningUnpinnedUnattributed} {
 		original := hubPinningProbe
-		hubPinningProbe = func(SSHBuildOptions) pinningVerdict { return verdict }
+		hubPinningProbe = func(SSHBuildOptions) (pinningVerdict, string) { return verdict, "" }
 		got := classifyExit127(remote, "codex", "").Error()
 		hubPinningProbe = original
 		if strings.Contains(got, "/usr/local/bin/agentchute") {

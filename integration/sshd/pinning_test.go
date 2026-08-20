@@ -395,9 +395,9 @@ func TestSSHDPinningProbeVerdicts(t *testing.T) {
 		before := poolTree(t, h.pool)
 		authBefore := h.authCount()
 
-		verdict, pinned := hubclient.PinningVerdict(probeRemote(h), "codex")
-		if !pinned {
-			t.Fatalf("a pinned host was reported unpinned: %s", verdict)
+		verdict, state := hubclient.PinningVerdict(probeRemote(h), "codex")
+		if state != hubclient.PinningPinned {
+			t.Fatalf("a pinned host was reported %v: %s", state, verdict)
 		}
 		if after := poolTree(t, h.pool); after != before {
 			t.Fatalf("the probe wrote into the pool:\nbefore:\n%s\nafter:\n%s", before, after)
@@ -415,9 +415,12 @@ func TestSSHDPinningProbeVerdicts(t *testing.T) {
 		addUnrestrictedAgent(t, h, "drifter")
 		rememberProbeMux(t, h, "drifter")
 
-		verdict, pinned := hubclient.PinningVerdict(probeRemote(h), "drifter")
-		if pinned {
-			t.Fatalf("an unpinned host was reported pinned; sshd applies no forced command for that key")
+		verdict, state := hubclient.PinningVerdict(probeRemote(h), "drifter")
+		if state != hubclient.PinningNotPinned {
+			// Explicitly not "anything but pinned": UNVERIFIED here would mean
+			// the probe never ran, and this row would be reporting a fixture
+			// failure as a finding about the host.
+			t.Fatalf("an unpinned host was reported %v; sshd applies no forced command for that key:\n%s", state, verdict)
 		}
 		// Row 15 on real sshd. The throwaway key the probe mints is authorized
 		// nowhere, so sshd refuses it — and that refusal is precisely what

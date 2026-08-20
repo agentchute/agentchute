@@ -20,8 +20,8 @@ func TestHubPinningCheckSeverity(t *testing.T) {
 	remote := &loop.RemoteConfig{Host: "hub44", PoolPath: "/srv/pool"}
 
 	t.Run("pinned is OK, and doctor does not repeat the probe's prose", func(t *testing.T) {
-		defer swapPinningVerdict(t, func(*loop.RemoteConfig, string) (string, bool) {
-			return "some message the probe would only produce when UNPINNED", true
+		defer swapPinningVerdict(t, func(*loop.RemoteConfig, string) (string, hubclient.PinningState) {
+			return "some message the probe would only produce when UNPINNED", hubclient.PinningPinned
 		})()
 		got := hubPinningCheck(remote, "opus-high")
 		if got.Name != "hub_pinning" {
@@ -40,8 +40,8 @@ func TestHubPinningCheckSeverity(t *testing.T) {
 	// warning here reads as "noted" and ships an unpinned hub.
 	t.Run("unpinned is a BLOCKER and forwards the verdict verbatim", func(t *testing.T) {
 		verdict := "hub: NOT PINNED — hub44 ran a command this machine chose"
-		defer swapPinningVerdict(t, func(*loop.RemoteConfig, string) (string, bool) {
-			return verdict, false
+		defer swapPinningVerdict(t, func(*loop.RemoteConfig, string) (string, hubclient.PinningState) {
+			return verdict, hubclient.PinningNotPinned
 		})()
 		got := hubPinningCheck(remote, "opus-high")
 		if got.Severity != severityBlocker {
@@ -56,9 +56,9 @@ func TestHubPinningCheckSeverity(t *testing.T) {
 	// none) makes the operator-fallback remedy name a key nobody has.
 	t.Run("the agent id reaches the probe", func(t *testing.T) {
 		var seen string
-		defer swapPinningVerdict(t, func(_ *loop.RemoteConfig, agentID string) (string, bool) {
+		defer swapPinningVerdict(t, func(_ *loop.RemoteConfig, agentID string) (string, hubclient.PinningState) {
 			seen = agentID
-			return "", true
+			return "", hubclient.PinningPinned
 		})()
 		hubPinningCheck(remote, "opus-high")
 		if seen != "opus-high" {
@@ -67,7 +67,83 @@ func TestHubPinningCheckSeverity(t *testing.T) {
 	})
 }
 
-func swapPinningVerdict(t *testing.T, fn func(*loop.RemoteConfig, string) (string, bool)) func() {
+// Rows 21/22: the third severity, and its positive control.
+//
+// UNVERIFIED is a WARN carrying the reason. Not OK — that was the defect, and
+// the assertion that catches a regression to it is that the OK sentence must not
+// appear. Not a blocker either: a transient probe failure would exit doctor
+// non-zero and train operators to ignore it. And explicitly not INFO, because an
+// operator scanning for problems skims past info, which makes it functionally
+// identical to OK for the only purpose that matters.
+func TestDoctorWarnsWhenPinningCouldNotBeVerified(t *testing.T) {
+	remote := &loop.RemoteConfig{Host: "hub44", PoolPath: "/srv/pool"}
+	const reason = "could not verify pinning — the probe did not reach hub44 (Network is unreachable)"
+
+	t.Run("unverified is a WARN that carries the reason", func(t *testing.T) {
+		defer swapPinningVerdict(t, func(*loop.RemoteConfig, string) (string, hubclient.PinningState) {
+			return reason, hubclient.PinningUnverified
+		})()
+		got := hubPinningCheck(remote, "opus-high")
+		if got.Severity != severityWarn {
+			t.Fatalf("severity = %v, want WARN — OK hides it and blocker teaches operators to ignore doctor", got.Severity)
+		}
+		if got.Message != reason {
+			t.Fatalf("doctor rewrote the reason:\n got: %s\nwant: %s", got.Message, reason)
+		}
+		// The exact regression: printing the pinned sentence for a check that
+		// never ran.
+		if strings.Contains(got.Message, "pinned by sshd") {
+			t.Fatalf("an unverified probe rendered the OK sentence:\n%s", got.Message)
+		}
+	})
+
+	// The positive control for the row above: a probe that RAN and found no
+	// nonce is still OK, so the fix cannot be "warn whenever unsure".
+	t.Run("a probe that ran and found the host pinned is still OK", func(t *testing.T) {
+		defer swapPinningVerdict(t, func(*loop.RemoteConfig, string) (string, hubclient.PinningState) {
+			return "", hubclient.PinningPinned
+		})()
+		got := hubPinningCheck(remote, "opus-high")
+		if got.Severity != severityOK {
+			t.Fatalf("severity = %v, want OK", got.Severity)
+		}
+		if !strings.Contains(got.Message, "pinned by sshd") {
+			t.Fatalf("the OK arm lost its sentence: %s", got.Message)
+		}
+	})
+
+	// And the blocker arm must not have been swept into the warn bucket.
+	t.Run("not pinned is still a BLOCKER", func(t *testing.T) {
+		defer swapPinningVerdict(t, func(*loop.RemoteConfig, string) (string, hubclient.PinningState) {
+			return "hub: NOT PINNED — hub44 ran a command this machine chose", hubclient.PinningNotPinned
+		})()
+		if got := hubPinningCheck(remote, "opus-high"); got.Severity != severityBlocker {
+			t.Fatalf("severity = %v, want BLOCKER", got.Severity)
+		}
+	})
+}
+
+// The connect-failure path has the same three-way shape: E_HUB_PINNING_UNVERIFIED
+// must produce the named check as a WARN, not the blocker its two neighbours get.
+func TestDoctorReportsUnverifiedPinningOnAConnectFailure(t *testing.T) {
+	cfg := newDoctorHubFixture(t)
+	original := openRemoteOneShot
+	openRemoteOneShot = func(*loop.Config, string) (*hubclient.OneShot, error) {
+		return nil, &hubclient.Error{Code: "E_HUB_PINNING_UNVERIFIED", Msg: "hub: connected, but the hub did not run `agentchute-hub`", Retriable: true}
+	}
+	t.Cleanup(func() { openRemoteOneShot = original })
+
+	report := runRemoteDoctorChecks(cfg, "opus-high", time.Now().UTC())
+	pinning, has := doctorCheckNamed(report, "hub_pinning")
+	if !has {
+		t.Fatalf("hub_pinning absent; checks = %v", doctorCheckNames(report))
+	}
+	if pinning.Severity != severityWarn {
+		t.Fatalf("severity = %v, want WARN — an unreachable probe is not evidence of an unpinned hub", pinning.Severity)
+	}
+}
+
+func swapPinningVerdict(t *testing.T, fn func(*loop.RemoteConfig, string) (string, hubclient.PinningState)) func() {
 	t.Helper()
 	prev := hubPinningVerdict
 	hubPinningVerdict = fn
@@ -144,9 +220,9 @@ func TestDoctorReportsHubPinningOnAnUnpinnedConnectFailure(t *testing.T) {
 func TestDoctorDoesNotReprobeAfterAnUnpinnedConnectFailure(t *testing.T) {
 	cfg := newDoctorHubFixture(t)
 	probes := 0
-	defer swapPinningVerdict(t, func(*loop.RemoteConfig, string) (string, bool) {
+	defer swapPinningVerdict(t, func(*loop.RemoteConfig, string) (string, hubclient.PinningState) {
 		probes++
-		return "", true
+		return "", hubclient.PinningPinned
 	})()
 	original := openRemoteOneShot
 	openRemoteOneShot = func(*loop.Config, string) (*hubclient.OneShot, error) {
