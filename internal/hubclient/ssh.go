@@ -66,10 +66,38 @@ func ReapSSHMux(remote *loop.RemoteConfig, agentID, keyPath, stateDir string) er
 	}
 	args = append(args, remote.Destination())
 	out, err := exec.Command("ssh", args...).CombinedOutput()
-	if err == nil || strings.Contains(strings.ToLower(string(out)), "control socket connect") {
+	if err == nil || muxSocketIsGone(string(out)) {
 		return nil
 	}
 	return fmt.Errorf("reap SSH multiplex master: %w: %s", err, strings.TrimSpace(string(out)))
+}
+
+// muxSocketIsGone reports whether ssh failed because there was no socket to talk
+// to — the one outcome that PROVES no master is running.
+//
+// The previous test matched "control socket connect" anywhere in the output,
+// which is the prefix ssh prints for every connect failure, not just absence.
+// Measured, on the same command, ssh produces four:
+//
+//	Control socket connect(<path>): No such file or directory   — gone
+//	Control socket connect(<path>): Permission denied           — cannot tell
+//	Control socket connect(<path>): Socket operation on non-socket — cannot tell
+//	Control socket connect(<path>): Connection refused          — cannot tell
+//
+// Only the first proves absence. "Permission denied" is a socket this process
+// cannot reach, which may be a perfectly live master owned by another account —
+// reporting that as a successful reap tells a rotation or a migration that the
+// old connection is closed when it is not, which is the state the forced-command
+// snapshot outlives.
+//
+// "Connection refused" looks like proof and is not: a unix socket whose listen
+// backlog is full refuses connects while the listener is very much alive. A
+// stale socket file left by a crashed master gives the same error, so the two
+// are indistinguishable from here — and only one of them is safe to call reaped.
+func muxSocketIsGone(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "control socket connect") &&
+		strings.Contains(lower, "no such file or directory")
 }
 
 func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
