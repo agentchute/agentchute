@@ -237,18 +237,57 @@ func claimProvablyDead(cfg *Config, id string, now time.Time) bool {
 // producing an unkillable ghost row.
 func registrationAge(path string, now time.Time) (age time.Duration, ok bool) {
 	if reg, err := ReadRegistration(path); err == nil {
-		return clampNonNegativeAge(now.Sub(reg.LastSeen)), true
+		return registrationAgeFrom(now, reg.LastSeen), true
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, false
 	}
-	return clampNonNegativeAge(now.Sub(info.ModTime())), true
+	return registrationAgeFrom(now, info.ModTime()), true
 }
 
-func clampNonNegativeAge(age time.Duration) time.Duration {
-	if age < 0 {
-		return math.MaxInt64
+// registrationFutureTolerance is how far ahead of `now` a last_seen may be and
+// still count as FRESH rather than as maximally stale.
+//
+// It exists because the two sides of this subtraction do not have the same
+// precision. Registrations serialise last_seen with time.RFC3339 — SECOND
+// precision — while the sweep captures `now` at full precision. A heartbeat
+// that lands after `now` but crosses a second boundary therefore records a
+// timestamp LATER than `now`, and the old clamp turned that negative age into
+// math.MaxInt64: maximally stale, the verdict it gave to a row that had just
+// heartbeated. That is not a test flake. The under-lock re-check exists so a
+// concurrent heartbeat beats the sweep (C12), and in this window it instead
+// DELETED a live lane's registration row.
+//
+// One second is the granularity the serialisation guarantees; the second is
+// slack for the pass itself, which does real filesystem work between capturing
+// `now` and re-checking under the lock.
+//
+// A tolerance is safe in a way that removing the immortality guard would not
+// be: it grants a future-dated row only that much extra life, since the row
+// stops being future as the clock advances. Erring larger costs little if
+// cross-host clock skew ever turns up in the field. The 2-hour row in
+// TestSweepStaleRegistrationsFutureLastSeenIsNotImmortal stays sweepable, which
+// is the requirement in tension with this one and the reason the old clamp
+// existed at all.
+//
+// NOT fixed by widening the serialisation to RFC3339Nano, deliberately: rows
+// already on disk carry second precision, and the format is what other
+// implementations read. The comparison is what was wrong, so the comparison is
+// what changed.
+const registrationFutureTolerance = 2 * time.Second
+
+func registrationAgeFrom(now, lastSeen time.Time) time.Duration {
+	age := now.Sub(lastSeen)
+	if age >= 0 {
+		return age
 	}
-	return age
+	if -age <= registrationFutureTolerance {
+		// Slightly ahead: this is the second-precision artefact, and the row is
+		// as fresh as a row can be.
+		return 0
+	}
+	// Far ahead: clock skew or a hand edit. Keep the old verdict, so a bogus
+	// timestamp cannot make a row permanently sweep-immune.
+	return math.MaxInt64
 }
