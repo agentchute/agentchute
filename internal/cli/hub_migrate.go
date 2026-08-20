@@ -20,6 +20,12 @@ var hubDirNameRE = regexp.MustCompile(`^[0-9a-f]{12}$`)
 
 var hubMigrationReapMux = reapHubMigrationMux
 
+// hubMigrationReapOne is the per-agent reap behind a seam. A row swaps it to
+// drive the failure branch, which is otherwise only reachable by making a
+// process-wide ControlPath directory unreadable — a shared path that live lanes
+// on this machine use, so a test must not touch it.
+var hubMigrationReapOne = hubclient.ReapSSHMux
+
 func findHubMigrationCandidate(remote *loop.RemoteConfig, opts hubJoinOptions) (string, error) {
 	current, currentErr := hubclient.ReadHubConfig(remote.HubID)
 	currentExists := currentErr == nil
@@ -580,6 +586,18 @@ func writeHubMigrationConfig(path string, cfg *hubclient.HubConfig) error {
 	return os.Rename(tmpPath, path)
 }
 
+// reapHubMigrationMux closes any live one-shot master rooted in the OLD hub
+// directory before the migration moves it.
+//
+// It WARNS rather than failing the migration, and both halves of that are
+// deliberate. Warning, because a failed reap is not proof that anything is wrong
+// — and because the write-lock contract (§13.9a) is what actually keeps a live
+// lane and a migration apart: a migration takes both hub ids exclusively and
+// refuses while any holder lives, so this reap is cleanup, not the guard.
+// Reporting, because every error here was being discarded, so the one case that
+// matters — a master this process could not reach, which may still be alive and
+// still pinned to the old forced-command snapshot — looked exactly like the
+// common case of there being nothing to reap.
 func reapHubMigrationMux(cfg *hubclient.HubConfig, oldDir string) {
 	remote, err := loop.ParseRemoteURL(cfg.URL)
 	if err != nil || len(cfg.JoinedAs) == 0 {
@@ -588,6 +606,8 @@ func reapHubMigrationMux(cfg *hubclient.HubConfig, oldDir string) {
 	remote.HubDir = oldDir
 	for _, agentID := range cfg.JoinedAs {
 		keyPath := filepath.Join(oldDir, "keys", agentID+"_ed25519")
-		_ = hubclient.ReapSSHMux(remote, agentID, keyPath, oldDir)
+		if err := hubMigrationReapOne(remote, agentID, keyPath, oldDir); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not close the multiplex master for %s before the move (%v); if a connection to the old hub directory is still open it keeps the old forced-command snapshot until it ends\n", agentID, err)
+		}
 	}
 }
