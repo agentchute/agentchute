@@ -9,11 +9,13 @@ Thanks for considering it. Three things up-front:
 3. **Test what you change.** If you fix a bug, add a test that fails without the fix. If you add a feature, prefer integration tests over deep unit-test scaffolding. Run the full pre-commit ritual before sending the PR:
 
    ```sh
-   gofmt -w .
-   go vet ./...
-   go test ./...
-   go build ./...
+   sh tools/test.sh
    ```
+
+   That runs gofmt, `go vet`, `go test`, **`go test -race`**, the conformance module, and
+   `go build` — the same set CI runs. `-race` matters: `ci.yaml` and `release.yaml` both run
+   it, so a ritual without it is weaker than the gate judging your PR, and a race that only
+   `-race` catches can fail the release job after a tag is pushed.
 
    If the PR touches `install.sh` or release infrastructure, also run `sh tests/install_test.sh`.
 
@@ -65,7 +67,7 @@ If you want any of those, fork it. We'd rather agentchute stay small.
 
 1. Open an issue describing the bug or proposed change. (Skip for typo fixes and obvious bug fixes.)
 2. Fork, branch, commit. Reference the issue in commit messages.
-3. Run `gofmt -w . && go vet ./... && go test ./...` and confirm clean.
+3. Run `sh tools/test.sh` and confirm clean — it includes `go test -race ./...`, which is what CI gates on.
 4. Open the PR. Include: what changed, why, and what you tested.
 5. Wait for review. Maintainers will engage on merits, not gatekeep on style alone.
 

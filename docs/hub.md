@@ -32,7 +32,7 @@ agentchute hub authorize --revoke codex-tiny --pool /home/alex/code/agentchute
 
 OpenSSH checks `authorized_keys` when a connection authenticates, not for every session opened on that connection. Revocation, replacement, and forced-command or pool repointing therefore take effect at the next authentication. They do not interrupt a live `serve` channel or a live one-shot multiplex master. The `ControlPersist=60s` setting is an idle timeout; an active lane can keep its master alive indefinitely.
 
-For an immediate change, stop or relaunch the lane on the joining machine. Reap a local one-shot master with `ssh -O exit` when the authorizing account also owns it. A hub operator cannot reap a master held by another host or account. This matters most for a pool repoint: until the old connection ends, new operations on it can still use the old forced-command snapshot and write to the old pool.
+For an immediate change, stop or relaunch the lane on the joining machine. Reap a local one-shot master with `ssh -O exit` when the authorizing account also owns it. When the CLI does this for you, it counts the master as reaped only if the socket is **provably gone** ("no such file or directory"); a permission-denied or refused connect may be a live master, and is reported rather than treated as success. A hub operator cannot reap a master held by another host or account. This matters most for a pool repoint: until the old connection ends, new operations on it can still use the old forced-command snapshot and write to the old pool.
 
 Key rotation through `hub join --rotate-key` is self-invalidating: the multiplex identity includes the resolved key version, so promoting the new key forces the next operation to authenticate again. The active client-side replace path also reaps a matching local master when one exists.
 
@@ -100,6 +100,23 @@ Common failures are actionable and fail closed:
 - `E_POOL_MISMATCH`: the key line and recorded pool identity disagree; re-authorize or rejoin only after confirming the intended pool.
 - `E_LEASE_HELD`: another live serve owns that agent id; stop it or choose a distinct id.
 - `E_CHANNEL_LOST`: the runner stops the child before relaunching. Remote serve relaunch is enabled by default; pass `--relaunch=false` only when an operator should restart it manually.
+- `E_HUB_PINNING_UNVERIFIED`: the pinning probe could not run, so nothing was established either way. Retriable — re-run; if it persists, check both possibilities it cannot distinguish (the binary the forced command names is missing, or no forced command was applied at all).
+
+Two warnings from `hub join` are worth recognising, because both describe something that
+breaks later rather than now:
+
+- **"joined, but this hub's host-key fingerprint could not be recorded."** The join is complete
+  and the lane works. What is lost is the ability to MIGRATE this hub to a new URL later: the
+  move is recognised by the recorded fingerprint, and with none recorded it is never offered —
+  a `hub join` at the new URL is treated as a fresh join and refused for having an authorized
+  key already. Re-run the same `hub join` once the hub is reachable and it records itself. The
+  fingerprint normally comes from `known_hosts`, and falls back to `ssh-keyscan` when that
+  yields nothing.
+- **A key whose `.pub` never landed** — an interrupted mint leaves the private half with no
+  public half — used to fail the join on every re-run, with nothing naming the escape. Join now
+  regenerates the public half from the private key rather than minting a replacement, which
+  would strand a credential the hub may already have authorized. Nothing to do; noted so the
+  old symptom is recognisable if you meet it on an older binary.
 
 The complete error-code registry is in [AGENTCHUTE.md §13.10](../AGENTCHUTE.md#1310-error-code-registry).
 
@@ -127,7 +144,11 @@ agentchute detects both rather than trusting either:
   quietly accepting an agent id the caller chose.
 - `agentchute doctor` runs a `hub_pinning` check on **every** run — not only when something
   else has already broken — by asking the hub to run a command of the client's choosing. A
-  pinned host cannot; an unpinned one will. When that check fails it is a blocker.
+  pinned host cannot; an unpinned one will. The verdict has **three** states, not two: NOT
+  PINNED is a blocker; PINNED is OK; and a probe that could not run at all reports
+  `E_HUB_PINNING_UNVERIFIED` as a **warning** with the reason, so `doctor` still exits 0 if
+  that is the only finding. "I could not check" is not "I checked and it is fine", and it is
+  not evidence the hub is unpinned either.
 - The old "command not found at /usr/local/bin/agentchute — reinstall agentchute on the hub"
   is gone. That message named a path nothing used and sent operators to fix a working binary.
 
@@ -161,6 +182,13 @@ moved, and an open file follows the file itself rather than its name — so a mi
 went ahead would delete writes the lane was still making. Stop the lane, re-run the join,
 start the lane again. The reverse also holds: a lane will not start while a migration is in
 progress, and says so.
+
+That refusal covers writers that take the lock, which every current agentchute lane does. It
+is enforced when the lock is acquired, not at each write, and it cannot be enforced at write
+time — so a writer that never took the lock is invisible to it: an agentchute binary older
+than this contract, or any process outside agentchute (an editor, a backup agent, a sync
+client) can still have a write orphaned or destroyed by a migration. See
+[AGENTCHUTE.md §13.9a](../AGENTCHUTE.md) for what the contract does and does not enforce.
 
 ## Upgrading a machine that has two copies of agentchute
 

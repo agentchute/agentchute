@@ -1,5 +1,8 @@
 #!/bin/sh
 # test.sh — the AGENTS.md §4 verification ritual, env-stripped (AGENTS.md E10).
+# gofmt, vet, test, test -race, the conformance module, build — the same set ci.yaml and
+# release.yaml gate on. If you add a step here, add it to §4 and CONTRIBUTING.md too: a
+# ritual that teaches less than it runs is how the -race gap survived (#187).
 # Strips leaked AGENTCHUTE_* vars (false "serve lease fenced" failures when run from a
 # lane under the runner) before gofmt/vet/test/build. Run from the repo root.
 set -u
