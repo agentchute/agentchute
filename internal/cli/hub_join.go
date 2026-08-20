@@ -38,6 +38,13 @@ var hubJoinHostname = os.Hostname
 var hubJoinFingerprint = readHubJoinFingerprint
 var hubJoinDiscoverFingerprint = discoverHubJoinFingerprint
 
+// errHubJoinIncomplete is a VERDICT sentinel, not a failure: the local half of
+// the join succeeded, and re-running after authorizing on the hub is the
+// intended next step — but the machine is NOT yet joined, and exiting 0 told
+// every script otherwise. It exits 2, the code this CLI already reserves for
+// "this is a verdict, not a command failure" (#178).
+var errHubJoinIncomplete = errors.New("hub join: authorization still pending on the hub; re-run after authorizing")
+
 func cmdHubJoin(args []string) error {
 	fs := flag.NewFlagSet("hub join", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -223,7 +230,13 @@ func runHubJoin(root string, remote *loop.RemoteConfig, opts hubJoinOptions) err
 			return err
 		}
 		warnHubJoinEnv(remote.URL)
-		return nil
+		// #178: this join is NOT complete — authorization is still pending on
+		// the hub — and it used to exit 0, so a script checking $? read
+		// "half-joined" as "joined". The local half really did succeed (the
+		// pointer and the hub key are recorded, and re-running is the intended
+		// next step), so this is a verdict rather than a failure, which is
+		// exactly what exit 2 already means here.
+		return errHubJoinIncomplete
 	}
 	if !hello.Writable {
 		return fmt.Errorf("joined but the hub session cannot WRITE the pool: check that user %q owns %s (ls -ld), that the .agentchute/loop tree is writable by it, and that the pool was not authorized against another user's checkout", remote.User, hello.Pool)

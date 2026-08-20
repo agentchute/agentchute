@@ -264,8 +264,8 @@ func TestRegistryCompleteness(t *testing.T) {
 	// The count is asserted on purpose: a code added to the map and forgotten in
 	// the spec's table is exactly the drift this row exists to catch, so it must
 	// be moved deliberately rather than grow on its own.
-	if len(Emitters) != 29 {
-		t.Fatalf("emitter registry = %d rows, want 29", len(Emitters))
+	if len(Emitters) != 30 {
+		t.Fatalf("emitter registry = %d rows, want 30", len(Emitters))
 	}
 }
 

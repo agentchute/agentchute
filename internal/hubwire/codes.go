@@ -55,15 +55,18 @@ var Emitters = map[string]string{
 	// Client-emitted for the same reason as E_HUB_UNPINNED: only the CLIENT runs
 	// the probe, so only the client can report that the probe could not run.
 	"E_HUB_PINNING_UNVERIFIED": EmitterClient,
-	"E_CONNECT":                EmitterClient,
-	"E_UNAUTHORIZED":           EmitterClient,
-	"E_HOSTKEY_CHANGED":        EmitterClient,
-	"E_CHANNEL_LOST":           EmitterClient,
-	"E_SEND_UNKNOWN":           EmitterClient,
-	"E_HELLO_TIMEOUT":          EmitterClient,
-	"E_HUB_NO_BINARY":          EmitterClient,
-	"E_NOT_JOINED":             EmitterClient,
-	"E_NO_SSH":                 EmitterClient,
+	// Client-emitted: only the client knows whether it had already received and
+	// rendered streamed output when the connection dropped.
+	"E_RESULT_UNKNOWN":  EmitterClient,
+	"E_CONNECT":         EmitterClient,
+	"E_UNAUTHORIZED":    EmitterClient,
+	"E_HOSTKEY_CHANGED": EmitterClient,
+	"E_CHANNEL_LOST":    EmitterClient,
+	"E_SEND_UNKNOWN":    EmitterClient,
+	"E_HELLO_TIMEOUT":   EmitterClient,
+	"E_HUB_NO_BINARY":   EmitterClient,
+	"E_NOT_JOINED":      EmitterClient,
+	"E_NO_SSH":          EmitterClient,
 }
 
 // ProtocolError is a named session/codec failure. Operation errors keep their

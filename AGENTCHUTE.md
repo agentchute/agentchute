@@ -516,7 +516,7 @@ Wire frame: `{"t":"error","re":N,"code":"E_…","msg":"<human text>","retriable"
 
 The two arms are ordered and non-overlapping: the hub arm runs before `hello-ok` exists; the client arm only on a `hello-ok` the hub arm already let through.
 
-Client-side only (never on the wire): `E_CONNECT`, `E_UNAUTHORIZED`, `E_HOSTKEY_CHANGED`, `E_CHANNEL_LOST`, `E_SEND_UNKNOWN`, `E_HELLO_TIMEOUT`, `E_HUB_NO_BINARY`, `E_HUB_UNPINNED`, `E_HUB_PINNING_UNVERIFIED`, `E_NOT_JOINED`, `E_NO_SSH`. (`E_POOL_MISMATCH` is **not** in this list.)
+Client-side only (never on the wire): `E_CONNECT`, `E_UNAUTHORIZED`, `E_HOSTKEY_CHANGED`, `E_CHANNEL_LOST`, `E_SEND_UNKNOWN`, `E_HELLO_TIMEOUT`, `E_HUB_NO_BINARY`, `E_HUB_UNPINNED`, `E_HUB_PINNING_UNVERIFIED`, `E_RESULT_UNKNOWN`, `E_NOT_JOINED`, `E_NO_SSH`. (`E_POOL_MISMATCH` is **not** in this list.)
 
 `E_UNPINNED` is hub-emitted and travels on the wire: a hub reached WITHOUT an
 `authorized_keys` forced command refuses to serve, because the agent id and pool for that
@@ -532,6 +532,16 @@ A code's name is its claim, and when the probe never ran neither neighbour's cla
 `doctor` renders it as a **warning carrying the reason**, not as OK (which would print an
 all-clear for a check that did not happen) and not as a blocker (a transient probe failure
 must not exit `doctor` non-zero and teach operators to ignore it).
+
+`E_RESULT_UNKNOWN` is the streaming counterpart of `E_SEND_UNKNOWN`, and carries the same
+obligation. A streaming operation delivers its results as they arrive and confirms completion
+with a terminal frame; when the connection drops **after** results have been streamed and
+**before** that frame, the client has already rendered work the hub may well have committed.
+It MUST NOT report that as a plain failure, because the two situations that produce it call
+for opposite actions and it cannot distinguish them — the terminal frame is what would have
+said which. It is **not retriable**: at-least-once means a blind re-run re-delivers what the
+operator was just shown. A drop with no streamed output keeps its ordinary classification,
+where "nothing happened, re-run" is correct advice.
 
 ## 14. Namespace
 State lives under the fixed `.agentchute/loop` directory. `AGENTCHUTE.md` is shared; reference-implementation notes live in `.agentchute/loop/README.md`. (Earlier drafts used a vendor-namespaced `.<vendor>/loop/` dotdir and a `.rehumanlabs/` legacy namespace; both are gone — the namespace is now fixed. `reHuman Labs` remains the maker's credit in `README.md`; that's brand, not a namespace.)

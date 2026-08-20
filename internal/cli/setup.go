@@ -913,15 +913,50 @@ func setupEnsureShimPath(opts setupOptions) error {
 		return nil
 	}
 
+	// #177: write to profiles that EXIST; never create one that does not.
+	//
+	// Joining a hub on a fresh macOS account created ~/.zshrc and ~/.profile,
+	// neither of which the operator had — agentchute inventing a user's login
+	// profiles as a side effect of an unrelated command, with no warning, no
+	// opt-out, and a timestamped backup left behind each time.
+	//
+	// An explicitly named --profile is different and is honoured: naming the
+	// file IS the consent that was missing.
+	named := strings.TrimSpace(opts.Profile) != ""
+	var wrote []string
 	for _, profile := range profiles {
+		if !named {
+			if _, err := os.Stat(profile); err != nil {
+				if !os.IsNotExist(err) {
+					return fmt.Errorf("read profile %s: %w", profile, err)
+				}
+				continue
+			}
+		}
 		if err := setupWritePathBlock(profile, opts.ShimDir); err != nil {
 			return err
 		}
+		wrote = append(wrote, profile)
+	}
+	if len(wrote) == 0 {
+		fmt.Printf("no shell profile found to update, and none was created (looked for: %s).\n", strings.Join(displayHomePaths(profiles), ", "))
+		fmt.Printf("Add this to your shell's startup file yourself:\n\n%s\n", setupRenderPathBlock(profiles[0], opts.ShimDir))
+		fmt.Printf("Or re-run with --profile <path> to name one (it will be created), or --no-profile to skip this step.\n")
+		return nil
 	}
 	if !onPath {
 		fmt.Printf("%s is now on PATH in your shell profile; start a new shell (or source it) before using `ac serve`\n", opts.ShimDir)
 	}
 	return nil
+}
+
+// displayHomePaths renders a list for an operator, ~-abbreviated.
+func displayHomePaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, displayHomePath(p))
+	}
+	return out
 }
 
 func setupPlausibleProfiles(override string) []string {
