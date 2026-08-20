@@ -321,9 +321,9 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 	updateGitHubBase = srv.URL
 	resolveUpdateTargetForTest = bin
 	resyncCalled := false
-	updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
+	updateRunResync = func(target string, setupArgs []string, controlRepo string) (string, error) {
 		resyncCalled = true
-		return nil
+		return "", nil
 	}
 	t.Cleanup(func() {
 		updateGitHubBase = oldBase
@@ -448,12 +448,12 @@ func TestUpdateInvalidatesLeaseOnlyAfterSetupResyncSucceeds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
+		updateRunResync = func(target string, setupArgs []string, controlRepo string) (string, error) {
 			resyncCalled = true
 			if err := loop.RenewLease(lease); err != nil {
 				t.Fatalf("lease at setup re-sync = %v, want no error (leases must not be invalidated before the resync succeeds)", err)
 			}
-			return nil
+			return "", nil
 		}
 		if err := cmdUpdate([]string{"--version", "v0.5.0"}); err != nil {
 			t.Fatalf("update with re-sync failed: %v", err)
@@ -503,8 +503,8 @@ func TestUpdate_ResyncFailureLeavesLeaseIntact(t *testing.T) {
 	oldResync := updateRunResync
 	updateGitHubBase = srv.URL
 	resolveUpdateTargetForTest = bin
-	updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
-		return errors.New("injected resync failure")
+	updateRunResync = func(target string, setupArgs []string, controlRepo string) (string, error) {
+		return "", errors.New("injected resync failure")
 	}
 	t.Cleanup(func() {
 		updateGitHubBase = oldBase
@@ -613,8 +613,8 @@ func TestUpdate_ResyncVerificationFailurePreventsFinalRestartBanner(t *testing.T
 	oldResync := updateRunResync
 	updateGitHubBase = srv.URL
 	resolveUpdateTargetForTest = bin
-	updateRunResync = func(target string, setupArgs []string, controlRepo string) error {
-		return errors.New("hook compatibility verification failed: hook file(s) invoke unknown agentchute subcommand(s) after refresh: claude-code (`poller`) — run `agentchute hooks install --wrapper all --scope repo --force`")
+	updateRunResync = func(target string, setupArgs []string, controlRepo string) (string, error) {
+		return "", errors.New("hook compatibility verification failed: hook file(s) invoke unknown agentchute subcommand(s) after refresh: claude-code (`poller`) — run `agentchute hooks install --wrapper all --scope repo --force`")
 	}
 	t.Cleanup(func() {
 		updateGitHubBase = oldBase
