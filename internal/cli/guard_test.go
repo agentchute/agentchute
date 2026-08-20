@@ -198,7 +198,38 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 			{"agentchute turn-end", "agentchute turn-end --as bob", true},
 			{"agentchute update", "agentchute update", true},
 			{"agentchute setup", "agentchute setup --yes", true},
-			{"agentchute clean", "agentchute clean --owed --as bob", true},
+			// #174: `clean --owed` is ALLOWED under the latch, and the deadlock
+			// it fixes is why. `check` arms the latch and prints, in the same
+			// breath, "prune with: agentchute clean --owed" — a command that was
+			// denied at the exact moment it was displayed. turn-end clears the
+			// latch at the END of the turn, and the next turn opens with another
+			// injected check, so a lane never got a moment where it both knew
+			// about the obligation and was allowed to act. Two lanes hit it
+			// independently and neither could clear it.
+			//
+			// The deny was buying nothing on that path: the guard protects the
+			// claimed-mail pipeline, and --owed touches the agent's OWN reply
+			// ledger, which is asker-owned and non-blocking.
+			{"clean --owed is the deadlock, now allowed", "agentchute clean --owed --as bob", false},
+			{"clean --owed via the ac dispatcher", "ac clean --owed --as bob", false},
+			// Go's flag package takes one dash too, so the exemption has to.
+			{"clean -owed single dash", "agentchute clean -owed --as bob", false},
+			// --mailbox DELETES a peer's inbox. That is the claimed-mail
+			// pipeline, and it stays denied.
+			{"clean --mailbox still denied", "agentchute clean --mailbox ghost --yes", true},
+			{"clean with no mode still denied", "agentchute clean", true},
+			// The exemption is per COMMAND TEXT, not per occurrence: a compound
+			// that also deletes a mailbox is denied whole. Otherwise --owed
+			// becomes a prefix that launders anything after it.
+			{"owed then mailbox in one command", "agentchute clean --owed && agentchute clean --mailbox ghost --yes", true},
+			{"owed alongside a denied pipeline word", "agentchute clean --owed && rm -rf /tmp/x", true},
+			// And it is clean-only: --owed must not launder another subcommand.
+			{"ack with an owed flag is still ack", "agentchute ack --owed --as bob", true},
+			{"check next to a clean --owed", "agentchute check --as bob && agentchute clean --owed", true},
+			// The end-to-end pin: the literal string `check` prints as advice,
+			// fed to the thing that used to deny it. If either side changes
+			// alone, the deadlock is back and this row is what says so.
+			{"the exact hint check prints", guardStaleOwedHintCommand("bob"), false},
 			// claude-code review, PR #89 BLOCKER 1: the installed `ac`
 			// dispatcher spelling, its fully-expanded dispatch exec form, the
 			// templated env-var form, and extra whitespace all bypassed the
