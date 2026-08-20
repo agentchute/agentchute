@@ -201,6 +201,13 @@ func stopSetupRunner(cfg *loop.Config, agentID string) (bool, string) {
 	if !setupLocalHost(st.Host) {
 		return false, ""
 	}
+	// Stricter than the weak form for the one case it gets wrong, because what
+	// follows sends a SIGNAL: a record naming another machine, on a machine that
+	// cannot say what it is called, would otherwise have its pid compared
+	// against this process table.
+	if unknown, why := setupHostSaysElsewhereUnknown(st.Host); unknown {
+		return false, fmt.Sprintf("not stopping the runner for %s; %s", agentID, why)
+	}
 	if st.RunnerPID <= 0 || !setupProcessAlive(st.RunnerPID) {
 		return false, ""
 	}
@@ -265,6 +272,9 @@ func stopSetupLegacyPoller(cfg *loop.Config, agentID string) (bool, string) {
 	}
 	if !setupLocalHost(hb.Host) {
 		return false, ""
+	}
+	if unknown, why := setupHostSaysElsewhereUnknown(hb.Host); unknown {
+		return false, fmt.Sprintf("not stopping the legacy poller for %s; %s", agentID, why)
 	}
 	if hb.PID <= 0 || !setupProcessAlive(hb.PID) {
 		return false, ""
@@ -444,6 +454,18 @@ func signalProcess(pid int, sig os.Signal) error {
 	return p.Signal(sig)
 }
 
+// setupLocalHost answers "could this record belong to THIS machine?", and the
+// question is deliberately the weaker one.
+//
+// Two things make it unanswerable: a record with no host (written by an older
+// binary, or by the os.Hostname path fixed in #193), and this machine not
+// knowing its own name. Both return true, because every caller but one uses the
+// answer to REFUSE — to decline a wipe, an authorize, or a migration while
+// something might be live — and for those, "might be ours" is the safe answer.
+//
+// The exception is the pair that STOPS a process, where "might be ours" leads
+// to a SIGTERM rather than a refusal. Those ask setupHostIsProvablyLocal
+// instead; see stopSetupRunner.
 func setupLocalHost(host string) bool {
 	host = strings.TrimSpace(host)
 	if host == "" {
@@ -451,6 +473,33 @@ func setupLocalHost(host string) bool {
 	}
 	local := strings.TrimSpace(localHostname())
 	return local == "" || host == local
+}
+
+// setupHostSaysElsewhereUnknown reports the ONE case the weak form answers "yes"
+// to and should not, for callers that act rather than refuse: the record names a
+// machine, and this machine cannot say whether that machine is itself.
+//
+// It deliberately does NOT cover a record with no host. That case proceeds,
+// because the check immediately downstream is the stronger evidence: the
+// cmdline of a LOCAL pid, matched against this pool. A process on this machine
+// running `agentchute serve` for this pool IS ours, whatever a state file
+// forgot to write — and runner records written before the host field existed
+// carry none, so refusing them would stop `setup` from stopping runners it has
+// always stopped.
+//
+// What it does cover is the pairing that has no such backstop at the point of
+// decision: an unknown local name lets a record from another machine look
+// local, and the pid it names is then compared against THIS machine's process
+// table, where an unrelated process may sit at the same number.
+func setupHostSaysElsewhereUnknown(host string) (bool, string) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false, ""
+	}
+	if strings.TrimSpace(localHostname()) != "" {
+		return false, ""
+	}
+	return true, "this machine's hostname could not be determined, so the record's host (" + host + ") cannot be compared"
 }
 
 func setupPathMatchesRoot(path, root string) bool {

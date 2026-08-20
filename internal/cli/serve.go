@@ -757,7 +757,10 @@ func runRemoteWrapperOnce(cfg *loop.Config, opts runnerOptions, cwd string) remo
 
 // localHostname returns the current host's name, trimmed. Best-effort: an
 // os.Hostname() failure returns "".
-func localHostname() string {
+// localHostname is a var so rows can drive the "this machine does not know its
+// own name" case, which is otherwise unreachable in a test and is exactly the
+// case setupHostIsProvablyLocal exists for. Production never reassigns it.
+var localHostname = func() string {
 	host, _ := os.Hostname()
 	return strings.TrimSpace(host)
 }

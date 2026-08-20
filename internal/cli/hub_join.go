@@ -625,10 +625,25 @@ func warnHubJoinShadowedBinary() {
 	fmt.Printf("  %s now holds an ssh:// hub URL. A copy that predates hub support reads that as a file path and fails with a confusing lstat error; upgrade or reorder the other copy.\n", loop.PointerFileName)
 }
 
+// appendHubPointerExclude keeps the control-repo pointer out of git's way.
+//
+// A git failure used to return nil, which is right for the common case — this
+// is not a git repository, so there is nothing to exclude — and silent for
+// every other case. Those are different: an unreadable git dir, a git that is
+// not installed, or a repository this user cannot read all end with the pointer
+// file NOT excluded, which surfaces much later as an untracked file the
+// operator did not create and may commit.
+//
+// Not being a repository stays silent. Anything else says so, and does not fail
+// the join: the pointer is written either way, and refusing to join over a
+// gitignore nicety would be a worse trade than the one being fixed.
 func appendHubPointerExclude(root string) error {
 	cmd := exec.Command("git", "-C", root, "rev-parse", "--git-path", "info/exclude")
 	out, err := cmd.Output()
 	if err != nil {
+		if !gitSaysNotARepository(err) {
+			fmt.Fprintf(os.Stderr, "warning: could not ask git where to exclude %s (%v); the pointer file may show up as untracked\n", loop.PointerFileName, gitFailureDetail(err))
+		}
 		return nil
 	}
 	path := strings.TrimSpace(string(out))
@@ -654,6 +669,28 @@ func appendHubPointerExclude(root string) error {
 	defer f.Close()
 	_, err = fmt.Fprintln(f, loop.PointerFileName)
 	return err
+}
+
+// gitSaysNotARepository reports the one failure that means "nothing to do here".
+// git writes it to stderr, which exec.Cmd.Output captures into ExitError.Stderr.
+func gitSaysNotARepository(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(exitErr.Stderr)), "not a git repository")
+}
+
+// gitFailureDetail prefers what git said over the exit status, which on its own
+// tells an operator nothing they can act on.
+func gitFailureDetail(err error) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if said := strings.TrimSpace(string(exitErr.Stderr)); said != "" {
+			return said
+		}
+	}
+	return err.Error()
 }
 
 func installHubJoinShims() error {
