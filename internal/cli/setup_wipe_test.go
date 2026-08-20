@@ -182,8 +182,8 @@ func TestComputeAndExecuteWipePreservesScaffold(t *testing.T) {
 	for _, sub := range []string{"inbox", "archive", "malformed", "live", "agents", "state"} {
 		mustExist(t, filepath.Join(cfg.LoopDir, sub))
 	}
-	if leftovers := rescanWipeLeftovers(cfg.LoopDir); len(leftovers) != 0 {
-		t.Fatalf("post-wipe leftovers: %v", leftovers)
+	if leftovers, unverifiable := rescanWipeLeftovers(cfg.LoopDir); len(leftovers) != 0 || len(unverifiable) != 0 {
+		t.Fatalf("post-wipe leftovers=%v unverifiable=%v", leftovers, unverifiable)
 	}
 }
 
@@ -230,8 +230,8 @@ func TestWipeStatePreservesPoolIdentity(t *testing.T) {
 	}
 	mustExist(t, poolID)
 	mustNotExist(t, filepath.Join(cfg.LoopDir, "state", "codex"))
-	if leftovers := rescanWipeLeftovers(cfg.LoopDir); len(leftovers) != 0 {
-		t.Fatalf("post-wipe leftovers: %v", leftovers)
+	if leftovers, unverifiable := rescanWipeLeftovers(cfg.LoopDir); len(leftovers) != 0 || len(unverifiable) != 0 {
+		t.Fatalf("post-wipe leftovers=%v unverifiable=%v", leftovers, unverifiable)
 	}
 	if _, _, actual, err := validateHubPool(root, "9c4e12ab77f0", "codex"); err != nil || actual != "9c4e12ab77f0" {
 		t.Fatalf("hub session pool validation after wipe = %q, %v", actual, err)
