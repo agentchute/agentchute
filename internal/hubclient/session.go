@@ -341,10 +341,12 @@ func (s *OneShot) do(request any, body []byte, emit func(op.Event) error, observ
 	if err := s.setReadDeadline(30 * time.Second); err != nil {
 		return hubwire.RawFrame{}, transmitted, err
 	}
+	streamed := 0
 	for {
 		raw, err := s.reader.Read()
 		if err != nil {
-			return hubwire.RawFrame{}, transmitted, classifySSHFailure(s.remote, s.agentID, "operation", err, s.transport)
+			return hubwire.RawFrame{}, transmitted, resultUnknownIfStreamed(
+				classifySSHFailure(s.remote, s.agentID, "operation", err, s.transport), streamed)
 		}
 		if raw.Re != s.nextID {
 			return hubwire.RawFrame{}, transmitted, &Error{Code: hubwire.CodeMalformedFrame, Msg: fmt.Sprintf("hub: response %q references request %d, want %d", raw.T, raw.Re, s.nextID)}
@@ -361,6 +363,7 @@ func (s *OneShot) do(request any, body []byte, emit func(op.Event) error, observ
 			if err := emit(event); err != nil {
 				return hubwire.RawFrame{}, transmitted, err
 			}
+			streamed++
 		case "error":
 			return hubwire.RawFrame{}, transmitted, wireError(raw, s.transport)
 		default:
@@ -371,6 +374,41 @@ func (s *OneShot) do(request any, body []byte, emit func(op.Event) error, observ
 			_ = s.Close()
 			return raw, transmitted, nil
 		}
+	}
+}
+
+// resultUnknownIfStreamed re-codes a lost connection that arrived AFTER the hub
+// had already streamed output.
+//
+// #171: the hub commits the work, streams it, the client prints all of it, and
+// then the terminal frame is lost. The operator sees their messages followed by
+// "channel to the hub was lost" and does the obvious thing — re-runs — and
+// at-least-once re-delivers what they were just shown. Nothing is lost; the
+// safety property holds exactly as designed. What is wrong is the report: two
+// situations calling for OPPOSITE actions rendered identically.
+//
+//	nothing happened        -> re-run
+//	everything happened     -> do not re-run
+//
+// The client genuinely cannot tell which, because the terminal frame is what
+// would have told it. So it says that, rather than picking one and being wrong
+// half the time. Not retriable, for the same reason E_SEND_UNKNOWN is not: the
+// safe action is to look, not to repeat.
+//
+// A failure with NO streamed output keeps its original classification — there
+// the answer is known, and "nothing happened, re-run" is the correct advice.
+func resultUnknownIfStreamed(err error, streamed int) error {
+	if err == nil || streamed == 0 {
+		return err
+	}
+	return &Error{
+		Code: "E_RESULT_UNKNOWN",
+		Msg: fmt.Sprintf("hub: the connection dropped after the hub had already sent %d item(s) — everything printed above did happen, "+
+			"but the confirmation that would say the operation finished never arrived. DO NOT assume it failed: the hub may have "+
+			"committed the work, in which case re-running re-delivers what you were just shown (at-least-once). Check the current "+
+			"state first (`agentchute status`, or `agentchute pending` for obligations) and re-run only if it says the work is still outstanding.", streamed),
+		Retriable: false,
+		Cause:     err,
 	}
 }
 

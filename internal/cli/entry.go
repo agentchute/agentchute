@@ -129,7 +129,7 @@ func Main(a Assets, args []string) int {
 // reserved for actual command failures — doctor's summary line used to print
 // "exit 1" for a blocker, which is a gate verdict, not a failure.
 func exitCodeForError(err error) int {
-	if err == errFailIfAny || err == errBlocked {
+	if err == errFailIfAny || err == errBlocked || err == errHubJoinIncomplete {
 		return 2
 	}
 	return 1

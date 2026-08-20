@@ -157,8 +157,13 @@ func TestHubJoinAuthFallbackWritesProvisionalPointer(t *testing.T) {
 	hubJoinAutoAuthorize = func(*loop.RemoteConfig, string, string, bool) error {
 		return errors.New("operator ssh unavailable")
 	}
-	if err := runHubJoin(root, remote, hubJoinOptions{URL: remote.URL, AgentID: "work-tiny"}); err != nil {
-		t.Fatal(err)
+	// #178: the local half succeeds and the machine is NOT joined, so this
+	// reports the verdict rather than exiting 0. Everything below still has to
+	// hold — the provisional config and the pointer are what make re-running
+	// after authorizing work.
+	err := runHubJoin(root, remote, hubJoinOptions{URL: remote.URL, AgentID: "work-tiny"})
+	if !errors.Is(err, errHubJoinIncomplete) {
+		t.Fatalf("incomplete join returned %v, want errHubJoinIncomplete — exiting 0 tells a script it is fully joined", err)
 	}
 	cfg, err := hubclient.ReadHubConfig(remote.HubID)
 	if err != nil {
