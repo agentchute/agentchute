@@ -51,6 +51,13 @@ func prepareHubKey(remoteDir, agentID string) (hubKeyState, bool, error) {
 		if len(versions) > 0 {
 			newest := versions[len(versions)-1]
 			if err := checkHubKeyPassphraseFree(newest.Private); err == nil {
+				// #166: the adopted version may be missing its public half —
+				// that is the state an interrupted mint leaves. Repair before
+				// the join reaches readHubPublicKey, or a re-run converges to
+				// the same failure and the operator loops.
+				if err := ensureHubKeyPublic(keysDir, newest); err != nil {
+					return hubKeyState{}, false, err
+				}
 				if err := os.Symlink(filepath.Base(newest.Private), base); err != nil {
 					return hubKeyState{}, false, err
 				}
@@ -84,6 +91,12 @@ func prepareHubKey(remoteDir, agentID string) (hubKeyState, bool, error) {
 	}
 	if err := checkHubKeyPassphraseFree(state.Active.Private); err != nil {
 		return hubKeyState{}, false, fmt.Errorf("hub join: active key %s is corrupt or passphrase-protected; remove the passphrase or re-run with --rotate-key", displayHomePath(state.Active.Private))
+	}
+	// The commoner half of #166: the symlink landed, the public half did not.
+	// This branch never enters the adopt path above, so repairing only there
+	// would look complete and leave this state looping exactly as before.
+	if err := ensureHubKeyPublic(keysDir, state.Active); err != nil {
+		return hubKeyState{}, false, err
 	}
 	return state, false, nil
 }
@@ -167,18 +180,108 @@ func mintHubKey(keysDir, agentID string, number int) (hubKeyVersion, error) {
 	if err != nil {
 		return hubKeyVersion{}, fmt.Errorf("ssh-keygen: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	// #167: this returned a hubKeyVersion naming a `.pub` it never looked for,
+	// so a keygen that exited 0 without writing it was reported as a complete
+	// mint — the same read-a-zero-exit-as-success shape as the rest of that
+	// sweep, and the state #166 then had to recover from.
+	public := private + ".pub"
+	if _, err := os.Stat(public); err != nil {
+		return hubKeyVersion{}, fmt.Errorf("hub join: ssh-keygen exited 0 but %s is not there: %w", displayHomePath(public), err)
+	}
 	if err := fsyncHubDir(keysDir); err != nil {
 		return hubKeyVersion{}, err
 	}
-	return hubKeyVersion{Number: number, Private: private, Public: private + ".pub"}, nil
+	return hubKeyVersion{Number: number, Private: private, Public: public}, nil
 }
 
 func checkHubKeyPassphraseFree(path string) error {
+	_, err := hubKeyPublicFromPrivate(path)
+	return err
+}
+
+// hubKeyPublicFromPrivate derives the public half from the private one and
+// returns it. `ssh-keygen -y` prints exactly the contents of the `.pub` file,
+// which is why the probe doubles as the repair (#166): the caller that used to
+// fail on a missing `.pub` already had the material to write one.
+//
+// It stays the passphrase probe too, because -y is what fails on an encrypted
+// key. Only the discarded stdout is new (#167): the previous version read a
+// zero exit as "not passphrase-protected" and threw away the answer it had
+// asked for.
+func hubKeyPublicFromPrivate(path string) (string, error) {
 	out, err := runHubSSHKeygen("-y", "-P", "", "-f", path)
 	if err != nil {
-		return fmt.Errorf("ssh-keygen key probe: %w: %s", err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("ssh-keygen key probe: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	derived := strings.TrimSpace(string(out))
+	if derived == "" {
+		return "", fmt.Errorf("ssh-keygen printed no public key for %s", displayHomePath(path))
+	}
+	return derived, nil
+}
+
+// ensureHubKeyPublic writes the `.pub` half back when it is missing, deriving it
+// from the private key rather than minting a replacement.
+//
+// #166: ssh-keygen writes the private file and then the public one, so an
+// interrupted mint leaves a valid private key with no `.pub`. prepareHubKey
+// adopted it — correctly, since the hub may already have authorized it — and the
+// join then died reading the file that was never written. A plain re-run
+// reproduced the same state, so the obvious operator action looped forever.
+//
+// Regenerating is the only safe repair. Minting a replacement would strand a
+// credential the hub may already have authorized and present a different one,
+// which is the failure family #165 is about.
+//
+// A `.pub` that EXISTS is never touched: rewriting it would be an unrequested
+// write on the credential path, and it would overwrite the evidence of a real
+// mismatch instead of leaving it to be seen. Any stat error other than
+// not-exist is returned rather than treated as absence — an unreadable file is
+// not a missing one.
+func ensureHubKeyPublic(keysDir string, version hubKeyVersion) error {
+	if _, err := os.Stat(version.Public); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	derived, err := hubKeyPublicFromPrivate(version.Private)
+	if err != nil {
+		return err
+	}
+	if err := writeHubKeyPublic(version.Public, derived); err != nil {
+		return err
+	}
+	return fsyncHubDir(keysDir)
+}
+
+// writeHubKeyPublic writes through a temp file in the same directory and
+// renames, so a second interruption cannot leave a half-written `.pub` — the
+// exact shape of the state being repaired. 0644 matches what ssh-keygen writes:
+// a public key is public, and a mode nothing else uses invites a later
+// permission check to disagree with reality.
+func writeHubKeyPublic(path, contents string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".pub.tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(contents + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func readHubPublicKey(version hubKeyVersion) (string, error) {
