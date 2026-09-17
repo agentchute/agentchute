@@ -41,13 +41,14 @@ import (
 //     --codex-hook Stop (silent on clear, block-JSON exit-0 on block).
 //
 // Recovery property (and its known limit): turn-end has NO self-denial of
-// its own (unlike check/ack) — its only possible denial is the PreToolUse
+// its own (unlike ack) — its only possible denial is the PreToolUse
 // guard hook itself. When NEITHER that hook NOR the Stop hook is firing at
 // all (e.g. a hook-trust rollout window on a vendor that gates project-local
 // hook changes per-command), a lane armed by `check` is still recoverable:
 // the guard that would deny a direct `turn-end` invocation also isn't
-// running, so nothing stops it (check/ack's own self-denial error text names
-// it as the fix for exactly this reason — TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd).
+// running, so nothing stops it (ack's own self-denial error text names it
+// as the fix for exactly this reason — TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd;
+// check itself never self-denies, so a lane can always re-read what it holds).
 //
 // KNOWN GAP (codex review, PR #89 round 3, finding #1 — NOT fixed): a MIXED
 // state where the PreToolUse guard is active but Stop is independently

@@ -34,6 +34,16 @@ import (
 // path tricks). It is not a hard security boundary and must never be
 // presented as one.
 //
+// `check` is NOT on the deny list (mail-flow decision 2026-09-17, item B).
+// It once was: a second check while this session's latch was armed was
+// denied here and by check's own self-denial, and since every gate phase
+// blocks on unread mail, mail landing mid-turn forced the lane to end its
+// turn just to read it. A re-check cannot reach either thing this guard
+// protects — it never archives and never clears the latch; it arms it — so
+// the deny bought nothing. Every check replays uncommitted residue as
+// REDELIVERED (op.Claim), because a set latch is not proof that every
+// claimed message was displayed (check_latch_residue_test.go).
+//
 // Fails OPEN (allows) whenever it cannot cleanly resolve an armed session or
 // this agent's id: a misconfigured or partially-wired guard must never
 // itself wedge a serve lane (decision §9 rev 2.3, grok P2).
@@ -96,7 +106,9 @@ var guardDispatchPrefixRE = regexp.MustCompile(`\bdispatch\b(?:[ \t]+--shim-dir(
 // non-word character and a boundary can never hold between two non-word
 // characters (e.g. string-start immediately followed by `$`) — caught by
 // this file's own test suite once both forms were exercised together.
-var guardAgentchuteSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+(ack|check|turn-end|update|setup|clean)\b`)
+// `check` is deliberately absent (see the file header): a compound that
+// pairs it with any listed token is still denied whole by that token.
+var guardAgentchuteSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+(ack|turn-end|update|setup|clean)\b`)
 
 // guardStaleOwedHintCommand is the command `check` tells a lane to run when it
 // holds a stale reply obligation. It lives here, next to the deny rule that has
@@ -139,8 +151,9 @@ var (
 //   - It is scoped to the whole COMMAND TEXT, not to one occurrence. A compound
 //     that also runs `clean --mailbox` is denied whole, or `--owed` becomes a
 //     prefix that launders whatever follows it.
-//   - It is clean-only. An `--owed` flag next to `ack` or `check` exempts
-//     nothing; those subcommands still match and still deny.
+//   - It is clean-only. An `--owed` flag next to `ack` exempts nothing; that
+//     subcommand still matches and still denies. (`check` is no longer a
+//     sensitive subcommand at all, so it has nothing to launder.)
 //   - It exempts this rule only. The pipeline substrings (curl, rm -rf, hook
 //     config writes) are checked afterwards and are unaffected.
 func guardCleanOwedExempt(normalized string) bool {
