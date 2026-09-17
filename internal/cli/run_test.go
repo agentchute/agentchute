@@ -134,7 +134,7 @@ func TestRunnerDiagnosticsLogFileOnlyDuringRawWindow(t *testing.T) {
 	defer rt.diag.close()
 
 	stderr := captureStderr(t, func() {
-		rt.injectPrompt()
+		rt.injectPrompt(receiveQueuedWake(t, rt, false))
 	})
 	if stderr != "" {
 		t.Fatalf("raw-window diagnostic wrote stderr: %q", stderr)
@@ -708,7 +708,7 @@ func newPollTestRuntime(t *testing.T, cfg *loop.Config, agentID string) *runnerR
 		started: time.Now().UTC(),
 		lease:   lease,
 		channel: op.NewChannel(cfg, op.Context{ActorID: agentID}, op.ChannelOpts{Lease: lease, HeartbeatTemplate: &tmpl}),
-		wakeCh:  make(chan bool, 1),
+		wakeCh:  make(chan *wakeAttempt, 1),
 		stopCh:  make(chan struct{}),
 	}
 	return rt
@@ -719,19 +719,52 @@ func (r *runnerRuntime) drainWake() bool {
 	return had
 }
 
-// drainWakeRecue drains a queued wake (if any) and reports its recue value.
-// had=false means no wake was queued (pendingWake was already false); recue
-// is meaningless when had is false.
+// drainWakeRecue drains a queued wake (if any) and reports its recue value,
+// completing the attempt as if injectLoop had consumed it (so a later poll
+// may queue a fresh one). had=false means no wake was queued; recue is
+// meaningless when had is false.
 func (r *runnerRuntime) drainWakeRecue() (recue bool, had bool) {
-	r.mu.Lock()
-	had = r.pendingWake
-	r.pendingWake = false
-	r.mu.Unlock()
-	select {
-	case recue = <-r.wakeCh:
-	default:
+	a := r.takeQueuedWake()
+	if a == nil {
+		return false, false
 	}
-	return recue, had
+	r.mu.Lock()
+	if r.attempt == a {
+		r.attempt = nil
+	}
+	r.mu.Unlock()
+	return a.recue, true
+}
+
+// takeQueuedWake receives the queued attempt from wakeCh without completing
+// it — exactly injectLoop's own receive, leaving the attempt outstanding
+// (pending_wake true) the way it is while waitForInjectionWindow runs.
+func (r *runnerRuntime) takeQueuedWake() *wakeAttempt {
+	select {
+	case a := <-r.wakeCh:
+		return a
+	default:
+		return nil
+	}
+}
+
+// receiveQueuedWake enqueues a wake and hands back the outstanding attempt,
+// the state injectLoop is in right after its receive.
+func receiveQueuedWake(t *testing.T, rt *runnerRuntime, recue bool) *wakeAttempt {
+	t.Helper()
+	rt.enqueueWake(recue)
+	a := rt.takeQueuedWake()
+	if a == nil {
+		t.Fatal("enqueueWake queued nothing (an attempt was already outstanding?)")
+	}
+	return a
+}
+
+// outstandingWake reads the current attempt under the lock.
+func (r *runnerRuntime) outstandingWake() *wakeAttempt {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.attempt
 }
 
 func captureStderr(t *testing.T, fn func()) string {
@@ -856,10 +889,10 @@ func TestRunnerRecuesAfterInterval(t *testing.T) {
 		t.Fatalf("first poll: had=%v recue=%v, want had=true recue=false", had, recue)
 	}
 
-	// Simulate the cue having actually been injected, as injectPrompt would.
+	// Simulate the cue having actually been injected, as injectPrompt would
+	// (the drain above already completed the attempt).
 	rt.mu.Lock()
 	rt.lastInjection = time.Now().UTC()
-	rt.pendingWake = false
 	rt.injectedThisPeriod = true
 	rt.mu.Unlock()
 
@@ -883,6 +916,10 @@ func TestRunnerRecuesAfterInterval(t *testing.T) {
 // escalate via Ctrl-C, even under --interrupt-policy=always, while the
 // wrapper is busy — it waits for idle unconditionally. The Ctrl-C escalation
 // is reserved for the first injection of a pending period (recue=false).
+// Wake retirement (§8) changes nothing here: the mail stays pending for the
+// whole test, so the attempt is never retired, and the ONLY things that end
+// the wait are idle or shutdown — the wait returns false on shutdown, with no
+// bytes written.
 func TestRunnerRecueWaitsForIdle(t *testing.T) {
 	root := setupShortRunFixture(t)
 	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
@@ -903,7 +940,7 @@ func TestRunnerRecueWaitsForIdle(t *testing.T) {
 	rt.lastOutputUnixNano.Store(time.Now().UnixNano()) // force "busy"
 
 	done := make(chan bool, 1)
-	go func() { done <- rt.waitForInjectionWindow(true) }()
+	go func() { done <- rt.waitForInjectionWindow(receiveQueuedWake(t, rt, true)) }()
 
 	select {
 	case <-done:
@@ -950,8 +987,8 @@ func TestRunnerStartupMailCues(t *testing.T) {
 	})
 
 	select {
-	case recue := <-rt.wakeCh:
-		if recue {
+	case a := <-rt.wakeCh:
+		if a.recue {
 			t.Fatal("startup cue was recue=true, want the first-of-period recue=false")
 		}
 	case <-time.After(2 * time.Second):
@@ -988,20 +1025,15 @@ func TestInjectIfPendingSkipClearsPendingWake(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rt.mu.Lock()
-	rt.pendingWake = true
-	rt.mu.Unlock()
+	a := receiveQueuedWake(t, rt, false)
 	if err := rt.saveState(); err != nil {
 		t.Fatal(err)
 	}
 
-	rt.injectIfPending()
+	rt.injectIfPending(a)
 
-	rt.mu.Lock()
-	stillPending := rt.pendingWake
-	rt.mu.Unlock()
-	if stillPending {
-		t.Fatal("injectIfPending's skip path left pendingWake stuck true on an already-drained inbox")
+	if rt.outstandingWake() != nil {
+		t.Fatal("injectIfPending's skip path left the attempt outstanding (pending_wake stuck true) on an already-drained inbox")
 	}
 
 	got, err := loop.LoadRunnerState(cfg, "runner-test")
@@ -1034,26 +1066,19 @@ func TestInjectPromptFailureClearsPendingWake(t *testing.T) {
 	mustWrite(t, filepath.Join(inbox, "not-a-seq-name.md"), []byte("body"))
 
 	// First poll: period start, queues a wake (recue=false). Mail stays
-	// pending throughout this test (never claimed).
+	// pending throughout this test (never claimed). Take the attempt the way
+	// injectLoop does (received, still outstanding) right before it calls
+	// injectIfPending -> injectPrompt.
 	rt.pollOnce()
-	if _, had := rt.drainWakeRecue(); !had {
+	a := rt.takeQueuedWake()
+	if a == nil {
 		t.Fatal("first poll did not queue a wake")
 	}
-	// The test helper's drain cleared pendingWake as a side effect of
-	// inspecting the channel; restore it to simulate injectLoop's real
-	// consume-then-wait sequence (wake received, pendingWake still set) right
-	// before it calls injectIfPending -> injectPrompt.
-	rt.mu.Lock()
-	rt.pendingWake = true
-	rt.mu.Unlock()
 
-	rt.injectIfPending() // hasPendingInboxMail is true -> injectPrompt -> writePTY fails (ptmx is nil)
+	rt.injectIfPending(a) // hasPendingInboxMail is true -> injectPrompt -> writePTY fails (ptmx is nil)
 
-	rt.mu.Lock()
-	stillLatched := rt.pendingWake
-	rt.mu.Unlock()
-	if stillLatched {
-		t.Fatal("a failed injection left pendingWake stuck true — every future wake, including brand-new mail, would be silently suppressed forever")
+	if rt.outstandingWake() != nil {
+		t.Fatal("a failed injection left the attempt outstanding — every future wake, including brand-new mail, would be silently suppressed forever")
 	}
 
 	// A later poll, with the mail still genuinely pending, must still be able
@@ -1099,19 +1124,17 @@ func TestRunnerFailedInjectionStillEscalatesOnRetry(t *testing.T) {
 	// First poll queues the first cue (recue=false); simulate the failed
 	// injection attempt (ptmx is nil, so injectPrompt's writePTY fails).
 	rt.pollOnce()
-	if _, had := rt.drainWakeRecue(); !had {
+	first := rt.takeQueuedWake()
+	if first == nil {
 		t.Fatal("first poll did not queue a wake")
 	}
-	rt.mu.Lock()
-	rt.pendingWake = true
-	rt.mu.Unlock()
-	rt.injectIfPending()
+	rt.injectIfPending(first)
 
 	// Next poll's retry must still be recue=false...
 	rt.pollOnce()
-	recue, had := rt.drainWakeRecue()
-	if !had || recue {
-		t.Fatalf("retry after failed injection: had=%v recue=%v, want had=true recue=false", had, recue)
+	retry := rt.takeQueuedWake()
+	if retry == nil || retry.recue {
+		t.Fatalf("retry after failed injection: attempt=%+v, want a queued recue=false attempt", retry)
 	}
 
 	// ...and waitForInjectionWindow(false) under always-policy, while still
@@ -1124,7 +1147,7 @@ func TestRunnerFailedInjectionStillEscalatesOnRetry(t *testing.T) {
 	rt.ptmx = pw
 
 	done := make(chan bool, 1)
-	go func() { done <- rt.waitForInjectionWindow(recue) }()
+	go func() { done <- rt.waitForInjectionWindow(retry) }()
 	select {
 	case ok := <-done:
 		if !ok {
@@ -1165,11 +1188,12 @@ func TestRunnerDrainedPeriodResetsThroughProductionPath(t *testing.T) {
 	mustWrite(t, first, []byte("first"))
 
 	// Establish the precondition a real successful injection would leave:
-	// the period has already delivered a cue this round.
+	// the period has already delivered a cue this round, and a re-cue attempt
+	// is outstanding.
 	rt.mu.Lock()
 	rt.injectedThisPeriod = true
-	rt.pendingWake = true
 	rt.mu.Unlock()
+	a := receiveQueuedWake(t, rt, true)
 
 	// Simulate the message being claimed (drained) by the agent's own check,
 	// then drive injectIfPending's ACTUAL skip path (production code, not a
@@ -1177,7 +1201,7 @@ func TestRunnerDrainedPeriodResetsThroughProductionPath(t *testing.T) {
 	if err := os.Remove(first); err != nil {
 		t.Fatal(err)
 	}
-	rt.injectIfPending()
+	rt.injectIfPending(a)
 	rt.mu.Lock()
 	stillTracking := rt.injectedThisPeriod
 	rt.mu.Unlock()
@@ -1223,7 +1247,7 @@ func TestSaveStateSerializesSnapshotAndWrite(t *testing.T) {
 	t.Cleanup(func() { afterSaveStateSnapshotHook = nil })
 
 	rt.mu.Lock()
-	rt.pendingWake = true
+	rt.attempt = newWakeAttempt(1, false)
 	rt.mu.Unlock()
 
 	firstDone := make(chan struct{})
@@ -1238,7 +1262,7 @@ func TestSaveStateSerializesSnapshotAndWrite(t *testing.T) {
 	go func() {
 		close(secondStarted)
 		rt.mu.Lock() // must block: the first call still holds r.mu
-		rt.pendingWake = false
+		rt.attempt = nil
 		rt.mu.Unlock()
 		_ = rt.saveState()
 		close(secondDone)
@@ -1295,7 +1319,7 @@ func TestRunnerNewPeriodCuesWithinOneTickDespiteRecentInjection(t *testing.T) {
 	rt.mu.Lock()
 	rt.lastInjection = time.Now().UTC()
 	rt.injectedThisPeriod = false
-	rt.pendingWake = false
+	rt.attempt = nil
 	rt.mu.Unlock()
 
 	// A brand-new message arrives, starting a genuinely new period.

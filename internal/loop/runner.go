@@ -25,7 +25,12 @@ type RunnerState struct {
 	LastPoll      time.Time `json:"last_poll,omitempty"`
 	LastInjection time.Time `json:"last_injection,omitempty"`
 	PendingWake   bool      `json:"pending_wake"`
-	Status        string    `json:"status"`
+	// WakeAttempt is the id of the wake attempt currently queued or waiting
+	// for an injection window (0 / omitted when none). Diagnostic, additive:
+	// a lane whose pending_wake stays true across polls can be told apart by
+	// whether this id is stuck (one attempt parked) or advancing.
+	WakeAttempt uint64 `json:"wake_attempt,omitempty"`
+	Status      string `json:"status"`
 }
 
 // SaveRunnerState writes runner state atomically under state/<agent>/.
