@@ -293,21 +293,51 @@ type runnerRuntime struct {
 	// Local ticks preserve their historical log-and-continue behavior.
 	channelErr chan error
 
-	mu                 sync.Mutex
-	ptmxMu             sync.Mutex
-	stopOnce           sync.Once
-	pollWG             sync.WaitGroup
-	shutdownRequested  atomic.Bool
-	pendingWake        bool
-	injectedThisPeriod bool // true once a cue has SUCCEEDED for the current pending period (A2/C16-C17, review fix)
+	mu                sync.Mutex
+	ptmxMu            sync.Mutex
+	stopOnce          sync.Once
+	pollWG            sync.WaitGroup
+	shutdownRequested atomic.Bool
+	// attempt is the ONE queued-or-waiting wake attempt for the current
+	// pending-mail period, or nil when none is outstanding. It IS the
+	// pending-wake state: runner.json's pending_wake is derived from it, and
+	// the only ways it clears are retireWake (observed-empty inbox, which also
+	// stops the waiter) and the attempt's own completion in injectPrompt.
+	// There is deliberately no separate boolean — a flag that could flip while
+	// the waiter lived is the bug wake retirement exists to close.
+	attempt            *wakeAttempt
+	wakeSeq            uint64 // id of the most recent attempt (runner.log lines only)
+	injectedThisPeriod bool   // true once a cue has SUCCEEDED for the current pending period (A2/C16-C17, review fix)
 	lastInjection      time.Time
 	lastPoll           time.Time
 	lastTickPending    bool
 	lastOutputUnixNano atomic.Int64
 	lastInputUnixNano  atomic.Int64
 
-	wakeCh chan bool // true = re-cue (retry), false = first cue of a pending period
+	wakeCh chan *wakeAttempt
 	stopCh chan struct{}
+}
+
+// wakeAttempt is one wake for one pending-mail period (AGENTCHUTE.md §8, wake
+// retirement). It travels from enqueueWake over wakeCh to injectLoop, which
+// waits for an injection window and then injects — and it is what the runner
+// cancels when the inbox is observed empty while that wait is still going.
+type wakeAttempt struct {
+	id    uint64
+	recue bool // true = re-cue (retry), false = first cue of a pending period
+	// retired is closed by retireWake. The waiter selects on it, so retirement
+	// actually stops the wait rather than leaving a goroutine parked behind a
+	// wrapper that never goes idle (codex-tui repainting every 150 ms).
+	retired chan struct{}
+}
+
+func newWakeAttempt(id uint64, recue bool) *wakeAttempt {
+	return &wakeAttempt{id: id, recue: recue, retired: make(chan struct{})}
+}
+
+// pendingWake reports whether a wake attempt is outstanding. Caller holds r.mu.
+func (r *runnerRuntime) pendingWake() bool {
+	return r.attempt != nil
 }
 
 type runnerDiagnostics struct {
@@ -439,7 +469,7 @@ func newRunnerRuntime(cfg *loop.Config, opts runnerOptions, cwd string, lease *l
 		lease:      lease,
 		channel:    channel,
 		channelErr: make(chan error, 1),
-		wakeCh:     make(chan bool, 1),
+		wakeCh:     make(chan *wakeAttempt, 1),
 		stopCh:     make(chan struct{}),
 	}
 }
@@ -545,6 +575,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		// registration) from racing a pollOnce still in flight.
 		rt.pollWG.Wait()
 		rt.closePTY()
+		rt.dropWake()
 		_ = rt.saveStateWithStatus("offline")
 		// Release the serve lease last. ErrFenced => we were already reclaimed
 		// (another serve owns the id); releasing would be a no-op and must not
@@ -726,6 +757,7 @@ func runRemoteWrapperOnce(cfg *loop.Config, opts runnerOptions, cwd string) remo
 		rt.stopLoops()
 		rt.pollWG.Wait()
 		rt.closePTY()
+		rt.dropWake()
 		_ = rt.saveStateWithStatus("offline")
 		if err := rt.channel.ReleaseLease(); err != nil && hubclient.ErrorCode(err) != "E_FENCED" {
 			rt.logf("agentchute serve: release remote serve lease: %v\n", err)
@@ -937,19 +969,29 @@ func (r *runnerRuntime) pollOnce() {
 	// idle regardless of --interrupt-policy). The period resets (ready to
 	// treat the next arrival as genuinely new) the moment the inbox is
 	// observed empty — here, and in injectIfPending's drained-mail skip path.
-	// Once a wake is already in flight (pendingWake), we do not re-enqueue —
-	// enqueueWake itself guards that.
-	pending := tick.Pending > 0 || tick.Skipped > 0
-	r.mu.Lock()
-	r.lastTickPending = pending
-	if !pending {
-		r.injectedThisPeriod = false
-	}
-	injected := r.injectedThisPeriod
-	lastInjection := r.lastInjection
-	r.mu.Unlock()
-	if pending && (!injected || now.Sub(lastInjection) >= recueInterval) {
-		r.enqueueWake(injected)
+	// Once a wake is already in flight, we do not re-enqueue — enqueueWake
+	// itself guards that.
+	//
+	// Wake retirement (§8): an observed-EMPTY inbox also cancels the attempt
+	// still waiting for an injection window, so a wrapper that never looks
+	// idle cannot hold a wake for mail that is long gone. Only a tick that
+	// actually observed the inbox counts: a tick error is not evidence of an
+	// empty inbox (and a listing failure inside a successful tick already
+	// reports Pending:1, the fail-open direction).
+	if err == nil {
+		pending := tick.Pending > 0 || tick.Skipped > 0
+		r.mu.Lock()
+		r.lastTickPending = pending
+		if !pending {
+			r.injectedThisPeriod = false
+			r.retireWakeLocked(r.attempt, "inbox observed empty by poll")
+		}
+		injected := r.injectedThisPeriod
+		lastInjection := r.lastInjection
+		r.mu.Unlock()
+		if pending && (!injected || now.Sub(lastInjection) >= recueInterval) {
+			r.enqueueWake(injected)
+		}
 	}
 
 	r.mu.Lock()
@@ -960,32 +1002,84 @@ func (r *runnerRuntime) pollOnce() {
 	}
 }
 
+// retireWakeLocked cancels attempt a on an observed-empty inbox — but only if
+// a is STILL the outstanding attempt. Cancelling closes a.retired, which makes
+// the waiter inside waitForInjectionWindow return without injecting, clears
+// the pending-wake state as part of that same step, and resets
+// injectedThisPeriod so the next arrival is a genuinely NEW period
+// (recue=false). An attempt that is NOT the current one (an older waiter
+// racing a newer period) touches nothing: the pending state it sees belongs
+// to a period it does not own. Caller holds r.mu.
+func (r *runnerRuntime) retireWakeLocked(a *wakeAttempt, reason string) {
+	if a == nil || r.attempt != a {
+		return
+	}
+	close(a.retired)
+	r.attempt = nil
+	r.injectedThisPeriod = false
+	// a may still sit UNRECEIVED in wakeCh (cap 1) if injectLoop is away from
+	// its select — a PTY write blocked on a child that stopped draining, a
+	// stalled listing. Left there, it would block the NEXT period's send
+	// (enqueueWake's send is non-blocking: full buffer ⇒ dropped) while that
+	// period's attempt is already recorded as outstanding, so no later poll
+	// would enqueue either: a whole period without a cue. The gate guarantees
+	// anything buffered here is a itself, so removing it is safe (review F1).
+	select {
+	case <-r.wakeCh:
+	default:
+	}
+	r.logf("agentchute serve: wake attempt %d retired: %s\n", a.id, reason)
+}
+
+// completeLocked ends attempt a if it is still the outstanding one and
+// reports whether it was. Used at both injectPrompt outcomes: only the owner
+// may clear the pending-wake state. Caller holds r.mu.
+func (r *runnerRuntime) completeLocked(a *wakeAttempt) bool {
+	if a == nil || r.attempt != a {
+		return false
+	}
+	r.attempt = nil
+	return true
+}
+
+// dropWake clears any outstanding attempt on shutdown, so the offline
+// runner.json snapshot does not claim a pending wake for a runner that no
+// longer exists. Not an observation of the inbox: the period bookkeeping is
+// left alone (it dies with the process anyway).
+func (r *runnerRuntime) dropWake() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.attempt = nil
+}
+
 // enqueueWake queues a wake for injectLoop. recue=false is the first cue of a
 // pending period (the configured --interrupt-policy applies); recue=true is a
 // retry of still-unread mail (always waits for idle, C17).
 //
-// Gated on pendingWake (not just the channel's own non-blocking send): once a
-// wake is queued, pollOnce must not re-enqueue while it is still in flight —
-// including the window where injectLoop has already RECEIVED the value from
-// wakeCh (so the channel itself is empty again) but is still blocked inside
-// waitForInjectionWindow waiting for idle. A bare non-blocking send would
-// succeed and queue a redundant second wake during that window; gating on
-// pendingWake closes it and, as a side effect, also means a queued recue=false
-// can never be overwritten by a later recue=true (nothing gets queued at all
-// while pendingWake is set).
+// Gated on the outstanding attempt (not just the channel's own non-blocking
+// send): once a wake is queued, pollOnce must not re-enqueue while it is still
+// in flight — including the window where injectLoop has already RECEIVED the
+// attempt from wakeCh (so the channel itself is empty again) but is still
+// blocked inside waitForInjectionWindow waiting for idle. A bare non-blocking
+// send would succeed and queue a redundant second wake during that window;
+// gating on the attempt closes it and, as a side effect, also means a queued
+// recue=false can never be overwritten by a later recue=true (nothing gets
+// queued at all while an attempt is outstanding).
 func (r *runnerRuntime) enqueueWake(recue bool) {
 	if r.shutdownRequested.Load() {
 		return
 	}
 	r.mu.Lock()
-	if r.pendingWake {
+	if r.attempt != nil {
 		r.mu.Unlock()
 		return
 	}
-	r.pendingWake = true
+	r.wakeSeq++
+	a := newWakeAttempt(r.wakeSeq, recue)
+	r.attempt = a
 	r.mu.Unlock()
 	select {
-	case r.wakeCh <- recue:
+	case r.wakeCh <- a:
 	default:
 	}
 	_ = r.saveState()
@@ -996,9 +1090,9 @@ func (r *runnerRuntime) injectLoop() {
 		select {
 		case <-r.stopCh:
 			return
-		case recue := <-r.wakeCh:
-			if r.waitForInjectionWindow(recue) {
-				r.injectIfPending()
+		case a := <-r.wakeCh:
+			if r.waitForInjectionWindow(a) {
+				r.injectIfPending(a)
 			}
 		}
 	}
@@ -1011,26 +1105,35 @@ func (r *runnerRuntime) injectLoop() {
 // front of injectLoop, producing a spurious "check inbox" prompt into an
 // already-empty inbox. Single call site (the only caller of injectPrompt).
 //
-// The skip path clears pendingWake (v2.5 plan A2): today's code left it
-// stuck true forever when the inbox drained out from under a queued wake —
-// runner.json would report pending_wake:true against an empty inbox
-// indefinitely, since only a successful injectPrompt cleared it.
-//
-// It also resets injectedThisPeriod (review fix): this is an observed-empty
+// The skip path retires the attempt (v2.5 plan A2 / §8): today's code left
+// pending_wake stuck true forever when the inbox drained out from under a
+// queued wake, since only a successful injectPrompt cleared it. Retirement
+// also resets injectedThisPeriod (review fix): this is an observed-empty
 // transition exactly like pollOnce's own, so mail arriving before the next
 // poll tick must be treated as a genuinely NEW period (recue=false) rather
 // than misclassified as a continuation of the just-ended one, which could
 // wait out up to recueInterval before cuing.
-func (r *runnerRuntime) injectIfPending() {
+//
+// The ownership check is §8's second recheck: a is only allowed to inject if
+// it is STILL the outstanding attempt. An attempt pollOnce retired while this
+// goroutine was between the wait and this point may see mail again — but that
+// mail belongs to a newer period, whose own attempt cues it.
+func (r *runnerRuntime) injectIfPending(a *wakeAttempt) {
 	if !r.hasPendingInboxMail() {
 		r.mu.Lock()
-		r.pendingWake = false
-		r.injectedThisPeriod = false
+		r.retireWakeLocked(a, "inbox drained before injection")
 		r.mu.Unlock()
 		_ = r.saveState()
 		return
 	}
-	r.injectPrompt()
+	r.mu.Lock()
+	owner := r.attempt == a
+	r.mu.Unlock()
+	if !owner {
+		r.logf("agentchute serve: wake attempt %d is stale, not injecting\n", a.id)
+		return
+	}
+	r.injectPrompt(a)
 }
 
 // hasPendingInboxMail reports whether the raw inbox (parsed messages or
@@ -1047,22 +1150,32 @@ func (r *runnerRuntime) hasPendingInboxMail() bool {
 	return op.HasPendingInboxMail(r.cfg, r.opts.AgentID)
 }
 
-// waitForInjectionWindow blocks until it is safe to inject, or false if the
-// runner is shutting down. recue=true (a retry of an already-cued, still
-// unread pending period) always waits for idle regardless of
-// --interrupt-policy (C17): the Ctrl-C escalation of after-grace/always
-// applies only to the first injection of a pending period — repeated Ctrl-C
-// every recueInterval would abuse a busy wrapper.
-func (r *runnerRuntime) waitForInjectionWindow(recue bool) bool {
+// waitForInjectionWindow blocks until it is safe to inject a, or false if the
+// runner is shutting down or a was retired (the inbox was observed empty
+// while it waited — §8 wake retirement; no cue is owed for mail that is
+// gone). recue=true (a retry of an already-cued, still unread pending period)
+// always waits for idle regardless of --interrupt-policy (C17): the Ctrl-C
+// escalation of after-grace/always applies only to the first injection of a
+// pending period — repeated Ctrl-C every recueInterval would abuse a busy
+// wrapper. Retirement adds no escalation of its own: a wrapper that never
+// looks idle simply never receives the cue, and the attempt ends when the
+// mail does.
+func (r *runnerRuntime) waitForInjectionWindow(a *wakeAttempt) bool {
 	started := time.Now()
 	for {
 		if r.shutdownRequested.Load() {
 			return false
 		}
+		select {
+		case <-a.retired:
+			r.logf("agentchute serve: wake attempt %d wait cancelled\n", a.id)
+			return false
+		default:
+		}
 		if r.isIdle() {
 			return true
 		}
-		if !recue {
+		if !a.recue {
 			switch r.opts.InterruptPolicy {
 			case interruptAfterIdle:
 				// Keep waiting.
@@ -1081,6 +1194,9 @@ func (r *runnerRuntime) waitForInjectionWindow(recue bool) bool {
 		select {
 		case <-r.stopCh:
 			return false
+		case <-a.retired:
+			r.logf("agentchute serve: wake attempt %d wait cancelled\n", a.id)
+			return false
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
@@ -1096,33 +1212,45 @@ func (r *runnerRuntime) isIdle() bool {
 	return time.Since(time.Unix(0, last)) >= r.opts.IdleGrace
 }
 
-func (r *runnerRuntime) injectPrompt() {
+// injectPrompt writes the cue for attempt a and completes it. A successful
+// write establishes only that bytes reached the PTY, not that the wrapper
+// acted on them; recueInterval covers the rest.
+//
+// Completion is ownership-checked (§8): a can only clear pending state if it
+// is still the outstanding attempt when the write returns. If pollOnce
+// retired it in the meantime (inbox drained, and possibly a newer period's
+// attempt already queued), the state a would clear belongs to that newer
+// period — so a leaves it alone. The cue itself was still written; a
+// duplicate cue is the accepted fail-open direction, a suppressed one is not.
+func (r *runnerRuntime) injectPrompt(a *wakeAttempt) {
 	if err := r.writePTY(promptInjectionBytes(r.opts)); err != nil {
 		r.logf("agentchute serve: inject prompt: %v\n", err)
-		// Clear pendingWake even on failure (code review fix): enqueueWake's
-		// pendingWake gate (A2) means a stuck-true flag here would silently
-		// suppress every future wake for the runner's lifetime — including
-		// brand-new mail arriving later — defeating the whole point of this
-		// slice. lastInjection is deliberately NOT set: nothing was actually
-		// delivered, so the recueInterval countdown must not start.
+		// Complete the attempt even on failure (code review fix): enqueueWake's
+		// outstanding-attempt gate (A2) means a stuck attempt here would
+		// silently suppress every future wake for the runner's lifetime —
+		// including brand-new mail arriving later — defeating the whole point
+		// of this slice. lastInjection is deliberately NOT set: nothing was
+		// actually delivered, so the recueInterval countdown must not start.
 		// injectedThisPeriod is deliberately left UNTOUCHED (review fix): a
 		// failed attempt must not be treated as a delivered first cue (the
 		// next poll should still retry with the configured --interrupt-policy
 		// escalation, not downgrade to a silent recue=true), but if a PRIOR
 		// attempt this period already succeeded, that earlier success must
-		// still stand — only pollOnce/injectIfPending's observed-empty resets
-		// clear this flag.
+		// still stand — only the observed-empty retirement clears this flag.
 		r.mu.Lock()
-		r.pendingWake = false
+		r.completeLocked(a)
 		r.mu.Unlock()
 		_ = r.saveState()
 		return
 	}
 	now := time.Now().UTC()
 	r.mu.Lock()
-	r.pendingWake = false
-	r.lastInjection = now
-	r.injectedThisPeriod = true
+	if r.completeLocked(a) {
+		r.lastInjection = now
+		r.injectedThisPeriod = true
+	} else {
+		r.logf("agentchute serve: wake attempt %d delivered after retirement; newer period state left untouched\n", a.id)
+	}
 	r.mu.Unlock()
 	_ = r.saveState()
 }
@@ -1298,7 +1426,7 @@ func (r *runnerRuntime) saveStateWithStatus(status string) error {
 		StartedAt:     r.started,
 		LastPoll:      r.lastPoll,
 		LastInjection: r.lastInjection,
-		PendingWake:   r.pendingWake,
+		PendingWake:   r.pendingWake(),
 		Status:        status,
 	}
 	if afterSaveStateSnapshotHook != nil {

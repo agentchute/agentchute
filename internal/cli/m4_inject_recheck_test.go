@@ -46,7 +46,7 @@ func TestInjectIfPendingSkipsWhenInboxAlreadyClaimed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rt.injectIfPending()
+	rt.injectIfPending(receiveQueuedWake(t, rt, false))
 
 	log := readRunnerLog(t, cfg, "runner-test")
 	if strings.Contains(log, "agentchute serve: inject prompt:") {
@@ -70,7 +70,7 @@ func TestInjectIfPendingStillInjectsWhenMailPending(t *testing.T) {
 	mustWriteSeqInbox(t, inbox, "peer", 1, []byte("---\nfrom: peer\nto: runner-test\n---\n\nhi\n"))
 	// Mail is genuinely still pending (never claimed).
 
-	rt.injectIfPending()
+	rt.injectIfPending(receiveQueuedWake(t, rt, false))
 
 	log := readRunnerLog(t, cfg, "runner-test")
 	if !strings.Contains(log, "agentchute serve: inject prompt:") {
@@ -95,7 +95,7 @@ func TestInjectIfPendingStillInjectsOnMalformedFile(t *testing.T) {
 	inbox := cfg.AgentInboxDir("runner-test")
 	mustWrite(t, filepath.Join(inbox, "not-a-seq-name.md"), []byte("body"))
 
-	rt.injectIfPending()
+	rt.injectIfPending(receiveQueuedWake(t, rt, false))
 
 	log := readRunnerLog(t, cfg, "runner-test")
 	if !strings.Contains(log, "agentchute serve: inject prompt:") {
