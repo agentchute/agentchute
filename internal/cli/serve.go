@@ -306,7 +306,7 @@ type runnerRuntime struct {
 	// There is deliberately no separate boolean — a flag that could flip while
 	// the waiter lived is the bug wake retirement exists to close.
 	attempt            *wakeAttempt
-	wakeSeq            uint64 // id of the most recent attempt (diagnostic; runner.json wake_attempt)
+	wakeSeq            uint64 // id of the most recent attempt (runner.log lines only)
 	injectedThisPeriod bool   // true once a cue has SUCCEEDED for the current pending period (A2/C16-C17, review fix)
 	lastInjection      time.Time
 	lastPoll           time.Time
@@ -575,6 +575,7 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		// registration) from racing a pollOnce still in flight.
 		rt.pollWG.Wait()
 		rt.closePTY()
+		rt.dropWake()
 		_ = rt.saveStateWithStatus("offline")
 		// Release the serve lease last. ErrFenced => we were already reclaimed
 		// (another serve owns the id); releasing would be a no-op and must not
@@ -756,6 +757,7 @@ func runRemoteWrapperOnce(cfg *loop.Config, opts runnerOptions, cwd string) remo
 		rt.stopLoops()
 		rt.pollWG.Wait()
 		rt.closePTY()
+		rt.dropWake()
 		_ = rt.saveStateWithStatus("offline")
 		if err := rt.channel.ReleaseLease(); err != nil && hubclient.ErrorCode(err) != "E_FENCED" {
 			rt.logf("agentchute serve: release remote serve lease: %v\n", err)
@@ -1015,7 +1017,39 @@ func (r *runnerRuntime) retireWakeLocked(a *wakeAttempt, reason string) {
 	close(a.retired)
 	r.attempt = nil
 	r.injectedThisPeriod = false
+	// a may still sit UNRECEIVED in wakeCh (cap 1) if injectLoop is away from
+	// its select — a PTY write blocked on a child that stopped draining, a
+	// stalled listing. Left there, it would block the NEXT period's send
+	// (enqueueWake's send is non-blocking: full buffer ⇒ dropped) while that
+	// period's attempt is already recorded as outstanding, so no later poll
+	// would enqueue either: a whole period without a cue. The gate guarantees
+	// anything buffered here is a itself, so removing it is safe (review F1).
+	select {
+	case <-r.wakeCh:
+	default:
+	}
 	r.logf("agentchute serve: wake attempt %d retired: %s\n", a.id, reason)
+}
+
+// completeLocked ends attempt a if it is still the outstanding one and
+// reports whether it was. Used at both injectPrompt outcomes: only the owner
+// may clear the pending-wake state. Caller holds r.mu.
+func (r *runnerRuntime) completeLocked(a *wakeAttempt) bool {
+	if a == nil || r.attempt != a {
+		return false
+	}
+	r.attempt = nil
+	return true
+}
+
+// dropWake clears any outstanding attempt on shutdown, so the offline
+// runner.json snapshot does not claim a pending wake for a runner that no
+// longer exists. Not an observation of the inbox: the period bookkeeping is
+// left alone (it dies with the process anyway).
+func (r *runnerRuntime) dropWake() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.attempt = nil
 }
 
 // enqueueWake queues a wake for injectLoop. recue=false is the first cue of a
@@ -1204,17 +1238,14 @@ func (r *runnerRuntime) injectPrompt(a *wakeAttempt) {
 		// attempt this period already succeeded, that earlier success must
 		// still stand — only the observed-empty retirement clears this flag.
 		r.mu.Lock()
-		if r.attempt == a {
-			r.attempt = nil
-		}
+		r.completeLocked(a)
 		r.mu.Unlock()
 		_ = r.saveState()
 		return
 	}
 	now := time.Now().UTC()
 	r.mu.Lock()
-	if r.attempt == a {
-		r.attempt = nil
+	if r.completeLocked(a) {
 		r.lastInjection = now
 		r.injectedThisPeriod = true
 	} else {
@@ -1397,9 +1428,6 @@ func (r *runnerRuntime) saveStateWithStatus(status string) error {
 		LastInjection: r.lastInjection,
 		PendingWake:   r.pendingWake(),
 		Status:        status,
-	}
-	if r.attempt != nil {
-		st.WakeAttempt = r.attempt.id
 	}
 	if afterSaveStateSnapshotHook != nil {
 		afterSaveStateSnapshotHook()

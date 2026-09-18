@@ -696,7 +696,7 @@ func newPollTestRuntime(t *testing.T, cfg *loop.Config, agentID string) *runnerR
 	if err := loop.WriteRegistration(cfg.AgentRegistrationPath(agentID), reg); err != nil {
 		t.Fatal(err)
 	}
-	opts := runnerOptions{AgentID: agentID, Vendor: "test", IntervalSeconds: 5}
+	opts := runnerOptions{AgentID: agentID, Vendor: "test", IntervalSeconds: 5, Prompt: defaultRunnerPrompt}
 	lease, err := loop.AcquireServeLease(cfg, agentID)
 	if err != nil {
 		t.Fatal(err)
@@ -729,9 +729,7 @@ func (r *runnerRuntime) drainWakeRecue() (recue bool, had bool) {
 		return false, false
 	}
 	r.mu.Lock()
-	if r.attempt == a {
-		r.attempt = nil
-	}
+	r.completeLocked(a)
 	r.mu.Unlock()
 	return a.recue, true
 }
@@ -939,8 +937,9 @@ func TestRunnerRecueWaitsForIdle(t *testing.T) {
 	rt.ptmx = pw
 	rt.lastOutputUnixNano.Store(time.Now().UnixNano()) // force "busy"
 
+	recueAttempt := receiveQueuedWake(t, rt, true) // on the test goroutine: its t.Fatal must not run inside the waiter
 	done := make(chan bool, 1)
-	go func() { done <- rt.waitForInjectionWindow(receiveQueuedWake(t, rt, true)) }()
+	go func() { done <- rt.waitForInjectionWindow(recueAttempt) }()
 
 	select {
 	case <-done:

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,46 +13,27 @@ import (
 	"github.com/agentchute/agentchute/internal/op"
 )
 
-// wake_retirement_test.go — AGENTCHUTE.md §8 "wake retirement" (decision
-// package 2026-09-17, item C). codex-tui 0.154 repaints its composer every
-// 150 ms, so serve's idle heuristic (2 s of PTY silence) never fires and the
-// queued wake used to park inside waitForInjectionWindow for the lane's whole
-// life — pending_wake true, last_injection never set — and was NOT retired
-// when the inbox drained. These tests pin the fix: an observed-empty inbox
-// cancels the waiting attempt (the waiter actually stops), at most one
-// attempt is outstanding per pending period, and an old attempt can neither
-// inject into nor clear the state of a newer period.
+// wake_retirement_test.go — AGENTCHUTE.md §8 "wake retirement" (PR #205 /
+// CHANGELOG Unreleased). codex-tui 0.154 repaints its composer every 150 ms,
+// so serve's idle heuristic (2 s of PTY silence) never fires and the queued
+// wake used to park inside waitForInjectionWindow for the lane's whole life —
+// pending_wake true, last_injection never set — and was NOT retired when the
+// inbox drained. These tests pin the fix: an observed-empty inbox cancels the
+// waiting attempt (the waiter actually stops), at most one attempt is
+// outstanding per pending period, and an old attempt can neither inject into
+// nor clear the state of a newer period.
 
-// busyChild fakes a wrapper that emits PTY output every 100 ms (a repainting
-// TUI) — never idle under a 2 s IdleGrace. The returned func stops it.
-func busyChild(t *testing.T, rt *runnerRuntime) (stop func()) {
-	t.Helper()
-	rt.opts.IdleGrace = 2 * time.Second
+// neverIdle makes the child look busy for the test's lifetime (the sibling
+// idiom from TestRunnerRecueWaitsForIdle): an hour-long IdleGrace and one
+// fresh output timestamp. Tests flip idle explicitly with goIdle.
+func neverIdle(rt *runnerRuntime) {
+	rt.opts.IdleGrace = time.Hour
 	rt.lastOutputUnixNano.Store(time.Now().UnixNano())
-	done := make(chan struct{})
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				rt.lastOutputUnixNano.Store(time.Now().UnixNano())
-			}
-		}
-	}()
-	var once bool
-	return func() {
-		if once {
-			return
-		}
-		once = true
-		close(done)
-		<-finished
-	}
+}
+
+func goIdle(rt *runnerRuntime) {
+	rt.lastOutputUnixNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
+	rt.lastInputUnixNano.Store(time.Now().Add(-2 * time.Hour).UnixNano())
 }
 
 // waitUntil polls cond every 20 ms until it holds or the deadline passes.
@@ -100,7 +82,6 @@ func newRetirementRuntime(t *testing.T) (*loop.Config, *runnerRuntime) {
 		t.Fatal(err)
 	}
 	rt := newPollTestRuntime(t, cfg, "runner-test")
-	rt.opts.Prompt = defaultRunnerPrompt // newPollTestRuntime leaves it empty; cue counting needs the real text
 	rt.diag = newRunnerDiagnostics(cfg, "runner-test")
 	t.Cleanup(rt.diag.close)
 	return cfg, rt
@@ -120,16 +101,16 @@ func startInjectLoop(t *testing.T, rt *runnerRuntime) {
 }
 
 // TestWakeRetiredWhenInboxDrainsWhileBusy is the load-bearing scenario: a
-// continuously busy child, mail arrives (wake queued and taken by injectLoop,
-// which parks waiting for idle), the inbox drains while it waits. The next
-// poll must retire the attempt — pending_wake false, the waiter actually gone
-// (proved by injectLoop being free to take the NEXT period's attempt while the
-// child is still busy) — and nothing is ever written for the drained mail.
-// The new period then cues exactly once, recue=false, when the child idles.
+// child that never looks idle, mail arrives (wake queued and taken by
+// injectLoop, which parks waiting for idle), the inbox drains while it waits.
+// The next poll must retire the attempt — pending_wake false, the waiter
+// actually gone (proved by injectLoop being free to take the NEXT period's
+// attempt while the child is still busy) — and nothing is ever written for
+// the drained mail. The new period then cues exactly once, recue=false, when
+// the child idles.
 func TestWakeRetiredWhenInboxDrainsWhileBusy(t *testing.T) {
 	cfg, rt := newRetirementRuntime(t)
-	stopBusy := busyChild(t, rt)
-	defer stopBusy()
+	neverIdle(rt)
 	pr := attachPTYPipe(t, rt)
 	startInjectLoop(t, rt)
 
@@ -167,8 +148,8 @@ func TestWakeRetiredWhenInboxDrainsWhileBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.PendingWake || st.WakeAttempt != 0 {
-		t.Fatalf("runner.json after retirement: pending_wake=%v wake_attempt=%d, want false/0", st.PendingWake, st.WakeAttempt)
+	if st.PendingWake {
+		t.Fatal("runner.json after retirement: pending_wake=true, want false")
 	}
 	if !st.LastInjection.IsZero() {
 		t.Fatal("runner.json records an injection for mail that was never cued")
@@ -180,8 +161,7 @@ func TestWakeRetiredWhenInboxDrainsWhileBusy(t *testing.T) {
 	// A NEW period: mail again, child still busy. injectLoop must be free to
 	// take this attempt — had the old waiter still been parked, wakeCh would
 	// stay full behind it.
-	second := filepath.Join(inbox, loop.MsgID{From: "peer", Seq: 2}.Filename())
-	mustWrite(t, second, []byte("---\nfrom: peer\nto: runner-test\n---\n\nagain\n"))
+	mustWriteSeqInbox(t, inbox, "peer", 2, []byte("---\nfrom: peer\nto: runner-test\n---\n\nagain\n"))
 	rt.pollOnce()
 	a2 := rt.outstandingWake()
 	if a2 == nil || a2 == a1 || a2.recue {
@@ -191,8 +171,7 @@ func TestWakeRetiredWhenInboxDrainsWhileBusy(t *testing.T) {
 		"injectLoop did not take the new period's attempt — the retired waiter is still parked")
 
 	// The child goes idle: exactly one cue is written, for the new period.
-	stopBusy()
-	rt.lastOutputUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+	goIdle(rt)
 	waitUntil(t, 3*time.Second, func() bool { return rt.outstandingWake() == nil },
 		"the new period's attempt never completed once the child idled")
 	got := readPTYAfterClose(t, rt, pr)
@@ -207,6 +186,47 @@ func TestWakeRetiredWhenInboxDrainsWhileBusy(t *testing.T) {
 	}
 }
 
+// TestWakeRetiredWhileStillQueuedDoesNotBlockNextPeriod pins the lost-wake
+// hole claude-code found in review (F1): the poll goroutine retires a1 while
+// a1 still sits UNRECEIVED in wakeCh (injectLoop is away from its select —
+// a PTY write blocked on a child that stopped draining, a stalled listing).
+// The next period's enqueueWake installs a2 as the outstanding attempt, but
+// its non-blocking send finds the buffer still full of a1 and drops a2.
+// injectLoop later receives the retired a1, returns at once, and parks on an
+// empty channel while every later poll sees an attempt outstanding and
+// declines to enqueue: no cue for the whole period. Retirement must therefore
+// also remove the retired attempt from the channel, so what injectLoop next
+// receives is the attempt that actually owns the period.
+func TestWakeRetiredWhileStillQueuedDoesNotBlockNextPeriod(t *testing.T) {
+	cfg, rt := newRetirementRuntime(t)
+	inbox := cfg.AgentInboxDir("runner-test")
+	first := filepath.Join(inbox, loop.MsgID{From: "peer", Seq: 1}.Filename())
+	mustWrite(t, first, []byte("first"))
+
+	rt.pollOnce() // a1 queued; deliberately NOT taken — injectLoop is "away"
+	a1 := rt.outstandingWake()
+	if a1 == nil {
+		t.Fatal("first poll queued nothing")
+	}
+	if err := os.Remove(first); err != nil {
+		t.Fatal(err)
+	}
+	rt.pollOnce() // observed empty: retires a1 while it is still buffered
+	if rt.outstandingWake() != nil {
+		t.Fatal("observed-empty poll did not retire a1")
+	}
+	mustWriteSeqInbox(t, inbox, "peer", 2, []byte("second"))
+	rt.pollOnce() // new period: a2 must be both outstanding AND queued
+	a2 := rt.outstandingWake()
+	if a2 == nil || a2 == a1 {
+		t.Fatalf("new period: outstanding=%+v, want a fresh attempt", a2)
+	}
+	queued := rt.takeQueuedWake()
+	if queued != a2 {
+		t.Fatalf("wakeCh holds %+v, want the outstanding attempt %+v — the retired a1 blocked the send and the period can never cue", queued, a2)
+	}
+}
+
 // TestWakeDrainAndNewMailBetweenPollsStaysOnePeriod: the inbox drains and
 // refills between two polls, so no poll ever observes it empty. The runner
 // has no period boundary to act on: the one outstanding attempt stays, and
@@ -214,8 +234,7 @@ func TestWakeRetiredWhenInboxDrainsWhileBusy(t *testing.T) {
 // mail). No second attempt queues behind it.
 func TestWakeDrainAndNewMailBetweenPollsStaysOnePeriod(t *testing.T) {
 	cfg, rt := newRetirementRuntime(t)
-	stopBusy := busyChild(t, rt)
-	defer stopBusy()
+	neverIdle(rt)
 	pr := attachPTYPipe(t, rt)
 	startInjectLoop(t, rt)
 
@@ -232,14 +251,13 @@ func TestWakeDrainAndNewMailBetweenPollsStaysOnePeriod(t *testing.T) {
 	if err := os.Remove(first); err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(inbox, loop.MsgID{From: "peer", Seq: 2}.Filename()), []byte("second"))
+	mustWriteSeqInbox(t, inbox, "peer", 2, []byte("second"))
 	rt.pollOnce()
 	if got := rt.outstandingWake(); got != a1 {
 		t.Fatalf("a poll that never saw the inbox empty replaced the attempt: got %+v want %+v", got, a1)
 	}
 
-	stopBusy()
-	rt.lastOutputUnixNano.Store(time.Now().Add(-time.Hour).UnixNano())
+	goIdle(rt)
 	waitUntil(t, 3*time.Second, func() bool { return rt.outstandingWake() == nil }, "attempt never completed once idle")
 	if n := strings.Count(readPTYAfterClose(t, rt, pr), rt.opts.Prompt); n != 1 {
 		t.Fatalf("PTY received %d cues, want exactly 1", n)
@@ -274,7 +292,7 @@ func TestStaleWakeAttemptCannotTouchNewerPeriod(t *testing.T) {
 	default:
 		t.Fatal("a1 was not retired by the observed-empty poll")
 	}
-	mustWrite(t, filepath.Join(inbox, loop.MsgID{From: "peer", Seq: 2}.Filename()), []byte("second"))
+	mustWriteSeqInbox(t, inbox, "peer", 2, []byte("second"))
 	rt.pollOnce()
 	a2 := rt.takeQueuedWake()
 	if a2 == nil || a2 == a1 {
@@ -316,8 +334,8 @@ func TestStaleWakeAttemptCannotTouchNewerPeriod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !st.PendingWake || st.WakeAttempt != a2.id {
-		t.Fatalf("runner.json lost the newer period: pending_wake=%v wake_attempt=%d want true/%d", st.PendingWake, st.WakeAttempt, a2.id)
+	if !st.PendingWake {
+		t.Fatal("runner.json lost the newer period: pending_wake=false, want true")
 	}
 
 	// The legitimate owner still completes normally.
@@ -366,7 +384,7 @@ func TestWakeNotRetiredOnFailedListing(t *testing.T) {
 	}
 	cfg, rt := newRetirementRuntime(t)
 	inbox := cfg.AgentInboxDir("runner-test")
-	mustWrite(t, filepath.Join(inbox, loop.MsgID{From: "peer", Seq: 1}.Filename()), []byte("hi"))
+	mustWriteSeqInbox(t, inbox, "peer", 1, []byte("hi"))
 	rt.pollOnce()
 	a := rt.takeQueuedWake()
 	if a == nil {
@@ -403,11 +421,11 @@ func TestWakeNotRetiredOnFailedListing(t *testing.T) {
 }
 
 // TestWakeShutdownMidWaitExitsCleanly: shutdown while an attempt is waiting
-// makes the waiter return false without injecting, and injectLoop exits.
+// makes the waiter return false without injecting, injectLoop exits, and the
+// offline runner.json snapshot no longer claims a pending wake.
 func TestWakeShutdownMidWaitExitsCleanly(t *testing.T) {
 	cfg, rt := newRetirementRuntime(t)
-	stopBusy := busyChild(t, rt)
-	defer stopBusy()
+	neverIdle(rt)
 	pr := attachPTYPipe(t, rt)
 	loopDone := make(chan struct{})
 	go func() {
@@ -415,7 +433,7 @@ func TestWakeShutdownMidWaitExitsCleanly(t *testing.T) {
 		rt.injectLoop()
 	}()
 
-	mustWrite(t, filepath.Join(cfg.AgentInboxDir("runner-test"), loop.MsgID{From: "peer", Seq: 1}.Filename()), []byte("hi"))
+	mustWriteSeqInbox(t, cfg.AgentInboxDir("runner-test"), "peer", 1, []byte("hi"))
 	rt.pollOnce()
 	waitUntil(t, 2*time.Second, func() bool { return len(rt.wakeCh) == 0 }, "injectLoop never took the attempt")
 
@@ -427,6 +445,17 @@ func TestWakeShutdownMidWaitExitsCleanly(t *testing.T) {
 	}
 	if got := readPTYAfterClose(t, rt, pr); got != "" {
 		t.Fatalf("shutdown mid-wait wrote %q to the PTY", got)
+	}
+	rt.dropWake()
+	if err := rt.saveStateWithStatus("offline"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := loop.LoadRunnerState(cfg, "runner-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.PendingWake {
+		t.Fatal("offline runner.json still claims pending_wake=true after shutdown")
 	}
 }
 
@@ -483,7 +512,7 @@ func TestRemoteTickEmptyRetiresWake(t *testing.T) {
 	if b == nil || b == a {
 		t.Fatalf("new period queued %+v, want a fresh attempt", b)
 	}
-	fake.tickFn = func() (op.TickResp, error) { return op.TickResp{}, &hubTestErr{code: "E_CHANNEL_LOST"} }
+	fake.tickFn = func() (op.TickResp, error) { return op.TickResp{}, errors.New("E_CHANNEL_LOST") }
 	rt.pollOnce()
 	if got := rt.outstandingWake(); got != b {
 		t.Fatalf("channel loss retired the attempt: got %+v", got)
@@ -534,7 +563,7 @@ func TestWakeNotRetiredOnLocalTickError(t *testing.T) {
 	rt.injectedThisPeriod = true
 	rt.mu.Unlock()
 
-	fake.tickFn = func() (op.TickResp, error) { return op.TickResp{}, &hubTestErr{code: "tick exploded"} }
+	fake.tickFn = func() (op.TickResp, error) { return op.TickResp{}, errors.New("tick exploded") }
 	rt.pollOnce()
 	if got := rt.outstandingWake(); got != a {
 		t.Fatalf("a failed tick retired the attempt: got %+v", got)
@@ -549,8 +578,3 @@ func TestWakeNotRetiredOnLocalTickError(t *testing.T) {
 		t.Fatal("a non-fenced local tick error requested shutdown")
 	}
 }
-
-// hubTestErr is a minimal error for the remote tick-failure path.
-type hubTestErr struct{ code string }
-
-func (e *hubTestErr) Error() string { return e.code }
