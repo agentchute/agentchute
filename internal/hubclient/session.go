@@ -132,9 +132,16 @@ func Probe(ctx context.Context, remote *loop.RemoteConfig, agentID, bin, keyPath
 
 func OpenOneShotTransport(transport Transport, remote *loop.RemoteConfig, agentID, bin string) (*OneShot, error) {
 	s := &OneShot{transport: transport, reader: hubwire.NewReader(transport), remote: remote, agentID: agentID, nextID: 1}
+	// A deadline the transport can no longer take is a lost channel, and it
+	// is classified exactly like the write and read failures on either side
+	// of it (deadline_lost_test.go). These two calls used to return the raw
+	// transport error — net.Pipe's io.ErrClosedPipe once the far end has
+	// closed — so ErrorCode() came back "" whenever the hub closed between
+	// consuming a frame and the client's next deadline call: the race behind
+	// the intermittent "drops before anything is streamed" CI failure.
+	// classifySSHFailure closes the transport itself.
 	if err := s.setWriteDeadline(30 * time.Second); err != nil {
-		_ = transport.Close()
-		return nil, err
+		return nil, classifySSHFailure(remote, agentID, "connect", err, transport)
 	}
 	hello := hubwire.Hello{
 		RequestBase: hubwire.RequestBase{T: "hello", ID: s.nextID},
@@ -148,8 +155,7 @@ func OpenOneShotTransport(transport Transport, remote *loop.RemoteConfig, agentI
 		return nil, classifySSHFailure(remote, agentID, "connect", err, transport)
 	}
 	if err := s.setReadDeadline(10 * time.Second); err != nil {
-		_ = transport.Close()
-		return nil, err
+		return nil, classifySSHFailure(remote, agentID, "connect", err, transport)
 	}
 	raw, err := s.reader.Read()
 	if err != nil {
@@ -312,8 +318,11 @@ func (s *OneShot) do(request any, body []byte, emit func(op.Event) error, observ
 	if err != nil {
 		return hubwire.RawFrame{}, false, err
 	}
+	// Deadline-set failures classify like the neighbouring write/read failures;
+	// see OpenOneShotTransport. transmitted stays false here: nothing was
+	// written.
 	if err := s.setWriteDeadline(30 * time.Second); err != nil {
-		return hubwire.RawFrame{}, false, err
+		return hubwire.RawFrame{}, false, classifySSHFailure(s.remote, s.agentID, "operation", err, s.transport)
 	}
 	transmitted := false
 	if observeFirstByte {
@@ -338,8 +347,11 @@ func (s *OneShot) do(request any, body []byte, emit func(op.Event) error, observ
 	if !observeFirstByte {
 		transmitted = len(encoded) > 0
 	}
+	// The request is fully written by now, so transmitted is reported as
+	// computed; nothing has been streamed, so this is a plain channel loss,
+	// never E_RESULT_UNKNOWN (that re-coding happens only inside the loop).
 	if err := s.setReadDeadline(30 * time.Second); err != nil {
-		return hubwire.RawFrame{}, transmitted, err
+		return hubwire.RawFrame{}, transmitted, classifySSHFailure(s.remote, s.agentID, "operation", err, s.transport)
 	}
 	streamed := 0
 	for {
