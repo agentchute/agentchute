@@ -383,10 +383,13 @@ func TestTurnEndMalformedLatchDoesNotWedge(t *testing.T) {
 // guard NOR the Stop-hook turn-end call ever actually runs. This binary
 // cannot detect codex's own hook-trust state, so it cannot avoid arming in
 // that window — but it must never be an unrecoverable wedge. This test
-// proves the escape hatch: `check`/`ack` correctly self-deny (their error
-// text names `turn-end` as the fix), and a DIRECT `turn-end` invocation —
-// exactly what a stuck model/human would run next — always succeeds and
-// clears the latch, with no dependency on any hook actually having fired.
+// proves the escape hatch: `ack` correctly self-denies (its error text names
+// `turn-end` as the fix), a second `check` simply runs and replays the
+// claimed mail (mail-flow decision 2026-09-17 item B: check no longer
+// self-denies, so a lane can always re-read what it holds), and a DIRECT
+// `turn-end` invocation — exactly what a stuck model/human would run next —
+// always succeeds and clears the latch, with no dependency on any hook
+// actually having fired.
 func TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd(t *testing.T) {
 	root, cfg := setupConsumeFixture(t)
 	withCwd(t, root, func() {
@@ -406,10 +409,11 @@ func TestGuardArmedWithoutHooksEverFiringStillRecoversViaTurnEnd(t *testing.T) {
 
 		// Neither hook ever fires in this simulated rollout window: no guard
 		// PreToolUse call, no Stop-hook turn-end call. The model tries the
-		// commands it would normally reach for and must be redirected, not
-		// silently stuck.
-		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err == nil || !strings.Contains(err.Error(), "turn-end") {
-			t.Fatalf("second check err = %v, want a denial naming turn-end as the fix", err)
+		// commands it would normally reach for: a re-check runs and replays
+		// what is held; ack is redirected to turn-end, not silently stuck.
+		out, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) })
+		if err != nil || !strings.Contains(out, "[REDELIVERED") {
+			t.Fatalf("second check err = %v, want it to run and replay the claimed mail:\n%s", err, out)
 		}
 		if _, err := captureStdout(t, func() error { return cmdAck([]string{"--as", "bob"}) }); err == nil || !strings.Contains(err.Error(), "turn-end") {
 			t.Fatalf("ack err = %v, want a denial naming turn-end as the fix", err)

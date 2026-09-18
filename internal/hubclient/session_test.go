@@ -2,9 +2,11 @@ package hubclient_test
 
 import (
 	"context"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,101 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 )
+
+// failingWriteTransport fails every hub-side write from the failAt-th on,
+// without a terminal frame: the shape of a channel that drops mid-stream.
+type failingWriteTransport struct {
+	net.Conn
+	mu     sync.Mutex
+	writes int
+	failAt int
+}
+
+func (t *failingWriteTransport) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.writes++
+	if t.writes >= t.failAt {
+		return 0, io.ErrClosedPipe
+	}
+	return t.Conn.Write(p)
+}
+
+// TestOneShotCheckDisconnectAfterPartialDeliveryReplaysOnRecheck is the hub
+// row of the same-session re-check matrix (codex R1): the hub claims two
+// messages and the channel drops after the client has received one. The
+// client must not report success (it cannot know whether the second message
+// was claimed), and the next check must replay everything the hub holds
+// uncommitted — the second message included, which this client never saw.
+// The hub keeps no latch and gains no wire field: replay is op.Claim's
+// ordinary residue pass.
+func TestOneShotCheckDisconnectAfterPartialDeliveryReplaysOnRecheck(t *testing.T) {
+	h := newHarness(t)
+	h.register("codex", "openai")
+	h.register("grok", "xai")
+	for _, body := range []string{"one", "two"} {
+		if _, err := h.session("grok").Send(op.SendReq{To: "codex", Content: loop.ComposeMessage("grok", "", body)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// hello-ok, the first msg control line and its body succeed; the second
+	// msg's control write fails and the hub session ends without check-ok.
+	client, server := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() {
+		done <- cli.ServeHubSession(ctx, &failingWriteTransport{Conn: server, failAt: 4}, cli.HubSessionConfig{Agent: "codex", Pool: h.pool, PoolID: h.poolID, HubBin: "test"})
+	}()
+	t.Cleanup(func() {
+		_ = client.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("dropped hub session did not exit")
+		}
+	})
+	dropped, err := hubclient.OpenOneShotTransport(client, h.remote, "codex", "test-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []op.MessageEvent
+	_, err = dropped.Check(op.ClaimReq{}, func(ev op.Event) error {
+		if ev.Message != nil {
+			seen = append(seen, *ev.Message)
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("a check whose channel drops after one message must not report success")
+	}
+	if code := hubclient.ErrorCode(err); code != "E_RESULT_UNKNOWN" {
+		t.Fatalf("dropped check code = %s (%v), want E_RESULT_UNKNOWN: one message was streamed, so the outcome is unknown", code, err)
+	}
+	if len(seen) != 1 || seen[0].Redelivered {
+		t.Fatalf("partial delivery = %#v, want exactly one fresh message", seen)
+	}
+
+	var replay []op.MessageEvent
+	sum, err := h.session("codex").Check(op.ClaimReq{}, func(ev op.Event) error {
+		if ev.Message != nil {
+			replay = append(replay, *ev.Message)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("re-check after the drop: %v", err)
+	}
+	if sum.Claimed != 0 || sum.Redelivered != 2 || len(replay) != 2 {
+		t.Fatalf("re-check = %#v with %d replayed message(s), want 0 claimed / 2 redelivered", sum, len(replay))
+	}
+	for _, ev := range replay {
+		if !ev.Redelivered {
+			t.Errorf("%s replayed without the REDELIVERED marker", ev.Filename)
+		}
+	}
+}
 
 type harness struct {
 	t      *testing.T
