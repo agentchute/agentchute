@@ -4,17 +4,30 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
-## Unreleased
+## v1.6.2 (2026-09-18) — mail that lands mid-turn no longer costs the turn
+
+No new capability. v1.6.2 fixes how a working lane meets its mail — a message arriving mid-turn forced the recipient to end its turn to read it, and a runner whose wrapper never went quiet could wait forever on a wake that was already moot — plus the post-v1.6.1 UX wave and one CI failure that was a real race. Protocol v2.5 and registration wire `v: 3` are unchanged; `E_RESULT_UNKNOWN` (client-emitted, not retriable) is the only registry surface. The two runtime changes take effect when a lane is relaunched on the new binary; a joined machine and its hub still need matching versions.
 
 **Mail flow**
-- Same-session re-check: `check` leaves the guard deny list. A recipient may claim again in the same working turn when a new cue or an unread/malformed gate result shows more inbox work. Re-check retains/arms the latch, replays uncommitted residue, and does not archive; only the session's ordered end-of-turn handler commits and clears the latch. Spec in this tree; the matching CLI change lands separately and ships in the same release.
-- Wake retirement: a runner may have at most one queued or waiting wake attempt for its active pending-mail period. While waiting, it keeps observing its own raw inbox; an observed empty inbox retires that attempt without a cue, even if the wrapper never becomes idle. An old attempt must not inject into, or clear pending state belonging to, a newer period. Spec in this tree; the matching runner change lands separately and ships in the same release.
+- Same-session re-check: `check` leaves the guard deny list, and `check`'s own self-denial is gone. A recipient may claim again in the same working turn when a new cue or an unread/malformed gate result shows more inbox work. Re-check retains/arms the latch, replays uncommitted residue as `REDELIVERED` on every call (no skip rule — a set latch is not proof of display), and does not archive; only the session's ordered end-of-turn handler commits and clears the latch. `ack`/`turn-end`/`update`/`setup`/`clean --mailbox`, the pipeline substrings and the direct-send exception are unchanged, and a compound pairing `check` with any of them is still denied whole. No hub wire change. Spec [#205](https://github.com/agentchute/agentchute/pull/205); CLI [#206](https://github.com/agentchute/agentchute/pull/206).
+- Wake retirement: a runner has at most one outstanding wake attempt for its active pending-mail period — the pending-wake state *is* that attempt, so there is no separate flag to drift. A poll that actually observes an empty inbox retires the attempt without a cue, even if the wrapper never becomes idle, and drains it from the wake channel so it cannot block the next period's cue. Ownership is rechecked immediately before delivery and again at completion; a stale attempt neither injects into nor clears state belonging to a newer period. A tick error is not an empty inbox, malformed inbox files still cue, remote lanes retire on the hub tick's pending/skipped result, and the no-Ctrl-C re-cue rule, recue interval, shutdown and fencing paths are unchanged. No `runner.json` schema change. Spec [#205](https://github.com/agentchute/agentchute/pull/205); runner [#207](https://github.com/agentchute/agentchute/pull/207).
+
+**Hub client**
+- A deadline the transport can no longer set is classified as a lost channel. The four deadline-set calls in the one-shot client returned the raw transport error — `io: read/write on closed pipe` once the far end had closed — with no hub code, which was the intermittent `TestStreamingLoopMarksTheResultUnknownWhenTheDropFollowsOutput` failure on main and on two PRs (36 of 2,000 race-detector runs locally). All four now go through the same classifier and stage as the write/read failures next to them; `transmitted` and the `E_RESULT_UNKNOWN` rule are untouched ([#208](https://github.com/agentchute/agentchute/pull/208)).
+
+**The post-v1.6.1 UX wave** ([#204](https://github.com/agentchute/agentchute/pull/204))
+- `hub join` no longer creates `~/.zshrc` or `~/.profile` when neither exists. Existing profiles are still updated; absent ones are left absent with the block to add printed; `agentchute setup --profile <path>` names one (and creates it), `setup --no-profile` skips the step (closes [#177](https://github.com/agentchute/agentchute/issues/177)).
+- A join that stops at "Run this ON THE HUB…" exits 2 — a verdict, not a command failure — instead of 0, so scripts stop reading a pending authorization as a completed join (closes [#178](https://github.com/agentchute/agentchute/issues/178)).
+- A connection lost after the hub already streamed output is `E_RESULT_UNKNOWN`: what was printed did happen, the hub may have committed, check state before re-running. A drop with nothing streamed keeps its ordinary channel-lost classification (closes [#171](https://github.com/agentchute/agentchute/issues/171)).
 
 **Operator note**
-- Codex 0.154 TUI: set `[tui] whimsy = false`. Whimsy redraws can starve the idle window the runner uses to inject a cue.
+- Codex 0.154 TUI: set `[tui] whimsy = false` and restart the lane. Whimsy redraws (upstream [openai/codex#42842](https://github.com/openai/codex/issues/42842), every 150 ms while idle) starve the idle window the runner uses to inject a cue. `tui.animations = false` also stops them but freezes the Working timer.
 
 **Enrollment**
-- Enrollment prose moved to marker v32 (`check` is no longer a denied subcommand; same-session re-check; older binaries that still deny a latched `check` are a compatibility limitation).
+- Enrollment prose moved to marker v32 (`check` is no longer a denied subcommand; same-session re-check; older binaries that still deny a latched `check` are a compatibility limitation). `agentchute update` or `setup` re-stamps the wrapper files.
+
+**Deliberately not in this release**
+- The lifecycle-signal / structured-delivery half of the same decision (an idle signal from hooks; `codex queue` instead of composer injection) stays a requirements list pending its probes; the idle heuristic is unchanged. Re-check output is not deduplicated — every check re-prints residue rather than risk skipping a message.
 
 ## v1.6.1 (2026-08-20) — the hardening wave after the first field report
 
