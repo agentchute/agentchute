@@ -45,6 +45,16 @@ func TestStreamingLoopMarksTheResultUnknownWhenTheDropFollowsOutput(t *testing.T
 			go func() {
 				reader := hubwire.NewReader(server)
 				writer := hubwire.NewWriter(server)
+				// Read() returns only after the whole request line is consumed
+				// (net.Pipe delivers a Write in full before it returns), so the
+				// close below never races the client's write. It does race the
+				// client's SetReadDeadline call: net.Pipe returns
+				// io.ErrClosedPipe from that call once the far end is closed.
+				// Both orderings now classify to the same code, because do()
+				// routes a deadline-set failure through classifySSHFailure like
+				// a read failure (deadline_lost_test.go pins each ordering on
+				// its own). Before that, this row failed with code "" whenever
+				// the close won — main at fc83163, and #206 twice.
 				if _, err := reader.Read(); err != nil { // the check request
 					return
 				}
