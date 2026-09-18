@@ -4,6 +4,18 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## Unreleased
+
+**Mail flow**
+- Same-session re-check: `check` leaves the guard deny list. A recipient may claim again in the same working turn when a new cue or an unread/malformed gate result shows more inbox work. Re-check retains/arms the latch, replays uncommitted residue, and does not archive; only the session's ordered end-of-turn handler commits and clears the latch. Spec in this tree; the matching CLI change lands separately and ships in the same release.
+- Wake retirement: a runner may have at most one queued or waiting wake attempt for its active pending-mail period. While waiting, it keeps observing its own raw inbox; an observed empty inbox retires that attempt without a cue, even if the wrapper never becomes idle. An old attempt must not inject into, or clear pending state belonging to, a newer period. Spec in this tree; the matching runner change lands separately and ships in the same release.
+
+**Operator note**
+- Codex 0.154 TUI: set `[tui] whimsy = false`. Whimsy redraws can starve the idle window the runner uses to inject a cue.
+
+**Enrollment**
+- Enrollment prose moved to marker v32 (`check` is no longer a denied subcommand; same-session re-check; older binaries that still deny a latched `check` are a compatibility limitation).
+
 ## v1.6.1 (2026-08-20) — the hardening wave after the first field report
 
 No new capability. v1.6.1 is what the first days of v1.6.0 in real use turned up: one field report, one read-only sweep for a defect *class* rather than its instances, and the two CI flakes that were not flakes. Every change is a fix, a refusal that was missing, or a message that told an operator the wrong thing.
