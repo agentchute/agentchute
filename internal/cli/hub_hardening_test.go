@@ -144,3 +144,20 @@ func TestGuardDeniesHubAuthorizeAndJoinAcrossSpellings(t *testing.T) {
 		t.Error("a hub/join mention in a separate command after ; was denied")
 	}
 }
+
+// Shell spellings that the executing shell folds into the same invocation: a
+// continuation right after the binary, $IFS or an ANSI-C whitespace escape
+// between words, and the bare braced ${AGENTCHUTE_BIN}.
+func TestGuardDeniesHubAuthorizeAndJoinThroughShellFolding(t *testing.T) {
+	for _, cmd := range []string{
+		"agentchute \\\nhub join ssh://h/p --as y",
+		"agentchute hub${IFS}join ssh://h/p --as y",
+		"agentchute hub$IFS'join' ssh://h/p --as y",
+		"agentchute hub$'\\t'authorize --list",
+		"${AGENTCHUTE_BIN} hub join ssh://h/p --as y",
+	} {
+		if !guardCommandDenied("Bash " + cmd) {
+			t.Errorf("guard allowed %q while latched", cmd)
+		}
+	}
+}

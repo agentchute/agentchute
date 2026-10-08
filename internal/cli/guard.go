@@ -166,9 +166,24 @@ var guardDispatchPrefixRE = regexp.MustCompile(`\bdispatch\b(?:[ \t]+--shim-dir(
 // dispatcher takes global flags there (`ac --as x hub join`), and a quoted word
 // or a line continuation reaches the same command. Still best-effort — a binary
 // named through a variable is not seen.
-var guardHubSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[^;&|\n]*?\bhub\s+(?:authorize|join)\b`)
+var guardHubSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin(?::-agentchute)?\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[^;&|\n]*?\bhub\s+(?:authorize|join)\b`)
 
-var guardUnquoter = strings.NewReplacer("'", "", "\"", "", "\\", "")
+// guardShellFold undoes the spellings the executing shell folds back into one
+// command before the hub rule matches: a backslash-newline continuation, $IFS,
+// an ANSI-C quoted whitespace escape ($'\t'), then quotes and backslashes.
+var (
+	guardContinuation     = strings.NewReplacer("\\\r\n", "", "\\\n", "")
+	guardANSIWhitespaceRE = regexp.MustCompile(`\$'(?:\\[tnrv]|[ \t])*'`)
+	guardIFSRE            = regexp.MustCompile(`\$\{ifs\}|\$ifs\b`)
+	guardUnquoter         = strings.NewReplacer("'", "", "\"", "", "\\", "")
+)
+
+func guardShellFold(s string) string {
+	s = guardContinuation.Replace(s)
+	s = guardANSIWhitespaceRE.ReplaceAllString(s, " ")
+	s = guardIFSRE.ReplaceAllString(s, " ")
+	return guardUnquoter.Replace(s)
+}
 
 var guardAgentchuteSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+(ack|turn-end|update|setup|clean)\b`)
 
@@ -388,7 +403,7 @@ func guardCommandDenied(toolCmd string) bool {
 	if guardAgentchuteSubcmdRE.MatchString(normalized) && !guardCleanOwedExempt(normalized) {
 		return true
 	}
-	if guardHubSubcmdRE.MatchString(guardUnquoter.Replace(normalized)) {
+	if guardHubSubcmdRE.MatchString(guardShellFold(normalized)) {
 		return true
 	}
 	for _, pattern := range guardPipelineDenySubstrings {
