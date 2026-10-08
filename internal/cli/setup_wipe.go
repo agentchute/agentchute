@@ -734,7 +734,13 @@ func printWipePlan(w io.Writer, plan wipePlan) {
 			fmt.Fprintf(w, "      - %s\n", loop.OneLine(filepath.Base(t), loop.MaxPeerNameRunes))
 		}
 		if len(cat.Preserved) > 0 {
-			fmt.Fprintf(w, "      preserved: %s\n", strings.Join(cat.Preserved, ", "))
+			// Preserved names come from agents/ and the loop root, where
+			// any process can create an entry (gate r3 on #215).
+			preserved := make([]string, len(cat.Preserved))
+			for i, name := range cat.Preserved {
+				preserved[i] = loop.OneLine(name, loop.MaxPeerNameRunes)
+			}
+			fmt.Fprintf(w, "      preserved: %s\n", strings.Join(preserved, ", "))
 		}
 	}
 	if len(plan.LegacyDirs) > 0 {

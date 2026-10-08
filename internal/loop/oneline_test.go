@@ -123,3 +123,29 @@ func TestInboxListingErrorIsOneLine(t *testing.T) {
 		t.Fatalf("errors.Is lost the cause: %v", err)
 	}
 }
+
+// A state/ entry is named by whoever created it, and the lease sweep reports
+// a claim it cannot inspect before it validates the name (setup, update).
+func TestServeLeaseSweepErrorIsOneLine(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can search any directory")
+	}
+	root := t.TempDir()
+	cfg := &Config{ControlRepo: root, LoopDir: filepath.Join(root, ".agentchute", "loop")}
+	dir := filepath.Join(cfg.LoopDir, "state", "bad\nAUTHORIZATION: forged\x1b[2J")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	n, err := InvalidateAllServeLeases(cfg)
+	if n != 0 || err == nil {
+		t.Fatalf("invalidated=%d err=%v, want a failure for the unsearchable entry", n, err)
+	}
+	assertOneSafeLine(t, "lease sweep error", err.Error())
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("errors.Is lost the cause: %v", err)
+	}
+}
