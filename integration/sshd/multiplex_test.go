@@ -201,7 +201,7 @@ func TestSSHDKeyRotationChangesMuxIdentityAndReauthenticates(t *testing.T) {
 	h.rememberMuxPath(beforeInvocation)
 	beforeMux := controlPathDirectory(t, beforeInvocation)
 
-	stdout, stderr, err := h.runCLI(checkout, "hub", "join", h.remote.URL, "--name", "codex", "--rotate-key")
+	stdout, stderr, err := h.runCLITTY(checkout, "hub", "join", h.remote.URL, "--name", "codex", "--rotate-key")
 	if err != nil {
 		t.Fatalf("rotate key: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
 	}

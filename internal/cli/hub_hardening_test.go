@@ -175,7 +175,7 @@ func TestHubAutoAuthorizeSSHDisablesAgentAndX11Forwarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := hubAutoAuthorizeSSHArgs(remote, "'agentchute' 'hub' 'authorize'")
+	args := hubAutoAuthorizeSSHArgs(remote, "'agentchute' 'hub' 'authorize'", false)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"-o ForwardAgent=no", "-o ForwardX11=no", "-o ConnectTimeout=5", "-p 2222"} {
 		if !strings.Contains(joined, want) {

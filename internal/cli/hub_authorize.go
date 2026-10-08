@@ -150,6 +150,13 @@ func authorizeHubKey(opts hubAuthorizeOptions, out io.Writer) error {
 		if len(indexes) > 0 {
 			existing, keyErr := hubKeyFromAuthorizedLine(lines[indexes[0]])
 			sameKey := keyErr == nil && existing.Type == key.Type && existing.Blob == key.Blob
+			if !sameKey && opts.ReplaceKey && !hubAuthorizeStdinIsTTY() {
+				// Swapping the key of an id that already has one is the same
+				// takeover --takeover guards, for a lane that is already remote:
+				// a pasted or scripted --replace-key handed its identity to
+				// whoever supplied the key. Gated exactly like --takeover.
+				return fmt.Errorf("hub authorize: --replace-key of %q's authorized key needs an interactive terminal; it is refused from a script, a pasted ssh command, or an agent's tool call", opts.Agent)
+			}
 			if !sameKey && !opts.ReplaceKey {
 				fingerprint := "unreadable key"
 				if keyErr == nil {

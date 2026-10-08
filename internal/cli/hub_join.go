@@ -254,6 +254,12 @@ func runHubJoin(root string, remote *loop.RemoteConfig, opts hubJoinOptions) err
 		fmt.Printf("hub key recorded: %s\n", fingerprint)
 	}
 	if incomplete {
+		// A deferred rotation is still an operational join with the old key.
+		// Writing a fresh-join placeholder here erased its verified pool id
+		// and made ordinary operations fail with E_POOL_MISMATCH.
+		if existing.Pool12 != "" && containsString(existing.JoinedAs, agentID) {
+			return errHubJoinIncomplete
+		}
 		updateHubJoinConfig(existing, remote, agentID, localName, remote.PoolPath, "", fingerprint)
 		if err := hubclient.WriteHubConfig(remote.HubID, existing); err != nil {
 			return err
@@ -448,6 +454,11 @@ func authorizeHubJoinKey(remote *loop.RemoteConfig, agentID string, key hubKeyVe
 	}
 	fmt.Print("authorizing via your own SSH access… ")
 	if err := hubJoinAutoAuthorize(remote, agentID, pubkey, replace); err != nil {
+		if errors.Is(err, errHubReplaceNeedsTerminal) {
+			fmt.Println("skipped: " + err.Error() + ", and this join has none")
+			fmt.Println(hubAuthorizePaste(remote, agentID, pubkey, replace))
+			return false, nil
+		}
 		fmt.Println("not available")
 		printSSHProbeTranscript(err)
 		fmt.Println(hubAuthorizePaste(remote, agentID, pubkey, replace))
@@ -482,6 +493,13 @@ func hubAuthorizePaste(remote *loop.RemoteConfig, agentID, pubkey string, replac
 const hubAutoAuthorizeTimeout = "5"
 
 func runHubJoinAutoAuthorize(remote *loop.RemoteConfig, agentID, pubkey string, replace bool) error {
+	tty := hubJoinStdinIsTTY()
+	if replace && !tty {
+		// The hub would refuse this --replace-key without a terminal, so do not
+		// spend a connection learning that; the caller prints the command for
+		// the operator to run on the hub.
+		return errHubReplaceNeedsTerminal
+	}
 	values := []string{"agentchute", "hub", "authorize", "--agent", agentID, "--pool", remote.PoolPath, "--key", pubkey}
 	if replace {
 		values = append(values, "--replace-key")
@@ -493,7 +511,7 @@ func runHubJoinAutoAuthorize(remote *loop.RemoteConfig, agentID, pubkey string, 
 		}
 		quoted[i] = "'" + value + "'"
 	}
-	cmd := exec.Command("ssh", hubAutoAuthorizeSSHArgs(remote, strings.Join(quoted, " "))...)
+	cmd := exec.Command("ssh", hubAutoAuthorizeSSHArgs(remote, strings.Join(quoted, " "), replace && tty)...)
 	// stdin stays attached: this path deliberately uses the operator's OWN ssh
 	// access, so ssh may need to prompt. IdentitiesOnly is deliberately NOT set
 	// here for the same reason — pinning an identity would defeat the point.
@@ -520,8 +538,21 @@ func runHubJoinAutoAuthorize(remote *loop.RemoteConfig, agentID, pubkey string, 
 // operator's OWN access (no pinned identity), which is the one path that can
 // land on an unrestricted login — so agent and X11 forwarding are switched off
 // explicitly whatever the user's ssh_config says (review 2026-10-08, S11).
-func hubAutoAuthorizeSSHArgs(remote *loop.RemoteConfig, remoteCommand string) []string {
+// errHubReplaceNeedsTerminal: a --replace-key the hub would refuse, because
+// nothing here can give its `hub authorize` a terminal.
+var errHubReplaceNeedsTerminal = errors.New("replacing an authorized key needs an interactive terminal on the hub")
+
+// hubJoinStdinIsTTY reports whether the operator running the join is at a
+// terminal. A var so rows can drive both arms.
+var hubJoinStdinIsTTY = func() bool { return runnerIsTerminal(os.Stdin) }
+
+func hubAutoAuthorizeSSHArgs(remote *loop.RemoteConfig, remoteCommand string, tty bool) []string {
 	args := []string{"-o", "ConnectTimeout=" + hubAutoAuthorizeTimeout, "-o", "ForwardAgent=no", "-o", "ForwardX11=no"}
+	if tty {
+		// The hub gates --replace-key on a terminal; an interactive operator's
+		// ssh carries one there.
+		args = append(args, "-t")
+	}
 	if remote.Port != 22 {
 		args = append(args, "-p", strconv.Itoa(remote.Port))
 	}
