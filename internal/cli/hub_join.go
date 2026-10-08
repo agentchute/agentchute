@@ -461,12 +461,7 @@ func runHubJoinAutoAuthorize(remote *loop.RemoteConfig, agentID, pubkey string, 
 		}
 		quoted[i] = "'" + value + "'"
 	}
-	args := []string{"-o", "ConnectTimeout=" + hubAutoAuthorizeTimeout}
-	if remote.Port != 22 {
-		args = append(args, "-p", strconv.Itoa(remote.Port))
-	}
-	args = append(args, remote.Destination(), strings.Join(quoted, " "))
-	cmd := exec.Command("ssh", args...)
+	cmd := exec.Command("ssh", hubAutoAuthorizeSSHArgs(remote, strings.Join(quoted, " "))...)
 	// stdin stays attached: this path deliberately uses the operator's OWN ssh
 	// access, so ssh may need to prompt. IdentitiesOnly is deliberately NOT set
 	// here for the same reason — pinning an identity would defeat the point.
@@ -487,6 +482,18 @@ func runHubJoinAutoAuthorize(remote *loop.RemoteConfig, agentID, pubkey string, 
 		return &sshProbeError{err: err, transcript: stderr.String()}
 	}
 	return nil
+}
+
+// hubAutoAuthorizeSSHArgs is the auto-authorize ssh argv. This ssh uses the
+// operator's OWN access (no pinned identity), which is the one path that can
+// land on an unrestricted login — so agent and X11 forwarding are switched off
+// explicitly whatever the user's ssh_config says (review 2026-10-08, S11).
+func hubAutoAuthorizeSSHArgs(remote *loop.RemoteConfig, remoteCommand string) []string {
+	args := []string{"-o", "ConnectTimeout=" + hubAutoAuthorizeTimeout, "-o", "ForwardAgent=no", "-o", "ForwardX11=no"}
+	if remote.Port != 22 {
+		args = append(args, "-p", strconv.Itoa(remote.Port))
+	}
+	return append(args, remote.Destination(), remoteCommand)
 }
 
 // sshProbeError carries what ssh said so the CALLER can print it once its own

@@ -133,6 +133,10 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 		"-o", "UserKnownHostsFile="+filepath.Join(stateDir, "known_hosts"),
 		"-o", "IdentitiesOnly=yes", "-i", key,
 		"-o", "ClearAllForwardings=yes",
+		// ClearAllForwardings clears PORT forwards only; a user ssh_config with
+		// ForwardAgent yes would hand this machine's agent to the hub (review
+		// 2026-10-08, S11).
+		"-o", "ForwardAgent=no", "-o", "ForwardX11=no",
 	)
 	var warnings []string
 	// Every invocation sharing a mux key must keep the same connection-affecting

@@ -161,3 +161,25 @@ func TestGuardDeniesHubAuthorizeAndJoinThroughShellFolding(t *testing.T) {
 		}
 	}
 }
+
+// Review 2026-10-08 S11: ClearAllForwardings clears port forwards only. A user
+// config with ForwardAgent yes handed the ssh agent to the hub — and the
+// auto-authorize ssh passed no forwarding options at all, on the one path that
+// reaches an unrestricted login.
+func TestHubAutoAuthorizeSSHDisablesAgentAndX11Forwarding(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	remote, err := loop.ParseRemoteURL("ssh://alex@hub.example:2222/home/alex/pool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := hubAutoAuthorizeSSHArgs(remote, "'agentchute' 'hub' 'authorize'")
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-o ForwardAgent=no", "-o ForwardX11=no", "-o ConnectTimeout=5", "-p 2222"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("auto-authorize ssh argv %v is missing %q", args, want)
+		}
+	}
+	if last := args[len(args)-1]; last != "'agentchute' 'hub' 'authorize'" {
+		t.Fatalf("remote command must stay the last argument, got %q", last)
+	}
+}

@@ -44,6 +44,7 @@ func TestBuildSSHInvocationGolden(t *testing.T) {
 		"-o", "UserKnownHostsFile=" + filepath.Join(hubDir, "known_hosts"),
 		"-o", "IdentitiesOnly=yes", "-i", filepath.Join(hubDir, "keys", "codex_ed25519"),
 		"-o", "ClearAllForwardings=yes",
+		"-o", "ForwardAgent=no", "-o", "ForwardX11=no",
 		"-o", "ControlMaster=auto", "-o", "ControlPath=" + filepath.Join("/tmp", "ac-"+uid, muxIsolationKey(remote, "codex", filepath.Join(hubDir, "keys", "codex_ed25519")), "%C"), "-o", "ControlPersist=60s",
 		"-o", "LogLevel=ERROR",
 		"-p", "2222", "alex@hub.example", "agentchute-hub",
