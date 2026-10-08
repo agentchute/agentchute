@@ -228,6 +228,7 @@ func joinNamedCodex(t *testing.T, h *sshdHarness) (string, string) {
 func writeFakeCodex(t *testing.T, h *sshdHarness, logPath string) {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
+case "${1-}" in --help) printf 'Usage: codex [OPTIONS] [PROMPT]\n'; exit 0;; esac
 log=%s
 printf 'start|%%s|%%s|%%s|%%s|%%s\n' "$$" "$AGENTCHUTE_AGENT_ID" "$AGENTCHUTE_SERVE_TOKEN" "$AGENTCHUTE_CONTROL_REPO" "${AGENTCHUTE_LOOP_DIR-}" >> "$log"
 trap 'printf "term|%%s||||\n" "$$" >> "$log"; exit 0' TERM INT HUP
@@ -243,6 +244,7 @@ while :; do sleep 1; done
 func writeOneShotCodex(t *testing.T, h *sshdHarness, logPath string) {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
+case "${1-}" in --help) printf 'Usage: codex [OPTIONS] [PROMPT]\n'; exit 0;; esac
 printf 'start|%%s|%%s|%%s|%%s|%%s\n' "$$" "$AGENTCHUTE_AGENT_ID" "$AGENTCHUTE_SERVE_TOKEN" "$AGENTCHUTE_CONTROL_REPO" "${AGENTCHUTE_LOOP_DIR-}" >> %s
 exit 0
 `, shellLiteral(logPath))
