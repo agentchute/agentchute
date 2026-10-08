@@ -198,7 +198,9 @@ func cmdServe(args []string) error {
 	// serve is not going to launch.
 	var spec wrapperSpec
 	opts.WrapperArgs, spec = serveWrapperArgs(opts.WrapperArgs)
-	if spec.Key == "codex" && !dispatchHasFlag(opts.WrapperArgs[1:], codexNoDaemonFlag) {
+	// Only the probe-said-no case warns: a deliberate skip (queue, agents,
+	// --remote) is codex's own rule, not a missing flag.
+	if spec.Key == "codex" && !dispatchHasFlag(opts.WrapperArgs[1:], codexNoDaemonFlag) && !codexNoDaemonIncompatible(opts.WrapperArgs[1:]) {
 		fmt.Fprintf(os.Stderr, "warning: %s does not advertise %s; its shared app-server daemon hosts hooks under the FIRST serve's env (see doctor's codex_daemon_env)\n", opts.WrapperArgs[0], codexNoDaemonFlag)
 	}
 	return runWrapper(cfg, opts, cwd)

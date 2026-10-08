@@ -24,7 +24,8 @@ that daemon and inherit *its* environment — the identity and serve token of wh
 That makes `send` fence ("serve lease fenced (token mismatch)") and `turn-end` exit 1,
 across every repo. `ac serve codex` / `agentchute serve -- codex` therefore pass
 `--no-daemon` automatically when the installed codex advertises it (the session then
-runs its app-server in-process); pass it yourself on an older `agentchute`. `agentchute
+runs its app-server in-process), except for `queue`, `agents` and `--remote`, which codex
+refuses to combine with it; pass it yourself on an older `agentchute`. `agentchute
 doctor` reports a running daemon whose token or control repo is not this pool's
 (`codex_daemon_env`); clear one with `codex app-server daemon stop` and relaunch.
 

@@ -168,6 +168,11 @@ func runLauncherPathsPreserveRemoteness(t *testing.T) {
 			if event.Agent != agentID || event.ControlRepo != h.remote.URL || event.LoopDir != "" {
 				t.Fatalf("launcher child env = %+v", event)
 			}
+			// The hub path execs opts.WrapperArgs too: the fake advertises
+			// --no-daemon, so serve's rewrite must reach the remote child.
+			if event.Args != "--no-daemon" {
+				t.Fatalf("launcher child argv = %q, want --no-daemon (serve's codex rewrite missing on the hub path)", event.Args)
+			}
 			if err := serve.wait(10 * time.Second); err != nil {
 				t.Fatalf("launcher serve: %v\nstdout:\n%s\nstderr:\n%s", err, serve.stdout.String(), serve.stderr.String())
 			}
@@ -192,6 +197,7 @@ type childEvent struct {
 	Token       string
 	ControlRepo string
 	LoopDir     string
+	Args        string // the child's argv after argv[0], space-joined (start events only)
 }
 
 type serveProcess struct {
@@ -228,9 +234,9 @@ func joinNamedCodex(t *testing.T, h *sshdHarness) (string, string) {
 func writeFakeCodex(t *testing.T, h *sshdHarness, logPath string) {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
-case "${1-}" in --help) printf 'Usage: codex [OPTIONS] [PROMPT]\n'; exit 0;; esac
+case "${1-}" in --help) printf 'Usage: codex [OPTIONS] [PROMPT]\n      --no-daemon\n'; exit 0;; esac
 log=%s
-printf 'start|%%s|%%s|%%s|%%s|%%s\n' "$$" "$AGENTCHUTE_AGENT_ID" "$AGENTCHUTE_SERVE_TOKEN" "$AGENTCHUTE_CONTROL_REPO" "${AGENTCHUTE_LOOP_DIR-}" >> "$log"
+printf 'start|%%s|%%s|%%s|%%s|%%s|%%s\n' "$$" "$AGENTCHUTE_AGENT_ID" "$AGENTCHUTE_SERVE_TOKEN" "$AGENTCHUTE_CONTROL_REPO" "${AGENTCHUTE_LOOP_DIR-}" "$*" >> "$log"
 trap 'printf "term|%%s||||\n" "$$" >> "$log"; exit 0' TERM INT HUP
 %s send --to grok --body child-send >/dev/null 2>&1 || true
 printf 'send-done|%%s|%%s|%%s|%%s|%%s\n' "$$" "$AGENTCHUTE_AGENT_ID" "$AGENTCHUTE_SERVE_TOKEN" "$AGENTCHUTE_CONTROL_REPO" "${AGENTCHUTE_LOOP_DIR-}" >> "$log"
@@ -244,8 +250,8 @@ while :; do sleep 1; done
 func writeOneShotCodex(t *testing.T, h *sshdHarness, logPath string) {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
-case "${1-}" in --help) printf 'Usage: codex [OPTIONS] [PROMPT]\n'; exit 0;; esac
-printf 'start|%%s|%%s|%%s|%%s|%%s\n' "$$" "$AGENTCHUTE_AGENT_ID" "$AGENTCHUTE_SERVE_TOKEN" "$AGENTCHUTE_CONTROL_REPO" "${AGENTCHUTE_LOOP_DIR-}" >> %s
+case "${1-}" in --help) printf 'Usage: codex [OPTIONS] [PROMPT]\n      --no-daemon\n'; exit 0;; esac
+printf 'start|%%s|%%s|%%s|%%s|%%s|%%s\n' "$$" "$AGENTCHUTE_AGENT_ID" "$AGENTCHUTE_SERVE_TOKEN" "$AGENTCHUTE_CONTROL_REPO" "${AGENTCHUTE_LOOP_DIR-}" "$*" >> %s
 exit 0
 `, shellLiteral(logPath))
 	if err := os.WriteFile(filepath.Join(h.clientBin, "codex"), []byte(script), 0o700); err != nil {
@@ -405,15 +411,19 @@ func readChildEvents(t *testing.T, path, kind string) []childEvent {
 	}
 	var events []childEvent
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		fields := strings.Split(line, "|")
-		if len(fields) != 6 || fields[0] != kind {
+		fields := strings.SplitN(line, "|", 7)
+		if len(fields) < 6 || fields[0] != kind {
 			continue
 		}
 		pid, err := strconv.Atoi(fields[1])
 		if err != nil {
 			t.Fatalf("child event pid %q: %v", fields[1], err)
 		}
-		events = append(events, childEvent{Kind: fields[0], PID: pid, Agent: fields[2], Token: fields[3], ControlRepo: fields[4], LoopDir: fields[5]})
+		event := childEvent{Kind: fields[0], PID: pid, Agent: fields[2], Token: fields[3], ControlRepo: fields[4], LoopDir: fields[5]}
+		if len(fields) == 7 {
+			event.Args = fields[6]
+		}
+		events = append(events, event)
 	}
 	return events
 }

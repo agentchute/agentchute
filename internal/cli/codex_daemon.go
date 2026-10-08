@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
@@ -68,16 +69,24 @@ func codexSupportsNoDaemon(bin string) bool {
 // codexNoDaemonIncompatible reports whether codex 0.161 would refuse the flag
 // for these args: the binary's own strings say "--no-daemon cannot be used
 // with codex queue" / "... with codex agents" / "... with --remote" (both
-// subcommands exist to talk to the daemon). Exact-token matches only, so a
-// prompt that merely contains the word is not one.
+// subcommands exist to talk to the daemon). `--remote` is matched anywhere
+// (a flag); `queue`/`agents` only in the subcommand position — the first
+// token that is not a flag, before any `--` — so `resume queue` or a prompt
+// word `queue` does not drop the flag. Known gap: a value-taking top-level
+// flag before the subcommand (`--model m queue`) hides it; codex then refuses
+// the combination at launch, which is loud, not silent.
 func codexNoDaemonIncompatible(args []string) bool {
 	if dispatchHasFlag(args, "--remote") {
 		return true
 	}
 	for _, a := range args {
-		if a == "queue" || a == "agents" {
-			return true
+		if a == "--" {
+			return false
 		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		return a == "queue" || a == "agents"
 	}
 	return false
 }
@@ -150,7 +159,7 @@ func scanCodexDaemons() ([]codexDaemonProcess, error) {
 	}
 	daemons := parseCodexDaemonProcessTable(string(out))
 	for i := range daemons {
-		daemons[i].Env, daemons[i].EnvErr = readProcessEnv(ctx, daemons[i].PID)
+		daemons[i].Env, daemons[i].EnvErr = readProcessEnv(daemons[i].PID)
 	}
 	return daemons, nil
 }
@@ -182,21 +191,18 @@ func parseCodexDaemonProcessTable(table string) []codexDaemonProcess {
 	return out
 }
 
-// readProcessEnv returns the AGENTCHUTE_* environment of pid: /proc on Linux,
-// `ps -E` (environment appended to the command) on macOS/BSD.
-func readProcessEnv(ctx context.Context, pid int) (map[string]string, error) {
-	if data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "environ")); err == nil {
-		return parseProcessEnvBytes(data), nil
-	}
-	out, err := exec.CommandContext(ctx, "ps", "-E", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+// readProcessEnv returns the AGENTCHUTE_* environment of pid from the exact
+// NUL-separated source the OS keeps — /proc/<pid>/environ on Linux,
+// sysctl kern.procargs2 on macOS (codex_daemon_darwin.go) — never from `ps`
+// text, which word-splits a value containing a space (a control repo named
+// `Tmux workflow` would read as a mismatch). An empty map with a nil error is
+// a readable environment with no agentchute keys.
+func readProcessEnv(pid int) (map[string]string, error) {
+	data, err := readProcessEnvBlock(pid)
 	if err != nil {
-		return nil, fmt.Errorf("ps -E -p %d: %w", pid, err)
+		return nil, err
 	}
-	env := parseProcessEnvWords(string(out))
-	if len(env) == 0 {
-		return nil, fmt.Errorf("ps -E -p %d: no environment in output (another user's process, or an unsupported ps)", pid)
-	}
-	return env, nil
+	return parseProcessEnvBytes(data), nil
 }
 
 func parseProcessEnvBytes(data []byte) map[string]string {
@@ -209,14 +215,31 @@ func parseProcessEnvBytes(data []byte) map[string]string {
 	return env
 }
 
-func parseProcessEnvWords(line string) map[string]string {
-	env := map[string]string{}
-	for _, word := range strings.Fields(line) {
-		if k, v, ok := strings.Cut(word, "="); ok && strings.HasPrefix(k, "AGENTCHUTE_") {
-			env[k] = v
-		}
+// parseProcArgs2Env extracts the environment block from a kern.procargs2
+// buffer: a native-endian int32 argc, the executable path, NUL padding, argc
+// NUL-terminated argv strings, then the NUL-terminated environment strings.
+func parseProcArgs2Env(data []byte) ([]byte, error) {
+	if len(data) < 4 {
+		return nil, fmt.Errorf("kern.procargs2: %d bytes, no argc", len(data))
 	}
-	return env
+	argc := int(binary.NativeEndian.Uint32(data[:4]))
+	i := 4
+	for i < len(data) && data[i] != 0 { // executable path
+		i++
+	}
+	for i < len(data) && data[i] == 0 { // padding
+		i++
+	}
+	for n := 0; n < argc && i < len(data); n++ { // argv
+		for i < len(data) && data[i] != 0 {
+			i++
+		}
+		i++ // the terminator
+	}
+	if i > len(data) {
+		i = len(data)
+	}
+	return data[i:], nil
 }
 
 // poolServeTokens reads every serve.claim under <loop>/state/<id>/ without a

@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +116,34 @@ func TestEnsureCodexNoDaemon_Argv(t *testing.T) {
 			args:  []string{"codex", "list my agents"},
 			probe: probeYes,
 			want:  []string{"codex", "--no-daemon", "list my agents"},
+		},
+		{
+			name:  "queue as a later word after the resume subcommand: inserted",
+			spec:  codex,
+			args:  []string{"codex", "resume", "queue"},
+			probe: probeYes,
+			want:  []string{"codex", "--no-daemon", "resume", "queue"},
+		},
+		{
+			name:  "queue as a separate prompt word: inserted",
+			spec:  codex,
+			args:  []string{"codex", "review", "the", "queue"},
+			probe: probeYes,
+			want:  []string{"codex", "--no-daemon", "review", "the", "queue"},
+		},
+		{
+			name:  "bool flag then agents subcommand: skipped",
+			spec:  codex,
+			args:  []string{"codex", "--full-auto", "agents"},
+			probe: probeYes,
+			want:  []string{"codex", "--full-auto", "agents"},
+		},
+		{
+			name:  "agents after -- is a prompt, not the subcommand: inserted",
+			spec:  codex,
+			args:  []string{"codex", "--", "agents"},
+			probe: probeYes,
+			want:  []string{"codex", "--no-daemon", "--", "agents"},
 		},
 		{
 			name:  "probe says the installed codex lacks the flag: argv untouched",
@@ -254,16 +285,75 @@ func TestParseCodexDaemonProcessTable(t *testing.T) {
 }
 
 func TestParseProcessEnv(t *testing.T) {
-	// `ps -E -o command=` appends the environment as KEY=VALUE words after the argv.
-	line := "/Users/alex/.codex/bin/codex app-server --managed-daemon HOME=/Users/alex AGENTCHUTE_SERVE_TOKEN=d7ab11fe AGENTCHUTE_CONTROL_REPO=/Users/alex/code"
-	env := parseProcessEnvWords(line)
-	if env["AGENTCHUTE_SERVE_TOKEN"] != "d7ab11fe" || env["AGENTCHUTE_CONTROL_REPO"] != "/Users/alex/code" {
-		t.Fatalf("env = %v", env)
-	}
-	// /proc/<pid>/environ form: NUL-separated.
-	env = parseProcessEnvBytes([]byte("AGENTCHUTE_SERVE_TOKEN=abc\x00AGENTCHUTE_CONTROL_REPO=/r\x00PATH=/bin\x00"))
-	if env["AGENTCHUTE_SERVE_TOKEN"] != "abc" || env["AGENTCHUTE_CONTROL_REPO"] != "/r" {
+	// /proc/<pid>/environ form: NUL-separated; a value keeps its spaces.
+	env := parseProcessEnvBytes([]byte("AGENTCHUTE_SERVE_TOKEN=abc\x00AGENTCHUTE_CONTROL_REPO=/Users/alex/code/Tmux workflow\x00PATH=/bin\x00"))
+	if env["AGENTCHUTE_SERVE_TOKEN"] != "abc" || env["AGENTCHUTE_CONTROL_REPO"] != "/Users/alex/code/Tmux workflow" {
 		t.Fatalf("environ = %v", env)
+	}
+	if _, ok := env["PATH"]; ok {
+		t.Fatalf("non-agentchute key kept: %v", env)
+	}
+	if env := parseProcessEnvBytes([]byte("HOME=/Users/alex\x00")); len(env) != 0 {
+		t.Fatalf("env without agentchute keys = %v, want empty (readable, no token)", env)
+	}
+
+	// kern.procargs2 form: int32 argc, exec path, NUL padding, argv, then env.
+	var buf []byte
+	buf = binary.NativeEndian.AppendUint32(buf, 3)
+	buf = append(buf, "/Users/alex/.codex/bin/codex\x00\x00\x00\x00"...)
+	buf = append(buf, "codex\x00app-server\x00--managed-daemon\x00"...)
+	buf = append(buf, "HOME=/Users/alex\x00AGENTCHUTE_SERVE_TOKEN=d7ab11fe\x00AGENTCHUTE_CONTROL_REPO=/Users/alex/code/Tmux workflow\x00\x00"...)
+	block, err := parseProcArgs2Env(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = parseProcessEnvBytes(block)
+	if env["AGENTCHUTE_SERVE_TOKEN"] != "d7ab11fe" || env["AGENTCHUTE_CONTROL_REPO"] != "/Users/alex/code/Tmux workflow" {
+		t.Fatalf("procargs2 env = %v", env)
+	}
+	if _, err := parseProcArgs2Env([]byte{1, 0}); err == nil {
+		t.Fatal("truncated procargs2 buffer accepted")
+	}
+}
+
+// The real reader against this test's own process: the exact-source path on
+// each OS, with a value that contains a space.
+func TestReadProcessEnv_Self(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("no exact process-environment source on " + runtime.GOOS)
+	}
+	// Read a child we start with the value we want. The child is this test
+	// binary re-executed into the sleep branch below, not `sleep`: macOS hides
+	// the environment of platform (restricted) binaries from kern.procargs2,
+	// and codex is not one.
+	if os.Getenv("AGENTCHUTE_TEST_SLEEP_CHILD") == "1" {
+		time.Sleep(30 * time.Second)
+		return
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(self, "-test.run", "^TestReadProcessEnv_Self$")
+	cmd.Env = append(os.Environ(), "AGENTCHUTE_TEST_SLEEP_CHILD=1", "AGENTCHUTE_CONTROL_REPO=/Users/alex/code/Tmux workflow", "AGENTCHUTE_SERVE_TOKEN=abc123")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	var env map[string]string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		env, err = readProcessEnv(cmd.Process.Pid)
+		if err == nil && env["AGENTCHUTE_SERVE_TOKEN"] == "abc123" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["AGENTCHUTE_CONTROL_REPO"] != "/Users/alex/code/Tmux workflow" {
+		t.Fatalf("control repo with a space = %q", env["AGENTCHUTE_CONTROL_REPO"])
 	}
 }
 
