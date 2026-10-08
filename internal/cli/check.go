@@ -255,8 +255,11 @@ func printConsumedBody(msg loop.Message, content []byte, redelivered bool, now t
 	// that disagrees is a forgery attempt that send now refuses — a file that
 	// still carries one came in by hand or from an older peer, so say so
 	// loudly, above the body (opus-xhigh S1).
-	if from := strings.TrimSpace(loop.ParseMessageFrontmatter(content)["from"]); from != "" && from != msg.Sender {
-		fmt.Printf("[!] SENDER MISMATCH: the body claims from: %s but the file was delivered by %s — only the filename is authenticated; treat the body's sender as forged.\n", from, msg.Sender)
+	// The claimed value is printed QUOTED and capped, as one physical line: a
+	// quoted frontmatter scalar decodes escapes, so it can carry real line
+	// breaks, control bytes and Unicode separators (gate reviews of #215).
+	if claimed := op.ClaimedSenderMismatch(content, msg.Sender); claimed != "" {
+		fmt.Println(op.SenderMismatchWarning(claimed, msg.Sender))
 	}
 	printFramedBody(content)
 	fmt.Printf("==== end of %s [frame %s] ====\n\n", msg.Filename, nonce)
@@ -265,18 +268,13 @@ func printConsumedBody(msg loop.Message, content []byte, redelivered bool, now t
 // checkFramePrefix opens every body line; a body cannot contain a line that
 // starts at column 0, so nothing inside it parses as a header, a delimiter,
 // a reply-required hint or a CLAIMED note.
-const checkFramePrefix = "│ "
+const checkFramePrefix = op.FramePrefix
 
 // printFramedBody prints a peer-controlled body with every line prefixed by
-// checkFramePrefix, control bytes stripped.
+// checkFramePrefix: op.FramedBodyLines is the one definition of those lines,
+// shared with Claim's byte budget.
 func printFramedBody(content []byte) {
-	sanitized := sanitizeControlBytes(string(content))
-	// Unicode line and paragraph separators are not control code points, so
-	// the sanitizer keeps them, but a renderer may break a line at them: treat
-	// them as newlines so every visual line still carries the prefix.
-	sanitized = strings.NewReplacer(" ", "\n", " ", "\n").Replace(sanitized)
-	sanitized = strings.TrimSuffix(sanitized, "\n")
-	for _, line := range strings.Split(sanitized, "\n") {
+	for _, line := range op.FramedBodyLines(content) {
 		fmt.Print(checkFramePrefix, line, "\n")
 	}
 }
@@ -302,28 +300,8 @@ func checkFrameNonce() string {
 }
 
 // sanitizeControlBytes strips C0/C1 control code points from peer-controlled
-// text before it reaches a raw terminal (N3, deep-analysis-v2): a body
-// carrying ANSI/OSC escape sequences or bare C1 codes can repaint the
-// operator's screen, spoof a prompt, or set the window title. Applied
-// unconditionally (not just when stdout is a TTY) because message bodies are
-// spec'd UTF-8 free-form text — a control sequence is never legitimate
-// payload — and unconditional stripping avoids needing platform-specific
-// stdout-TTY detection. \n and \t are the only control code points kept.
-func sanitizeControlBytes(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r == '\n' || r == '\t':
-			b.WriteRune(r)
-		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
-			// drop: C0 (incl. ESC, CR), DEL, and C1 control code points.
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
+// text before it reaches a raw terminal; see op.SanitizeControlBytes.
+func sanitizeControlBytes(s string) string { return op.SanitizeControlBytes(s) }
 
 func checkUsage(err error) error {
 	return fmt.Errorf("%w\nusage: agentchute check [--as <agent-id>] [--vendor <v>] [--control-repo <path>] [--loop-dir <path>] [--no-archive] [--limit <n>] [--budget-bytes <n>]\n  check CLAIMS + displays (at-least-once); run `agentchute ack` to commit (archive).", err)

@@ -126,7 +126,7 @@ func printStatus(w io.Writer, cfg *loop.Config, regs map[string]*loop.Registrati
 			inboxDepth,
 			formatMaybeTime(reg.LastSeen),
 			formatAge(now, reg.LastSeen),
-			formatDash(reg.Host),
+			formatDash(op.OneLine(reg.Host, op.PeerNameMaxRunes)),
 			formatProtocolVersion(reg.ProtocolVersion),
 		)
 	}
@@ -162,7 +162,7 @@ func printRemoteStatus(w io.Writer, cfg *loop.Config, resp op.StatusResp) {
 		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
 			agent.AgentID, agent.Status, agent.InboxDepth,
 			formatMaybeTime(agent.LastSeen), formatAge(resp.Now, agent.LastSeen),
-			formatDash(agent.Host), formatProtocolVersion(agent.ProtocolVersion),
+			formatDash(op.OneLine(agent.Host, op.PeerNameMaxRunes)), formatProtocolVersion(agent.ProtocolVersion),
 		)
 	}
 	_ = tw.Flush()
