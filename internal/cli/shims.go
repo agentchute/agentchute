@@ -351,13 +351,22 @@ func wrapperSpecForName(name string) (wrapperSpec, bool) {
 }
 
 func resolveRealWrapper(spec wrapperSpec, shimDir string) (string, error) {
+	return resolveRealWrapperOnPath(spec, shimDir, os.Getenv("PATH"))
+}
+
+// resolveRealWrapperOnPath is resolveRealWrapper over an explicit PATH value:
+// directory-first (the first PATH entry holding ANY candidate wins), skipping
+// the shim directory. doctor shares it so it names the same binary serve
+// launches (codex gate on #213: name-first iteration picked `gemini` where
+// serve picked an earlier `agy`).
+func resolveRealWrapperOnPath(spec wrapperSpec, shimDir, pathEnv string) (string, error) {
 	absShimDir := ""
 	if shimDir != "" {
 		if abs, err := filepath.Abs(shimDir); err == nil {
 			absShimDir = abs
 		}
 	}
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+	for _, dir := range filepath.SplitList(pathEnv) {
 		if dir == "" {
 			dir = "."
 		}

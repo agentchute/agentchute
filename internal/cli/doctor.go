@@ -903,7 +903,7 @@ func shimNamesForAgent(agentID string) []string {
 // agentID's wrapper on pathEnv and reports whether serve launches it
 // UNGUARDED (wrapperSpec.guardedFor): doctor must then neither demand nor
 // byte-check a hook template that binary never reads (codex gate on #213).
-func doctorActingBinaryUnguarded(agentID, pathEnv string) (binary, reason string) {
+func doctorActingBinaryUnguarded(agentID, shimDir, pathEnv string) (binary, reason string) {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
 		return "", ""
@@ -912,22 +912,36 @@ func doctorActingBinaryUnguarded(agentID, pathEnv string) (binary, reason string
 		if !registrationMatchesCanonical(agentID, spec.AgentID) {
 			continue
 		}
-		for _, candidate := range spec.Candidates {
-			resolved, err := resolveExecutableOnPath(candidate, pathEnv)
-			if err != nil {
-				continue
-			}
-			if _, why := spec.guardedFor(resolved); why != "" {
-				return resolved, why
-			}
+		// The same selection serve makes: resolveRealWrapperOnPath walks
+		// PATH directories first and skips the shim directory.
+		resolved, err := resolveRealWrapperOnPath(spec, shimDir, pathEnv)
+		if err != nil {
 			return "", ""
 		}
+		if _, why := spec.guardedFor(resolved); why != "" {
+			return resolved, why
+		}
+		return "", ""
 	}
 	return "", ""
 }
 
+// doctorShimDir is the shim directory doctor excludes from wrapper
+// resolution, as serve's dispatcher does: setup's recorded dir, else the
+// default under $HOME.
+func doctorShimDir(opts doctorOptions) string {
+	if opts.GlobalState != nil && opts.GlobalState.ShimDir != "" {
+		return opts.GlobalState.ShimDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".agentchute", "bin")
+}
+
 func checkHookFilePresence(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
-	if bin, why := doctorActingBinaryUnguarded(agentID, opts.PathEnv); why != "" {
+	if bin, why := doctorActingBinaryUnguarded(agentID, doctorShimDir(opts), opts.PathEnv); why != "" {
 		return doctorCheck{
 			Name:     "hook_file_presence",
 			Severity: severitySkip,

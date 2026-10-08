@@ -418,3 +418,60 @@ func TestDoctorSkipsHookPresenceForUnguardedAgy(t *testing.T) {
 		t.Fatalf("gemini binary without its template must still block: %s %s", c.Severity, c.Message)
 	}
 }
+
+// doctor picks the SAME binary serve does: PATH directories first, not
+// candidate names first (codex gate r2 on #213). With agy in an earlier PATH
+// dir and gemini in a later one, serve launches agy, so doctor must SKIP;
+// with the order reversed, gemini semantics apply (the template is required).
+func TestDoctorMatchesServePathOrder(t *testing.T) {
+	geminiTemplate := filepath.Join(".gemini", "settings.json")
+	mkBin := func(name string) string {
+		dir := t.TempDir()
+		mustWrite(t, filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"))
+		if err := os.Chmod(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	agyDir, geminiDir := mkBin("agy"), mkBin("gemini")
+	agyFirst := agyDir + string(os.PathListSeparator) + geminiDir
+	geminiFirst := geminiDir + string(os.PathListSeparator) + agyDir
+
+	for _, row := range []struct {
+		name     string
+		pathEnv  string
+		template string
+		want     string
+	}{
+		{"agy first, template absent", agyFirst, "", severitySkip},
+		{"agy first, template present but stale", agyFirst, "{\"hooks\":{}}", severitySkip},
+		{"gemini first, template absent", geminiFirst, "", severityBlocker},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cfg := newDoctorCfg(t)
+			if row.template != "" {
+				mustWrite(t, filepath.Join(cfg.ControlRepo, geminiTemplate), []byte(row.template))
+			}
+			// serve's own selection, for the record.
+			spec, _ := wrapperSpecForName("gemini")
+			resolved, err := resolveRealWrapperOnPath(spec, "", row.pathEnv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{Now: time.Now().UTC(), PathEnv: row.pathEnv})
+			c := findCheck(t, r, "hook_file_presence")
+			if c.Severity != row.want {
+				t.Fatalf("serve would launch %s; hook_file_presence = %s (%s), want %s", resolved, c.Severity, c.Message, row.want)
+			}
+		})
+	}
+	// The shim directory is excluded, as serve excludes it: a stale `agy`
+	// alias shim ahead of the real gemini must not flip the verdict.
+	cfg := newDoctorCfg(t)
+	shimDir := mkBin("agy")
+	pathEnv := shimDir + string(os.PathListSeparator) + geminiDir
+	r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{Now: time.Now().UTC(), PathEnv: pathEnv, GlobalState: &setupGlobalState{ShimDir: shimDir}})
+	if c := findCheck(t, r, "hook_file_presence"); c.Severity != severityBlocker {
+		t.Fatalf("shim-dir agy must be skipped like serve does: %s %s", c.Severity, c.Message)
+	}
+}
