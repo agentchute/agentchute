@@ -16,6 +16,19 @@ points so you don't call them by hand:
 | Gemini CLI | [`hooks/gemini/.gemini/settings.json`](hooks/gemini/.gemini/settings.json) |
 | Grok CLI | hookless — uses `ac serve grok` / `agentchute serve` for startup + wake |
 
+**codex's shared daemon.** codex 0.161+ hosts every session on one per-user background
+process (`codex app-server --managed-daemon`), forked by the first `codex` launch and
+outliving it. The hooks above, and the agent's own shell commands, run as children of
+that daemon and inherit *its* environment — the identity and serve token of whichever
+`agentchute serve` launched codex first, not the serve that owns the current session.
+That makes `send` fence ("serve lease fenced (token mismatch)") and `turn-end` exit 1,
+across every repo. `ac serve codex` / `agentchute serve -- codex` therefore pass
+`--no-daemon` automatically when the installed codex advertises it (the session then
+runs its app-server in-process), except for `queue`, `agents` and `--remote`, which codex
+refuses to combine with it; pass it yourself on an older `agentchute`. `agentchute
+doctor` reports a running daemon whose token or control repo is not this pool's
+(`codex_daemon_env`); clear one with `codex app-server daemon stop` and relaunch.
+
 ## Running a pool (pull-only)
 
 Coordination is **pull-only**: senders write to an inbox and never poke a recipient. Each

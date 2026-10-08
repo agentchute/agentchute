@@ -511,9 +511,13 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		return err
 	}
 
+	// Lease admitted: now (and only now) probe codex for --no-daemon, with the
+	// env the child itself gets.
+	childEnv := runnerChildEnv(cfg, opts, lease.Token)
+	opts.WrapperArgs = applyCodexLaunchArgs(opts.WrapperArgs, childEnv)
 	cmd := exec.Command(opts.WrapperArgs[0], opts.WrapperArgs[1:]...)
 	cmd.Dir = cwd
-	cmd.Env = runnerChildEnv(cfg, opts, lease.Token)
+	cmd.Env = childEnv
 	// Size the child's PTY from our own terminal before the child starts —
 	// a TUI that reads a 0x0 winsize on first draw renders a blank screen.
 	ptmx, err := runnerpty.StartInheritSize(cmd, os.Stdin)
@@ -714,9 +718,13 @@ func runRemoteWrapperOnce(cfg *loop.Config, opts runnerOptions, cwd string) remo
 		return remoteRunResult{err: err}
 	}
 
+	// Lease admitted and registered: probe codex for --no-daemon with the
+	// child env (the deferred release covers a failure after this point).
+	childEnv := runnerChildEnv(cfg, opts, channel.Token())
+	opts.WrapperArgs = applyCodexLaunchArgs(opts.WrapperArgs, childEnv)
 	cmd := exec.Command(opts.WrapperArgs[0], opts.WrapperArgs[1:]...)
 	cmd.Dir = cwd
-	cmd.Env = runnerChildEnv(cfg, opts, channel.Token())
+	cmd.Env = childEnv
 	ptmx, err := runnerpty.StartInheritSize(cmd, os.Stdin)
 	if err != nil {
 		return remoteRunResult{err: fmt.Errorf("start wrapper under PTY: %w", err)}
