@@ -1,7 +1,6 @@
 package hubclient
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -45,6 +44,7 @@ func TestBuildSSHInvocationGolden(t *testing.T) {
 		"-o", "UserKnownHostsFile=" + filepath.Join(hubDir, "known_hosts"),
 		"-o", "IdentitiesOnly=yes", "-i", filepath.Join(hubDir, "keys", "codex_ed25519"),
 		"-o", "ClearAllForwardings=yes",
+		"-o", "ForwardAgent=no", "-o", "ForwardX11=no",
 		"-o", "ControlMaster=auto", "-o", "ControlPath=" + filepath.Join("/tmp", "ac-"+uid, muxIsolationKey(remote, "codex", filepath.Join(hubDir, "keys", "codex_ed25519")), "%C"), "-o", "ControlPersist=60s",
 		"-o", "LogLevel=ERROR",
 		"-p", "2222", "alex@hub.example", "agentchute-hub",
@@ -209,7 +209,7 @@ func TestClassifySSHFailureCodes(t *testing.T) {
 			waitCh := make(chan error, 1)
 			waitCh <- tt.waitErr
 			transport := &processTransport{
-				stdin: stdin, stderr: *bytes.NewBufferString(tt.stderr),
+				stdin: stdin, stderr: tailCapWriter{buf: []byte(tt.stderr), limit: transportStderrLimit},
 				cancel: func() {}, waitCh: waitCh, closeDone: make(chan struct{}),
 			}
 			got := classifySSHFailure(remote, "codex", tt.stage, errors.New("transport failed"), transport)
@@ -266,12 +266,53 @@ func TestUnauthorizedIncludesReadyToPasteAuthorization(t *testing.T) {
 	waitCh := make(chan error, 1)
 	waitCh <- nil
 	transport := &processTransport{
-		stdin: stdin, stderr: *bytes.NewBufferString("Permission denied (publickey)."),
+		stdin: stdin, stderr: tailCapWriter{buf: []byte("Permission denied (publickey)."), limit: transportStderrLimit},
 		cancel: func() {}, waitCh: waitCh, closeDone: make(chan struct{}),
 	}
 	got := classifySSHFailure(remote, "codex", "connect", errors.New("transport failed"), transport)
-	want := "hub: hub refused this key for alex@hub.example. Either it was never authorized or it was revoked. Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent codex --pool /remote/pool --key \"" + pubkey + "\""
+	want := "hub: hub refused this key for alex@hub.example. Either it was never authorized or it was revoked. Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent 'codex' --pool '/remote/pool' --key '" + pubkey + "'"
 	if ErrorCode(got) != "E_UNAUTHORIZED" || got.Error() != want {
 		t.Fatalf("unauthorized error = %q, want %q", got, want)
+	}
+}
+
+// Review 2026-10-08 S9: only the LEAF of /tmp/ac-<uid>/<key> was ownership-
+// checked. Another local user who owns the PARENT can rename a verified leaf
+// away and substitute a directory holding a fake master socket. The parent is
+// now verified first; a parent this user does not own disables multiplexing
+// for that root rather than trusting it.
+func TestMuxDirVerifiesTheParentBeforeTheLeaf(t *testing.T) {
+	remote := &loop.RemoteConfig{Host: "hub", Port: 22, HubID: "0123456789ab", HubDir: "/tmp/hubdir"}
+	var ensured []string
+	got, err := BuildSSHInvocation(SSHBuildOptions{
+		Remote: remote, AgentID: "codex", TempRoots: []string{"/tmp"}, UserID: "0",
+		EnsureOwned: func(dir string) error {
+			ensured = append(ensured, dir)
+			if dir == "/tmp/ac-0" {
+				return errors.New("/tmp/ac-0: owned by uid 4242, not current uid")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(got.Args, " ")
+	if !strings.Contains(joined, "ControlMaster=no") || !strings.Contains(joined, "ControlPath=none") {
+		t.Fatalf("a parent owned by another user still multiplexed: %v", got.Args)
+	}
+	if len(ensured) != 1 || ensured[0] != "/tmp/ac-0" {
+		t.Fatalf("ensured %v; the leaf must never be created under a parent that failed its check", ensured)
+	}
+
+	ensured = nil
+	if _, err := BuildSSHInvocation(SSHBuildOptions{
+		Remote: remote, AgentID: "codex", TempRoots: []string{"/tmp"}, UserID: "0",
+		EnsureOwned: func(dir string) error { ensured = append(ensured, dir); return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ensured) != 2 || ensured[0] != "/tmp/ac-0" || filepath.Dir(ensured[1]) != "/tmp/ac-0" {
+		t.Fatalf("ensured %v, want the parent then the leaf", ensured)
 	}
 }

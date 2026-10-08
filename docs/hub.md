@@ -14,12 +14,14 @@ Normally, a user who can already SSH to the hub completes authorization from the
 
 ```sh
 agentchute hub authorize \
-  --agent codex-tiny \
-  --pool /home/alex/code/agentchute \
-  --key "ssh-ed25519 AAAAC3Nz... agentchute:codex-tiny"
+  --agent 'codex-tiny' \
+  --pool '/home/alex/code/agentchute' \
+  --key 'ssh-ed25519 AAAAC3Nz... agentchute:codex-tiny'
 ```
 
-The pool path is absolute on the hub. `hub authorize` refuses a non-pool path or a non-executable agentchute binary, creates or reuses the pool's durable identity, writes the forced-command key line, and enforces the SSH directory and file modes.
+The pool path is absolute on the hub. `hub authorize` refuses a non-pool path or a non-executable agentchute binary, creates or reuses the pool's durable identity, writes the forced-command key line, and enforces the SSH directory and file modes. Every printed command single-quotes its arguments, and a joining URL's pool path must match `[A-Za-z0-9._/+-]+` — the same set `hub authorize` accepts — so a pasted command cannot carry shell syntax.
+
+`hub authorize` refuses to bind a key to an id the pool already knows without a hub key: one with a registration row, a fresh serve claim, an inbox (a lane offline long enough for its row to be swept), or lane state. Binding a key to such an id lets that key act as the lane — claim its mail and send under its name. When that is intended (re-authorizing a lane whose key was revoked, or moving a local lane to a remote machine), run it from an interactive terminal with `--takeover`. The check is that stdin is a real terminal (not `/dev/null`, a pipe or a file), so it refuses a script, a pasted non-interactive `ssh` command or an agent's tool call. It does **not** prove a human is present — `ssh -t`, `script` or `expect` can allocate a terminal — so treat it as a guard against the automated path, not as authentication. Swapping the key of an id that already HAS one (`--replace-key` with a different key) is the same takeover and is gated the same way. While a lane holds claimed mail, its guard also denies `hub authorize`, `hub join` and `hub session`.
 
 Audit or revoke authorizations on the hub:
 
@@ -34,7 +36,7 @@ OpenSSH checks `authorized_keys` when a connection authenticates, not for every 
 
 For an immediate change, stop or relaunch the lane on the joining machine. Reap a local one-shot master with `ssh -O exit` when the authorizing account also owns it. When the CLI does this for you, it counts the master as reaped only if the socket is **provably gone** ("no such file or directory"); a permission-denied or refused connect may be a live master, and is reported rather than treated as success. A hub operator cannot reap a master held by another host or account. This matters most for a pool repoint: until the old connection ends, new operations on it can still use the old forced-command snapshot and write to the old pool.
 
-Key rotation through `hub join --rotate-key` is self-invalidating: the multiplex identity includes the resolved key version, so promoting the new key forces the next operation to authenticate again. The active client-side replace path also reaps a matching local master when one exists.
+Key rotation through `hub join --rotate-key` needs the hub to accept a `--replace-key`, so it needs a terminal at one end. Run from a terminal, the join's auto-authorize carries one to the hub with `ssh -t`. Run without one (a script, CI, an agent), it does not try: it prints the single-quoted `agentchute hub authorize … --replace-key` command, and an operator runs it on the hub at a terminal, then re-runs the join. While that authorization is pending, an already-joined lane keeps its old active key and verified pool identity and remains usable. Rotation is self-invalidating: the multiplex identity includes the resolved key version, so promoting the new key forces the next operation to authenticate again. The active client-side replace path also reaps a matching local master when one exists.
 
 ## Joining machine
 
@@ -73,6 +75,10 @@ agentchute hub join \
 
 Run `agentchute doctor` from the joined checkout to check the local hub record, active key, connection, pinned identity, protocol, and remote pool.
 
+A checkout that already points at a **different** hub is not repointed silently: `hub join` refuses before minting a key or connecting, and `--replace` says you mean it. A same-hub migration (a new URL for the hub you already joined) needs no flag.
+
+The first join copies this machine's existing trust for the hub host — its entries in `~/.ssh/known_hosts` and `/etc/ssh/ssh_known_hosts` — into the per-hub `known_hosts` before connecting, so a key you already verified is checked rather than accepted on first use. After that the per-hub file is the pin; a later change in `~/.ssh/known_hosts` does not alter it. Agent and X11 forwarding are switched off on every hub connection, whatever your `ssh_config` says, and connection-sharing sockets live under `/tmp/ac-<uid>/`, which agentchute refuses to use unless this user owns it.
+
 ## Tailscale network recipe
 
 Use Tailscale only as the network layer:
@@ -106,12 +112,13 @@ Two warnings from `hub join` are worth recognising, because both describe someth
 breaks later rather than now:
 
 - **"joined, but this hub's host-key fingerprint could not be recorded."** The join is complete
-  and the lane works. What is lost is the ability to MIGRATE this hub to a new URL later: the
-  move is recognised by the recorded fingerprint, and with none recorded it is never offered —
-  a `hub join` at the new URL is treated as a fresh join and refused for having an authorized
-  key already. Re-run the same `hub join` once the hub is reachable and it records itself. The
-  fingerprint normally comes from `known_hosts`, and falls back to `ssh-keyscan` when that
-  yields nothing.
+  and the lane works. What is at risk is MIGRATING this hub to a new URL later: a migration
+  proves the new URL reaches the same hub by making it pass a probe pinned to the host key in
+  this hub's `known_hosts`, and with no key pinned there the move is never offered — a
+  `hub join` at the new URL is treated as a fresh join and refused for having an authorized key
+  already. Re-run the same `hub join` once the hub is reachable and it records itself. The
+  fingerprint comes only from `known_hosts`; agentchute never uses `ssh-keyscan`, which shows a
+  key without proving the server holds it.
 - **A key whose `.pub` never landed** — an interrupted mint leaves the private half with no
   public half — used to fail the join on every re-run, with nothing naming the escape. Join now
   regenerates the public half from the private key rather than minting a replacement, which
