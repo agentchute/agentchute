@@ -19,3 +19,12 @@ func readProcessEnvBlock(pid int) ([]byte, error) {
 	}
 	return parseProcArgs2Env(data)
 }
+
+// readProcessArgv returns pid's exact argv from the same kern.procargs2 buffer.
+func readProcessArgv(pid int) ([]string, error) {
+	data, err := unix.SysctlRaw("kern.procargs2", pid)
+	if err != nil {
+		return nil, fmt.Errorf("sysctl kern.procargs2 %d: %w", pid, err)
+	}
+	return parseProcArgs2Argv(data)
+}

@@ -46,6 +46,12 @@ import (
 // REDELIVERED (op.Claim), because a set latch is not proof that every
 // claimed message was displayed (check_latch_residue_test.go).
 //
+// One rule is NOT latch-scoped: a codex thread whose working directory is
+// outside the control repo cannot run agentchute bus commands at all
+// (evaluateCodexThreadCwd). codex's memory consolidation runs such a thread
+// inside the lane's own process, with the lane's identity, and one sent a
+// review verdict its lane never wrote (codex_memories.go).
+//
 // Fails OPEN (allows) whenever it cannot cleanly resolve an armed session or
 // this agent's id: a misconfigured or partially-wired guard must never
 // itself wedge a serve lane (decision §9 rev 2.3, grok P2).
@@ -244,6 +250,13 @@ type guardDecision struct {
 // lists inboxes, archives, or takes any lock beyond the single latch read on
 // the (rare) armed-and-latched path.
 func cmdGuard(args []string) error {
+	return runGuardHook(args, os.Stdin)
+}
+
+// runGuardHook is cmdGuard with the hook input passed in, so tests drive it
+// without swapping the process-wide os.Stdin (serve's input copier reads that
+// variable from a goroutine that outlives cmdServe).
+func runGuardHook(args []string, stdin io.Reader) error {
 	fs := flag.NewFlagSet("guard", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
@@ -267,7 +280,7 @@ func cmdGuard(args []string) error {
 		return guardUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	stdinBody, _ := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
+	stdinBody, _ := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	toolCmd := parseGuardToolCommand(stdinBody)
 
 	// A foreign runner env fails open like every other unresolvable guard state:
@@ -276,7 +289,13 @@ func cmdGuard(args []string) error {
 	// someone else's env.
 	decision := guardDecision{Allowed: true}
 	if warnRunnerAncestry("guard") {
-		decision = evaluateGuardInvocation(agentID, controlRepo, loopDir, toolCmd)
+		if codexHook == "PreToolUse" {
+			// Latched or not: a hidden codex thread is a hazard at any time.
+			decision = evaluateCodexThreadCwd(controlRepo, loopDir, parseGuardHookCwd(stdinBody), toolCmd)
+		}
+		if decision.Allowed {
+			decision = evaluateGuardInvocation(agentID, controlRepo, loopDir, toolCmd)
+		}
 	}
 
 	switch {
@@ -327,6 +346,109 @@ func evaluateGuardInvocation(agentIDFlag, controlRepo, loopDir, toolCmd string) 
 	}
 
 	return evaluateGuardDecision(cfg, id, session, toolCmd)
+}
+
+// guardBusSubcmdRE matches the agentchute subcommands that move mail or
+// rewire the pool, under every spelling guardAgentchuteSubcmdRE knows (plus a
+// quote closing a quoted binary token). Apply AFTER guardDispatchPrefixRE.
+var guardBusSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)["']?[ \t]+(send|check|ack|turn-end|clean|setup|update)\b`)
+
+// guardBusCommand reports whether toolCmd runs an agentchute bus command. An
+// apply_patch runs nothing.
+func guardBusCommand(toolCmd string) bool {
+	if strings.HasPrefix(toolCmd, guardApplyPatchPrefix) {
+		return false
+	}
+	normalized := guardDispatchPrefixRE.ReplaceAllString(strings.ToLower(toolCmd), "")
+	return guardBusSubcmdRE.MatchString(normalized)
+}
+
+// parseGuardHookCwd returns the hook input's `cwd` (codex's PreToolUse input
+// requires it: pre-tool-use.command.input), or "" when it is absent,
+// malformed or not absolute.
+func parseGuardHookCwd(body []byte) string {
+	var in struct {
+		Cwd string `json:"cwd"`
+	}
+	if err := json.Unmarshal(body, &in); err != nil {
+		return ""
+	}
+	cwd := strings.TrimSpace(in.Cwd)
+	if !filepath.IsAbs(cwd) {
+		return ""
+	}
+	return cwd
+}
+
+// guardPathWithin reports whether path is dir or below it: lexically, or by
+// file identity walking up from path's resolved form (a symlinked or
+// differently cased spelling of the same tree). A path or dir that cannot be
+// resolved counts as within: fail open.
+func guardPathWithin(path, dir string) bool {
+	path, dir = filepath.Clean(path), filepath.Clean(dir)
+	if rel, err := filepath.Rel(dir, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return true
+	}
+	for d := resolved; ; {
+		if info, err := os.Stat(d); err == nil && os.SameFile(info, dirInfo) {
+			return true
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return false
+		}
+		d = parent
+	}
+}
+
+// codexThreadCwdReasonFmt is the deny text for a bus command from a codex
+// thread outside the control repo.
+const codexThreadCwdReasonFmt = "this codex thread runs in %s, outside the control repo %s, so agentchute send/check/ack/turn-end/clean/setup/update are refused from it: codex runs hidden threads (memory consolidation, in ~/.codex/memories) with this lane's identity. A lane's own threads run where serve launched it; if this is one, relaunch the lane from inside the control repo (agentchute §15 guard)"
+
+// evaluateCodexThreadCwd refuses agentchute bus commands from a codex thread
+// whose working directory (the hook input's `cwd`) is outside the lane's
+// control repo, latched or not. codex's memory consolidation runs such a
+// thread inside the lane's own process, with the lane's env, in
+// ~/.codex/memories (codex_memories.go); the lane's own threads run where
+// serve launched codex. Codex only: the hidden-thread hazard is codex's, and
+// Claude Code's `cwd` follows the agent's `cd` ("the new directory after
+// Claude runs `cd`", code.claude.com/docs/en/hooks), so a Claude lane working
+// in its scratchpad is not foreign. Fails open
+// when the cwd is absent, the guard session does not resolve, discovery
+// fails, or the lane is remote: an ssh:// lane's local repo is itself derived
+// from the working directory, so it cannot anchor this check (serve's
+// `--disable memories` is the protection there).
+func evaluateCodexThreadCwd(controlRepo, loopDir, hookCwd, toolCmd string) guardDecision {
+	allow := guardDecision{Allowed: true}
+	if hookCwd == "" || !guardBusCommand(toolCmd) || resolveGuardSession() == "" {
+		return allow
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return allow
+	}
+	cfg, err := discoverConfig(loop.DiscoverOpts{
+		ControlRepoFlag: controlRepo,
+		LoopDirFlag:     loopDir,
+		Cwd:             cwd,
+		EnvControlRepo:  os.Getenv("AGENTCHUTE_CONTROL_REPO"),
+		EnvLoopDir:      os.Getenv("AGENTCHUTE_LOOP_DIR"),
+	})
+	if err != nil || cfg.Remote != nil || cfg.ControlRepo == "" {
+		return allow
+	}
+	if guardPathWithin(hookCwd, cfg.ControlRepo) {
+		return allow
+	}
+	return guardDecision{Allowed: false, Reason: fmt.Sprintf(codexThreadCwdReasonFmt, hookCwd, cfg.ControlRepo)}
 }
 
 // evaluateGuardDecision applies the C25 deny list against toolCmd, but ONLY
