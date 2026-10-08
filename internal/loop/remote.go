@@ -14,8 +14,12 @@ import (
 )
 
 var (
-	remoteNamePattern  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-	ErrRemoteNotJoined = errors.New("remote hub is not joined on this machine")
+	remoteNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	// remotePoolPathPattern is hub_authorize.go's hubSafePathPattern: the two
+	// must accept the same paths, or a URL could join a pool its own authorize
+	// line refuses.
+	remotePoolPathPattern = regexp.MustCompile(`^[A-Za-z0-9._/+-]+$`)
+	ErrRemoteNotJoined    = errors.New("remote hub is not joined on this machine")
 )
 
 func isRemoteLocator(raw string) bool {
@@ -97,6 +101,13 @@ func ParseRemoteURL(raw string) (*RemoteConfig, error) {
 	}
 	if u.Path == "" || !strings.HasPrefix(u.Path, "/") {
 		return nil, fmt.Errorf("invalid ssh control repo %q: pool path must be absolute", raw)
+	}
+	// The path is printed into "run this ON THE HUB" commands an operator
+	// pastes, so it is held to the same set `hub authorize` enforces on the hub
+	// (hubSafePathPattern): a percent-encoded `;`, space, quote or newline would
+	// otherwise reach that shell as syntax (review 2026-10-08, S8).
+	if !remotePoolPathPattern.MatchString(u.Path) {
+		return nil, fmt.Errorf("invalid ssh control repo %q: pool path must match [A-Za-z0-9._/+-]+", raw)
 	}
 	canonicalPath := u.EscapedPath()
 	if canonicalPath == "" {

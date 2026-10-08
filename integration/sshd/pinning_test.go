@@ -430,7 +430,7 @@ func TestSSHDPinningProbeVerdicts(t *testing.T) {
 		for _, want := range []string{
 			"NOT with the key agentchute pinned",
 			"fell back to another identity",
-			"hub authorize --agent drifter",
+			"hub authorize --agent 'drifter'",
 		} {
 			if !strings.Contains(verdict, want) {
 				t.Fatalf("verdict does not attribute this to producer 2 (missing %q):\n%s", want, verdict)
@@ -499,7 +499,7 @@ func TestSSHDExit127IsReclassifiedByCauseNotByGuess(t *testing.T) {
 		// The producer-2 remedy, which row 13 cannot assert without reading the
 		// host machine's own ssh config. Getting the code right while sending the
 		// operator to the wrong fix would trade one wrong message for another.
-		for _, want := range []string{"hub authorize --agent drifter", "The binary on the hub is fine"} {
+		for _, want := range []string{"hub authorize --agent 'drifter'", "The binary on the hub is fine"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Fatalf("the producer-2 message is missing %q:\n%v", want, err)
 			}

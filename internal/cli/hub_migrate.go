@@ -49,23 +49,21 @@ func findHubMigrationCandidate(remote *loop.RemoteConfig, opts hubJoinOptions) (
 	if len(candidates) == 0 {
 		return "", nil
 	}
-	fingerprint := ""
-	if currentExists {
-		fingerprint = current.HostKeyFingerprint
-	}
-	if fingerprint == "" {
-		fingerprint, err = hubJoinDiscoverFingerprint(remote)
-		if err != nil {
-			return "", err
-		}
-	}
+	// "Same hub" needs PROOF that the new URL's host holds the old hub's key.
+	// It used to come from an ssh-keyscan fingerprint, which a server can show
+	// without holding the key, followed by an accept-new probe that trusted
+	// whatever key the new host offered (review 2026-10-08, S11). Two
+	// fingerprints both recorded from authenticated joins are still enough;
+	// otherwise the new host must pass a probe pinned to the old hub's
+	// known_hosts, with the old hub's client key.
 	for _, oldID := range candidates {
 		oldCfg, err := hubclient.ReadHubConfig(oldID)
-		if err != nil || oldCfg.HostKeyFingerprint == "" || oldCfg.HostKeyFingerprint != fingerprint {
+		if err != nil {
 			continue
 		}
 		if currentExists {
-			if current.Pool12 != "" && current.Pool12 == oldCfg.Pool12 && oldCfg.URL != remote.URL {
+			if current.HostKeyFingerprint != "" && current.HostKeyFingerprint == oldCfg.HostKeyFingerprint &&
+				current.Pool12 != "" && current.Pool12 == oldCfg.Pool12 && oldCfg.URL != remote.URL {
 				return oldID, nil
 			}
 			continue
@@ -79,7 +77,7 @@ func findHubMigrationCandidate(remote *loop.RemoteConfig, opts hubJoinOptions) (
 			return "", err
 		}
 		keyPath := filepath.Join(oldDir, "keys", agentID+"_ed25519")
-		hello, warnings, err := hubJoinProbe(remote, agentID, keyPath)
+		hello, warnings, err := hubJoinPinnedProbe(remote, agentID, keyPath, filepath.Join(oldDir, "known_hosts"))
 		printHubJoinWarnings(warnings)
 		if err == nil && hello.Pool12 == oldCfg.Pool12 {
 			return oldID, nil
