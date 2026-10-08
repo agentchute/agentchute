@@ -64,16 +64,8 @@ var codexHelpOutput = func(bin string, env []string) (string, error) {
 // codex_daemon_env check reports it). env is the child env the wrapper itself
 // will be launched with.
 func codexSupportsNoDaemon(bin string, env []string) bool {
-	out, err := codexHelpOutput(bin, env)
-	if err != nil {
-		return false
-	}
-	for _, word := range strings.Fields(out) {
-		if word == codexNoDaemonFlag {
-			return true
-		}
-	}
-	return false
+	out, ok := codexHelpMemo(env)(bin)
+	return ok && codexHelpAdvertises(out, codexNoDaemonFlag)
 }
 
 // codexNoDaemonIncompatible reports whether codex 0.161 would refuse the flag
@@ -131,27 +123,54 @@ func ensureCodexNoDaemon(spec wrapperSpec, args []string, probe func(bin string)
 // arrives here directly. The spec is resolved from argv[0]'s basename, so an
 // absolute path from the dispatcher and a bare name both match.
 func serveWrapperArgs(args []string, env []string) ([]string, wrapperSpec) {
+	out, spec, _ := serveWrapperArgsNoted(args, env)
+	return out, spec
+}
+
+// serveWrapperArgsNoted is serveWrapperArgs plus the reason, when there is
+// one, that the memories probe could not confirm `--disable memories` (serve
+// warns with it). --no-daemon is decided first, against the operator's argv
+// exactly as typed; `--disable memories` (codex_memories.go) second. One
+// `codex --help` run serves both probes.
+func serveWrapperArgsNoted(args []string, env []string) ([]string, wrapperSpec, string) {
 	if len(args) == 0 {
-		return args, wrapperSpec{}
+		return args, wrapperSpec{}, ""
 	}
 	spec, ok := wrapperSpecForName(filepath.Base(args[0]))
 	if !ok {
-		return args, wrapperSpec{}
+		return args, wrapperSpec{}, ""
 	}
-	probe := func(bin string) bool { return codexSupportsNoDaemon(bin, env) }
-	return ensureCodexNoDaemon(spec, args, probe), spec
+	help := codexHelpMemo(env)
+	noDaemon := func(bin string) bool {
+		out, ok := help(bin)
+		return ok && codexHelpAdvertises(out, codexNoDaemonFlag)
+	}
+	note := ""
+	memoriesOff := func(bin string) bool {
+		result, why := probeCodexMemoriesOff(bin, env, help)
+		if result == codexMemoriesUnknown {
+			note = why
+		}
+		return result == codexMemoriesOffWorks
+	}
+	out := ensureCodexNoDaemon(spec, args, noDaemon)
+	return ensureCodexMemoriesOff(spec, out, memoriesOff), spec, note
 }
 
 // applyCodexLaunchArgs is serve's launch-time argv step, run only AFTER the
 // serve lease is admitted (both local and remote paths) and with the child's
-// own env, so a duplicate lane never executes the wrapper's --help before
-// being refused, and the probe sees what the wrapper will see. Only the
-// probe-said-no case warns: a deliberate skip (queue, agents, --remote) is
-// codex's own rule, not a missing flag.
+// own env, so a duplicate lane never executes the wrapper's --help (or
+// `features list`) before being refused, and the probes see what the wrapper
+// will see. Only a probe that said no warns: a deliberate skip (queue,
+// agents, --remote, an operator's own memories choice) is not a missing flag,
+// and a codex with no memories feature has nothing to turn off.
 func applyCodexLaunchArgs(args []string, env []string) []string {
-	out, spec := serveWrapperArgs(args, env)
+	out, spec, memoriesNote := serveWrapperArgsNoted(args, env)
 	if spec.Key == "codex" && !dispatchHasFlag(out[1:], codexNoDaemonFlag) && !codexNoDaemonIncompatible(out[1:]) {
 		fmt.Fprintf(os.Stderr, "warning: %s does not advertise %s; its shared app-server daemon hosts hooks under the FIRST serve's env (see doctor's codex_daemon_env)\n", out[0], codexNoDaemonFlag)
+	}
+	if memoriesNote != "" {
+		fmt.Fprintf(os.Stderr, "warning: could not confirm that %s takes --disable memories (%s); launching without it. If codex memories are on, hidden consolidation threads run under this lane's identity (see doctor's codex_memories)\n", out[0], memoriesNote)
 	}
 	return out
 }
@@ -265,6 +284,49 @@ func parseProcArgs2Env(data []byte) ([]byte, error) {
 		i = len(data)
 	}
 	return data[i:], nil
+}
+
+// parseProcArgs2Argv extracts argv from a kern.procargs2 buffer (layout as
+// in parseProcArgs2Env).
+func parseProcArgs2Argv(data []byte) ([]string, error) {
+	if len(data) < 4 {
+		return nil, fmt.Errorf("kern.procargs2: %d bytes, no argc", len(data))
+	}
+	argc := int(binary.NativeEndian.Uint32(data[:4]))
+	i := 4
+	for i < len(data) && data[i] != 0 { // executable path
+		i++
+	}
+	for i < len(data) && data[i] == 0 { // padding
+		i++
+	}
+	argv := make([]string, 0, argc)
+	for n := 0; n < argc && i < len(data); n++ {
+		j := i
+		for j < len(data) && data[j] != 0 {
+			j++
+		}
+		argv = append(argv, string(data[i:j]))
+		i = j + 1
+	}
+	if len(argv) != argc {
+		return nil, fmt.Errorf("kern.procargs2: argc %d but %d strings", argc, len(argv))
+	}
+	return argv, nil
+}
+
+// splitNULArgv splits a /proc/<pid>/cmdline block: NUL-terminated strings.
+func splitNULArgv(data []byte) []string {
+	data = bytes.TrimSuffix(data, []byte{0})
+	if len(data) == 0 {
+		return nil
+	}
+	parts := bytes.Split(data, []byte{0})
+	argv := make([]string, len(parts))
+	for i, p := range parts {
+		argv[i] = string(p)
+	}
+	return argv
 }
 
 // poolServeTokens reads every serve.claim under <loop>/state/<id>/ without a
