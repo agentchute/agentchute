@@ -2,6 +2,7 @@ package cli
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -11,15 +12,15 @@ import (
 // denied `git log --grep='agentchute hub join'` and read a checkout path such
 // as /Users/alex/code/agentchute as the binary; a match that only allowed
 // adjacent words was spelled around with quotes, continuations, $IFS or global
-// flags. So the command text is split into shell words and commands the way a
-// shell would, and only a command whose program is agentchute/ac (after
-// assignments, wrappers such as env/sudo/xargs, and the CLI's own global
-// options) counts. Command text nested in $(...), backticks, sh -c, eval and
-// an ssh remote command is examined the same way.
+// flags. This bounded model handles ordinary shell words/lists, common wrapper
+// options, ANSI-C hex/octal escapes, heredocs and redirection substitutions.
+// An unquoted comma-brace expansion in command position fails closed. Nested
+// substitutions, sh -c, eval, ssh commands and find -exec/-execdir/-ok are read.
 //
-// Still a speed bump, like the rest of the guard: a binary reached through an
-// arbitrary variable or alias is not seen. The S10 control is hub authorize's
-// own terminal-gated refusal.
+// This is not a complete shell parser: arbitrary variables, aliases, script
+// files, general expansion and dialect-specific syntax are not resolved.
+// Exotic spellings can evade this speed bump. The S10 control is authorize's
+// terminal gate; even that does not authenticate a human.
 
 var guardHubSubcommands = map[string]bool{"authorize": true, "join": true, "session": true}
 
@@ -32,7 +33,15 @@ var guardReserved = map[string]bool{"if": true, "then": true, "else": true, "eli
 // guardWrappers run another command given as later words.
 var guardWrappers = map[string]bool{"env": true, "command": true, "exec": true, "nohup": true, "time": true, "nice": true, "timeout": true, "sudo": true, "doas": true, "xargs": true, "stdbuf": true, "builtin": true}
 
-// guardHubInvocation reports whether lower-cased command text runs a guarded
+var guardWrapperValueOptions = map[string]string{
+	"env": " -u --unset -C --chdir -a --argv0 ", "exec": " -a ",
+	"xargs": " -E -I -L -n -P -s -J -a -d --arg-file --delimiter --eof --replace --max-lines --max-args --max-procs --max-chars --process-slot-var ",
+	"sudo":  " -u -g -h -p -C -R -T -D -a --user --group --host --prompt --chdir ",
+	"doas":  " -u -C ", "nice": " -n --adjustment ",
+	"timeout": " -s -k --signal --kill-after ", "stdbuf": " -i -o -e --input --output --error ",
+}
+
+// guardHubInvocation reports whether command text runs a guarded
 // hub subcommand anywhere in command position.
 func guardHubInvocation(text string) bool {
 	budget := guardHubBudget
@@ -65,30 +74,115 @@ func guardHubInvocationDepth(text string, depth int, budget *int) bool {
 
 // guardHubCommand examines one simple command.
 func guardHubCommand(words []string, depth int, budget *int) bool {
-	for j := 0; j+1 < len(words); j++ {
-		if filepath.Base(words[j]) == "env" && (words[j+1] == "-s" || strings.HasPrefix(words[j+1], "--split-string")) && j+2 < len(words) {
-			if guardHubInvocationDepth(words[j+2], depth+1, budget) {
-				return true
-			}
+	for len(words) > 0 {
+		*budget -= len(words)
+		if *budget < 0 || depth > 8 {
+			return true
 		}
+		words = words[guardSkipPrefix(words):]
+		if len(words) == 0 {
+			return false
+		}
+		if strings.Contains(words[0], guardBraceMarker) {
+			return true
+		}
+		if !guardWrappers[strings.ToLower(filepath.Base(words[0]))] {
+			return guardHubProgramAt(words, depth, budget)
+		}
+		words = guardWrappedCommand(words)
 	}
-	i := guardSkipPrefix(words)
+	return false
+}
+
+// guardWrappedCommand returns the actual command operand, never all the later
+// arguments. The latter treated `env printf ... agentchute hub join` as a join.
+func guardWrappedCommand(words []string) []string {
+	base := strings.ToLower(filepath.Base(words[0]))
+	i := 1
+	for i < len(words) {
+		w := words[i]
+		if w == "--" {
+			i++
+			break
+		}
+		if base == "env" && guardIsAssignment(w) {
+			i++
+			continue
+		}
+		if !strings.HasPrefix(w, "-") || w == "-" {
+			break
+		}
+		if base == "command" && strings.Contains(strings.ToLower(w), "v") {
+			return nil
+		}
+		if base == "env" && (strings.HasPrefix(w, "-S") || strings.HasPrefix(w, "--split-string")) {
+			var split string
+			switch {
+			case w == "-S" || w == "--split-string":
+				i++
+				if i >= len(words) {
+					return nil
+				}
+				split = words[i]
+			case strings.HasPrefix(w, "--split-string="):
+				split = strings.TrimPrefix(w, "--split-string=")
+			case strings.HasPrefix(w, "-S"):
+				split = w[2:]
+			}
+			// env splits quotes/whitespace but does not execute shell syntax.
+			return append([]string{"env"}, append(guardEnvWords(split), words[i+1:]...)...)
+		}
+		if strings.Contains(guardWrapperValueOptions[base], " "+w+" ") {
+			i++
+		}
+		i++
+	}
+	if base == "timeout" && i < len(words) {
+		i++ // duration precedes the wrapped command
+	}
 	if i >= len(words) {
-		return false
+		return nil
 	}
-	if guardWrappers[filepath.Base(words[i])] {
-		// Which wrapper options take a value differs per wrapper, and the guard
-		// sees lower-cased text, so it does not guess: every later word is
-		// tried as the program, once each (a wrapper found there adds nothing,
-		// since every word after it is already being tried).
-		for j := i + 1; j < len(words); j++ {
-			if guardHubProgramAt(words[j:], depth, budget) {
-				return true
-			}
+	return words[i:]
+}
+
+func guardEnvWords(s string) []string {
+	var words []string
+	var word strings.Builder
+	var quote byte
+	started := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' && i+1 < len(s) && quote != '\'' {
+			i++
+			word.WriteByte(s[i])
+			started = true
+			continue
 		}
-		return false
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			} else {
+				word.WriteByte(c)
+			}
+		} else if c == '\'' || c == '"' {
+			quote = c
+			started = true
+		} else if c == ' ' || c == '\t' || c == '\n' {
+			if started {
+				words = append(words, word.String())
+				word.Reset()
+				started = false
+			}
+		} else {
+			word.WriteByte(c)
+			started = true
+		}
 	}
-	return guardHubProgramAt(words[i:], depth, budget)
+	if started {
+		words = append(words, word.String())
+	}
+	return words
 }
 
 // guardHubProgramAt examines words[0] as the program of a command.
@@ -98,7 +192,7 @@ func guardHubProgramAt(words []string, depth int, budget *int) bool {
 		return true
 	}
 	i := 0
-	prog := words[i]
+	prog := strings.ToLower(words[i])
 	base := filepath.Base(prog)
 	switch {
 	case base == "agentchute" || base == "ac" || prog == "${agentchute_bin:-agentchute}" || prog == "${agentchute_bin}" || prog == "$agentchute_bin":
@@ -130,6 +224,20 @@ func guardHubProgramAt(words []string, depth int, budget *int) bool {
 		if cmd := guardSSHRemoteCommand(words[i+1:]); cmd != "" {
 			return guardHubInvocationDepth(cmd, depth+1, budget)
 		}
+	case base == "find":
+		for j := 1; j < len(words); j++ {
+			if words[j] != "-exec" && words[j] != "-execdir" && words[j] != "-ok" && words[j] != "-okdir" {
+				continue
+			}
+			end := j + 1
+			for end < len(words) && words[end] != ";" && words[end] != "+" {
+				end++
+			}
+			if guardHubCommand(words[j+1:end], depth+1, budget) {
+				return true
+			}
+			j = end
+		}
 	}
 	return false
 }
@@ -139,7 +247,7 @@ func guardHubProgramAt(words []string, depth int, budget *int) bool {
 func guardHubArgs(args []string) bool {
 	i := 0
 	for i < len(args) {
-		a := args[i]
+		a := strings.ToLower(args[i])
 		switch {
 		case a == "dispatch":
 			i++
@@ -150,17 +258,17 @@ func guardHubArgs(args []string) bool {
 		case strings.HasPrefix(a, "-"):
 			i++
 		default:
-			return a == "hub" && i+1 < len(args) && guardHubSubcommands[args[i+1]]
+			return a == "hub" && i+1 < len(args) && guardHubSubcommands[strings.ToLower(args[i+1])]
 		}
 	}
 	return false
 }
 
 // guardSkipPrefix returns the index of the program word: past NAME=value
-// assignments and past wrapper commands with their options.
+// assignments and reserved shell words.
 func guardSkipPrefix(words []string) int {
 	i := 0
-	for i < len(words) && (guardIsAssignment(words[i]) || guardReserved[words[i]]) {
+	for i < len(words) && (guardIsAssignment(words[i]) || guardReserved[strings.ToLower(words[i])]) {
 		i++
 	}
 	return i
@@ -205,13 +313,17 @@ func guardSSHRemoteCommand(args []string) string {
 	return strings.Join(args[i+1:], " ") // past the destination
 }
 
-// guardShellCommands splits command text into simple commands (lists of words)
-// the way a POSIX shell would for this purpose: quotes group, backslash
+// guardShellCommands models ordinary simple commands: quotes group, backslash
 // escapes, a backslash-newline continues, ;, &, |, newline and parentheses
 // separate commands, and $IFS / ${IFS} or an ANSI-C whitespace escape ($'\t')
 // separate words. The text of every $(...) and `...` is returned in nested
 // for the caller to examine as its own command line.
 func guardShellCommands(s string) (commands [][]string, nested []string) {
+	type heredoc struct {
+		delimiter    string
+		quoted, tabs bool
+	}
+	var heredocs []heredoc
 	var words []string
 	var word strings.Builder
 	inWord := false
@@ -243,7 +355,8 @@ func guardShellCommands(s string) (commands [][]string, nested []string) {
 			i++
 		case c == '>' || c == '<' || (c == '&' && i+1 < len(s) && s[i+1] == '>'):
 			// A redirection: its fd number, operator and target are not words of
-			// the command. A heredoc's body is data until its delimiter line.
+			// the command. Heredoc bodies start after the introducing newline,
+			// not at the redirect: the rest of that command line still executes.
 			if inWord && guardAllDigits(word.String()) {
 				word.Reset()
 				inWord = false
@@ -257,13 +370,27 @@ func guardShellCommands(s string) (commands [][]string, nested []string) {
 			for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
 				j++
 			}
-			target, n := guardReadWord(s[j:])
+			target, n, expansions := guardReadWord(s[j:])
+			rawTarget := s[j : j+n]
 			j += n
 			if strings.HasPrefix(op, "<<") && !strings.HasPrefix(op, "<<<") && target != "" {
-				j = guardSkipHeredoc(s, j, target)
+				heredocs = append(heredocs, heredoc{target, strings.ContainsAny(rawTarget, "'\"\\"), op == "<<-"})
+			} else {
+				nested = append(nested, expansions...)
 			}
 			i = j
-		case c == '\n' || c == ';' || c == '&' || c == '|' || c == '(' || c == ')':
+		case c == '\n':
+			endCommand()
+			i++
+			for _, doc := range heredocs {
+				body, after := guardHeredocBody(s, i, doc.delimiter, doc.tabs)
+				if !doc.quoted {
+					nested = append(nested, guardExpansions(body)...)
+				}
+				i = after
+			}
+			heredocs = nil
+		case c == ';' || c == '&' || c == '|' || c == '(' || c == ')':
 			endCommand()
 			i++
 		case c == '\'':
@@ -280,6 +407,8 @@ func guardShellCommands(s string) (commands [][]string, nested []string) {
 			i++
 			for i < len(s) && s[i] != '"' {
 				switch {
+				case s[i] == '\\' && i+1 < len(s) && s[i+1] == '\n':
+					i += 2
 				case s[i] == '\\' && i+1 < len(s):
 					word.WriteByte(s[i+1])
 					i += 2
@@ -302,30 +431,15 @@ func guardShellCommands(s string) (commands [][]string, nested []string) {
 			i++
 			inWord = true
 		case strings.HasPrefix(s[i:], "$'"):
-			j := i + 2
-			var lit strings.Builder
-			for j < len(s) && s[j] != '\'' {
-				if s[j] == '\\' && j+1 < len(s) {
-					switch s[j+1] {
-					case 't', 'n', 'r', 'v':
-						lit.WriteByte(' ')
-					default:
-						lit.WriteByte(s[j+1])
-					}
-					j += 2
-					continue
-				}
-				lit.WriteByte(s[j])
-				j++
-			}
-			i = j + 1
-			if strings.TrimSpace(lit.String()) == "" {
+			lit, n := guardANSIWord(s[i+2:])
+			i += 2 + n
+			if strings.TrimSpace(lit) == "" {
 				endWord()
 			} else {
-				word.WriteString(lit.String())
+				word.WriteString(lit)
 				inWord = true
 			}
-		case strings.HasPrefix(s[i:], "${ifs"):
+		case len(s)-i >= 5 && strings.EqualFold(s[i:i+5], "${ifs"):
 			// Any expansion of IFS (${IFS}, ${IFS:0:1}, ...) splits words.
 			endWord()
 			if j := strings.IndexByte(s[i:], '}'); j >= 0 {
@@ -333,7 +447,7 @@ func guardShellCommands(s string) (commands [][]string, nested []string) {
 			} else {
 				i = len(s)
 			}
-		case strings.HasPrefix(s[i:], "$ifs") && (i+4 == len(s) || !guardIsNameByte(s[i+4])):
+		case len(s)-i >= 4 && strings.EqualFold(s[i:i+4], "$ifs") && (i+4 == len(s) || !guardIsNameByte(s[i+4])):
 			endWord()
 			i += len("$ifs")
 		case strings.HasPrefix(s[i:], "$("):
@@ -350,6 +464,9 @@ func guardShellCommands(s string) (commands [][]string, nested []string) {
 			i += j + 2
 			inWord = true
 		default:
+			if c == '{' && guardCommaBrace(s[i:]) {
+				word.WriteString(guardBraceMarker)
+			}
 			word.WriteByte(c)
 			inWord = true
 			i++
@@ -398,21 +515,36 @@ func guardAllDigits(w string) bool {
 }
 
 // guardReadWord reads one shell word (quotes removed) from the start of s.
-func guardReadWord(s string) (string, int) {
+func guardReadWord(s string) (string, int, []string) {
 	var b strings.Builder
+	var nested []string
 	i := 0
 	for i < len(s) {
 		c := s[i]
 		switch {
 		case c == ' ' || c == '\t' || c == '\n' || c == ';' || c == '&' || c == '|' || c == '(' || c == ')' || c == '<' || c == '>':
-			return b.String(), i
+			return b.String(), i, nested
 		case c == '\'' || c == '"':
 			j := strings.IndexByte(s[i+1:], c)
 			if j < 0 {
 				b.WriteString(s[i+1:])
-				return b.String(), len(s)
+				return b.String(), len(s), nested
 			}
 			b.WriteString(s[i+1 : i+1+j])
+			if c == '"' {
+				nested = append(nested, guardExpansions(s[i+1:i+1+j])...)
+			}
+			i += j + 2
+		case strings.HasPrefix(s[i:], "$("):
+			inner, n := guardBalanced(s[i+2:])
+			nested = append(nested, inner)
+			i += 2 + n
+		case c == '`':
+			j := strings.IndexByte(s[i+1:], '`')
+			if j < 0 {
+				j = len(s) - i - 1
+			}
+			nested = append(nested, s[i+1:i+1+j])
 			i += j + 2
 		case c == '\\' && i+1 < len(s):
 			b.WriteByte(s[i+1])
@@ -422,18 +554,16 @@ func guardReadWord(s string) (string, int) {
 			i++
 		}
 	}
-	return b.String(), i
+	if i > len(s) {
+		i = len(s)
+	}
+	return b.String(), i, nested
 }
 
-// guardSkipHeredoc returns the index just past a heredoc body that starts on
-// the line after position i and ends at a line equal to delim (leading tabs
-// allowed, as <<- permits).
-func guardSkipHeredoc(s string, i int, delim string) int {
-	nl := strings.IndexByte(s[i:], '\n')
-	if nl < 0 {
-		return len(s)
-	}
-	j := i + nl + 1
+// guardHeredocBody starts after the introducing newline. Quotes in the body
+// are data, not shell quotes; only a quoted delimiter suppresses expansions.
+func guardHeredocBody(s string, i int, delim string, tabs bool) (string, int) {
+	j := i
 	for j < len(s) {
 		end := strings.IndexByte(s[j:], '\n')
 		line := s[j:]
@@ -442,10 +572,133 @@ func guardSkipHeredoc(s string, i int, delim string) int {
 			line = s[j : j+end]
 			next = j + end + 1
 		}
-		if strings.TrimLeft(line, "\t") == delim {
-			return next
+		if tabs {
+			line = strings.TrimLeft(line, "\t")
+		}
+		if line == delim {
+			return s[i:j], next
 		}
 		j = next
 	}
-	return len(s)
+	return s[i:], len(s)
+}
+
+// guardExpansions reads contexts where quote characters are ordinary data
+// (an unquoted heredoc body or the contents of a double-quoted redirect).
+func guardExpansions(s string) (nested []string) {
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '\\':
+			i++
+		case strings.HasPrefix(s[i:], "$("):
+			inner, n := guardBalanced(s[i+2:])
+			nested = append(nested, inner)
+			i += 1 + n
+		case s[i] == '`':
+			j := strings.IndexByte(s[i+1:], '`')
+			if j < 0 {
+				j = len(s) - i - 1
+			}
+			nested = append(nested, s[i+1:i+1+j])
+			i += j + 1
+		}
+	}
+	return nested
+}
+
+const guardBraceMarker = "\x00brace\x00"
+
+func guardCommaBrace(s string) bool {
+	comma := false
+	for i := 1; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++
+		case '\'', '"':
+			j := strings.IndexByte(s[i+1:], s[i])
+			if j < 0 {
+				return false
+			}
+			i += j + 1
+		case ',':
+			comma = true
+		case '}':
+			return comma
+		case '{', ' ', '\t', '\n', ';', '&', '|':
+			return false
+		}
+	}
+	return false
+}
+
+func guardANSIWord(s string) (string, int) {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		i++
+		if c == '\'' {
+			return b.String(), i
+		}
+		if c != '\\' || i >= len(s) {
+			b.WriteByte(c)
+			continue
+		}
+		c = s[i]
+		i++
+		base, digits := 0, 0
+		switch {
+		case c == 'x':
+			base, digits = 16, 2
+		case c == 'u':
+			base, digits = 16, 4
+		case c == 'U':
+			base, digits = 16, 8
+		case c >= '0' && c <= '7':
+			base, digits = 8, 3
+			i--
+		}
+		if base != 0 {
+			start := i
+			for i < len(s) && i-start < digits {
+				if _, err := strconv.ParseUint(s[i:i+1], base, 8); err != nil {
+					break
+				}
+				i++
+			}
+			if i > start {
+				n, _ := strconv.ParseUint(s[start:i], base, 32)
+				if c == 'u' || c == 'U' {
+					b.WriteRune(rune(n))
+				} else {
+					b.WriteByte(byte(n))
+				}
+				continue
+			}
+		}
+		switch c {
+		case 'a':
+			b.WriteByte('\a')
+		case 'b':
+			b.WriteByte('\b')
+		case 'e', 'E':
+			b.WriteByte(27)
+		case 'f':
+			b.WriteByte('\f')
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case 'v':
+			b.WriteByte('\v')
+		case '\\', '\'', '"', '?':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		}
+	}
+	return b.String(), i
 }

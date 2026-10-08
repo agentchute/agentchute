@@ -374,7 +374,7 @@ func guardCommandDenied(toolCmd string) bool {
 	if guardAgentchuteSubcmdRE.MatchString(normalized) && !guardCleanOwedExempt(normalized) {
 		return true
 	}
-	if guardHubInvocation(guardStripToolName(lower)) {
+	if guardHubInvocation(guardStripToolName(toolCmd)) {
 		return true
 	}
 	for _, pattern := range guardPipelineDenySubstrings {

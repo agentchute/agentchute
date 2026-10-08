@@ -4,11 +4,13 @@ package sshd
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	creackpty "github.com/creack/pty"
 )
@@ -25,16 +27,19 @@ func (h *sshdHarness) runCLITTY(dir string, args ...string) (string, string, err
 		h.t.Fatalf("open pty: %v", err)
 	}
 	defer ptmx.Close()
+	defer tty.Close()
 	// Drain anything written back to the terminal (ssh -t puts it in raw mode),
 	// so a full pty buffer can never stall the child.
 	go func() { _, _ = io.Copy(io.Discard, ptmx) }()
-	cmd := exec.Command(h.binary, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, h.binary, args...)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Dir = dir
 	cmd.Env = h.commandEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, &stdout, &stderr
 	err = cmd.Run()
-	_ = tty.Close()
 	return stdout.String(), stderr.String(), err
 }
 
