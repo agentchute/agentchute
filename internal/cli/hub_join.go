@@ -830,12 +830,61 @@ func readHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
 // the other option, and it is weaker: a key the user later accepted with plain
 // ssh would then pass agentchute's pin too, and the fingerprint join records
 // would come from whichever file happened to match.
-// hubKnownHostsSpec is how ssh names this hub in known_hosts.
+// hubKnownHostsSpec is the name ssh checks this hub's host key under. The hub
+// connection honours the user's ssh_config, so that is a HostKeyAlias when one
+// is configured, and otherwise the host with the EFFECTIVE port — which a
+// configured Port can change (PR #216 gate, codex P2). ssh -G resolves both the
+// way the connection will. If it cannot, the fallback is loud, never silent.
 func hubKnownHostsSpec(remote *loop.RemoteConfig) string {
-	if remote.Port != 22 {
-		return fmt.Sprintf("[%s]:%d", remote.Host, remote.Port)
+	alias, port, err := hubJoinResolveSSH(remote)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not resolve %s through your ssh config (ssh -G: %v); looking up its host key as %s:%d\n", remote.Host, err, remote.Host, remote.Port)
+		alias, port = "", remote.Port
+	}
+	if alias != "" {
+		return alias
+	}
+	if port != 22 {
+		return fmt.Sprintf("[%s]:%d", remote.Host, port)
 	}
 	return remote.Host
+}
+
+// hubJoinSSHConfig, when set, is passed to ssh -G as -F. Production leaves it
+// empty so ssh reads the same config the hub connection does (ssh finds it
+// through the account's passwd home, not $HOME — which is why a row needs it).
+var hubJoinSSHConfig = ""
+
+// hubJoinResolveSSH asks ssh for the effective HostKeyAlias and port of the
+// hub destination.
+var hubJoinResolveSSH = func(remote *loop.RemoteConfig) (alias string, port int, err error) {
+	args := []string{"-G"}
+	if hubJoinSSHConfig != "" {
+		args = append(args, "-F", hubJoinSSHConfig)
+	}
+	if remote.Port != 22 {
+		args = append(args, "-p", strconv.Itoa(remote.Port))
+	}
+	out, err := exec.Command("ssh", append(args, remote.Destination())...).Output()
+	if err != nil {
+		return "", 0, err
+	}
+	port = remote.Port
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		switch strings.ToLower(fields[0]) {
+		case "hostkeyalias":
+			alias = fields[1]
+		case "port":
+			if p, perr := strconv.Atoi(fields[1]); perr == nil {
+				port = p
+			}
+		}
+	}
+	return alias, port, nil
 }
 
 func seedHubKnownHosts(remote *loop.RemoteConfig) error {

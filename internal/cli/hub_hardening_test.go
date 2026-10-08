@@ -400,3 +400,42 @@ func testHostKeyBlob(t *testing.T) string {
 	}
 	return strings.Fields(string(pub))[1]
 }
+
+// PR #216 gate (codex P2): seeding looked the host up as remote.Host[:port],
+// but ssh — with the user's own ssh_config, as agentchute's connection uses it —
+// checks the HostKeyAlias (or the configured Port) instead, so an entry the user
+// already trusted under that name was missed and the first connection fell back
+// to accept-new. Seeding now asks ssh -G for the name it will check.
+func TestHubJoinSeedsUnderTheNameSSHChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, entryName string
+	}{
+		{"HostKeyAlias", "Host hub.example\n  HostKeyAlias trusted-hub\n", "trusted-hub"},
+		{"configured Port", "Host hub.example\n  Port 2222\n", "[hub.example]:2222"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, remote := setupHubJoinTest(t)
+			home, _ := os.UserHomeDir()
+			if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(home, ".ssh", "config"), []byte(tc.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			orig := hubJoinSSHConfig
+			hubJoinSSHConfig = filepath.Join(home, ".ssh", "config")
+			t.Cleanup(func() { hubJoinSSHConfig = orig })
+			blob := testHostKeyBlob(t)
+			if err := os.WriteFile(filepath.Join(home, ".ssh", "known_hosts"), []byte(tc.entryName+" ssh-ed25519 "+blob+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := seedHubKnownHosts(remote); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(filepath.Join(remote.HubDir, "known_hosts"))
+			if err != nil || !strings.Contains(string(got), blob) {
+				t.Fatalf("the user's entry under %q was not seeded (err %v):\n%s", tc.entryName, err, got)
+			}
+		})
+	}
+}
