@@ -120,7 +120,7 @@ Each of arms 1–3 also accepts an `ssh://` locator (a remote lane's pointer at 
 ssh://[user@]host[:port]/absolute/path/to/control-repo
 ```
 
-`user` and `host` match `[A-Za-z0-9._-]+` and must not begin with `-`; `port` is 1–65535 or omitted (ssh default); the path is absolute on the hub. The `ssh://` prefix is recognized **before** local-directory checks. Remoteness is discovered from this locator — there is no `--hub` / `--remote` flag. An `ssh://` locator combined with an explicit `--loop-dir` / `AGENTCHUTE_LOOP_DIR` is a hard error (one authority for where local state lives). The local state for a joined hub lives under `~/.agentchute/hub/<hub-id>/` (shadow loop dir, keys, known_hosts); mail never does.
+`user` and `host` match `[A-Za-z0-9._-]+` and must not begin with `-`; `port` is 1–65535 or omitted (ssh default); the path is absolute on the hub and, after percent-decoding, matches `[A-Za-z0-9._/+-]+` — the set `hub authorize` accepts on the hub, because the path is printed into commands an operator pastes there. The `ssh://` prefix is recognized **before** local-directory checks. Remoteness is discovered from this locator — there is no `--hub` / `--remote` flag. An `ssh://` locator combined with an explicit `--loop-dir` / `AGENTCHUTE_LOOP_DIR` is a hard error (one authority for where local state lives). The local state for a joined hub lives under `~/.agentchute/hub/<hub-id>/` (shadow loop dir, keys, known_hosts); mail never does.
 
 ### 4.2 Loop dir cascade
 1. **`--loop-dir <path>` flag.**
@@ -412,7 +412,7 @@ A remote send terminates as `send-ok` or `error`. Those are two shapes: `error` 
 The ambiguity window opens when the first byte of the `send` frame is handed to the ssh child's stdin, and closes when `send-ok` or an `error` frame for that `id` is read.
 
 - **Before the window** (connect, hello, preflight error frame): the send provably did not happen. The CLI spools the body and prints the retry command. Retrying is safe.
-- **Inside the window** (channel drops, ssh exits, response deadline expires with no frame): the outcome is **unknown**. The CLI spools the body, exits 1 with `E_SEND_UNKNOWN`, and **never retries automatically**. There is no delivery-side dedup (§6.2: at-most-once, no idempotency key); a blind replay would be a duplicate message.
+- **Inside the window** (channel drops, ssh exits, response deadline expires with no frame, or the terminal frame is malformed — another request's `id`, or not `send-ok`/`error`): the outcome is **unknown**. Only an `error` frame for this `id` proves nothing was delivered. The CLI spools the body, exits 1 with `E_SEND_UNKNOWN`, and **never retries automatically**. There is no delivery-side dedup (§6.2: at-most-once, no idempotency key); a blind replay would be a duplicate message.
 - A `send-ok` with non-empty `durability_note` and/or non-empty `owed_note` is still a committed delivery: report, do not resend. Neither field is a delivery failure.
 
 ### 13.6 Disconnect after claim
@@ -456,6 +456,8 @@ One-shot masters are isolated by an opaque 12-hex digest over the hub id, agent 
 ### 13.9 Identity pinning
 
 One authorized key = one agent id. The `authorized_keys` line **is** the mapping — no side database.
+
+`hub authorize` does not append a line for an id the pool already knows without one — a registration row, a fresh serve claim, an inbox (its row may have been swept), or lane state — unless run with `--takeover` from an interactive terminal: a new key for such an id is that lane. Replacing the key of an id that already has a line still takes `--replace-key`.
 
 ```
 restrict,command="/usr/local/bin/agentchute hub session --agent <id> --pool <abs> --pool-id <pool12>" ssh-ed25519 … agentchute:<id>:<pool12>
