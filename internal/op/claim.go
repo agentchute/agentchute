@@ -172,7 +172,7 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 				return sum, ferr
 			}
 			if qerr != nil {
-				if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("failed to quarantine %s: %v", OneLine(name, peerNameMaxRunes), qerr))); eerr != nil {
+				if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("failed to quarantine %s: %s", OneLine(name, peerNameMaxRunes), OneLine(qerr.Error(), 4*peerNameMaxRunes)))); eerr != nil {
 					return sum, eerr
 				}
 				continue
