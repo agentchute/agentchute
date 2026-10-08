@@ -25,7 +25,7 @@ func cmdPending(args []string) error {
 	fs := flag.NewFlagSet("pending", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, controlRepo, loopDir, staleAfter, codexHook, claudeHook string
+	var agentID, vendor, controlRepo, loopDir, staleAfter, codexHook, claudeHook, geminiHook, agyHook string
 	var jsonOut, failIfAny, showBody bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
@@ -38,6 +38,8 @@ func cmdPending(args []string) error {
 	fs.StringVar(&staleAfter, "stale-after", "", "annotate (not filter) messages older than this duration (default 24h; 0s disables)")
 	fs.StringVar(&codexHook, "codex-hook", "", "emit codex-specific hook JSON shape for the named event (UserPromptSubmit)")
 	fs.StringVar(&claudeHook, "claude-hook", "", "emit Claude-Code-specific hook JSON shape for the named event (UserPromptSubmit)")
+	fs.StringVar(&geminiHook, "gemini-hook", "", "emit Gemini CLI hook JSON shape for the named event (BeforeAgent)")
+	fs.StringVar(&agyHook, "agy-hook", "", "emit Antigravity CLI hook JSON shape for the named event (PreInvocation)")
 
 	if err := fs.Parse(args); err != nil {
 		return pendingUsage(err)
@@ -177,6 +179,15 @@ func cmdPending(args []string) error {
 	}
 	if codexHook == "UserPromptSubmit" {
 		return emitCodexUserPromptSubmit(entries, owedEntries, malformed, needsBoot, agentID)
+	}
+	if geminiHook == "BeforeAgent" {
+		return emitHookContextJSON("BeforeAgent", buildPendingContext(entries, owedEntries, malformed, needsBoot, agentID))
+	}
+	if agyHook == "PreInvocation" {
+		if len(entries) == 0 && len(owedEntries) == 0 && malformed == 0 && !needsBoot {
+			return emitAgyInjectSteps("")
+		}
+		return emitAgyInjectSteps(buildPendingContext(entries, owedEntries, malformed, needsBoot, agentID))
 	}
 	if jsonOut {
 		return emitPendingJSON(entries, owedEntries, malformed, needsBoot, agentID)
@@ -452,6 +463,8 @@ Flags:
   --stale-after <dur>   annotate (not filter) messages older than this
                         (default 24h, matching check's stale banner; 0s off)
   --codex-hook <event>  emit codex-specific hook JSON (UserPromptSubmit)
+  --gemini-hook <event> emit Gemini CLI hook JSON (BeforeAgent)
+  --agy-hook <event>    emit Antigravity CLI hook JSON (PreInvocation)
   --claude-hook <event> emit Claude-Code-specific hook JSON (UserPromptSubmit)
 `)
 }
@@ -459,4 +472,18 @@ Flags:
 // pendingPath is exported for tests to assert on path construction.
 func pendingPath(cfg *loop.Config, agentID string) string {
 	return filepath.Clean(cfg.AgentInboxDir(agentID))
+}
+
+// emitAgyInjectSteps writes Antigravity's PreInvocation/PostInvocation
+// response: `{"injectSteps":[{"ephemeralMessage": …}]}` to add transient
+// context, or `{}` when there is nothing to add
+// (https://antigravity.google/docs/hooks/ — there is no additionalContext
+// field in that contract).
+func emitAgyInjectSteps(message string) error {
+	out := map[string]any{}
+	if message != "" {
+		out["injectSteps"] = []map[string]any{{"ephemeralMessage": message}}
+	}
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(out)
 }

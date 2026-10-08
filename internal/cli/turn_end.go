@@ -65,7 +65,7 @@ func cmdTurnEnd(args []string) error {
 	fs := flag.NewFlagSet("turn-end", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, host, bio, controlRepo, loopDir, codexHook string
+	var agentID, vendor, host, bio, controlRepo, loopDir, codexHook, geminiHook, agyHook string
 	var jsonOut bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai, local)")
@@ -75,6 +75,8 @@ func cmdTurnEnd(args []string) error {
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
 	fs.StringVar(&codexHook, "codex-hook", "", "codex hook JSON shape for the named event (Stop)")
+	fs.StringVar(&geminiHook, "gemini-hook", "", "Gemini CLI hook JSON shape for the named event (AfterAgent)")
+	fs.StringVar(&agyHook, "agy-hook", "", "Antigravity CLI hook JSON shape for the named event (Stop)")
 
 	if err := fs.Parse(args); err != nil {
 		return turnEndUsage(err)
@@ -198,6 +200,12 @@ func cmdTurnEnd(args []string) error {
 		// the exit code, for this event).
 		return emitGateCodexStop(status)
 	}
+	if geminiHook == "AfterAgent" {
+		return emitTurnEndGeminiAfterAgent(status, os.Stdin)
+	}
+	if agyHook == "Stop" {
+		return emitTurnEndAgyStop(status)
+	}
 	if jsonOut {
 		if err := emitTurnEndJSON(status, acked); err != nil {
 			return err
@@ -268,5 +276,49 @@ Flags:
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --json                structured JSON output
   --codex-hook <event>  codex hook JSON shape (Stop)
+  --gemini-hook <event> Gemini CLI hook JSON shape (AfterAgent)
+  --agy-hook <event>    Antigravity CLI hook JSON shape (Stop)
 `)
+}
+
+// geminiAfterAgentInput is the slice of Gemini CLI's AfterAgent stdin this
+// command reads: stop_hook_active is true when the hook is already running as
+// part of a retry it caused (geminicli.com/docs/hooks/reference).
+type geminiAfterAgentInput struct {
+	StopHookActive bool `json:"stop_hook_active"`
+}
+
+// emitTurnEndGeminiAfterAgent is the Gemini CLI end-of-turn contract: silent
+// and exit 0 on clear; `{"decision":"deny","reason":…}` with exit 0 on block —
+// the documented AfterAgent deny (geminicli.com/docs/hooks/reference#afteragent),
+// which rejects the response and retries with the reason; exit 2 is the
+// stderr spelling of the same rejection and is not used. A second AfterAgent
+// raised by our own deny (stop_hook_active) is never denied again, so a lane
+// that cannot clear the gate is not spun in retries.
+func emitTurnEndGeminiAfterAgent(s gateStatus, stdin io.Reader) error {
+	if !s.Blocked {
+		return nil
+	}
+	var in geminiAfterAgentInput
+	if data, err := io.ReadAll(io.LimitReader(stdin, 1<<20)); err == nil && len(data) > 0 {
+		_ = json.Unmarshal(data, &in)
+	}
+	if in.StopHookActive {
+		return nil
+	}
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(map[string]any{"decision": "deny", "reason": gateBlockedReasonLine(s)})
+}
+
+// emitTurnEndAgyStop is Antigravity's Stop contract: `decision` is required;
+// `"continue"` keeps the agent running and injects `reason` as a system
+// message, any other value allows the stop (https://antigravity.google/docs/hooks/).
+// Clear → `{"decision":"stop"}`; blocked → continue with the gate's reason.
+func emitTurnEndAgyStop(s gateStatus) error {
+	out := map[string]any{"decision": "stop"}
+	if s.Blocked {
+		out = map[string]any{"decision": "continue", "reason": gateBlockedReasonLine(s)}
+	}
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(out)
 }

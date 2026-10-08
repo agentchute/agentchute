@@ -60,7 +60,7 @@ func TestParseDispatch_Run(t *testing.T) {
 		wantWArgs  []string
 	}{
 		{"serve by key", []string{"serve", "codex"}, "codex", nil, []string{}},
-		{"serve by alias agy", []string{"serve", "agy"}, "gemini", nil, []string{}},
+		{"serve by alias agy", []string{"serve", "agy"}, "agy", nil, []string{}},
 		{"serve with global flag (spaced)", []string{"--as", "x", "serve", "codex"}, "codex", []string{"--as", "x"}, []string{}},
 		{"serve with global flag (=)", []string{"--as=x", "serve", "gemini", "--flag"}, "gemini", []string{"--as=x"}, []string{"--flag"}},
 		{"serve with control-repo + loop-dir globals", []string{"--control-repo", "R", "--loop-dir", "D", "serve", "codex"}, "codex", []string{"--control-repo", "R", "--loop-dir", "D"}, []string{}},

@@ -16,10 +16,16 @@ import (
 
 // ---------- H5: Guarded follows the binary ----------
 
+// Guarded follows the launched binary: a spec may list candidate binaries
+// that do not load its template (UnguardedBinaries). Since the Google
+// templates PR, `agy` is its own guarded wrapper and no longer a gemini
+// candidate, so the mechanism is pinned on a synthetic spec.
 func TestWrapperGuardedForBinary(t *testing.T) {
 	gemini, _ := wrapperSpecForName("gemini")
+	agy, _ := wrapperSpecForName("agy")
 	grok, _ := wrapperSpecForName("grok")
 	codex, _ := wrapperSpecForName("codex")
+	synth := wrapperSpec{Key: "synth", AgentID: "synth-cli", Guarded: true, UnguardedBinaries: []string{"synthfoo"}}
 	rows := []struct {
 		spec   wrapperSpec
 		binary string
@@ -28,8 +34,9 @@ func TestWrapperGuardedForBinary(t *testing.T) {
 	}{
 		{gemini, "/usr/local/bin/gemini", true, false},
 		{gemini, "gemini-cli", true, false},
-		{gemini, "/Users/alex/.local/bin/agy", false, true},
-		{gemini, "agy", false, true},
+		{agy, "/Users/alex/.local/bin/agy", true, false},
+		{synth, "/opt/bin/synthfoo", false, true},
+		{synth, "synthbar", true, false},
 		{grok, "/Users/alex/.grok/bin/grok", false, false},
 		{codex, "codex", true, false},
 	}
@@ -38,15 +45,21 @@ func TestWrapperGuardedForBinary(t *testing.T) {
 		if got != row.want || (reason != "") != row.reason {
 			t.Fatalf("%s + %s: guarded=%v reason=%q, want guarded=%v reason=%v", row.spec.Key, row.binary, got, reason, row.want, row.reason)
 		}
-		if reason != "" && (!strings.Contains(reason, "agy") || !strings.Contains(reason, "UNGUARDED")) {
+		if reason != "" && (!strings.Contains(reason, "synthfoo") || !strings.Contains(reason, "UNGUARDED")) {
 			t.Fatalf("reason must name the binary and say unguarded: %q", reason)
+		}
+	}
+	for _, c := range gemini.Candidates {
+		if c == "agy" {
+			t.Fatal("ac serve gemini must never resolve to agy")
 		}
 	}
 }
 
-// `ac serve gemini` resolving to agy: the child gets no AGENTCHUTE_GUARD,
-// stderr says which binary and why, and the gemini template is NOT written.
-func TestServeAgyLaunchesUnguardedWithoutGeminiTemplate(t *testing.T) {
+// `ac serve agy` is a guarded lane with its own template: the child gets
+// AGENTCHUTE_GUARD=1 and id agy, .agents/hooks.json is installed, and no gemini
+// file is written.
+func TestServeAgyLaunchesGuardedWithItsOwnTemplate(t *testing.T) {
 	root := setupShortRunFixture(t)
 	envPath := filepath.Join(root, "child-env.txt")
 	wrapper := filepath.Join(root, "agy")
@@ -57,7 +70,7 @@ func TestServeAgyLaunchesUnguardedWithoutGeminiTemplate(t *testing.T) {
 	var serveErr error
 	stderr := captureStderr(t, func() {
 		withCwd(t, root, func() {
-			serveErr = cmdServe([]string{"--as", "gemini-cli", "--control-repo", root, "--loop-dir", filepath.Join(root, ".agentchute", "loop"), "--interval", "5", "--idle-grace", "100ms", "--", wrapper})
+			serveErr = cmdServe([]string{"--as", "agy", "--control-repo", root, "--loop-dir", filepath.Join(root, ".agentchute", "loop"), "--interval", "5", "--idle-grace", "100ms", "--", wrapper})
 		})
 	})
 	if serveErr != nil {
@@ -67,16 +80,16 @@ func TestServeAgyLaunchesUnguardedWithoutGeminiTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wrapper did not run: %v", err)
 	}
-	if strings.Contains(string(got), "AGENTCHUTE_GUARD=") {
-		t.Fatalf("agy child is armed:\n%s", got)
+	if !strings.Contains(string(got), "AGENTCHUTE_GUARD=1") || !strings.Contains(string(got), "AGENTCHUTE_AGENT_ID=agy") {
+		t.Fatalf("agy child env:\n%s", got)
 	}
-	if !strings.Contains(string(got), "AGENTCHUTE_AGENT_ID=gemini-cli") {
-		t.Fatalf("child env missing the id:\n%s", got)
+	if strings.Contains(stderr, "UNGUARDED") {
+		t.Fatalf("spurious unguarded warning:\n%s", stderr)
 	}
-	if !strings.Contains(stderr, "resolved to agy") || !strings.Contains(stderr, "UNGUARDED") {
-		t.Fatalf("stderr did not say which binary and why:\n%s", stderr)
+	if _, err := os.Stat(filepath.Join(root, ".agents/hooks.json")); err != nil {
+		t.Fatalf("agy template not installed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".gemini", "settings.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, ".gemini/settings.json")); !os.IsNotExist(err) {
 		t.Fatalf("gemini template written for agy: stat err = %v", err)
 	}
 }
@@ -380,51 +393,58 @@ func sha256Hex(s string) string {
 
 // ---------- codex gate finding 3: doctor agrees with the unguarded agy launch ----------
 
-func TestDoctorSkipsHookPresenceForUnguardedAgy(t *testing.T) {
-	geminiTemplate := filepath.Join(".gemini", "settings.json")
+// doctor requires agy's OWN template for an agy lane (BLOCKER absent, OK
+// present, BLOCKER drifted), and a gemini-cli lane whose PATH holds only agy
+// has no resolvable gemini binary: it is never treated as an unguarded agy
+// launch, since `ac serve gemini` no longer resolves to agy at all.
+func TestDoctorAgyRequiresItsOwnTemplate(t *testing.T) {
+	bin := t.TempDir()
+	mustWrite(t, filepath.Join(bin, "agy"), []byte("#!/bin/sh\nexit 0\n"))
+	if err := os.Chmod(filepath.Join(bin, "agy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	template, err := fs.ReadFile(hooksFS, "examples/hooks/agy/.agents/hooks.json")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, row := range []struct {
 		name     string
-		template string // "" = absent, otherwise written as the installed gemini file
+		agent    string
+		template []byte
+		want     string
 	}{
-		{"template absent", ""},
-		{"template present but stale", "{\"hooks\":{}}"},
+		{"agy, template absent", "agy", nil, severityBlocker},
+		{"agy, template present", "agy", template, severityOK},
+		{"agy, template drifted", "agy", []byte("{\"agentchute\":{}}"), severityBlocker},
+		{"gemini-cli with only agy on PATH: not an unguarded skip", "gemini-cli", nil, severityBlocker},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			cfg := newDoctorCfg(t)
-			if row.template != "" {
-				mustWrite(t, filepath.Join(cfg.ControlRepo, geminiTemplate), []byte(row.template))
+			if row.template != nil {
+				mustWrite(t, filepath.Join(cfg.ControlRepo, ".agents/hooks.json"), row.template)
 			}
-			bin := t.TempDir()
-			mustWrite(t, filepath.Join(bin, "agy"), []byte("#!/bin/sh\nexit 0\n"))
-			if err := os.Chmod(filepath.Join(bin, "agy"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{Now: time.Now().UTC(), PathEnv: bin})
+			r := runDoctorChecks(cfg, row.agent, doctorOptions{Now: time.Now().UTC(), PathEnv: bin})
 			c := findCheck(t, r, "hook_file_presence")
-			if c.Severity != severitySkip || !strings.Contains(c.Message, "agy") || !strings.Contains(c.Message, "unguarded") {
-				t.Fatalf("hook_file_presence with agy resolved = %s: %s", c.Severity, c.Message)
+			if c.Severity != row.want {
+				t.Fatalf("hook_file_presence = %s (%s), want %s", c.Severity, c.Message, row.want)
+			}
+			if c.Severity == severitySkip {
+				t.Fatalf("no Google lane is an unguarded skip any more: %s", c.Message)
 			}
 		})
-	}
-	// With a real gemini binary on PATH the template is still required.
-	cfg := newDoctorCfg(t)
-	bin := t.TempDir()
-	mustWrite(t, filepath.Join(bin, "gemini"), []byte("#!/bin/sh\nexit 0\n"))
-	if err := os.Chmod(filepath.Join(bin, "gemini"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{Now: time.Now().UTC(), PathEnv: bin})
-	if c := findCheck(t, r, "hook_file_presence"); c.Severity != severityBlocker {
-		t.Fatalf("gemini binary without its template must still block: %s %s", c.Severity, c.Message)
 	}
 }
 
 // doctor picks the SAME binary serve does: PATH directories first, not
-// candidate names first (codex gate r2 on #213). With agy in an earlier PATH
-// dir and gemini in a later one, serve launches agy, so doctor must SKIP;
-// with the order reversed, gemini semantics apply (the template is required).
+// candidate names first (codex gate r2 on #213), and the shim directory is
+// excluded. Pinned on a synthetic spec with an unguarded candidate, since no
+// shipped wrapper has one any more.
 func TestDoctorMatchesServePathOrder(t *testing.T) {
-	geminiTemplate := filepath.Join(".gemini", "settings.json")
+	synth := wrapperSpec{Key: "synth", Name: "ac-synth", Aliases: []string{"synthbar"}, AgentID: "synth-cli", Vendor: "test", Candidates: []string{"synthbar", "synthfoo"}, Guarded: true, UnguardedBinaries: []string{"synthfoo"}}
+	restore := wrapperSpecs
+	wrapperSpecs = append(append([]wrapperSpec{}, restore...), synth)
+	t.Cleanup(func() { wrapperSpecs = restore })
+
 	mkBin := func(name string) string {
 		dir := t.TempDir()
 		mustWrite(t, filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"))
@@ -433,45 +453,38 @@ func TestDoctorMatchesServePathOrder(t *testing.T) {
 		}
 		return dir
 	}
-	agyDir, geminiDir := mkBin("agy"), mkBin("gemini")
-	agyFirst := agyDir + string(os.PathListSeparator) + geminiDir
-	geminiFirst := geminiDir + string(os.PathListSeparator) + agyDir
+	fooDir, barDir := mkBin("synthfoo"), mkBin("synthbar")
+	fooFirst := fooDir + string(os.PathListSeparator) + barDir
+	barFirst := barDir + string(os.PathListSeparator) + fooDir
 
 	for _, row := range []struct {
 		name     string
 		pathEnv  string
-		template string
-		want     string
+		wantSkip bool
 	}{
-		{"agy first, template absent", agyFirst, "", severitySkip},
-		{"agy first, template present but stale", agyFirst, "{\"hooks\":{}}", severitySkip},
-		{"gemini first, template absent", geminiFirst, "", severityBlocker},
+		{"unguarded binary first", fooFirst, true},
+		{"guarded binary first", barFirst, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			cfg := newDoctorCfg(t)
-			if row.template != "" {
-				mustWrite(t, filepath.Join(cfg.ControlRepo, geminiTemplate), []byte(row.template))
-			}
-			// serve's own selection, for the record.
-			spec, _ := wrapperSpecForName("gemini")
-			resolved, err := resolveRealWrapperOnPath(spec, "", row.pathEnv)
+			resolved, err := resolveRealWrapperOnPath(synth, "", row.pathEnv)
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{Now: time.Now().UTC(), PathEnv: row.pathEnv})
+			r := runDoctorChecks(cfg, "synth-cli", doctorOptions{Now: time.Now().UTC(), PathEnv: row.pathEnv})
 			c := findCheck(t, r, "hook_file_presence")
-			if c.Severity != row.want {
-				t.Fatalf("serve would launch %s; hook_file_presence = %s (%s), want %s", resolved, c.Severity, c.Message, row.want)
+			if (c.Severity == severitySkip) != row.wantSkip {
+				t.Fatalf("serve would launch %s; hook_file_presence = %s (%s), want skip=%v", resolved, c.Severity, c.Message, row.wantSkip)
 			}
 		})
 	}
-	// The shim directory is excluded, as serve excludes it: a stale `agy`
-	// alias shim ahead of the real gemini must not flip the verdict.
+	// The shim directory is excluded, as serve excludes it: a stale unguarded
+	// alias shim ahead of the real binary must not flip the verdict.
 	cfg := newDoctorCfg(t)
-	shimDir := mkBin("agy")
-	pathEnv := shimDir + string(os.PathListSeparator) + geminiDir
-	r := runDoctorChecks(cfg, "gemini-cli", doctorOptions{Now: time.Now().UTC(), PathEnv: pathEnv, GlobalState: &setupGlobalState{ShimDir: shimDir}})
-	if c := findCheck(t, r, "hook_file_presence"); c.Severity != severityBlocker {
-		t.Fatalf("shim-dir agy must be skipped like serve does: %s %s", c.Severity, c.Message)
+	shimDir := mkBin("synthfoo")
+	pathEnv := shimDir + string(os.PathListSeparator) + barDir
+	r := runDoctorChecks(cfg, "synth-cli", doctorOptions{Now: time.Now().UTC(), PathEnv: pathEnv, GlobalState: &setupGlobalState{ShimDir: shimDir}})
+	if c := findCheck(t, r, "hook_file_presence"); c.Severity == severitySkip {
+		t.Fatalf("shim-dir binary must be skipped like serve does: %s %s", c.Severity, c.Message)
 	}
 }

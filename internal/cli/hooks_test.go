@@ -165,6 +165,7 @@ func TestHooksInstallAllWrappers(t *testing.T) {
 			filepath.Join(".claude", "settings.json"),
 			filepath.Join(".codex", "hooks.json"),
 			filepath.Join(".gemini", "settings.json"),
+			filepath.Join(".agents", "hooks.json"),
 		} {
 			path := filepath.Join(root, want)
 			if _, err := os.Stat(path); err != nil {
@@ -223,6 +224,7 @@ func TestHooksInstallDefaultsToAll(t *testing.T) {
 			filepath.Join(".claude", "settings.json"),
 			filepath.Join(".codex", "hooks.json"),
 			filepath.Join(".gemini", "settings.json"),
+			filepath.Join(".agents", "hooks.json"),
 		} {
 			if _, err := os.Stat(filepath.Join(root, want)); err != nil {
 				t.Errorf("missing %s after default install: %v", want, err)
@@ -310,6 +312,7 @@ func TestHooksInstallEmbeddedTemplatesPresent(t *testing.T) {
 		"examples/hooks/claude-code/.claude/settings.json": false,
 		"examples/hooks/codex/.codex/hooks.json":           false,
 		"examples/hooks/gemini/.gemini/settings.json":      false,
+		"examples/hooks/agy/.agents/hooks.json":            false,
 	}
 	if err := fs.WalkDir(hooksFS, "examples/hooks", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
