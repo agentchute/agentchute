@@ -4,6 +4,12 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## Unreleased
+
+**codex**
+- `agentchute serve` (and so `ac serve codex`) launches codex with `--no-daemon` when the installed codex advertises the flag (`codex --help`, probed on every launch, never cached), inserted directly after argv[0] so it is a top-level option ahead of `resume`/`exec` (`codex exec --no-daemon` exits 2), never duplicated when the operator already passed it, and skipped for the daemon-only forms codex refuses to combine with it (`queue`, `agents`, `--remote`). codex 0.161 hosts every session on one shared per-user `codex app-server --managed-daemon`, forked by the first launch and outliving it; hooks and the agent's shell commands run as the daemon's children and inherit the FIRST serve's `AGENTCHUTE_SERVE_TOKEN`/`AGENTCHUTE_CONTROL_REPO`, so `send` fenced ("serve lease fenced (token mismatch)") and `turn-end` exited 1 on every codex lane on the host, across repos. Other wrappers are untouched; an older codex without the flag launches unchanged with a stderr warning.
+- `doctor` gains `codex_daemon_env`: lists running managed daemons with their `AGENTCHUTE_SERVE_TOKEN` (prefix) and `AGENTCHUTE_CONTROL_REPO`, and WARNs when a daemon's token matches no live `serve.claim` in this pool, its control repo is another pool, it carries no agentchute env, or its environment cannot be read. Never a BLOCKER: the daemon is a host condition outside the pool.
+
 ## v1.6.2 (2026-09-18) — mail that lands mid-turn no longer costs the turn
 
 No new capability. v1.6.2 fixes how a working lane meets its mail — a message arriving mid-turn forced the recipient to end its turn to read it, and a runner whose wrapper never went quiet could wait forever on a wake that was already moot — plus the post-v1.6.1 UX wave and one CI failure that was a real race. Protocol v2.5 and registration wire `v: 3` are unchanged; `E_RESULT_UNKNOWN` (client-emitted, not retriable) is the only registry surface. The two runtime changes take effect when a lane is relaunched on the new binary; a joined machine and its hub still need matching versions.
