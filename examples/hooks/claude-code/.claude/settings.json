@@ -2,7 +2,6 @@
   "permissions": {
     "allow": [
       "Bash(agentchute check:*)",
-      "Bash(agentchute send:*)",
       "Bash(agentchute ack:*)",
       "Bash(agentchute gate:*)",
       "Bash(agentchute turn-end:*)",
@@ -19,9 +18,9 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git worktree:*)",
-      "Bash(go test:*)",
-      "Bash(go build:*)",
-      "Bash(go vet:*)",
+      "Bash(go test ./...)",
+      "Bash(go build ./...)",
+      "Bash(go vet ./...)",
       "Bash(gofmt:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr list:*)",
@@ -30,6 +29,12 @@
       "Bash(gh run view:*)",
       "Bash(gh run list:*)",
       "Bash(gh run watch:*)"
+    ],
+    "deny": [
+      "Bash(go *-exec*)",
+      "Bash(go *-toolexec*)",
+      "Bash(go *-vettool*)",
+      "Bash(git *--output*)"
     ]
   },
   "hooks": {
@@ -60,7 +65,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
@@ -74,7 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --claude-hook Stop"
           }
         ]
       }

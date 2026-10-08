@@ -383,9 +383,7 @@ func TestUpdate_NoResyncSkipsSetupReSync(t *testing.T) {
 	if string(gotHook) != string(staleHook) {
 		t.Errorf("--no-resync must leave hook bytes untouched; got %q, want stale %q", gotHook, staleHook)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".claude", "settings.json.bak")); !os.IsNotExist(err) {
-		t.Errorf("--no-resync must write no hook backup; stat err = %v", err)
-	}
+	mustNoHookBackup(t, filepath.Join(root, ".claude", "settings.json"))
 }
 
 // TestUpdateInvalidatesLeaseOnlyAfterSetupResyncSucceeds proves the reordering

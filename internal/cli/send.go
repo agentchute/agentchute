@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -127,7 +128,11 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 	// actually made, instead of an unrelated registration/freshness complaint
 	// whose outcome depends on live pool state.
 	if bodyFileSet {
-		body, err = readSendBodyFile(cfg, bodyFile)
+		// The sender's own spool is the one state/ directory a body may come
+		// from: a failed send preserved it there (C5). Identity is resolved
+		// properly below; the raw flag/env value only picks which spool.
+		spoolOwner, _ := resolveAgentIDRaw(fromID)
+		body, err = readSendBodyFile(cfg, bodyFile, spoolOwner)
 		if err != nil {
 			return err
 		}
@@ -564,6 +569,9 @@ func formatSendSpoolStamp(t time.Time) string {
 	return t.Format("20060102T150405") + fmt.Sprintf("%06dZ", t.Nanosecond()/1000)
 }
 
+// sendRetryCommand is the retry printed for a local send that failed before
+// delivery: `--body-file <spool>`, a single command with no redirection, so it
+// also runs while the guard latch is held (C5; `< spool` was denied there).
 func sendRetryCommand(from, to, spoolPath string, opts sendRetryOptions) string {
 	parts := []string{"agentchute", "send", "--to", to, "--from", from}
 	if opts.Ask {
@@ -575,7 +583,7 @@ func sendRetryCommand(from, to, spoolPath string, opts sendRetryOptions) string 
 	if opts.ReplyToSet {
 		parts = append(parts, "--reply-to", shellQuote(opts.ReplyTo))
 	}
-	return strings.Join(parts, " ") + " < " + shellQuote(spoolPath)
+	return strings.Join(parts, " ") + " --body-file " + shellQuote(spoolPath)
 }
 
 func sendRetryCommandBodyFile(to, spoolPath string, opts sendRetryOptions) string {
@@ -658,7 +666,11 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 // anyone actually sends and one nobody does. guard_test.go's
 // TestGuardDirectSendDataSinkException pins that tokenization; nothing in
 // guard.go had to change for it.
-func readSendBodyFile(cfg *loop.Config, path string) (string, error) {
+// afterSendBodyFileCheck runs between the --body-file checks and the open;
+// tests use it to swap the path in that window.
+var afterSendBodyFileCheck func(path string)
+
+func readSendBodyFile(cfg *loop.Config, path, spoolOwner string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", fmt.Errorf("--body-file: %w", err)
@@ -666,7 +678,7 @@ func readSendBodyFile(cfg *loop.Config, path string) (string, error) {
 	if info.IsDir() {
 		return "", fmt.Errorf("--body-file: %s is a directory, not a file", path)
 	}
-	if err := rejectLoopStateBodyFile(cfg, path); err != nil {
+	if err := rejectLoopStateBodyFile(cfg, path, spoolOwner); err != nil {
 		return "", err
 	}
 	// Refuse by size before reading a byte of it: a multi-GB file must not be
@@ -674,11 +686,19 @@ func readSendBodyFile(cfg *loop.Config, path string) (string, error) {
 	if info.Size() > loop.MaxSendBodyBytes {
 		return "", sendBodyTooLarge(fmt.Sprintf("--body-file %s is %d bytes", path, info.Size()))
 	}
+	if afterSendBodyFileCheck != nil {
+		afterSendBodyFileCheck(path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("--body-file: %w", err)
 	}
 	defer f.Close()
+	// What was opened must be what was checked: a path swapped (a symlink
+	// re-pointed, a file replaced) between the check and the open is refused.
+	if opened, err := f.Stat(); err != nil || !os.SameFile(opened, info) {
+		return "", fmt.Errorf("--body-file: %s changed while it was being read; refusing it", path)
+	}
 	body, err := readBodyCapped(f, "--body-file")
 	if err != nil {
 		return "", err
@@ -741,7 +761,14 @@ func sendBodyTooLarge(what string) error {
 // live serve token went out as a message body (codex review on PR #141,
 // reproduced against e995648). Inode identity has no spelling to alias, and it
 // folds in the symlink and `..` cases for free.
-func rejectLoopStateBodyFile(cfg *loop.Config, path string) error {
+//
+// One exemption (opus-xhigh C5): a regular file directly in the sender's OWN
+// spool, state/<sender>/spool/, where a failed send preserved its body. The
+// printed retry is `--body-file <spool>` — the only multi-line form the guard
+// latch allows — so refusing the spool made a latched retry impossible. A
+// symlink there that leads anywhere else resolves out of the spool first and
+// is judged like any other path.
+func rejectLoopStateBodyFile(cfg *loop.Config, path, spoolOwner string) error {
 	loopDir, err := filepath.Abs(cfg.LoopDir)
 	if err != nil {
 		return fmt.Errorf("--body-file: resolve loop dir: %w", err)
@@ -764,6 +791,9 @@ func rejectLoopStateBodyFile(cfg *loop.Config, path string) error {
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		target = resolved
 	}
+	if spoolBodyFile(loopDir, target, spoolOwner) {
+		return nil
+	}
 	for dir := filepath.Dir(target); ; {
 		if info, err := os.Stat(dir); err == nil && os.SameFile(info, stateInfo) {
 			return fmt.Errorf("--body-file: refusing to read %s: it is inside the loop's state/ tree, which holds serve.claim (the live serve token) — state files are never a message body", path)
@@ -774,6 +804,30 @@ func rejectLoopStateBodyFile(cfg *loop.Config, path string) error {
 		}
 		dir = parent
 	}
+}
+
+// spoolSendFileRE is the name writeSendSpool gives a preserved body.
+var spoolSendFileRE = regexp.MustCompile(`^[0-9]{8}T[0-9]{12}Z_to-[A-Za-z0-9][A-Za-z0-9._-]*\.md$`)
+
+// spoolBodyFile reports whether target (symlinks already resolved) is a body
+// writeSendSpool preserved in spoolOwner's OWN spool: directly in
+// state/<owner>/spool/, named like one, a regular file, and with a single
+// link — a hard link to serve.claim placed in the spool has the claim's inode
+// and a link count of two, so it is not a spool file whatever its name.
+func spoolBodyFile(loopDir, target, spoolOwner string) bool {
+	if loop.ValidateAgentID(spoolOwner) != nil || !spoolSendFileRE.MatchString(filepath.Base(target)) {
+		return false
+	}
+	spoolInfo, err := os.Stat(filepath.Join(loopDir, "state", spoolOwner, "spool"))
+	if err != nil {
+		return false
+	}
+	parentInfo, err := os.Stat(filepath.Dir(target))
+	if err != nil || !os.SameFile(spoolInfo, parentInfo) {
+		return false
+	}
+	info, err := os.Lstat(target)
+	return err == nil && info.Mode().IsRegular() && singleLink(info)
 }
 
 func sendUsage(err error) error {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 // TestMain injects the build-time assets that Main normally supplies (the
@@ -27,6 +29,8 @@ import (
 // when the test binary is re-exec'd as a subprocess helper with a different
 // cwd, which runs TestMain too.
 func TestMain(m *testing.M) {
+	// Before anything reads the environment (opus-xhigh C4).
+	loop.MustStripTestEnv()
 	root := repoRootForTests()
 
 	mustRead := func(rel string) string {

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
@@ -363,122 +363,104 @@ func cmdHooksInstall(args []string) error {
 	return nil
 }
 
+// installOneHook installs or repairs one wrapper's hook file (opus-xhigh S3). A
+// missing file is written from the template and a current one is left alone.
+// An existing file that is out of date needs force: a settings file is then
+// MERGED — agentchute's hook entries and permission rules replaced, every
+// other key kept — and a dedicated hook file replaced; either way the old file
+// is kept as a timestamped backup. A settings file that cannot be merged
+// (invalid JSON, wrong shape) is never overwritten.
 func installOneHook(w hookWrapper, scopeRoot string, dryRun, force bool) error {
-	src, err := fs.ReadFile(hooksFS, w.Src)
+	p, err := planHookFile(w, scopeRoot)
 	if err != nil {
-		return fmt.Errorf("read embedded template for %s: %w", w.Name, err)
+		return err
 	}
-
-	dest := filepath.Join(scopeRoot, w.Dest)
-
-	// Existence + overwrite semantics. If the destination already has the
-	// exact bytes we'd write, treat as a no-op (idempotent re-runs are a
-	// feature; this is how `agentchute init` works too).
-	existing, statErr := os.ReadFile(dest)
-	if statErr == nil {
-		if bytes.Equal(existing, src) {
-			fmt.Printf("hooks install %s → %s: already current; skipping\n", w.Name, dest)
-			return nil
-		}
+	switch p.State {
+	case hookFileCurrent:
+		fmt.Printf("hooks install %s → %s: already current; skipping\n", w.Name, p.Dest)
+		return nil
+	case hookFileInvalid:
+		return fmt.Errorf("%s cannot be merged (%v); fix it or move it aside, then re-run — agentchute never overwrites a settings file it cannot read", p.Dest, p.Problem)
+	case hookFileStale:
 		if !force {
-			return fmt.Errorf("%s already exists and differs from the canonical template; pass --force to overwrite (a backup at %s.bak will be written)", dest, dest)
+			verb := "overwrite it"
+			if p.Merge {
+				verb = "merge agentchute's entries into it"
+			}
+			return fmt.Errorf("%s already exists and differs from the canonical template; pass --force to %s (the old file is kept as a timestamped %s<time> backup)", p.Dest, verb, hookBackupSuffix)
 		}
-	} else if !os.IsNotExist(statErr) {
-		return fmt.Errorf("stat %s: %w", dest, statErr)
 	}
-
 	if dryRun {
-		fmt.Printf("hooks install %s → %s (dry-run; would write %d bytes)\n", w.Name, dest, len(src))
+		fmt.Printf("hooks install %s → %s (dry-run; would write %d bytes)\n", w.Name, p.Dest, len(p.Proposed))
 		return nil
 	}
-
-	// Ensure parent dir exists at 0700 — hook files contain agent IDs and
-	// host metadata that we don't want world-readable. Codex review #3:
-	// MkdirAll only sets perms on directories it creates; if .claude/
-	// already exists at 0755, MkdirAll leaves it alone. Tighten with an
-	// explicit chmod after the mkdir.
-	parentDir := filepath.Dir(dest)
-	if err := os.MkdirAll(parentDir, 0o700); err != nil {
-		return fmt.Errorf("mkdir parent for %s: %w", dest, err)
-	}
-	if err := os.Chmod(parentDir, 0o700); err != nil {
-		return fmt.Errorf("chmod parent for %s: %w", dest, err)
-	}
-
-	// Backup any pre-existing file we're about to overwrite.
-	if statErr == nil && force {
-		backup := dest + ".bak"
-		if err := os.WriteFile(backup, existing, 0o600); err != nil {
-			return fmt.Errorf("write backup for %s: %w", dest, err)
-		}
-		fmt.Printf("hooks install %s → %s: existing file backed up to %s\n", w.Name, dest, backup)
-	}
-
-	// Atomic write: temp + rename, mirroring the inbox-delivery convention.
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".tmp_hook-*")
+	backup, err := writeHookFile(p, time.Now())
 	if err != nil {
-		return fmt.Errorf("create temp for %s: %w", dest, err)
+		return err
 	}
-	if _, err := tmp.Write(src); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return fmt.Errorf("write temp for %s: %w", dest, err)
+	if backup != "" {
+		fmt.Printf("hooks install %s → %s: existing file backed up to %s\n", w.Name, p.Dest, backup)
 	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return fmt.Errorf("close temp for %s: %w", dest, err)
+	if p.Merge {
+		fmt.Printf("hooks install %s → %s: merged agentchute's entries (%d bytes); every other key kept\n", w.Name, p.Dest, len(p.Proposed))
+		return nil
 	}
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		os.Remove(tmp.Name())
-		return fmt.Errorf("chmod temp for %s: %w", dest, err)
-	}
-	if err := os.Rename(tmp.Name(), dest); err != nil {
-		os.Remove(tmp.Name())
-		return fmt.Errorf("rename %s → %s: %w", tmp.Name(), dest, err)
-	}
-
-	fmt.Printf("hooks install %s → %s (%d bytes)\n", w.Name, dest, len(src))
+	fmt.Printf("hooks install %s → %s (%d bytes)\n", w.Name, p.Dest, len(p.Proposed))
 	return nil
 }
 
-// refreshWrapperHook creates or refreshes the launched wrapper's repo hook and
-// verifies exact parity with this binary before the wrapper starts. This makes
-// each discovered control repo self-healing without a global repo registry.
-func refreshWrapperHook(root, wrapper string) error {
-	var target *hookWrapper
-	for i := range hookWrappers {
-		if hookWrappers[i].Name == wrapper {
-			target = &hookWrappers[i]
-			break
+// prepareServeHook checks the launched wrapper's hook file before serve
+// launches it (opus-xhigh S3). A missing file is created from the template and
+// a current one — agentchute's part matching this binary — is accepted. serve
+// never rewrites an existing file: one that is out of date or unreadable is
+// refused with the repair command, because repairing a project's settings is
+// setup's job. When root is a remote lane's working-directory fallback (no
+// AGENTCHUTE.md), serve writes nothing at all, and a hook file that is not
+// already current makes the lane launch unguarded: unguardedNote says so.
+func prepareServeHook(root, wrapper string) (unguardedNote string, err error) {
+	w, ok := hookWrapperByName(wrapper)
+	if !ok {
+		return "", nil
+	}
+	p, err := planHookFile(w, root)
+	if err != nil {
+		return "", err
+	}
+	if p.State == hookFileCurrent {
+		return "", nil
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "AGENTCHUTE.md")); statErr != nil {
+		return fmt.Sprintf("%s has no AGENTCHUTE.md (this remote lane's working directory stands in for a control repo), so serve writes no hook file there, and %s is %s; launching UNGUARDED — commit mail with `agentchute ack` yourself", root, p.Dest, hookStateWords(p.State)), nil
+	}
+	switch p.State {
+	case hookFileMissing:
+		if _, err := writeHookFile(p, time.Now()); err != nil {
+			return "", err
 		}
+		check, err := planHookFile(w, root)
+		if err != nil {
+			return "", err
+		}
+		if check.State != hookFileCurrent {
+			return "", fmt.Errorf("%s does not match the canonical %s template after it was written", p.Dest, w.Name)
+		}
+		return "", nil
+	case hookFileInvalid:
+		return "", fmt.Errorf("%s cannot be read as a %s hook file (%v); serve never rewrites an existing hook file — fix it or move it aside, then run `agentchute setup` and relaunch", p.Dest, w.Name, p.Problem)
+	default:
+		return "", fmt.Errorf("%s: agentchute's %s hook entries differ from this binary's template; serve never rewrites an existing hook file — run `agentchute setup` (or `agentchute hooks install --wrapper %s --force`, which merges agentchute's entries and keeps everything else) to repair it, then relaunch", p.Dest, w.Name, w.Name)
 	}
-	if target == nil {
-		return nil
-	}
+}
 
-	want, err := fs.ReadFile(hooksFS, target.Src)
-	if err != nil {
-		return fmt.Errorf("read embedded template for %s: %w", target.Name, err)
+func hookStateWords(s hookFileState) string {
+	switch s {
+	case hookFileMissing:
+		return "missing"
+	case hookFileInvalid:
+		return "unreadable"
+	default:
+		return "not current"
 	}
-	dest := filepath.Join(root, target.Dest)
-	got, err := os.ReadFile(dest)
-	if err == nil && bytes.Equal(got, want) {
-		return nil
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read %s: %w", dest, err)
-	}
-	if err := installOneHook(*target, root, false, true); err != nil {
-		return err
-	}
-	got, err = os.ReadFile(dest)
-	if err != nil {
-		return fmt.Errorf("read refreshed %s: %w", dest, err)
-	}
-	if !bytes.Equal(got, want) {
-		return fmt.Errorf("%s does not match the canonical %s template after refresh", dest, target.Name)
-	}
-	return nil
 }
 
 // refreshHookCompatibility keeps every ALREADY-INSTALLED hookWrappers file
@@ -489,29 +471,32 @@ func refreshWrapperHook(root, wrapper string) error {
 // installed hook file invoking a subcommand this binary had removed.
 // Existence-preserving no-create mode: a hookWrappers Dest that is not
 // already installed stays uninstalled — installing one is a membership
-// decision (setup's --wrappers loop), not a compatibility one. Returns the
-// names of wrappers whose file content actually changed.
+// decision (setup's --wrappers loop), not a compatibility one. A settings file
+// is merged, never replaced (opus-xhigh S3); one that cannot be merged stops
+// the resync instead of being overwritten. Returns the names of wrappers whose
+// file content actually changed.
 func refreshHookCompatibility(root string) ([]string, error) {
 	var refreshed []string
+	now := time.Now()
 	for _, w := range hookWrappers {
-		dest := filepath.Join(root, w.Dest)
-		before, err := os.ReadFile(dest)
+		p, err := planHookFile(w, root)
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("stat %s: %w", dest, err)
-		}
-		if err := installOneHook(w, root, false, true); err != nil {
 			return nil, fmt.Errorf("refresh hook %s: %w", w.Name, err)
 		}
-		after, err := os.ReadFile(dest)
+		switch p.State {
+		case hookFileMissing, hookFileCurrent:
+			continue
+		case hookFileInvalid:
+			return nil, fmt.Errorf("refresh hook %s: %s cannot be merged (%v); fix it or move it aside, then re-run", w.Name, p.Dest, p.Problem)
+		}
+		backup, err := writeHookFile(p, now)
 		if err != nil {
-			return nil, fmt.Errorf("read refreshed %s: %w", dest, err)
+			return nil, fmt.Errorf("refresh hook %s: %w", w.Name, err)
 		}
-		if !bytes.Equal(before, after) {
-			refreshed = append(refreshed, w.Name)
+		if backup != "" {
+			fmt.Printf("hooks install %s → %s: existing file backed up to %s\n", w.Name, p.Dest, backup)
 		}
+		refreshed = append(refreshed, w.Name)
 	}
 	return refreshed, nil
 }

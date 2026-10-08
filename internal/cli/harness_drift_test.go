@@ -316,17 +316,17 @@ func TestGuardApplyPatchMatchesTargetsOnly(t *testing.T) {
 	const movesOntoHookFile = `{"tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: notes.md\n*** Move to: .claude/settings.json\n@@\n-a\n+b\n*** End Patch\n"}}`
 	const bashStillMatchesBody = `{"tool_name":"Bash","tool_input":{"command":"echo hi && agentchute ack"}}`
 
-	if cmd := parseGuardToolCommand([]byte(bodyMentionsAck)); guardCommandDenied(cmd) {
-		t.Fatalf("a patch whose diff body mentions deny words was denied; command text = %q", cmd)
+	if cmd := parseGuardToolUse([]byte(bodyMentionsAck)); cmd.denied() {
+		t.Fatalf("a patch whose diff body mentions deny words was denied; use = %+v", cmd)
 	}
-	if cmd := parseGuardToolCommand([]byte(targetsHookFile)); !guardCommandDenied(cmd) {
-		t.Fatalf("a patch targeting a hook config file was allowed; command text = %q", cmd)
+	if cmd := parseGuardToolUse([]byte(targetsHookFile)); !cmd.denied() {
+		t.Fatalf("a patch targeting a hook config file was allowed; use = %+v", cmd)
 	}
-	if cmd := parseGuardToolCommand([]byte(movesOntoHookFile)); !guardCommandDenied(cmd) {
-		t.Fatalf("a patch moving onto a hook config file was allowed; command text = %q", cmd)
+	if cmd := parseGuardToolUse([]byte(movesOntoHookFile)); !cmd.denied() {
+		t.Fatalf("a patch moving onto a hook config file was allowed; use = %+v", cmd)
 	}
-	if cmd := parseGuardToolCommand([]byte(bashStillMatchesBody)); !guardCommandDenied(cmd) {
-		t.Fatalf("Bash command text is still matched whole; command text = %q", cmd)
+	if cmd := parseGuardToolUse([]byte(bashStillMatchesBody)); !cmd.denied() {
+		t.Fatalf("Bash command text is still matched whole; use = %+v", cmd)
 	}
 	if got := guardApplyPatchTargets("*** Add File: a/b.md\n*** Delete File: c.txt\nbody *** Update File: not-a-header\n"); strings.Join(got, ",") != "a/b.md,c.txt" {
 		t.Fatalf("targets = %v", got)
@@ -352,9 +352,9 @@ func TestGuardApplyPatchMatchesTargetsOnly(t *testing.T) {
 		{"look-alike name", patch("*** Update File: docs/codex-hooks.json"), false},
 		{"look-alike suffix", patch("*** Update File: notes/settings.json"), false},
 	} {
-		cmd := parseGuardToolCommand([]byte(row.body))
-		if got := guardCommandDenied(cmd); got != row.deny {
-			t.Fatalf("%s: denied=%v, want %v; command text = %q", row.name, got, row.deny, cmd)
+		cmd := parseGuardToolUse([]byte(row.body))
+		if got := cmd.denied(); got != row.deny {
+			t.Fatalf("%s: denied=%v, want %v; use = %+v", row.name, got, row.deny, cmd)
 		}
 	}
 }

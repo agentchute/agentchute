@@ -53,14 +53,14 @@ func TestGeminiAfterAgentTurnEndShape(t *testing.T) {
 	blocked := gateStatus{Blocked: true, UnreadCount: 2}
 	// Clear: silent.
 	out, err := captureStdout(t, func() error {
-		return emitTurnEndGeminiAfterAgent(gateStatus{}, strings.NewReader(`{"stop_hook_active":false}`))
+		return emitTurnEndGeminiAfterAgent(gateStatus{}, false)
 	})
 	if err != nil || strings.TrimSpace(out) != "" {
 		t.Fatalf("clear AfterAgent must be silent: out=%q err=%v", out, err)
 	}
 	// Blocked: top-level deny with a reason, exit 0 (nil error).
 	out, err = captureStdout(t, func() error {
-		return emitTurnEndGeminiAfterAgent(blocked, strings.NewReader(`{"hook_event_name":"AfterAgent","stop_hook_active":false}`))
+		return emitTurnEndGeminiAfterAgent(blocked, false)
 	})
 	if err != nil {
 		t.Fatalf("blocked AfterAgent must not return an error (exit 0 with JSON): %v", err)
@@ -71,7 +71,7 @@ func TestGeminiAfterAgentTurnEndShape(t *testing.T) {
 	}
 	// Our own retry (stop_hook_active): never deny again.
 	out, err = captureStdout(t, func() error {
-		return emitTurnEndGeminiAfterAgent(blocked, strings.NewReader(`{"stop_hook_active":true}`))
+		return emitTurnEndGeminiAfterAgent(blocked, true)
 	})
 	if err != nil || strings.TrimSpace(out) != "" {
 		t.Fatalf("stop_hook_active retry must be silent: out=%q err=%v", out, err)
@@ -137,16 +137,17 @@ func TestAgyGuardDecisionAlwaysCarriesDecision(t *testing.T) {
 
 func TestGuardParsesAntigravityToolCall(t *testing.T) {
 	body := `{"conversationId":"c1","toolCall":{"name":"run_command","args":{"CommandLine":"agentchute ack --as agy","Cwd":"/w","WaitMsBeforeAsync":5000}},"stepIdx":3}`
-	cmd := parseGuardToolCommand([]byte(body))
+	use := parseGuardToolUse([]byte(body))
+	cmd := use.Text
 	if !strings.HasPrefix(cmd, "run_command ") || !strings.Contains(cmd, "agentchute ack --as agy") {
 		t.Fatalf("command text = %q", cmd)
 	}
-	if !guardCommandDenied(cmd) {
+	if !use.denied() {
 		t.Fatalf("a camelCase toolCall running ack was not denied: %q", cmd)
 	}
 	allowed := `{"toolCall":{"name":"run_command","args":{"CommandLine":"git status","Cwd":"/w"}}}`
-	if cmd := parseGuardToolCommand([]byte(allowed)); guardCommandDenied(cmd) {
-		t.Fatalf("harmless toolCall denied: %q", cmd)
+	if use := parseGuardToolUse([]byte(allowed)); use.denied() {
+		t.Fatalf("harmless toolCall denied: %+v", use)
 	}
 }
 

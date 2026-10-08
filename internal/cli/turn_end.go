@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,7 +66,7 @@ func cmdTurnEnd(args []string) error {
 	fs := flag.NewFlagSet("turn-end", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, host, bio, controlRepo, loopDir, codexHook, geminiHook, agyHook string
+	var agentID, vendor, host, bio, controlRepo, loopDir, claudeHook, codexHook, geminiHook, agyHook string
 	var jsonOut bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai, local)")
@@ -74,6 +75,7 @@ func cmdTurnEnd(args []string) error {
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
+	fs.StringVar(&claudeHook, "claude-hook", "", "Claude Code hook mode for the named event (Stop): --json output, exit 2 on block")
 	fs.StringVar(&codexHook, "codex-hook", "", "codex hook JSON shape for the named event (Stop)")
 	fs.StringVar(&geminiHook, "gemini-hook", "", "Gemini CLI hook JSON shape for the named event (AfterAgent)")
 	fs.StringVar(&agyHook, "agy-hook", "", "Antigravity CLI hook JSON shape for the named event (Stop)")
@@ -86,6 +88,15 @@ func cmdTurnEnd(args []string) error {
 	}
 	if err := requireRunnerAncestry("turn-end"); err != nil {
 		return err
+	}
+	// Hook stdin is read only in a hook mode: a hand-run turn-end must never
+	// wait on a terminal.
+	var hookIn turnEndHookInput
+	if claudeHook == "Stop" || codexHook == "Stop" || geminiHook == "AfterAgent" {
+		hookIn = readTurnEndHookInput(turnEndStdin())
+	}
+	if claudeHook == "Stop" {
+		jsonOut = true
 	}
 
 	opts := registerOpts{Host: host, Bio: bio, ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
@@ -194,24 +205,53 @@ func cmdTurnEnd(args []string) error {
 		return err
 	}
 
+	// C3 (opus-xhigh): a Stop our own block caused (stop_hook_active) that
+	// finds the SAME reasons means the agent tried and could not clear them.
+	// Blocking again only re-prompts it until the harness's own continuation
+	// cap overrides us silently; allow the stop and say so instead.
+	stillBlocked := ""
+	if status.Blocked && (claudeHook == "Stop" || codexHook == "Stop") {
+		// The record names the session too, and self-check (every turn's
+		// UserPromptSubmit) clears it: stop_hook_active is also true when
+		// ANOTHER Stop hook blocked, and a block from an earlier turn or
+		// session must never let this turn's first block through.
+		reasons := gateBlockedReasonLine(status)
+		record := hookIn.session() + "\n" + reasons
+		if hookIn.active() && readTurnEndLastBlock(cfg, agentID) == record {
+			stillBlocked = "finish gate still blocked: " + reasons
+		} else {
+			writeTurnEndLastBlock(cfg, agentID, record)
+		}
+	} else if !status.Blocked {
+		clearTurnEndLastBlock(cfg, agentID)
+	}
+
 	if codexHook == "Stop" {
+		if stillBlocked != "" {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"systemMessage": stillBlocked})
+		}
 		// Identical contract to gate.go's own codex Stop path: silent + exit 0
 		// on clear, block-JSON + exit 0 on block (codex reads the JSON, not
 		// the exit code, for this event).
 		return emitGateCodexStop(status)
 	}
 	if geminiHook == "AfterAgent" {
-		return emitTurnEndGeminiAfterAgent(status, os.Stdin)
+		return emitTurnEndGeminiAfterAgent(status, hookIn.active())
 	}
 	if agyHook == "Stop" {
 		return emitTurnEndAgyStop(status)
 	}
 	if jsonOut {
-		if err := emitTurnEndJSON(status, acked); err != nil {
+		if err := emitTurnEndJSON(status, acked, stillBlocked); err != nil {
 			return err
 		}
 	} else {
 		emitTurnEndText(status, acked)
+	}
+	if stillBlocked != "" {
+		// Exit 0: Claude Code stops, and shows systemMessage to the user.
+		fmt.Fprintln(os.Stderr, stillBlocked)
+		return nil
 	}
 
 	emitGateBlockedStderr(status)
@@ -226,10 +266,13 @@ func cmdTurnEnd(args []string) error {
 type turnEndJSON struct {
 	gateStatus
 	Archived []ackItem `json:"archived,omitempty"`
+	// SystemMessage is Claude Code's common hook output field ("shown to the
+	// user"): set only when a repeated, unchanged block is let through.
+	SystemMessage string `json:"systemMessage,omitempty"`
 }
 
-func emitTurnEndJSON(status gateStatus, acked []ackItem) error {
-	out := turnEndJSON{gateStatus: status, Archived: acked}
+func emitTurnEndJSON(status gateStatus, acked []ackItem, systemMessage string) error {
+	out := turnEndJSON{gateStatus: status, Archived: acked, SystemMessage: systemMessage}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
@@ -275,17 +318,86 @@ Flags:
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --json                structured JSON output
+  --claude-hook <event> Claude Code Stop hook mode (Stop): --json output, exit 2 on
+                        block; a Stop our own block caused that finds the same
+                        reasons is let through with a "finish gate still
+                        blocked" systemMessage
   --codex-hook <event>  codex hook JSON shape (Stop)
   --gemini-hook <event> Gemini CLI hook JSON shape (AfterAgent)
   --agy-hook <event>    Antigravity CLI hook JSON shape (Stop)
 `)
 }
 
-// geminiAfterAgentInput is the slice of Gemini CLI's AfterAgent stdin this
-// command reads: stop_hook_active is true when the hook is already running as
-// part of a retry it caused (geminicli.com/docs/hooks/reference).
-type geminiAfterAgentInput struct {
-	StopHookActive bool `json:"stop_hook_active"`
+// turnEndHookInput is the slice of an end-of-turn hook's stdin turn-end
+// reads: whether this run was caused by a block we returned. Claude Code,
+// codex and Gemini CLI send stop_hook_active, grok stopHookActive.
+type turnEndHookInput struct {
+	StopHookActive      bool   `json:"stop_hook_active"`
+	StopHookActiveCamel bool   `json:"stopHookActive"`
+	SessionID           string `json:"session_id"`
+	SessionIDCamel      string `json:"sessionId"`
+}
+
+func (in turnEndHookInput) session() string {
+	if in.SessionID != "" {
+		return in.SessionID
+	}
+	return in.SessionIDCamel
+}
+
+func (in turnEndHookInput) active() bool { return in.StopHookActive || in.StopHookActiveCamel }
+
+// turnEndStdin is the hook input source; tests replace it rather than swap
+// the process-wide os.Stdin, which serve's input copier reads.
+var turnEndStdin = func() *os.File { return os.Stdin }
+
+// readTurnEndHookInput reads a hook's JSON stdin. A terminal is never read,
+// and a pipe that stays open is given up on after two seconds: the decision
+// then falls back to an ordinary block.
+func readTurnEndHookInput(stdin *os.File) turnEndHookInput {
+	var in turnEndHookInput
+	if info, err := stdin.Stat(); err != nil || info.Mode()&os.ModeCharDevice != 0 {
+		return in
+	}
+	done := make(chan []byte, 1)
+	go func() {
+		data, _ := io.ReadAll(io.LimitReader(stdin, 1<<20))
+		done <- data
+	}()
+	select {
+	case data := <-done:
+		_ = json.Unmarshal(data, &in)
+	case <-time.After(2 * time.Second):
+	}
+	return in
+}
+
+// turnEndLastBlockFile holds the reasons of the last block turn-end returned
+// in a hook mode, so a Stop it caused can tell whether anything changed.
+func turnEndLastBlockFile(cfg *loop.Config, agentID string) string {
+	return filepath.Join(cfg.AgentStateDir(agentID), "turn-end.last-block")
+}
+
+func readTurnEndLastBlock(cfg *loop.Config, agentID string) string {
+	data, err := os.ReadFile(turnEndLastBlockFile(cfg, agentID))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// writeTurnEndLastBlock records a block's reasons. Best effort: without the
+// record the next Stop simply blocks again, as it always did.
+func writeTurnEndLastBlock(cfg *loop.Config, agentID, reasons string) {
+	path := turnEndLastBlockFile(cfg, agentID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte(reasons), 0o600)
+}
+
+func clearTurnEndLastBlock(cfg *loop.Config, agentID string) {
+	_ = os.Remove(turnEndLastBlockFile(cfg, agentID))
 }
 
 // emitTurnEndGeminiAfterAgent is the Gemini CLI end-of-turn contract: silent
@@ -295,15 +407,11 @@ type geminiAfterAgentInput struct {
 // stderr spelling of the same rejection and is not used. A second AfterAgent
 // raised by our own deny (stop_hook_active) is never denied again, so a lane
 // that cannot clear the gate is not spun in retries.
-func emitTurnEndGeminiAfterAgent(s gateStatus, stdin io.Reader) error {
+func emitTurnEndGeminiAfterAgent(s gateStatus, stopHookActive bool) error {
 	if !s.Blocked {
 		return nil
 	}
-	var in geminiAfterAgentInput
-	if data, err := io.ReadAll(io.LimitReader(stdin, 1<<20)); err == nil && len(data) > 0 {
-		_ = json.Unmarshal(data, &in)
-	}
-	if in.StopHookActive {
+	if stopHookActive {
 		return nil
 	}
 	enc := json.NewEncoder(os.Stdout)
