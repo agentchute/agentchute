@@ -156,41 +156,6 @@ var guardDispatchPrefixRE = regexp.MustCompile(`\bdispatch\b(?:[ \t]+--shim-dir(
 // this file's own test suite once both forms were exercised together.
 // `check` is deliberately absent (see the file header): a compound that
 // pairs it with any listed token is still denied whole by that token.
-// guardHubSubcmdRE is the same binary-token match for the hub commands an inbox
-// message must not be able to drive while mail is held (review 2026-10-08,
-// S10): `hub authorize` binds a key to an identity, `hub join` rewrites this
-// checkout's pointer to a hub of the sender's choosing, and `hub session` (the
-// forced command) serves the wire for whatever --agent it is given.
-//
-// This list is a speed bump, like the rest of the guard, and it is not the
-// control for S10: shell text can always be spelled around a matcher. The
-// control is hub authorize's own --takeover-on-a-terminal refusal, which does
-// not depend on what the guard saw.
-//
-// It is matched on the text with quotes and backslashes removed, and allows
-// anything but a command separator between the binary and `hub`: the ac
-// dispatcher takes global flags there (`ac --as x hub join`), and a quoted word
-// or a line continuation reaches the same command. Still best-effort — a binary
-// named through a variable is not seen.
-var guardHubSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin(?::-agentchute)?\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[^;&|\n]*?\bhub\s+(?:authorize|join|session)\b`)
-
-// guardShellFold undoes the spellings the executing shell folds back into one
-// command before the hub rule matches: a backslash-newline continuation, $IFS,
-// an ANSI-C quoted whitespace escape ($'\t'), then quotes and backslashes.
-var (
-	guardContinuation     = strings.NewReplacer("\\\r\n", "", "\\\n", "")
-	guardANSIWhitespaceRE = regexp.MustCompile(`\$'(?:\\[tnrv]|[ \t])*'`)
-	guardIFSRE            = regexp.MustCompile(`\$\{ifs\}|\$ifs\b`)
-	guardUnquoter         = strings.NewReplacer("'", "", "\"", "", "\\", "")
-)
-
-func guardShellFold(s string) string {
-	s = guardContinuation.Replace(s)
-	s = guardANSIWhitespaceRE.ReplaceAllString(s, " ")
-	s = guardIFSRE.ReplaceAllString(s, " ")
-	return guardUnquoter.Replace(s)
-}
-
 var guardAgentchuteSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+(ack|turn-end|update|setup|clean)\b`)
 
 // guardStaleOwedHintCommand is the command `check` tells a lane to run when it
@@ -409,7 +374,7 @@ func guardCommandDenied(toolCmd string) bool {
 	if guardAgentchuteSubcmdRE.MatchString(normalized) && !guardCleanOwedExempt(normalized) {
 		return true
 	}
-	if guardHubSubcmdRE.MatchString(guardShellFold(normalized)) {
+	if guardHubInvocation(guardStripToolName(lower)) {
 		return true
 	}
 	for _, pattern := range guardPipelineDenySubstrings {
@@ -418,6 +383,19 @@ func guardCommandDenied(toolCmd string) bool {
 		}
 	}
 	return false
+}
+
+// guardStripToolName drops the tool-name word parseGuardToolCommand puts in
+// front of the command text, so the hub rule sees the command itself in
+// command position (lower-cased input).
+func guardStripToolName(lower string) string {
+	trimmed := strings.TrimSpace(lower)
+	for _, name := range []string{"bash", "functions.exec_command", "exec_command", "run_shell_command", "run_command", "run_terminal_command", "shell", "local_shell"} {
+		if strings.HasPrefix(trimmed, name+" ") {
+			return strings.TrimSpace(trimmed[len(name):])
+		}
+	}
+	return trimmed
 }
 
 // guardDirectSendInvocation recognizes only the literal send binaries this
