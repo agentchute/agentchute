@@ -73,26 +73,45 @@ func ProbeWithPinnedHostKey(ctx context.Context, remote *loop.RemoteConfig, agen
 }
 
 // pinnedHostKeyLines rewrites every usable key line of a known_hosts file under
-// pinnedHostAlias. Comments are dropped, and so are @revoked and
-// @cert-authority lines: neither pins a host key. A file with no usable line is
-// an error — an empty pin set must never read as "nothing to verify".
+// pinnedHostAlias. Comments are dropped. An @revoked key is removed from the
+// set even where an ordinary line pins the same key — sshd's own rule
+// (sshd(8), SSH_KNOWN_HOSTS FILE FORMAT), and the pin must not be weaker than
+// plain ssh on the same file (PR #216 gate, codex P1). @cert-authority lines
+// pin no specific host key and are not carried. A set with nothing left is an
+// error: an empty pin must never read as "nothing to verify".
 func pinnedHostKeyLines(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("pinned host keys: %w", err)
 	}
 	defer f.Close()
-	var out []string
+	var keys []string
+	revoked := map[string]bool{}
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) < 3 || strings.HasPrefix(fields[0], "#") || strings.HasPrefix(fields[0], "@") {
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
 			continue
 		}
-		out = append(out, pinnedHostAlias+" "+fields[1]+" "+fields[2])
+		if fields[0] == "@revoked" {
+			if len(fields) >= 4 {
+				revoked[fields[2]+" "+fields[3]] = true
+			}
+			continue
+		}
+		if len(fields) < 3 || strings.HasPrefix(fields[0], "@") {
+			continue
+		}
+		keys = append(keys, fields[1]+" "+fields[2])
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("pinned host keys %s: %w", path, err)
+	}
+	var out []string
+	for _, key := range keys {
+		if !revoked[key] {
+			out = append(out, pinnedHostAlias+" "+key)
+		}
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("pinned host keys: %s %w", path, errNoPinnedHostKey)

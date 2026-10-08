@@ -65,3 +65,38 @@ func TestPinnedKnownHostsKeepsOnlyUsableKeyLines(t *testing.T) {
 		t.Fatal("no known_hosts file is no pin: want an error, not an empty pin set")
 	}
 }
+
+// PR #216 gate (codex P1): dropping every @-marked line dropped @revoked too,
+// while keeping the ordinary entry for the SAME key — so the pinned probe
+// accepted a key the pin file explicitly revokes. A revoked key leaves the
+// positive set, and a set with nothing left fails closed.
+func TestPinnedKnownHostsHonoursRevocation(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	onlyRevoked := write("revoked", "hub.example ssh-ed25519 AAAAkeyA\n@revoked hub.example ssh-ed25519 AAAAkeyA\n")
+	if got, err := pinnedHostKeyLines(onlyRevoked); err == nil {
+		t.Fatalf("a pin file whose only key is revoked pinned %v; want fail-closed", got)
+	}
+	mixed := write("mixed", "hub.example ssh-ed25519 AAAAkeyA\nhub.example ssh-ed25519 AAAAkeyB\n@revoked * ssh-ed25519 AAAAkeyA\n")
+	got, err := pinnedHostKeyLines(mixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "\n") != pinnedHostAlias+" ssh-ed25519 AAAAkeyB" {
+		t.Fatalf("pinned = %v, want only the unrevoked key B", got)
+	}
+	// CarryHostKeyPin reads the same set: a revoked key is never carried to a new name.
+	if err := CarryHostKeyPin(mixed, "hub-alias.example"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(mixed)
+	if strings.Contains(string(data), "hub-alias.example ssh-ed25519 AAAAkeyA") || !strings.Contains(string(data), "hub-alias.example ssh-ed25519 AAAAkeyB") {
+		t.Fatalf("carried pins =\n%s\nwant B carried and revoked A not", data)
+	}
+}
