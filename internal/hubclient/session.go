@@ -21,6 +21,10 @@ type Error struct {
 	Retriable   bool
 	ClaimedHeld bool
 	Cause       error
+
+	// hubFrame marks an error the hub itself sent as the terminal frame for
+	// this request: an authoritative refusal, never an ambiguity.
+	hubFrame bool
 }
 
 func (e *Error) Error() string { return e.Msg }
@@ -205,8 +209,18 @@ func (s *OneShot) Send(req op.SendReq) (op.SendResp, error) {
 	}
 	raw, transmitted, err := s.do(frame, req.Content, nil, true, "send-ok")
 	if err != nil {
-		if transmitted && ErrorCode(err) == "E_CHANNEL_LOST" {
-			return op.SendResp{}, &Error{Code: "E_SEND_UNKNOWN", Msg: "hub: connection lost after the send was transmitted — DELIVERY UNKNOWN", Retriable: false, Cause: err}
+		// Once the frame is on the wire, only the hub's own error frame for this
+		// request proves nothing was delivered. Anything else — a lost channel,
+		// a terminal frame for another request, an unexpected frame type — leaves
+		// the commit unknown, and "retry with" would duplicate it (review
+		// 2026-10-08, S11).
+		var hubErr *Error
+		if transmitted && !(errors.As(err, &hubErr) && hubErr.hubFrame) {
+			msg := "hub: connection lost after the send was transmitted — DELIVERY UNKNOWN"
+			if ErrorCode(err) != "E_CHANNEL_LOST" {
+				msg = "hub: the send was transmitted but the hub's answer was unusable (" + err.Error() + ") — DELIVERY UNKNOWN"
+			}
+			return op.SendResp{}, &Error{Code: "E_SEND_UNKNOWN", Msg: msg, Retriable: false, Cause: err}
 		}
 		return op.SendResp{}, err
 	}
@@ -468,7 +482,7 @@ func wireError(raw hubwire.RawFrame, transport Transport) error {
 		return err
 	}
 	_ = transport.Close()
-	return &Error{Code: frame.Code, Msg: frame.Msg, Retriable: frame.Retriable, ClaimedHeld: frame.ClaimedHeld}
+	return &Error{Code: frame.Code, Msg: frame.Msg, Retriable: frame.Retriable, ClaimedHeld: frame.ClaimedHeld, hubFrame: true}
 }
 
 func (s *OneShot) setReadDeadline(after time.Duration) error {

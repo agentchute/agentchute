@@ -1,7 +1,6 @@
 package hubclient
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,6 +20,10 @@ import (
 )
 
 const (
+	// transportStderrLimit caps how much of ssh's stderr a transport keeps. The
+	// tail is what classification reads (host-key, permission, exit-127 text).
+	transportStderrLimit = 64 << 10
+
 	controlPathByteBudget = 100
 	controlPathTokenWidth = 64
 	muxIsolationKeyWidth  = 12
@@ -35,6 +38,11 @@ type SSHBuildOptions struct {
 	TempRoots   []string
 	EnsureOwned func(string) error
 	UserID      string
+
+	// PinnedKnownHosts, when set, replaces trust-on-first-use: the server must
+	// match a key in this file (written under pinnedHostAlias), and the
+	// invocation never multiplexes. See ProbeWithPinnedHostKey.
+	PinnedKnownHosts string
 }
 
 type SSHInvocation struct {
@@ -125,18 +133,38 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 	} else {
 		args = append(args, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2")
 	}
+	if opts.PinnedKnownHosts != "" {
+		args = append(args,
+			"-o", "StrictHostKeyChecking=yes",
+			"-o", "UserKnownHostsFile="+opts.PinnedKnownHosts,
+			"-o", "GlobalKnownHostsFile=/dev/null",
+			"-o", "HostKeyAlias="+pinnedHostAlias,
+			// A user ssh_config must not supply keys behind the pin's back.
+			"-o", "VerifyHostKeyDNS=no", "-o", "KnownHostsCommand=none",
+		)
+	} else {
+		args = append(args,
+			"-o", "StrictHostKeyChecking=accept-new",
+			"-o", "UserKnownHostsFile="+filepath.Join(stateDir, "known_hosts"),
+		)
+	}
 	args = append(args,
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile="+filepath.Join(stateDir, "known_hosts"),
 		"-o", "IdentitiesOnly=yes", "-i", key,
 		"-o", "ClearAllForwardings=yes",
+		// ClearAllForwardings clears PORT forwards only; a user ssh_config with
+		// ForwardAgent yes would hand this machine's agent to the hub (review
+		// 2026-10-08, S11).
+		"-o", "ForwardAgent=no", "-o", "ForwardX11=no",
 	)
 	var warnings []string
 	// Every invocation sharing a mux key must keep the same connection-affecting
 	// options: an attached session inherits the master's forwarding, host-key,
 	// and route decisions. User ssh_config alias changes are deliberately not
 	// reimplemented here; a live master retains its resolved route until close.
-	if opts.Channel {
+	// A pinned probe never multiplexes: a live master for this mux key may have
+	// been authenticated under accept-new, which is exactly what it must not
+	// inherit.
+	if opts.Channel || opts.PinnedKnownHosts != "" {
 		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
 	} else {
 		muxDir, attempted, err := selectMuxDir(opts, muxIsolationKey(opts.Remote, opts.AgentID, key))
@@ -200,6 +228,14 @@ func selectMuxDir(opts SSHBuildOptions, isolationKey string) (string, []string, 
 		if !controlPathFits(candidate) {
 			continue
 		}
+		// The PARENT first. Checking only the leaf let another local user who
+		// owns /tmp/ac-<uid> rename a verified leaf away and put a fake master
+		// socket in its place (review 2026-10-08, S9). Once the parent is ours
+		// and 0700, nobody else can touch its entries, and /tmp's sticky bit
+		// keeps them from moving the parent itself.
+		if err := ensure(filepath.Dir(candidate)); err != nil {
+			continue
+		}
 		if err := ensure(candidate); err != nil {
 			continue
 		}
@@ -244,7 +280,7 @@ type processTransport struct {
 	cmd       *exec.Cmd
 	stdin     *os.File
 	stdout    *os.File
-	stderr    bytes.Buffer
+	stderr    tailCapWriter
 	cancel    context.CancelFunc
 	waitCh    chan error
 	closeOnce sync.Once
@@ -298,7 +334,10 @@ func startProcessTransport(cmd *exec.Cmd, cancel context.CancelFunc) (*processTr
 	}
 	cmd.Stdin = childStdin
 	cmd.Stdout = childStdout
-	p := &processTransport{cmd: cmd, stdin: stdin, stdout: stdout, cancel: cancel, waitCh: make(chan error, 1), closeDone: make(chan struct{})}
+	// A capped tail, not the whole stream: a channel lives as long as its lane,
+	// and an unbounded buffer let a chatty or hostile hub grow it without limit
+	// (review 2026-10-08, S11).
+	p := &processTransport{cmd: cmd, stdin: stdin, stdout: stdout, stderr: tailCapWriter{limit: transportStderrLimit}, cancel: cancel, waitCh: make(chan error, 1), closeDone: make(chan struct{})}
 	cmd.Stderr = &p.stderr
 	startErr := cmd.Start()
 	// Load-bearing, on BOTH paths, and not a belt-and-braces double close.
@@ -366,7 +405,7 @@ func classifySSHFailure(remote *loop.RemoteConfig, agentID, stage string, cause 
 		msg := fmt.Sprintf("hub: hub refused this key for %s. Either it was never authorized or it was revoked.", remote.Destination())
 		if hubCfg, err := ReadHubConfig(remote.HubID); err == nil {
 			if pubkey, err := readActivePublicKey(remote, agentID); err == nil {
-				msg += fmt.Sprintf(" Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent %s --pool %s --key %q", agentID, hubCfg.Pool, pubkey)
+				msg += " Run this ON THE HUB, then retry here:\n  " + HubAuthorizeCommand(agentID, hubCfg.Pool, pubkey, false)
 			}
 		}
 		return &Error{Code: "E_UNAUTHORIZED", Msg: msg}

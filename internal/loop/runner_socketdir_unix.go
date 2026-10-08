@@ -15,6 +15,10 @@ func currentUID() string {
 	return strconv.Itoa(os.Getuid())
 }
 
+// socketDirOwnerUID is the uid a socket directory must belong to. A var only so
+// a test can expect someone else's uid — tests cannot chown.
+var socketDirOwnerUID = os.Getuid
+
 // ensureOwnedRunnerSocketDir creates dir (0700) if needed and verifies it is
 // owned by the current uid and is a real directory (not a symlink) before a
 // runner binds a socket inside it. On a shared /tmp this defends against
@@ -41,8 +45,8 @@ func ensureOwnedRunnerSocketDir(dir string) error {
 		// can't ownership-check.
 		return fmt.Errorf("%s: cannot determine runner socket dir ownership", dir)
 	}
-	if int(st.Uid) != os.Getuid() {
-		return fmt.Errorf("%s: runner socket dir is owned by uid %d, not current uid %d; refusing to bind", dir, st.Uid, os.Getuid())
+	if want := socketDirOwnerUID(); int(st.Uid) != want {
+		return fmt.Errorf("%s: runner socket dir is owned by uid %d, not current uid %d; refusing to bind", dir, st.Uid, want)
 	}
 	// Tighten perms in case MkdirAll honored a loose umask on a pre-existing dir.
 	return os.Chmod(dir, 0o700)

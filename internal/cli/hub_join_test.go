@@ -35,7 +35,9 @@ func setupHubJoinTest(t *testing.T) (string, *loop.RemoteConfig) {
 	originalInstall := hubJoinInstallShims
 	originalHostname := hubJoinHostname
 	originalFingerprint := hubJoinFingerprint
-	originalDiscoverFingerprint := hubJoinDiscoverFingerprint
+	originalPinnedProbe := hubJoinPinnedProbe
+	originalUserKnownHosts := hubJoinUserKnownHosts
+	originalSystemKnownHosts := hubJoinSystemKnownHosts
 	originalReapMux := hubMigrationReapMux
 	// Deterministic PATH resolution. The default runs exec.LookPath("agentchute"),
 	// so the shadowed-binary warning printed on a developer machine with agentchute
@@ -51,7 +53,13 @@ func setupHubJoinTest(t *testing.T) (string, *loop.RemoteConfig) {
 	hubJoinInstallShims = func() error { return nil }
 	hubJoinHostname = func() (string, error) { return "Tiny.local", nil }
 	hubJoinFingerprint = func(*loop.RemoteConfig) (string, error) { return "SHA256:host", nil }
-	hubJoinDiscoverFingerprint = func(*loop.RemoteConfig) (string, error) { return "SHA256:host", nil }
+	// Migration rows prove the hub through the pinned probe; by default it
+	// answers exactly as the ordinary probe does, so a row that stubs
+	// hubJoinProbe drives both.
+	hubJoinPinnedProbe = func(remote *loop.RemoteConfig, agentID, keyPath, _ string) (hubwire.HelloOK, []string, error) {
+		return hubJoinProbe(remote, agentID, keyPath)
+	}
+	hubJoinSystemKnownHosts = filepath.Join(root, "no-system-known-hosts")
 	hubMigrationReapMux = func(*hubclient.HubConfig, string) {}
 	hubJoinReapMux = func(*loop.RemoteConfig, string, string, string) error { return nil }
 	t.Cleanup(func() {
@@ -61,7 +69,9 @@ func setupHubJoinTest(t *testing.T) (string, *loop.RemoteConfig) {
 		hubJoinInstallShims = originalInstall
 		hubJoinHostname = originalHostname
 		hubJoinFingerprint = originalFingerprint
-		hubJoinDiscoverFingerprint = originalDiscoverFingerprint
+		hubJoinPinnedProbe = originalPinnedProbe
+		hubJoinUserKnownHosts = originalUserKnownHosts
+		hubJoinSystemKnownHosts = originalSystemKnownHosts
 		hubMigrationReapMux = originalReapMux
 	})
 	return root, remote
@@ -427,8 +437,10 @@ func TestHubJoinRecoveryBranchWithCompletedFreshJoinPreservesOldKey(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A complete, ordinary join to the new URL: config.json and all.
-	if err := runHubJoin(root, newRemote, hubJoinOptions{URL: newRemote.URL, Name: "codex"}); err != nil {
+	// A complete, ordinary join to the new URL: config.json and all. The
+	// checkout points at the old URL, a different hub id, so constructing this
+	// state now takes --replace (review 2026-10-08, S11).
+	if err := runHubJoin(root, newRemote, hubJoinOptions{URL: newRemote.URL, Name: "codex", Replace: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(newRemote.HubDir, "config.json")); err != nil {

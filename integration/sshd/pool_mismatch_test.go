@@ -89,7 +89,7 @@ func TestSSHDHubSideRepointCannotReapClientHeldMaster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, err := h.runCLI(h.pool, "hub", "authorize", "--agent", "codex", "--pool", other, "--key", strings.TrimSpace(string(pubkey)), "--replace-key")
+	stdout, stderr, err := h.runCLITTY(h.pool, "hub", "authorize", "--agent", "codex", "--pool", other, "--key", strings.TrimSpace(string(pubkey)), "--replace-key")
 	if err != nil {
 		t.Fatalf("hub-side repoint: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
 	}

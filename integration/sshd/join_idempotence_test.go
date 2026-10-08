@@ -55,7 +55,8 @@ func TestSSHDJoinIsIdempotentAndRotationReplacesTheLine(t *testing.T) {
 	// Rotation must REPLACE, not append. A rotation that adds a line leaves the
 	// retired key authorized, which is the failure the whole rotation design
 	// exists to prevent.
-	if stdout, stderr, err := h.runCLI(checkout, "hub", "join", h.remote.URL, "--name", "codex", "--rotate-key"); err != nil {
+	// At a terminal: rotation's --replace-key reaches the hub with `ssh -t`.
+	if stdout, stderr, err := h.runCLITTY(checkout, "hub", "join", h.remote.URL, "--name", "codex", "--rotate-key"); err != nil {
 		t.Fatalf("rotate: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
 	}
 	rotatedPub := activePubKey(t, h, agentID)

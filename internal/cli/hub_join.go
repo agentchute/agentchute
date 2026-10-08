@@ -25,10 +25,17 @@ type hubJoinOptions struct {
 	AgentID      string
 	ResetHostKey bool
 	RotateKey    bool
+	Replace      bool
 }
 
 var hubJoinProbe = func(remote *loop.RemoteConfig, agentID, keyPath string) (hubwire.HelloOK, []string, error) {
 	return hubclient.Probe(context.Background(), remote, agentID, version, keyPath)
+}
+
+// hubJoinPinnedProbe is the migration's same-hub proof (see
+// hubclient.ProbeWithPinnedHostKey).
+var hubJoinPinnedProbe = func(remote *loop.RemoteConfig, agentID, keyPath, pinnedKnownHosts string) (hubwire.HelloOK, []string, error) {
+	return hubclient.ProbeWithPinnedHostKey(context.Background(), remote, agentID, version, keyPath, pinnedKnownHosts)
 }
 
 var hubJoinAutoAuthorize = runHubJoinAutoAuthorize
@@ -36,7 +43,19 @@ var hubJoinReapMux = hubclient.ReapSSHMux
 var hubJoinInstallShims = installHubJoinShims
 var hubJoinHostname = os.Hostname
 var hubJoinFingerprint = readHubJoinFingerprint
-var hubJoinDiscoverFingerprint = discoverHubJoinFingerprint
+
+// The known_hosts files a first join seeds from (seedHubKnownHosts). Vars so a
+// row can point them at fixtures rather than this machine's real trust.
+var (
+	hubJoinUserKnownHosts = func() string {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(home, ".ssh", "known_hosts")
+	}
+	hubJoinSystemKnownHosts = "/etc/ssh/ssh_known_hosts"
+)
 
 // errHubJoinIncomplete is a VERDICT sentinel, not a failure: the local half of
 // the join succeeded, and re-running after authorizing on the hub is the
@@ -53,6 +72,7 @@ func cmdHubJoin(args []string) error {
 	fs.StringVar(&opts.AgentID, "as", "", "pool-wide agent id")
 	fs.BoolVar(&opts.ResetHostKey, "reset-hostkey", false, "replace the pinned host key after operator confirmation")
 	fs.BoolVar(&opts.RotateKey, "rotate-key", false, "rotate this joined identity's key")
+	fs.BoolVar(&opts.Replace, "replace", false, "repoint a checkout that already points at a DIFFERENT hub")
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		opts.URL = args[0]
 		args = args[1:]
@@ -144,13 +164,34 @@ func cmdHubJoin(args []string) error {
 		if err := migrateHubJoinState(root, oldHubID, remote); err != nil {
 			return err
 		}
+		// The migration was proven: the new URL's host holds a key pinned for
+		// the old hub. The moved known_hosts names only the OLD host, so make
+		// that proof the new name's pin, or its first connection is accept-new.
+		spec, err := hubKnownHostsSpec(remote)
+		if err != nil {
+			return err
+		}
+		if err := hubclient.CarryHostKeyPin(filepath.Join(remote.HubDir, "known_hosts"), spec); err != nil {
+			return err
+		}
 		return runHubJoin(root, remote, opts)
 	})
 }
 
 func runHubJoin(root string, remote *loop.RemoteConfig, opts hubJoinOptions) error {
+	if err := refuseHubJoinRepoint(root, remote, opts); err != nil {
+		return err
+	}
 	if opts.ResetHostKey {
 		if err := os.Remove(filepath.Join(remote.HubDir, "known_hosts")); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	// Not after --reset-hostkey: it exists to accept the hub's NEW key after a
+	// confirmed rebuild, and seeding would re-pin the old one from
+	// ~/.ssh/known_hosts.
+	if !opts.ResetHostKey {
+		if err := seedHubKnownHosts(remote); err != nil {
 			return err
 		}
 	}
@@ -200,28 +241,25 @@ func runHubJoin(root string, remote *loop.RemoteConfig, opts hubJoinOptions) err
 	if err != nil {
 		return err
 	}
+	// Recorded from the per-hub known_hosts, i.e. from the key this join's
+	// authenticated connection verified — never from ssh-keyscan, which shows a
+	// key without proving anyone holds it (review 2026-10-08, S11; the #164
+	// fallback). Migration no longer needs this value to prove a hub: it pins
+	// the old hub's known_hosts directly (findHubMigrationCandidate).
 	fingerprint, readErr := hubJoinFingerprint(remote)
 	if fingerprint == "" {
-		// known_hosts yielded nothing usable. MIGRATION has had an ssh-keyscan
-		// fallback for exactly this since it shipped; join had none, recorded an
-		// empty fingerprint, and discarded the error that said why — and nothing
-		// re-records it, so findHubMigrationCandidate skips that hub forever
-		// (#164). The path that RECORDS a value has to be at least as robust as
-		// the path that CONSUMES it.
-		//
-		// Only when known_hosts fails, deliberately: ssh-keyscan is a second
-		// connection to a host this join has already reached, and a healthy join
-		// should not pay for a probe it does not need.
-		if scanned, scanErr := hubJoinDiscoverFingerprint(remote); scanErr == nil && scanned != "" {
-			fingerprint = scanned
-		} else {
-			warnHubJoinNoFingerprint(remote, readErr, scanErr)
-		}
+		warnHubJoinNoFingerprint(remote, readErr)
 	}
 	if fingerprint != "" {
 		fmt.Printf("hub key recorded: %s\n", fingerprint)
 	}
 	if incomplete {
+		// A deferred rotation is still an operational join with the old key.
+		// Writing a fresh-join placeholder here erased its verified pool id
+		// and made ordinary operations fail with E_POOL_MISMATCH.
+		if existing.Pool12 != "" && containsString(existing.JoinedAs, agentID) {
+			return errHubJoinIncomplete
+		}
 		updateHubJoinConfig(existing, remote, agentID, localName, remote.PoolPath, "", fingerprint)
 		if err := hubclient.WriteHubConfig(remote.HubID, existing); err != nil {
 			return err
@@ -416,6 +454,11 @@ func authorizeHubJoinKey(remote *loop.RemoteConfig, agentID string, key hubKeyVe
 	}
 	fmt.Print("authorizing via your own SSH access… ")
 	if err := hubJoinAutoAuthorize(remote, agentID, pubkey, replace); err != nil {
+		if errors.Is(err, errHubReplaceNeedsTerminal) {
+			fmt.Println("skipped: " + err.Error() + ", and this join has none")
+			fmt.Println(hubAuthorizePaste(remote, agentID, pubkey, replace))
+			return false, nil
+		}
 		fmt.Println("not available")
 		printSSHProbeTranscript(err)
 		fmt.Println(hubAuthorizePaste(remote, agentID, pubkey, replace))
@@ -440,11 +483,7 @@ func printHubAuthorizePaste(remote *loop.RemoteConfig, agentID string, key hubKe
 }
 
 func hubAuthorizePaste(remote *loop.RemoteConfig, agentID, pubkey string, replace bool) string {
-	replaceArg := ""
-	if replace {
-		replaceArg = " --replace-key"
-	}
-	return fmt.Sprintf("Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent %s --pool %s --key %s%s", agentID, remote.PoolPath, strconv.Quote(pubkey), replaceArg)
+	return "Run this ON THE HUB, then retry here:\n  " + hubclient.HubAuthorizeCommand(agentID, remote.PoolPath, pubkey, replace)
 }
 
 // hubAutoAuthorizeTimeout bounds the auto-authorize probe. Every other ssh this
@@ -454,6 +493,13 @@ func hubAuthorizePaste(remote *loop.RemoteConfig, agentID, pubkey string, replac
 const hubAutoAuthorizeTimeout = "5"
 
 func runHubJoinAutoAuthorize(remote *loop.RemoteConfig, agentID, pubkey string, replace bool) error {
+	tty := hubJoinStdinIsTTY()
+	if replace && !tty {
+		// The hub would refuse this --replace-key without a terminal, so do not
+		// spend a connection learning that; the caller prints the command for
+		// the operator to run on the hub.
+		return errHubReplaceNeedsTerminal
+	}
 	values := []string{"agentchute", "hub", "authorize", "--agent", agentID, "--pool", remote.PoolPath, "--key", pubkey}
 	if replace {
 		values = append(values, "--replace-key")
@@ -465,12 +511,7 @@ func runHubJoinAutoAuthorize(remote *loop.RemoteConfig, agentID, pubkey string, 
 		}
 		quoted[i] = "'" + value + "'"
 	}
-	args := []string{"-o", "ConnectTimeout=" + hubAutoAuthorizeTimeout}
-	if remote.Port != 22 {
-		args = append(args, "-p", strconv.Itoa(remote.Port))
-	}
-	args = append(args, remote.Destination(), strings.Join(quoted, " "))
-	cmd := exec.Command("ssh", args...)
+	cmd := exec.Command("ssh", hubAutoAuthorizeSSHArgs(remote, strings.Join(quoted, " "), replace && tty)...)
 	// stdin stays attached: this path deliberately uses the operator's OWN ssh
 	// access, so ssh may need to prompt. IdentitiesOnly is deliberately NOT set
 	// here for the same reason — pinning an identity would defeat the point.
@@ -491,6 +532,31 @@ func runHubJoinAutoAuthorize(remote *loop.RemoteConfig, agentID, pubkey string, 
 		return &sshProbeError{err: err, transcript: stderr.String()}
 	}
 	return nil
+}
+
+// hubAutoAuthorizeSSHArgs is the auto-authorize ssh argv. This ssh uses the
+// operator's OWN access (no pinned identity), which is the one path that can
+// land on an unrestricted login — so agent and X11 forwarding are switched off
+// explicitly whatever the user's ssh_config says (review 2026-10-08, S11).
+// errHubReplaceNeedsTerminal: a --replace-key the hub would refuse, because
+// nothing here can give its `hub authorize` a terminal.
+var errHubReplaceNeedsTerminal = errors.New("replacing an authorized key needs an interactive terminal on the hub")
+
+// hubJoinStdinIsTTY reports whether the operator running the join is at a
+// terminal. A var so rows can drive both arms.
+var hubJoinStdinIsTTY = func() bool { return runnerIsTerminal(os.Stdin) }
+
+func hubAutoAuthorizeSSHArgs(remote *loop.RemoteConfig, remoteCommand string, tty bool) []string {
+	args := []string{"-o", "ConnectTimeout=" + hubAutoAuthorizeTimeout, "-o", "ForwardAgent=no", "-o", "ForwardX11=no"}
+	if tty {
+		// The hub gates --replace-key on a terminal; an interactive operator's
+		// ssh carries one there.
+		args = append(args, "-t")
+	}
+	if remote.Port != 22 {
+		args = append(args, "-p", strconv.Itoa(remote.Port))
+	}
+	return append(args, remote.Destination(), remoteCommand)
 }
 
 // sshProbeError carries what ssh said so the CALLER can print it once its own
@@ -540,6 +606,31 @@ func updateHubJoinConfig(cfg *hubclient.HubConfig, remote *loop.RemoteConfig, ag
 	if localName != "" {
 		cfg.Names[localName] = agentID
 	}
+}
+
+// refuseHubJoinRepoint stops a join from silently repointing a checkout that
+// already points at a DIFFERENT hub: every lane in it would follow the new
+// pointer to a hub of the caller's choosing (review 2026-10-08, S11). It runs
+// before any key is minted or any connection made. A same-hub migration has
+// already rewritten the pointer to this URL by the time it gets here, and a
+// local (non-ssh) pointer is not a hub, so neither needs --replace.
+func refuseHubJoinRepoint(root string, remote *loop.RemoteConfig, opts hubJoinOptions) error {
+	if opts.Replace {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(root, loop.PointerFileName))
+	if err != nil {
+		return nil
+	}
+	old, _ := loop.ParsePointerFile(string(data))
+	if !strings.HasPrefix(strings.TrimSpace(old), "ssh://") {
+		return nil
+	}
+	oldRemote, err := loop.ParseRemoteURL(old)
+	if err == nil && oldRemote.HubID == remote.HubID {
+		return nil
+	}
+	return fmt.Errorf("hub join: this checkout already points at another hub (%s); joining %s would repoint every lane here. If that is intended, re-run with --replace", strings.TrimSpace(old), remote.URL)
 }
 
 func writeHubJoinPointer(root, url string) error {
@@ -741,15 +832,12 @@ func installHubJoinShims() error {
 // must not do is stay quiet, and it must say what actually breaks — an operator
 // has no reason to care about a fingerprint field, and the symptom shows up much
 // later wearing someone else's remedy.
-func warnHubJoinNoFingerprint(remote *loop.RemoteConfig, readErr, scanErr error) {
+func warnHubJoinNoFingerprint(remote *loop.RemoteConfig, readErr error) {
 	fmt.Fprintln(os.Stderr, "warning: joined, but this hub's host-key fingerprint could not be recorded.")
 	if readErr != nil {
 		fmt.Fprintf(os.Stderr, "  %s: %v\n", displayHomePath(filepath.Join(remote.HubDir, "known_hosts")), readErr)
 	}
-	if scanErr != nil {
-		fmt.Fprintf(os.Stderr, "  ssh-keyscan %s: %v\n", remote.Host, scanErr)
-	}
-	fmt.Fprintln(os.Stderr, "  The join itself is complete; what this costs you is later. Migrating this hub to a new URL needs the recorded fingerprint to recognise the two directories as the same hub, and with none recorded the move is never offered: a `hub join` at the new URL is treated as a FRESH join and refused for having an authorized key already. Re-run the same `hub join` command once the hub is reachable and this records itself.")
+	fmt.Fprintln(os.Stderr, "  The join itself is complete; what this costs you is later. Migrating this hub to a new URL proves the two are the same hub with the host key pinned in that known_hosts file, and with none pinned the move is never offered: a `hub join` at the new URL is treated as a FRESH join and refused for having an authorized key already. Re-run the same `hub join` command once the hub is reachable and this records itself.")
 }
 
 func readHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
@@ -765,27 +853,116 @@ func readHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
 	return fields[1], nil
 }
 
-func discoverHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
-	args := []string{"-T", "5", "-t", "ed25519"}
+// seedHubKnownHosts copies this machine's existing trust for the hub host into
+// the per-hub known_hosts before the FIRST connection. That file is passed as
+// ssh's UserKnownHostsFile, which replaces ~/.ssh/known_hosts: a hub key the
+// user had already verified was never consulted, and accept-new trusted
+// whatever key answered first (review 2026-10-08, S11). Only when the per-hub
+// file does not exist — once it does, it is the pin, and a seeded copy of a
+// later ~/.ssh change must not silently re-pin it.
+//
+// Listing ~/.ssh/known_hosts beside the per-hub file in UserKnownHostsFile was
+// the other option, and it is weaker: a key the user later accepted with plain
+// ssh would then pass agentchute's pin too, and the fingerprint join records
+// would come from whichever file happened to match.
+// hubKnownHostsSpec is the name ssh checks this hub's host key under. The hub
+// connection honours the user's ssh_config, so that is a HostKeyAlias when one
+// is configured, and otherwise the host with the EFFECTIVE port — which a
+// configured HostName or Port can change (PR #216 gate, codex P2). ssh -G resolves them the
+// way the connection will. If it cannot, the fallback is loud, never silent.
+func hubKnownHostsSpec(remote *loop.RemoteConfig) (string, error) {
+	host, alias, port, err := hubJoinResolveSSH(remote)
+	if err != nil {
+		// Fail closed: guessing the name would seed (or pin) the wrong entry and
+		// leave the real one to accept-new. ssh -G failing means the connection
+		// would be reading the same broken config anyway.
+		return "", fmt.Errorf("hub join: cannot resolve how ssh names %s for its host key (ssh -G: %v); fix the ssh config and re-run", remote.Host, err)
+	}
+	if alias != "" {
+		return alias, nil
+	}
+	if port != 22 {
+		return fmt.Sprintf("[%s]:%d", host, port), nil
+	}
+	return host, nil
+}
+
+// hubJoinSSHConfig, when set, is passed to ssh -G as -F. Production leaves it
+// empty so ssh reads the same config the hub connection does (ssh finds it
+// through the account's passwd home, not $HOME — which is why a row needs it).
+var hubJoinSSHConfig = ""
+
+// hubJoinResolveSSH asks ssh for the effective HostName, HostKeyAlias and port of the
+// hub destination.
+var hubJoinResolveSSH = func(remote *loop.RemoteConfig) (host, alias string, port int, err error) {
+	args := []string{"-G"}
+	if hubJoinSSHConfig != "" {
+		args = append(args, "-F", hubJoinSSHConfig)
+	}
 	if remote.Port != 22 {
 		args = append(args, "-p", strconv.Itoa(remote.Port))
 	}
-	args = append(args, remote.Host)
-	keys, err := exec.Command("ssh-keyscan", args...).Output()
-	if err != nil || len(keys) == 0 {
-		return "", &hubclient.Error{Code: "E_CONNECT", Msg: fmt.Sprintf("hub: cannot reach %s:%d (connect failed after 5s). Check network/VPN/tailnet, then retry; `agentchute doctor` runs this same probe. (If this machine should no longer be joined to this hub, delete .agentchute-control-repo.)", remote.Host, remote.Port), Retriable: true, Cause: err}
-	}
-	cmd := exec.Command("ssh-keygen", "-lf", "-")
-	cmd.Stdin = strings.NewReader(string(keys))
-	out, err := cmd.Output()
+	out, err := exec.Command("ssh", append(args, remote.Destination())...).Output()
 	if err != nil {
-		return "", err
+		return "", "", 0, err
 	}
-	fields := strings.Fields(string(out))
-	if len(fields) < 2 {
-		return "", fmt.Errorf("could not parse host-key fingerprint")
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		switch strings.ToLower(fields[0]) {
+		case "hostname":
+			host = fields[1]
+		case "hostkeyalias":
+			alias = fields[1]
+		case "port":
+			if p, perr := strconv.Atoi(fields[1]); perr == nil {
+				port = p
+			}
+		}
 	}
-	return fields[1], nil
+	if host == "" || port < 1 || port > 65535 {
+		return "", "", 0, fmt.Errorf("ssh -G returned no usable hostname and port")
+	}
+	return host, alias, port, nil
+}
+
+func seedHubKnownHosts(remote *loop.RemoteConfig) error {
+	dest := filepath.Join(remote.HubDir, "known_hosts")
+	if _, err := os.Lstat(dest); err == nil || !os.IsNotExist(err) {
+		return nil
+	}
+	spec, err := hubKnownHostsSpec(remote)
+	if err != nil {
+		return err
+	}
+	var lines []string
+	for _, src := range []string{hubJoinUserKnownHosts(), hubJoinSystemKnownHosts} {
+		if src == "" {
+			continue
+		}
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		// ssh-keygen -F matches hashed entries too, and exits 1 on no match.
+		out, err := exec.Command("ssh-keygen", "-F", spec, "-f", src).Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if trimmed := strings.TrimSpace(line); trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+				lines = append(lines, trimmed)
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(remote.HubDir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(dest, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
 func warnHubJoinEnv(url string) {
