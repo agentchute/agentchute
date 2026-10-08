@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // `--budget-bytes 0` lifts the budget on the local path (it is sent as -1 to
@@ -52,37 +53,51 @@ func TestCheckBudgetBytesFlag(t *testing.T) {
 // with the old 192-byte allowance).
 func TestCheckBudgetBoundCoversRenderer(t *testing.T) {
 	stale := []byte("---\nfrom: alice\nreply_required: true\n---\n\nplease reply\n")
-	render := func(n int, budget string) string {
-		t.Helper()
-		root, cfg := setupConsumeFixture(t)
-		var out string
-		withCwd(t, root, func() {
-			clearGuardEnv(t)
-			for seq := uint64(1); seq <= uint64(n); seq++ {
-				mustWriteSeqInbox(t, cfg.AgentInboxDir("bob"), "alice", seq, stale)
+	// Two recipients: the fixture's short "bob", and a 130-char id — the reply
+	// line carries the recipient twice and ids have no length cap.
+	longID := "r" + strings.Repeat("ecipient-", 14) + "end"
+	for _, recipient := range []string{"bob", longID} {
+		t.Run(recipient[:3], func(t *testing.T) {
+			render := func(n int, budget string) string {
+				t.Helper()
+				root, cfg := setupConsumeFixture(t)
+				var out string
+				withCwd(t, root, func() {
+					clearGuardEnv(t)
+					if recipient != "bob" {
+						if err := cmdRegister([]string{"--as", recipient, "--vendor", "openai"}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for seq := uint64(1); seq <= uint64(n); seq++ {
+						// Aged past oldMailBannerAfter so the STALE banner is part
+						// of the measured render — the case codex measured.
+						mustWriteAgedInbox(t, cfg.AgentInboxDir(recipient), "alice", seq, stale, 48*time.Hour)
+					}
+					var err error
+					out, err = checkAs(t, recipient, "--budget-bytes", budget)
+					if err != nil {
+						t.Fatal(err)
+					}
+				})
+				return out
 			}
-			var err error
-			out, err = checkAs(t, "bob", "--budget-bytes", budget)
-			if err != nil {
-				t.Fatal(err)
+			one := render(1, "0")
+			if !strings.Contains(one, "reply-required:") || !strings.Contains(one, "[!] STALE") {
+				t.Fatalf("fixture did not render both the STALE banner and the reply-required line:\n%s", one)
+			}
+			// Everything but the trailing CLAIMED note is one message's render.
+			single := strings.Index(one, "note: messages CLAIMED")
+			if single < 0 {
+				t.Fatalf("no CLAIMED note in:\n%s", one)
+			}
+			two := render(2, strconv.Itoa(2*single-1))
+			if got := strings.Count(two, "---- "); got != 1 {
+				t.Fatalf("displayed %d messages under a budget one byte short of two renders (%d each); the overhead bound under-counts the renderer:\n%s", got, single, two)
+			}
+			if !strings.Contains(two, "(reached budget of") {
+				t.Fatalf("no budget line:\n%s", two)
 			}
 		})
-		return out
-	}
-	one := render(1, "0")
-	if !strings.Contains(one, "reply-required:") {
-		t.Fatalf("fixture did not render the reply-required line:\n%s", one)
-	}
-	// Everything but the trailing CLAIMED note is one message's render.
-	single := strings.Index(one, "note: messages CLAIMED")
-	if single < 0 {
-		t.Fatalf("no CLAIMED note in:\n%s", one)
-	}
-	two := render(2, strconv.Itoa(2*single-1))
-	if got := strings.Count(two, "---- "); got != 1 {
-		t.Fatalf("displayed %d messages under a budget one byte short of two renders (%d each); the overhead bound under-counts the renderer:\n%s", got, single, two)
-	}
-	if !strings.Contains(two, "(reached budget of") {
-		t.Fatalf("no budget line:\n%s", two)
 	}
 }

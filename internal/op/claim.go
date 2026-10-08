@@ -27,13 +27,15 @@ const DefaultClaimBudgetBytes = 12 << 10
 // sender), the REDELIVERED header (~90 bytes + filename), the blank-line
 // framing, the reply-required command line (~80 bytes + agent id + sender +
 // the reply ref, which is the filename plus the recipient id), and the budget
-// status line itself. Bounded generously per filename because the ids inside
+// status line itself. The recipient id appears twice in the reply line
+// (`--from <id>` and `to-<id>_` in the ref) and agent ids have no length cap,
+// so it is counted twice explicitly. Bounded generously per filename because the ids inside
 // the ref and header scale with it; a cli test (TestCheckBudgetBoundCoversRenderer)
 // pins that the real renderer never exceeds the estimate.
 const renderedMessageOverhead = 512
 
-func renderedSize(msg loop.Message, content []byte) int {
-	return len(content) + 3*len(msg.Filename) + renderedMessageOverhead
+func renderedSize(recipient string, msg loop.Message, content []byte) int {
+	return len(content) + 3*len(msg.Filename) + 2*len(recipient) + renderedMessageOverhead
 }
 
 // ClaimReq is `check`'s state half. Limit 0 means no limit; BudgetBytes 0
@@ -184,7 +186,7 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 		if err := emitMessage(emit, agentID, msg, content, true); err != nil {
 			return sum, err
 		}
-		used += renderedSize(msg, content)
+		used += renderedSize(agentID, msg, content)
 		// The residue path discharges even under --no-archive, exactly as
 		// today: the shipped loop calls displayConsumed (not the read-only
 		// variant) for redelivered mail regardless of the flag.
@@ -221,14 +223,14 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 		// C1: stop BEFORE claiming a message the rendered batch cannot hold.
 		// The first message of a batch is always taken, so a body larger than
 		// the whole budget is delivered rather than starved.
-		if budget > 0 && batch > 0 && used+renderedSize(msg, content) > budget {
+		if budget > 0 && batch > 0 && used+renderedSize(agentID, msg, content) > budget {
 			line := fmt.Sprintf("(reached budget of %d bytes; %d more pending)", budget, len(msgs)-i)
 			if err := emit(NewNoteEvent(NoteInfo, line)); err != nil {
 				return sum, err
 			}
 			break
 		}
-		used += renderedSize(msg, content)
+		used += renderedSize(agentID, msg, content)
 		batch++
 
 		// §11 enforcement on frontmatter. Body-only messages pass through.
