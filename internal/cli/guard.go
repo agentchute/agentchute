@@ -291,7 +291,8 @@ func runGuardHook(args []string, stdin io.Reader) error {
 	if warnRunnerAncestry("guard") {
 		if codexHook == "PreToolUse" {
 			// Latched or not: a hidden codex thread is a hazard at any time.
-			decision = evaluateCodexThreadCwd(controlRepo, loopDir, parseGuardHookCwd(stdinBody), toolCmd)
+			toolName, inputText := guardAllInputStrings(stdinBody)
+			decision = evaluateCodexThreadCwd(controlRepo, loopDir, parseGuardHookCwd(stdinBody), toolName, inputText)
 		}
 		if decision.Allowed {
 			decision = evaluateGuardInvocation(agentID, controlRepo, loopDir, toolCmd)
@@ -367,12 +368,51 @@ var guardBusQuoting = strings.NewReplacer("\\\n", "", `"`, "", "'", "", `\`, "",
 // (a variable, flags or another command between). An apply_patch runs
 // nothing. Still text matching, not a shell: a name assembled at run time
 // (`$(printf agent%s chute) send`) is not seen.
-func guardBusCommand(toolCmd string) bool {
-	if strings.HasPrefix(toolCmd, guardApplyPatchPrefix) {
-		return false
-	}
-	normalized := guardBusQuoting.Replace(strings.ToLower(toolCmd))
+func guardBusCommand(text string) bool {
+	normalized := guardBusQuoting.Replace(strings.ToLower(text))
 	return guardBusAfterBinaryRE.MatchString(normalized)
+}
+
+// guardAllInputStrings returns the tool name and every string anywhere in the
+// hook's tool input (nested objects and arrays included, keys in order), one
+// per line: what the foreign-thread rule matches. Unlike
+// parseGuardToolCommand it knows no tool's argument names, so a command a
+// tool carries under any key is seen — codex's write_stdin `chars` typed
+// into an already-open shell, a code cell's source.
+func guardAllInputStrings(body []byte) (toolName, text string) {
+	var in struct {
+		ToolName  string          `json:"tool_name"`
+		ToolInput json.RawMessage `json:"tool_input"`
+	}
+	if err := json.Unmarshal(body, &in); err != nil {
+		return "", ""
+	}
+	var parts []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			parts = append(parts, x)
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			keys := make([]string, 0, len(x))
+			for k := range x {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				walk(x[k])
+			}
+		}
+	}
+	var input any
+	if len(in.ToolInput) > 0 && json.Unmarshal(in.ToolInput, &input) == nil {
+		walk(input)
+	}
+	return in.ToolName, strings.Join(parts, "\n")
 }
 
 // parseGuardHookCwd returns the hook input's `cwd` (codex's PreToolUse input
@@ -392,15 +432,12 @@ func parseGuardHookCwd(body []byte) string {
 	return cwd
 }
 
-// guardPathWithin reports whether path is dir or below it: lexically, or by
-// file identity walking up from path's resolved form (a symlinked or
-// differently cased spelling of the same tree). A path or dir that cannot be
-// resolved counts as within: fail open.
+// guardPathWithin reports whether path, with every symlink resolved, is dir
+// or below it, by file identity walking up (so a symlinked or differently
+// cased spelling of the repo counts, and a symlink inside the repo that
+// leads out of it does not). A path or dir that cannot be resolved counts as
+// within: fail open.
 func guardPathWithin(path, dir string) bool {
-	path, dir = filepath.Clean(path), filepath.Clean(dir)
-	if rel, err := filepath.Rel(dir, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return true
-	}
 	dirInfo, err := os.Stat(dir)
 	if err != nil {
 		return true
@@ -438,9 +475,10 @@ const codexThreadCwdReasonFmt = "this codex thread runs in %s, outside the contr
 // fails, or the lane is remote: an ssh:// lane's local repo is itself derived
 // from the working directory, so it cannot anchor this check (serve's
 // `--disable memories` is the protection there).
-func evaluateCodexThreadCwd(controlRepo, loopDir, hookCwd, toolCmd string) guardDecision {
+func evaluateCodexThreadCwd(controlRepo, loopDir, hookCwd, toolName, inputText string) guardDecision {
 	allow := guardDecision{Allowed: true}
-	if hookCwd == "" || !guardBusCommand(toolCmd) || resolveGuardSession() == "" {
+	// apply_patch writes files and runs nothing.
+	if hookCwd == "" || toolName == "apply_patch" || !guardBusCommand(inputText) || resolveGuardSession() == "" {
 		return allow
 	}
 	cwd, err := os.Getwd()

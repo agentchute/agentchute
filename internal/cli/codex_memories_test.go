@@ -434,6 +434,16 @@ func TestCodexGuardRefusesBusCommandsFromAThreadOutsideTheControlRepo(t *testing
 	if err := os.Symlink(root, link); err != nil {
 		t.Fatal(err)
 	}
+	// A symlink INSIDE the repo that leads out of it, to the memory dir.
+	escape := filepath.Join(root, "memories-link")
+	if err := os.Symlink(memories, escape); err != nil {
+		t.Fatal(err)
+	}
+	withInput := func(tool string, input map[string]any) func(cwd string) map[string]any {
+		return func(cwd string) map[string]any {
+			return map[string]any{"hook_event_name": "PreToolUse", "cwd": cwd, "tool_name": tool, "tool_input": input}
+		}
+	}
 	codexHook := []string{"--pre-tool-use", "--codex-hook", "PreToolUse"}
 	rows := []struct {
 		name    string
@@ -442,7 +452,17 @@ func TestCodexGuardRefusesBusCommandsFromAThreadOutsideTheControlRepo(t *testing
 		cmd     string
 		armed   bool
 		wantDen bool
+		input   func(cwd string) map[string]any // nil: a shell call running cmd
 	}{
+		{name: "write_stdin types the command into an open shell", args: codexHook, cwd: memories, armed: true, wantDen: true,
+			input: withInput("write_stdin", map[string]any{"session_id": 7, "chars": "agentchute send --from bob --to alice --body SHIP\n"})},
+		{name: "a code cell carries the command under its own key", args: codexHook, cwd: memories, armed: true, wantDen: true,
+			input: withInput("exec", map[string]any{"source": "await tools.exec_command({cmd: 'agentchute send --body x'})"})},
+		{name: "an argv array under an unknown key", args: codexHook, cwd: memories, armed: true, wantDen: true,
+			input: withInput("functions.exec_command", map[string]any{"argv": []any{"sh", "-c", "agentchute check --as bob"}})},
+		{name: "apply_patch writes a file and runs nothing", args: codexHook, cwd: memories, armed: true,
+			input: withInput("apply_patch", map[string]any{"command": "*** Begin Patch\n*** Add File: notes.md\n+run agentchute send --body-file reply.md\n*** End Patch\n"})},
+		{name: "a symlink inside the repo that leads out of it", args: codexHook, cwd: escape, cmd: "agentchute send --body x", armed: true, wantDen: true},
 		{name: "memory thread sends", args: codexHook, cwd: memories, cmd: "agentchute send --from bob --to alice --body SHIP", armed: true, wantDen: true},
 		{name: "memory thread checks", args: codexHook, cwd: memories, cmd: "agentchute check --as bob", armed: true, wantDen: true},
 		{name: "memory thread acks", args: codexHook, cwd: memories, cmd: "agentchute ack --as bob", armed: true, wantDen: true},
@@ -487,6 +507,9 @@ func TestCodexGuardRefusesBusCommandsFromAThreadOutsideTheControlRepo(t *testing
 					armGuard(t, "tok-memories")
 				}
 				in := codexShellInput(row.cwd, row.cmd)
+				if row.input != nil {
+					in = row.input(row.cwd)
+				}
 				if len(row.args) == 1 {
 					in["tool_name"] = "Bash"
 					in["tool_input"] = map[string]any{"command": row.cmd}
