@@ -14,7 +14,8 @@ points so you don't call them by hand:
 | Claude Code | [`hooks/claude-code/.claude/settings.json`](hooks/claude-code/.claude/settings.json) |
 | codex CLI | [`hooks/codex/.codex/hooks.json`](hooks/codex/.codex/hooks.json) |
 | Gemini CLI | [`hooks/gemini/.gemini/settings.json`](hooks/gemini/.gemini/settings.json) |
-| Grok CLI | hookless — uses `ac serve grok` / `agentchute serve` for startup + wake |
+| Grok CLI | hookless — `ac serve grok` / `agentchute serve` handle startup + wake and set `GROK_CLAUDE_HOOKS_ENABLED=0` so grok does not run the Claude Code template above |
+| Antigravity CLI (`agy`, what `ac serve gemini` runs where Gemini CLI is absent) | no template yet — launches UNGUARDED (it does not read the Gemini CLI file); commit with `agentchute ack` |
 
 **codex's shared daemon.** codex 0.161+ hosts every session on one per-user background
 process (`codex app-server --managed-daemon`), forked by the first `codex` launch and

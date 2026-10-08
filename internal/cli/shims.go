@@ -27,12 +27,36 @@ type wrapperSpec struct {
 	// no hook system at all (grok_cli_hookless) and must stay unguarded —
 	// arming a latch nothing can clear would wedge every serve lane.
 	Guarded bool
+	// UnguardedBinaries lists candidate binaries that do NOT load this
+	// wrapper's hook template even though they answer to its name: the
+	// gemini wrapper's third candidate `agy` (Antigravity CLI 1.3.1) reads
+	// `.agents/hooks.json` with different events and has no BeforeAgent/
+	// BeforeTool at all, so a latch armed for it would never be cleared
+	// (opus-xhigh H5). Guarded is resolved per launched binary (guardedFor),
+	// never from the spec alone.
+	UnguardedBinaries []string
+}
+
+// guardedFor resolves Guarded for the binary actually launched (its
+// basename). The second value is the operator-facing reason when a guarded
+// spec resolves to an unguarded binary, empty otherwise.
+func (s wrapperSpec) guardedFor(binary string) (bool, string) {
+	if !s.Guarded {
+		return false, ""
+	}
+	base := filepath.Base(binary)
+	for _, u := range s.UnguardedBinaries {
+		if base == u {
+			return false, fmt.Sprintf("%s wrapper resolved to %s, which does not load the %s hook template (no end-of-turn hook can clear a guard latch); launching UNGUARDED — commit mail with `agentchute ack` yourself", s.Key, base, s.AgentID)
+		}
+	}
+	return true, ""
 }
 
 var wrapperSpecs = []wrapperSpec{
 	{Key: "claude", Name: "ac-claude", Aliases: []string{"claude", "claude-code"}, AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}, Guarded: true},
 	{Key: "codex", Name: "ac-codex", Aliases: []string{"codex"}, AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}, Guarded: true},
-	{Key: "gemini", Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli", "agy"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli", "agy"}, Guarded: true},
+	{Key: "gemini", Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli", "agy"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli", "agy"}, Guarded: true, UnguardedBinaries: []string{"agy"}},
 	{Key: "grok", Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}, Guarded: false},
 }
 
@@ -327,13 +351,22 @@ func wrapperSpecForName(name string) (wrapperSpec, bool) {
 }
 
 func resolveRealWrapper(spec wrapperSpec, shimDir string) (string, error) {
+	return resolveRealWrapperOnPath(spec, shimDir, os.Getenv("PATH"))
+}
+
+// resolveRealWrapperOnPath is resolveRealWrapper over an explicit PATH value:
+// directory-first (the first PATH entry holding ANY candidate wins), skipping
+// the shim directory. doctor shares it so it names the same binary serve
+// launches (codex gate on #213: name-first iteration picked `gemini` where
+// serve picked an earlier `agy`).
+func resolveRealWrapperOnPath(spec wrapperSpec, shimDir, pathEnv string) (string, error) {
 	absShimDir := ""
 	if shimDir != "" {
 		if abs, err := filepath.Abs(shimDir); err == nil {
 			absShimDir = abs
 		}
 	}
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+	for _, dir := range filepath.SplitList(pathEnv) {
 		if dir == "" {
 			dir = "."
 		}
