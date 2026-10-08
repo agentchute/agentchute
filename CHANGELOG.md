@@ -6,7 +6,8 @@ The repo follows a release-squash convention: each release lands on `main` as a 
 
 ## Unreleased
 
-**Hub session cleanup (#219)**
+**Hub session cleanup (#219, #223)**
+- `hub session` ends promptly on SIGHUP or SIGTERM even while sshd's pipes stay open (#223). Cancellation used to reach the session only by closing its transport, and closing an inherited pipe fd does not interrupt a read or write already blocked in the kernel, so the session waited in read(fd 0) — or in a write to a full stdout — until its 20 s channel-read bound before releasing the lease. The read and write waits now also watch the session's cancellation (a write in progress still gets the 250 ms grace from #176), and the one-shot lifetime uses the same path. Real-stdio rows cover SIGHUP and SIGTERM, idle and with stdout full.
 - `hub session` no longer dies on a broken stdout. When a client vanished while a reply (a tick-ok, say) was already on its way, the write to sshd's closed pipe raised SIGPIPE, which kills a Go program that has not asked for it — before the deferred lease release ran, so the hub kept the lane's serve claim after its channel was gone. The session now asks for SIGPIPE, sees the write fail, and ends through its normal exit path. Found as the CI flake in `TestSSHDChildIsNotRelaunchedWhenOptedOut`; a new row runs the real command over its own stdio and breaks its stdout.
 - Test-only: the hub session deadline rows no longer put hello-ok and lease-ok under a 10 ms write deadline (a reader the scheduler ran late got EOF), and the exit-path rows no longer share a 25 ms read deadline that could end the session before the path a row names.
 

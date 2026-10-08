@@ -119,6 +119,25 @@ type hubSession struct {
 	afterAcquire func()
 	now          func() time.Time
 	oneShotTimer *time.Timer
+	// stop closes when the session must end: a SIGHUP/SIGTERM on the caller's
+	// context, or the one-shot lifetime. The read and write waits select on
+	// it, because closing the transport does not interrupt a read or write
+	// already blocked on an inherited pipe fd (#223). nil before the session
+	// starts, which never fires.
+	stop <-chan struct{}
+}
+
+// errHubSessionStopped is what a read or write wait returns when stop fires.
+var errHubSessionStopped = errors.New("hub session stopped")
+
+// stopped reports whether stop has fired.
+func (s *hubSession) stopped() bool {
+	select {
+	case <-s.stop:
+		return true
+	default:
+		return false
+	}
 }
 
 func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hubSessionOptions) (returnErr error) {
@@ -153,21 +172,24 @@ func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hu
 	s.cfg = cfg
 	s.ctx = op.Context{ActorID: opts.Agent}
 
+	sessionCtx, stopSession := context.WithCancel(ctx)
+	defer stopSession()
+	s.stop = sessionCtx.Done()
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
-		case <-ctx.Done():
+		case <-sessionCtx.Done():
 			s.closeAfterWriteIdle()
 		case <-done:
 		}
 	}()
-	s.oneShotTimer = time.AfterFunc(timing.OneShotLifetime, func() { s.closeAfterWriteIdle() })
+	s.oneShotTimer = time.AfterFunc(timing.OneShotLifetime, stopSession)
 	defer s.oneShotTimer.Stop()
 
 	raw, err := s.read(timing.Hello)
 	if err != nil {
-		if !errors.Is(err, io.EOF) {
+		if !errors.Is(err, io.EOF) && !s.stopped() {
 			_ = s.writeError(0, err)
 		}
 		return nil
@@ -213,7 +235,7 @@ func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hu
 		}
 		raw, err := s.read(readFor)
 		if err != nil {
-			if errors.Is(err, io.EOF) || ctx.Err() != nil {
+			if errors.Is(err, io.EOF) || s.stopped() {
 				return nil
 			}
 			_ = s.writeError(raw.ID, err)
@@ -228,6 +250,9 @@ func serveHubSession(ctx context.Context, transport hubSessionTransport, opts hu
 		s.lastID = raw.ID
 		terminal, err := s.dispatch(raw)
 		if err != nil {
+			if s.stopped() {
+				return nil
+			}
 			return err
 		}
 		if terminal {
@@ -514,6 +539,10 @@ func (s *hubSession) read(after time.Duration) (hubwire.RawFrame, error) {
 	case <-timer.C:
 		_ = s.transport.Close()
 		return hubwire.RawFrame{}, os.ErrDeadlineExceeded
+	case <-s.stop:
+		// The read goroutine may stay blocked in the kernel; the session ends
+		// anyway, and its exit path releases the lease.
+		return hubwire.RawFrame{}, errHubSessionStopped
 	}
 }
 
@@ -585,6 +614,18 @@ func (s *hubSession) watchIO(after time.Duration, operation func() error) error 
 		// exactly the thing that is not happening.
 		_ = s.transport.Close()
 		return os.ErrDeadlineExceeded
+	case <-s.stop:
+		// Give a write in progress the same bounded chance to finish that
+		// closeAfterWriteIdle gives it (#176), then end the session even if the
+		// write is still blocked in the kernel (#223).
+		grace := time.NewTimer(hubSessionCloseGrace)
+		defer grace.Stop()
+		select {
+		case err := <-done:
+			return err
+		case <-grace.C:
+			return errHubSessionStopped
+		}
 	}
 }
 
