@@ -39,6 +39,11 @@ func cmdSelfCheck(args []string) error {
 	if fs.NArg() != 0 {
 		return selfCheckUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
+	// Fail open, but do not repair: rewriting a registration from another
+	// runner's env is exactly what the ancestry check exists to stop.
+	if !warnRunnerAncestry("self-check") {
+		return nil
+	}
 
 	opts := registerOpts{
 		Host:       host,
