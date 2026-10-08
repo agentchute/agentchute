@@ -27,6 +27,27 @@ func TestHubAuthorizeTerminalGateIsNotFooledByDevNull(t *testing.T) {
 		t.Fatal("stdin = /dev/null passed the terminal gate")
 	}
 
+	// A pipe and a regular file are not terminals either.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	os.Stdin = r
+	if hubAuthorizeStdinIsTTY() {
+		t.Fatal("stdin = a pipe passed the terminal gate")
+	}
+	regular, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer regular.Close()
+	os.Stdin = regular
+	if hubAuthorizeStdinIsTTY() {
+		t.Fatal("stdin = a regular file passed the terminal gate")
+	}
+
 	ptmx, tty, err := creackpty.Open()
 	if err != nil {
 		t.Skipf("no pty available: %v", err)

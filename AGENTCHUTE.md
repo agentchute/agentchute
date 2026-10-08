@@ -457,7 +457,7 @@ One-shot masters are isolated by an opaque 12-hex digest over the hub id, agent 
 
 One authorized key = one agent id. The `authorized_keys` line **is** the mapping — no side database.
 
-`hub authorize` does not append a line for an id the pool already knows without one — a registration row, a fresh serve claim, an inbox (its row may have been swept), or lane state — unless run with `--takeover` from an interactive terminal: a new key for such an id is that lane. Replacing the key of an id that already has a line still takes `--replace-key`.
+`hub authorize` does not append a line for an id the pool already knows without one — a registration row, a fresh serve claim, an inbox (its row may have been swept), or lane state — unless run with `--takeover` with a real terminal on stdin (a termios check — `/dev/null`, a pipe or a file is refused): a new key for such an id is that lane. A terminal is not proof of a human; the check stops the scripted and tool-call path, not a determined operator. Replacing the key of an id that already has a line still takes `--replace-key`.
 
 ```
 restrict,command="/usr/local/bin/agentchute hub session --agent <id> --pool <abs> --pool-id <pool12>" ssh-ed25519 … agentchute:<id>:<pool12>
