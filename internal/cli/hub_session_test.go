@@ -832,6 +832,43 @@ func TestValidateHubPoolDoesNotConsultDiscoveryEnvironment(t *testing.T) {
 	}
 }
 
+// The hub's ClaimReq literal carries the frame's budget_bytes: a frame without
+// it claims under the default (two of four 5,000-byte messages); -1 claims all.
+func TestHubCheckFrameBudgetReachesClaim(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		budget int
+		want   int
+	}{
+		{"omitted = default", 0, 2},
+		{"-1 = unbounded", -1, 4},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			pool, cfg := newHubPool(t)
+			enrollHubAgent(t, cfg, "codex")
+			enrollHubAgent(t, cfg, "grok")
+			for i := 0; i < 4; i++ {
+				deliverHubMessage(t, cfg, "grok", "codex", strings.Repeat("x", 5000))
+			}
+			s := startHubSession(t, pool, "codex", hubSessionTiming{}, nil, nil)
+			helloHub(t, s, "codex", 1)
+			if err := s.writer.Write(hubwire.Check{RequestBase: hubwire.RequestBase{T: "check", ID: 2}, BudgetBytes: row.budget}, nil); err != nil {
+				t.Fatal(err)
+			}
+			frames := readUntil(t, s, "check-ok")
+			msgs := 0
+			for _, f := range frames {
+				if f.T == "msg" {
+					msgs++
+				}
+			}
+			if msgs != row.want || frames[len(frames)-1].T != "check-ok" {
+				t.Fatalf("msg frames = %d, want %d; stream = %v", msgs, row.want, frameTypes(frames))
+			}
+		})
+	}
+}
+
 // The consume fence on the wire (review 2026-10-08, S2): the hub applies it
 // against ITS serve claim for the pinned id. A check/ack frame with a
 // mismatched serve_token is E_FENCED and one with an empty serve_token is

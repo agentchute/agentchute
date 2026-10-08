@@ -63,6 +63,8 @@ func cmdCheck(args []string) error {
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&noArchive, "no-archive", false, "dry run: suppress inbox side effects (no archive or quarantine); own last_seen still updates")
 	fs.IntVar(&limit, "limit", 0, "process at most N messages this turn (0 = no limit)")
+	var budgetBytes int
+	fs.IntVar(&budgetBytes, "budget-bytes", op.DefaultClaimBudgetBytes, "stop claiming once this many rendered bytes have been displayed; at least one message is always claimed (0 = no budget)")
 
 	if err := fs.Parse(args); err != nil {
 		return checkUsage(err)
@@ -157,9 +159,12 @@ func cmdCheck(args []string) error {
 	// archiving DURING check (the old behavior) is at-most-once for the WORK. A
 	// crash between claim and ack now RE-DELIVERS (at-least-once); handlers must
 	// be idempotent.
+	if budgetBytes <= 0 {
+		budgetBytes = -1 // the op's "no budget"; 0 there means the default
+	}
 	// The serve token fences the claim as it already fences send: a process
 	// whose env belongs to another runner may not claim a live lane's mail.
-	claimReq := op.ClaimReq{Limit: limit, NoArchive: noArchive, ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
+	claimReq := op.ClaimReq{Limit: limit, BudgetBytes: budgetBytes, NoArchive: noArchive, ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
 	var sum op.ClaimSummary
 	if cfg.Remote != nil {
 		session, openErr := openRemoteOneShot(cfg, agentID)
@@ -275,5 +280,5 @@ func sanitizeControlBytes(s string) string {
 }
 
 func checkUsage(err error) error {
-	return fmt.Errorf("%w\nusage: agentchute check [--as <agent-id>] [--vendor <v>] [--control-repo <path>] [--loop-dir <path>] [--no-archive] [--limit <n>]\n  check CLAIMS + displays (at-least-once); run `agentchute ack` to commit (archive).", err)
+	return fmt.Errorf("%w\nusage: agentchute check [--as <agent-id>] [--vendor <v>] [--control-repo <path>] [--loop-dir <path>] [--no-archive] [--limit <n>] [--budget-bytes <n>]\n  check CLAIMS + displays (at-least-once); run `agentchute ack` to commit (archive).", err)
 }
