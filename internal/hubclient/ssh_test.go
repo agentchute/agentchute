@@ -270,7 +270,7 @@ func TestUnauthorizedIncludesReadyToPasteAuthorization(t *testing.T) {
 		cancel: func() {}, waitCh: waitCh, closeDone: make(chan struct{}),
 	}
 	got := classifySSHFailure(remote, "codex", "connect", errors.New("transport failed"), transport)
-	want := "hub: hub refused this key for alex@hub.example. Either it was never authorized or it was revoked. Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent codex --pool /remote/pool --key \"" + pubkey + "\""
+	want := "hub: hub refused this key for alex@hub.example. Either it was never authorized or it was revoked. Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent 'codex' --pool '/remote/pool' --key '" + pubkey + "'"
 	if ErrorCode(got) != "E_UNAUTHORIZED" || got.Error() != want {
 		t.Fatalf("unauthorized error = %q, want %q", got, want)
 	}

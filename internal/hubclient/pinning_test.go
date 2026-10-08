@@ -249,7 +249,7 @@ func TestExit127IsClassifiedByTheProbeNotTheShellText(t *testing.T) {
 		{
 			name: "producer 2 — operator fallback", verdict: pinningOperatorFallback,
 			wantCode: "E_HUB_UNPINNED",
-			wantSays: []string{"authorization problem wearing", "agentchute hub authorize --agent codex"},
+			wantSays: []string{"authorization problem wearing", "agentchute hub authorize --agent 'codex'"},
 		},
 		{
 			name: "unattributed — names BOTH remedies", verdict: pinningUnpinnedUnattributed,

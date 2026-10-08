@@ -366,7 +366,7 @@ func classifySSHFailure(remote *loop.RemoteConfig, agentID, stage string, cause 
 		msg := fmt.Sprintf("hub: hub refused this key for %s. Either it was never authorized or it was revoked.", remote.Destination())
 		if hubCfg, err := ReadHubConfig(remote.HubID); err == nil {
 			if pubkey, err := readActivePublicKey(remote, agentID); err == nil {
-				msg += fmt.Sprintf(" Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent %s --pool %s --key %q", agentID, hubCfg.Pool, pubkey)
+				msg += " Run this ON THE HUB, then retry here:\n  " + HubAuthorizeCommand(agentID, hubCfg.Pool, pubkey, false)
 			}
 		}
 		return &Error{Code: "E_UNAUTHORIZED", Msg: msg}

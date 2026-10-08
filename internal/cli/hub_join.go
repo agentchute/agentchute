@@ -440,11 +440,7 @@ func printHubAuthorizePaste(remote *loop.RemoteConfig, agentID string, key hubKe
 }
 
 func hubAuthorizePaste(remote *loop.RemoteConfig, agentID, pubkey string, replace bool) string {
-	replaceArg := ""
-	if replace {
-		replaceArg = " --replace-key"
-	}
-	return fmt.Sprintf("Run this ON THE HUB, then retry here:\n  agentchute hub authorize --agent %s --pool %s --key %s%s", agentID, remote.PoolPath, strconv.Quote(pubkey), replaceArg)
+	return "Run this ON THE HUB, then retry here:\n  " + hubclient.HubAuthorizeCommand(agentID, remote.PoolPath, pubkey, replace)
 }
 
 // hubAutoAuthorizeTimeout bounds the auto-authorize probe. Every other ssh this
