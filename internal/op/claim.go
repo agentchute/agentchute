@@ -20,6 +20,8 @@ type ClaimReq struct {
 	NoArchive  bool   `json:"no_archive,omitempty"`
 	ServeToken string `json:"serve_token,omitempty"`
 	Unfenced   bool   `json:"-"`
+
+	beforeMutation func() // test-only, invocation-scoped
 }
 
 // ClaimSummary is counts only (D2). Everything unbounded left as events.
@@ -72,6 +74,12 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 		}
 	}
 
+	// Every mutation below re-checks that fence under the agent lock; the read
+	// above is only the early refusal (fencedMutation).
+	fenced := func(mutate func() error) error {
+		return fencedMutation(cfg, agentID, req.ServeToken, req.Unfenced, req.beforeMutation, mutate)
+	}
+
 	inboxDir := cfg.AgentInboxDir(agentID)
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
 	if err != nil {
@@ -82,7 +90,14 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 	// (file moves), so --no-archive reports and skips it.
 	if !req.NoArchive {
 		for _, name := range skipped {
-			quarantined, qerr := loop.QuarantineInboxFile(filepath.Join(inboxDir, name), cfg.MalformedDir(), agentID, now)
+			var quarantined string
+			var qerr error
+			if ferr := fenced(func() error {
+				quarantined, qerr = loop.QuarantineInboxFile(filepath.Join(inboxDir, name), cfg.MalformedDir(), agentID, now)
+				return nil
+			}); ferr != nil {
+				return sum, ferr
+			}
 			if qerr != nil {
 				if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("failed to quarantine %s: %v", name, qerr))); eerr != nil {
 					return sum, eerr
@@ -167,7 +182,14 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 				}
 				continue
 			}
-			quarantined, qerr := loop.QuarantineInboxFile(msg.Path, cfg.MalformedDir(), agentID, now)
+			var quarantined string
+			var qerr error
+			if ferr := fenced(func() error {
+				quarantined, qerr = loop.QuarantineInboxFile(msg.Path, cfg.MalformedDir(), agentID, now)
+				return nil
+			}); ferr != nil {
+				return sum, ferr
+			}
 			if qerr != nil {
 				sum.Claimed++
 				if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("%s has malformed frontmatter but quarantine failed: %v", msg.Filename, qerr))); eerr != nil {
@@ -195,11 +217,16 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 
 		// CLAIM (phase 1): move inbox -> .claimed, then emit from the claimed
 		// copy. NO archive — that is `ack`, phase 2.
-		claimedPath, cerr := loop.ClaimMessage(msg, claimedDir)
-		if cerr != nil {
-			return sum, fmt.Errorf("claim message %s: %w", msg.Filename, cerr)
+		if err := fenced(func() error {
+			claimedPath, cerr := loop.ClaimMessage(msg, claimedDir)
+			if cerr != nil {
+				return fmt.Errorf("claim message %s: %w", msg.Filename, cerr)
+			}
+			msg.Path = claimedPath
+			return nil
+		}); err != nil {
+			return sum, err
 		}
-		msg.Path = claimedPath
 		sum.Claimed++
 		if err := emitMessage(emit, agentID, msg, content, false); err != nil {
 			return sum, err

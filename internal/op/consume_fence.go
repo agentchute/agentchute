@@ -45,3 +45,28 @@ func consumeFence(cfg *loop.Config, agentID, token string, unfenced bool, now ti
 	}
 	return nil
 }
+
+// fencedMutation is where the fence is authoritative. A preflight consumeFence
+// is one read; a lane restart that reclaims the lease after it would let an
+// in-flight check or ack go on claiming or archiving the NEW owner's mail for
+// the rest of its batch (PR #211 gate, codex + grok). So every consume
+// mutation — the claim move, the archive, a quarantine — re-checks the fence
+// under the agent lock that AcquireServeLease and RenewLease write the claim
+// under, and mutates inside the same critical section: no reclaim can land
+// between the check and the move. This is MintSendStamp's check-within-lock
+// (loop/floor.go). The lock is non-reentrant, so mutate must not take it, and
+// callers emit only after this returns.
+//
+// before is an invocation-scoped test hook (ClaimReq/AckReq.beforeMutation),
+// run outside the lock; nil in production.
+func fencedMutation(cfg *loop.Config, agentID, token string, unfenced bool, before func(), mutate func() error) error {
+	if before != nil {
+		before()
+	}
+	return loop.WithAgentLock(cfg, agentID, func() error {
+		if err := consumeFence(cfg, agentID, token, unfenced, time.Now().UTC()); err != nil {
+			return err
+		}
+		return mutate()
+	})
+}

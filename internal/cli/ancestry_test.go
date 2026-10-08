@@ -224,3 +224,18 @@ func withStdin(t *testing.T, content string, fn func() error) error {
 	defer func() { os.Stdin = orig }()
 	return fn()
 }
+
+// A serve running as PID 1 (a container's init) is a real runner: the walk must
+// compare the parent with the runner BEFORE stopping at init (PR #211 gate,
+// codex P2). Before the fix every descendant was refused as foreign.
+func TestRunnerAncestryCheckRecognizesARunnerAtPIDOne(t *testing.T) {
+	fakeAncestry(t, 41000, 1)
+	t.Setenv("AGENTCHUTE_RUNNER_PID", "1")
+	if err := runnerAncestryCheck(); err != nil {
+		t.Fatalf("a child of a PID-1 serve was refused: %v", err)
+	}
+	t.Setenv("AGENTCHUTE_RUNNER_PID", "77777")
+	if err := runnerAncestryCheck(); !errors.Is(err, errForeignRunnerEnv) {
+		t.Fatalf("a chain ending at init without the runner = %v, want errForeignRunnerEnv", err)
+	}
+}

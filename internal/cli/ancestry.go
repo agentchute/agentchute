@@ -51,10 +51,17 @@ func runnerAncestryCheck() error {
 	if err != nil || want <= 0 {
 		return fmt.Errorf("%w: AGENTCHUTE_RUNNER_PID=%q is not a pid", errForeignRunnerEnv, raw)
 	}
+	// Compare every pid on the chain — init included — before stopping there:
+	// a serve running as PID 1 (a container's init) is a real runner, and
+	// stopping at a parent of 1 before visiting it refused all its descendants
+	// (PR #211 gate, codex).
 	pid := os.Getpid()
 	for hop := 0; hop < maxAncestryHops; hop++ {
 		if pid == want {
 			return nil
+		}
+		if pid <= 1 {
+			break
 		}
 		ppid, err := parentPIDOf(pid)
 		if errors.Is(err, errAncestryUnsupported) {
@@ -63,7 +70,7 @@ func runnerAncestryCheck() error {
 		if err != nil {
 			return fmt.Errorf("cannot confirm this process runs under AGENTCHUTE_RUNNER_PID=%d: parent of pid %d: %w", want, pid, err)
 		}
-		if ppid <= 1 || ppid == pid {
+		if ppid == pid {
 			break
 		}
 		pid = ppid
