@@ -80,6 +80,41 @@ func TestEnsureCodexNoDaemon_Argv(t *testing.T) {
 			want:  []string{"codex", "resume", "--no-daemon"},
 		},
 		{
+			name:  "daemon-only form `queue`: codex refuses the combination, so skipped",
+			spec:  codex,
+			args:  []string{"codex", "queue", "list"},
+			probe: probeYes,
+			want:  []string{"codex", "queue", "list"},
+		},
+		{
+			name:  "daemon-only form `agents`: skipped",
+			spec:  codex,
+			args:  []string{"codex", "agents"},
+			probe: probeYes,
+			want:  []string{"codex", "agents"},
+		},
+		{
+			name:  "--remote: skipped",
+			spec:  codex,
+			args:  []string{"codex", "--remote", "resume"},
+			probe: probeYes,
+			want:  []string{"codex", "--remote", "resume"},
+		},
+		{
+			name:  "--remote=value: skipped",
+			spec:  codex,
+			args:  []string{"codex", "--remote=hub"},
+			probe: probeYes,
+			want:  []string{"codex", "--remote=hub"},
+		},
+		{
+			name:  "a prompt that merely contains the word agents is not the subcommand",
+			spec:  codex,
+			args:  []string{"codex", "list my agents"},
+			probe: probeYes,
+			want:  []string{"codex", "--no-daemon", "list my agents"},
+		},
+		{
 			name:  "probe says the installed codex lacks the flag: argv untouched",
 			spec:  codex,
 			args:  []string{"codex", "resume"},
@@ -119,7 +154,7 @@ func TestEnsureCodexNoDaemon_Argv(t *testing.T) {
 			if strings.Join(row.args, "\x00") != strings.Join(orig, "\x00") {
 				t.Fatalf("input argv mutated: %q", row.args)
 			}
-			wantProbe := row.spec.Key == "codex" && !dispatchHasFlag(row.args[1:], codexNoDaemonFlag)
+			wantProbe := row.spec.Key == "codex" && !dispatchHasFlag(row.args[1:], codexNoDaemonFlag) && !codexNoDaemonIncompatible(row.args[1:])
 			if probed != wantProbe {
 				t.Fatalf("probe ran = %v, want %v (nothing is cached, and no probe when the flag is present or the wrapper is not codex)", probed, wantProbe)
 			}

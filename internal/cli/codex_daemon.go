@@ -65,17 +65,36 @@ func codexSupportsNoDaemon(bin string) bool {
 	return false
 }
 
+// codexNoDaemonIncompatible reports whether codex 0.161 would refuse the flag
+// for these args: the binary's own strings say "--no-daemon cannot be used
+// with codex queue" / "... with codex agents" / "... with --remote" (both
+// subcommands exist to talk to the daemon). Exact-token matches only, so a
+// prompt that merely contains the word is not one.
+func codexNoDaemonIncompatible(args []string) bool {
+	if dispatchHasFlag(args, "--remote") {
+		return true
+	}
+	for _, a := range args {
+		if a == "queue" || a == "agents" {
+			return true
+		}
+	}
+	return false
+}
+
 // ensureCodexNoDaemon returns the wrapper argv serve should launch: when the
 // real wrapper is codex, the installed binary advertises --no-daemon (probe),
 // and the operator did not already pass it anywhere, the flag is inserted
 // directly after argv[0] — a top-level option, ahead of any subcommand such as
-// `resume` or `exec`. Every other case returns args unchanged. Pure: the input
-// slice is never mutated.
+// `resume` or `exec` (`codex exec --no-daemon` exits 2: the subcommands do not
+// accept it). Skipped for the daemon-only forms (queue, agents, --remote),
+// which codex refuses to combine with the flag. Every other case returns args
+// unchanged. Pure: the input slice is never mutated.
 func ensureCodexNoDaemon(spec wrapperSpec, args []string, probe func(bin string) bool) []string {
 	if spec.Key != "codex" || len(args) == 0 {
 		return args
 	}
-	if dispatchHasFlag(args[1:], codexNoDaemonFlag) {
+	if dispatchHasFlag(args[1:], codexNoDaemonFlag) || codexNoDaemonIncompatible(args[1:]) {
 		return args
 	}
 	if !probe(args[0]) {
