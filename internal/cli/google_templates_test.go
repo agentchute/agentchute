@@ -223,6 +223,9 @@ func TestAgyTemplateInstallsAndPassesDoctorSanity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg.ControlRepo, "AGENTCHUTE.md"), []byte("# spec\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The template invokes `${AGENTCHUTE_BIN:-agentchute}`; CI has no
+	// agentchute on PATH, so point the override at this test binary.
+	t.Setenv("AGENTCHUTE_BIN", os.Args[0])
 	withCwd(t, cfg.ControlRepo, func() {
 		if _, err := captureStdout(t, func() error { return cmdHooks([]string{"install", "--wrapper", "agy"}) }); err != nil {
 			t.Fatal(err)
