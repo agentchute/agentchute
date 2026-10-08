@@ -45,6 +45,7 @@ func cmdPending(args []string) error {
 	if fs.NArg() != 0 {
 		return pendingUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
+	_ = warnRunnerAncestry("pending")
 
 	cwd, err := os.Getwd()
 	if err != nil {

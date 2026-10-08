@@ -82,6 +82,9 @@ func cmdTurnEnd(args []string) error {
 	if fs.NArg() != 0 {
 		return turnEndUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
+	if err := requireRunnerAncestry("turn-end"); err != nil {
+		return err
+	}
 
 	opts := registerOpts{Host: host, Bio: bio, ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
 	fs.Visit(func(f *flag.Flag) {

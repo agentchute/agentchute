@@ -831,3 +831,75 @@ func TestValidateHubPoolDoesNotConsultDiscoveryEnvironment(t *testing.T) {
 		t.Fatalf("got=%s cfg=%+v id=%s err=%v", got, cfg, id, err)
 	}
 }
+
+// The consume fence on the wire (review 2026-10-08, S2): the hub applies it
+// against ITS serve claim for the pinned id. A check/ack frame with a
+// mismatched serve_token is E_FENCED and one with an empty serve_token is
+// E_LEASE_HELD while that id's serve is live — and a frame with no
+// serve_token key at all (a client that predates the fence) is served as
+// before, so upgrading the hub first does not strand old remote lanes.
+func TestHubSessionConsumeFenceAgainstALiveLease(t *testing.T) {
+	pool, cfg := newHubPool(t)
+	enrollHubAgent(t, cfg, "codex")
+	enrollHubAgent(t, cfg, "grok")
+	lease, err := loop.AcquireServeLease(cfg, "grok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loop.ReleaseLease(lease) })
+
+	terminal := func(agent string, request any, want string) hubwire.RawFrame {
+		t.Helper()
+		s := startHubSession(t, pool, agent, hubSessionTiming{}, nil, nil)
+		helloHub(t, s, agent, 1)
+		if err := s.writer.Write(request, nil); err != nil {
+			t.Fatal(err)
+		}
+		frames := readUntil(t, s, want)
+		return frames[len(frames)-1]
+	}
+	errCode := func(frame hubwire.RawFrame) string {
+		if frame.T != "error" {
+			return frame.T
+		}
+		var e hubwire.Error
+		_ = frame.Decode(&e)
+		return e.Code
+	}
+	str := func(s string) *string { return &s }
+	foreign := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	deliverHubMessage(t, cfg, "codex", "grok", "for the live lane")
+	for _, tc := range []struct {
+		name  string
+		token *string
+		want  string
+	}{
+		{"mismatched token", str(foreign), "E_FENCED"},
+		{"empty token", str(""), "E_LEASE_HELD"},
+	} {
+		got := errCode(terminal("grok", hubwire.Check{RequestBase: hubwire.RequestBase{T: "check", ID: 2}, ServeToken: tc.token}, "check-ok"))
+		if got != tc.want {
+			t.Fatalf("check with %s = %s, want %s", tc.name, got, tc.want)
+		}
+		if n := countDirFiles(t, cfg.AgentInboxDir("grok")); n != 1 {
+			t.Fatalf("check with %s left %d inbox files, want the message untouched", tc.name, n)
+		}
+	}
+
+	// The live lane's own token claims; a foreign ack cannot commit it.
+	if got := errCode(terminal("grok", hubwire.Check{RequestBase: hubwire.RequestBase{T: "check", ID: 2}, ServeToken: str(lease.Token)}, "check-ok")); got != "check-ok" {
+		t.Fatalf("check with the live token = %s, want check-ok", got)
+	}
+	if got := errCode(terminal("grok", hubwire.Ack{RequestBase: hubwire.RequestBase{T: "ack", ID: 2}, ServeToken: str(foreign)}, "ack-ok")); got != "E_FENCED" {
+		t.Fatalf("ack with a mismatched token = %s, want E_FENCED", got)
+	}
+	if n := countDirFiles(t, cfg.AgentClaimedDir("grok")); n != 1 {
+		t.Fatalf(".claimed = %d files after a refused ack, want 1", n)
+	}
+
+	// A pre-fence client: no serve_token key on the frame at all.
+	if got := errCode(terminal("grok", hubwire.Ack{RequestBase: hubwire.RequestBase{T: "ack", ID: 2}}, "ack-ok")); got != "ack-ok" {
+		t.Fatalf("ack from a pre-fence client = %s, want ack-ok (served unfenced)", got)
+	}
+}

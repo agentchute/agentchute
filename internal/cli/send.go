@@ -64,6 +64,9 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 	if fs.NArg() != 0 {
 		return sendUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
+	if err := requireRunnerAncestry("send"); err != nil {
+		return err
+	}
 	var replyBySet, replyToSet, bodySet, bodyFileSet bool
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
