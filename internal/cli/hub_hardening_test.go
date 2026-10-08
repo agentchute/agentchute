@@ -103,3 +103,44 @@ func TestGuardDeniesHubAuthorizeAndJoinWhileLatched(t *testing.T) {
 		}
 	}
 }
+
+// The sweep removes a lane's registration row after stale_after but never its
+// inbox (loop/sweep.go). A lane offline for an hour therefore had no row and no
+// claim, and its id — with the mail queued for it — could be bound to any key.
+// Any trace of the id in the pool counts.
+func TestHubAuthorizeRefusesAnIDWhoseRowWasSweptButWhoseInboxRemains(t *testing.T) {
+	_, pool, _, key := setupHubAuthorizeTest(t)
+	cfg := &loop.Config{ControlRepo: pool, LoopDir: filepath.Join(pool, ".agentchute", "loop"), Vendor: "agentchute"}
+	if err := os.MkdirAll(cfg.AgentInboxDir("offline-lane"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	orig := hubAuthorizeStdinIsTTY
+	hubAuthorizeStdinIsTTY = func() bool { return false }
+	t.Cleanup(func() { hubAuthorizeStdinIsTTY = orig })
+	var out bytes.Buffer
+	err := runHubAuthorize(hubAuthorizeOptions{Agent: "offline-lane", Pool: pool, Key: key}, &out)
+	if err == nil || !strings.Contains(err.Error(), "--takeover") {
+		t.Fatalf("authorize an id with a swept row but a live inbox = %v, want a --takeover refusal", err)
+	}
+}
+
+// The guard rule matches the invocation, not one spelling of it: global flags
+// between the binary and `hub` (the ac dispatcher accepts them), quotes around
+// either word, and a line continuation all reach the same command.
+func TestGuardDeniesHubAuthorizeAndJoinAcrossSpellings(t *testing.T) {
+	for _, cmd := range []string{
+		"ac --as codex-tiny hub join ssh://h/p --name codex",
+		"agentchute --control-repo /p hub authorize --agent x --pool /p --key k",
+		"agentchute 'hub' join ssh://h/p --as y",
+		"agentchute hub \"authorize\" --list",
+		"agentchute hub \\\njoin ssh://h/p --as y",
+		"\"$HOME/.local/bin/agentchute\" hub join ssh://h/p --as y",
+	} {
+		if !guardCommandDenied("Bash " + cmd) {
+			t.Errorf("guard allowed %q while latched", cmd)
+		}
+	}
+	if guardCommandDenied("Bash agentchute status; echo hub join is documented in docs/hub.md") {
+		t.Error("a hub/join mention in a separate command after ; was denied")
+	}
+}

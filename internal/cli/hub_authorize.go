@@ -679,6 +679,13 @@ func refuseHubAuthorizeLocalLane(cfg *loop.Config, opts hubAuthorizeOptions) err
 		what = fmt.Sprintf("a live serve (pid %d on %s)", claim.PID, claim.Host)
 	} else if _, err := os.Stat(cfg.AgentRegistrationPath(opts.Agent)); err == nil {
 		what = "a registration row"
+	} else if _, err := os.Stat(cfg.AgentInboxDir(opts.Agent)); err == nil {
+		// The sweep removes a stale row but never the inbox (loop/sweep.go), so a
+		// lane offline past stale_after has no row and no claim — and its queued
+		// mail would go to whichever key is bound next.
+		what = "an inbox (its registration row was swept)"
+	} else if _, err := os.Stat(cfg.AgentStateDir(opts.Agent)); err == nil {
+		what = "lane state"
 	}
 	if what == "" {
 		return nil

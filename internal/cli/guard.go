@@ -160,7 +160,15 @@ var guardDispatchPrefixRE = regexp.MustCompile(`\bdispatch\b(?:[ \t]+--shim-dir(
 // inbox message must not be able to drive while mail is held (review
 // 2026-10-08, S10): `hub authorize` binds a key to an identity, and `hub join`
 // rewrites this checkout's pointer to a hub of the sender's choosing.
-var guardHubSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+hub[ \t]+(authorize|join)\b`)
+//
+// It is matched on the text with quotes and backslashes removed, and allows
+// anything but a command separator between the binary and `hub`: the ac
+// dispatcher takes global flags there (`ac --as x hub join`), and a quoted word
+// or a line continuation reaches the same command. Still best-effort — a binary
+// named through a variable is not seen.
+var guardHubSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[^;&|\n]*?\bhub\s+(?:authorize|join)\b`)
+
+var guardUnquoter = strings.NewReplacer("'", "", "\"", "", "\\", "")
 
 var guardAgentchuteSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+(ack|turn-end|update|setup|clean)\b`)
 
@@ -380,7 +388,7 @@ func guardCommandDenied(toolCmd string) bool {
 	if guardAgentchuteSubcmdRE.MatchString(normalized) && !guardCleanOwedExempt(normalized) {
 		return true
 	}
-	if guardHubSubcmdRE.MatchString(normalized) {
+	if guardHubSubcmdRE.MatchString(guardUnquoter.Replace(normalized)) {
 		return true
 	}
 	for _, pattern := range guardPipelineDenySubstrings {
