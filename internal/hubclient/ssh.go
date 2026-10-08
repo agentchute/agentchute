@@ -200,6 +200,14 @@ func selectMuxDir(opts SSHBuildOptions, isolationKey string) (string, []string, 
 		if !controlPathFits(candidate) {
 			continue
 		}
+		// The PARENT first. Checking only the leaf let another local user who
+		// owns /tmp/ac-<uid> rename a verified leaf away and put a fake master
+		// socket in its place (review 2026-10-08, S9). Once the parent is ours
+		// and 0700, nobody else can touch its entries, and /tmp's sticky bit
+		// keeps them from moving the parent itself.
+		if err := ensure(filepath.Dir(candidate)); err != nil {
+			continue
+		}
 		if err := ensure(candidate); err != nil {
 			continue
 		}

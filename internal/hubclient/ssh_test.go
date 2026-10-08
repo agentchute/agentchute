@@ -275,3 +275,44 @@ func TestUnauthorizedIncludesReadyToPasteAuthorization(t *testing.T) {
 		t.Fatalf("unauthorized error = %q, want %q", got, want)
 	}
 }
+
+// Review 2026-10-08 S9: only the LEAF of /tmp/ac-<uid>/<key> was ownership-
+// checked. Another local user who owns the PARENT can rename a verified leaf
+// away and substitute a directory holding a fake master socket. The parent is
+// now verified first; a parent this user does not own disables multiplexing
+// for that root rather than trusting it.
+func TestMuxDirVerifiesTheParentBeforeTheLeaf(t *testing.T) {
+	remote := &loop.RemoteConfig{Host: "hub", Port: 22, HubID: "0123456789ab", HubDir: "/tmp/hubdir"}
+	var ensured []string
+	got, err := BuildSSHInvocation(SSHBuildOptions{
+		Remote: remote, AgentID: "codex", TempRoots: []string{"/tmp"}, UserID: "0",
+		EnsureOwned: func(dir string) error {
+			ensured = append(ensured, dir)
+			if dir == "/tmp/ac-0" {
+				return errors.New("/tmp/ac-0: owned by uid 4242, not current uid")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(got.Args, " ")
+	if !strings.Contains(joined, "ControlMaster=no") || !strings.Contains(joined, "ControlPath=none") {
+		t.Fatalf("a parent owned by another user still multiplexed: %v", got.Args)
+	}
+	if len(ensured) != 1 || ensured[0] != "/tmp/ac-0" {
+		t.Fatalf("ensured %v; the leaf must never be created under a parent that failed its check", ensured)
+	}
+
+	ensured = nil
+	if _, err := BuildSSHInvocation(SSHBuildOptions{
+		Remote: remote, AgentID: "codex", TempRoots: []string{"/tmp"}, UserID: "0",
+		EnsureOwned: func(dir string) error { ensured = append(ensured, dir); return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ensured) != 2 || ensured[0] != "/tmp/ac-0" || filepath.Dir(ensured[1]) != "/tmp/ac-0" {
+		t.Fatalf("ensured %v, want the parent then the leaf", ensured)
+	}
+}
