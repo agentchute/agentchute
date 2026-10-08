@@ -1,0 +1,34 @@
+{
+  "agentchute": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "${AGENTCHUTE_BIN:-agentchute} boot --agy-hook PreInvocation"
+      },
+      {
+        "type": "command",
+        "command": "${AGENTCHUTE_BIN:-agentchute} pending --agy-hook PreInvocation"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} guard --pre-tool-use --agy-hook PreToolUse",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --agy-hook Stop",
+        "timeout": 30
+      }
+    ]
+  }
+}

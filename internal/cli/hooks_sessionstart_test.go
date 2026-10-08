@@ -30,7 +30,8 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 	}{
 		{"claude-code", "examples/hooks/claude-code/.claude/settings.json", "SessionStart", "UserPromptSubmit", "self-check"},
 		{"codex", "examples/hooks/codex/.codex/hooks.json", "SessionStart", "UserPromptSubmit", "self-check"},
-		{"gemini-cli", "examples/hooks/gemini/.gemini/settings.json", "SessionStart", "BeforeAgent", "turn-end"},
+		{"gemini-cli", "examples/hooks/gemini/.gemini/settings.json", "SessionStart", "BeforeAgent", "self-check"},
+		{"agy", "examples/hooks/agy/.agents/hooks.json", "PreInvocation", "PreInvocation", "boot"},
 	}
 
 	for _, c := range cases {
@@ -78,39 +79,47 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 	}
 }
 
-// TestGeminiHookTemplateUsesBeforeAgentJSONTurnEnd is
-// TestGeminiHookTemplateUsesBeforeAgentJSONGate's successor (v2.5 plan A8):
-// gemini's end-of-turn gate evaluation now runs inside `turn-end --json`
-// (folded from the old standalone `gate --before finish --json` entry), so
-// this pins the new command's shape instead of the retired one.
-func TestGeminiHookTemplateUsesBeforeAgentJSONTurnEnd(t *testing.T) {
+// TestGeminiHookTemplateUsesAfterAgentTurnEnd pins the H6 fix (opus-xhigh
+// review 2026-10-08): Gemini CLI has an AfterAgent event
+// (geminicli.com/docs/hooks/reference), so the end-of-turn commit runs
+// THERE — `turn-end --gemini-hook AfterAgent`, silent on clear and
+// `{"decision":"deny",...}` exit 0 on block — not on BeforeAgent, where it
+// committed turn N's mail only when turn N+1's prompt arrived (never, if the
+// inbox stayed empty) and exited 2 into a prompt-erasing abort. BeforeAgent
+// keeps only self-check and the pending context emitter.
+func TestGeminiHookTemplateUsesAfterAgentTurnEnd(t *testing.T) {
 	data, err := fs.ReadFile(hooksFS, "examples/hooks/gemini/.gemini/settings.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmds := hookCommandsForEvent(t, data, "BeforeAgent")
+	after := hookCommandsForEvent(t, data, "AfterAgent")
 	var turnEndCmd string
-	for _, cmd := range cmds {
+	for _, cmd := range after {
 		if strings.Contains(cmd, "turn-end") {
 			turnEndCmd = cmd
-			break
 		}
 	}
 	if turnEndCmd == "" {
-		t.Fatal("Gemini BeforeAgent hook has no turn-end command")
+		t.Fatalf("Gemini AfterAgent hook has no turn-end command: %q", after)
 	}
-	if !strings.Contains(turnEndCmd, "--json") {
-		t.Fatalf("Gemini turn-end command missing --json: %q", turnEndCmd)
+	if !strings.Contains(turnEndCmd, "--gemini-hook AfterAgent") || strings.Contains(turnEndCmd, "--json") {
+		t.Fatalf("Gemini turn-end must use the AfterAgent envelope, not --json: %q", turnEndCmd)
 	}
-	for _, stale := range []string{"--gemini-hook", "AfterAgent", "--before finish"} {
-		if strings.Contains(turnEndCmd, stale) {
-			t.Fatalf("Gemini shipped turn-end hook must use BeforeAgent + --json, not %s: %q", stale, turnEndCmd)
+	before := hookCommandsForEvent(t, data, "BeforeAgent")
+	var sawSelfCheck, sawPending bool
+	for _, cmd := range before {
+		if strings.Contains(cmd, "turn-end") || strings.Contains(cmd, " gate ") {
+			t.Fatalf("Gemini BeforeAgent must not commit or gate (that is AfterAgent's job): %q", cmd)
 		}
+		sawSelfCheck = sawSelfCheck || strings.Contains(cmd, "self-check")
+		sawPending = sawPending || strings.Contains(cmd, "pending --gemini-hook BeforeAgent")
 	}
-	for _, cmd := range cmds {
-		if strings.Contains(cmd, " gate ") {
-			t.Fatalf("Gemini BeforeAgent must no longer run a standalone gate entry (folded into turn-end): %q", cmd)
-		}
+	if !sawSelfCheck || !sawPending {
+		t.Fatalf("Gemini BeforeAgent must run self-check and the BeforeAgent pending emitter: %q", before)
+	}
+	start := hookCommandsForEvent(t, data, "SessionStart")
+	if len(start) != 1 || !strings.Contains(start[0], "boot --gemini-hook SessionStart") {
+		t.Fatalf("Gemini SessionStart must run boot with the SessionStart emitter: %q", start)
 	}
 }
 
@@ -133,6 +142,37 @@ func hookCommandsForEvent(t *testing.T, data []byte, event string) []string {
 	for _, group := range doc.Hooks[event] {
 		for _, h := range group.Hooks {
 			cmds = append(cmds, h.Command)
+		}
+	}
+	if len(doc.Hooks) == 0 {
+		// Antigravity's shape: {"<hookName>": {"enabled": …, "<Event>": [
+		// {"command": …} | {"matcher": …, "hooks": [{"command": …}]} ]}}.
+		var named map[string]map[string]json.RawMessage
+		if err := json.Unmarshal(data, &named); err != nil {
+			t.Fatalf("parse named hook config: %v", err)
+		}
+		for _, events := range named {
+			raw, ok := events[event]
+			if !ok {
+				continue
+			}
+			var handlers []struct {
+				Command string `json:"command"`
+				Hooks   []struct {
+					Command string `json:"command"`
+				} `json:"hooks"`
+			}
+			if err := json.Unmarshal(raw, &handlers); err != nil {
+				t.Fatalf("parse %s handlers: %v", event, err)
+			}
+			for _, h := range handlers {
+				if h.Command != "" {
+					cmds = append(cmds, h.Command)
+				}
+				for _, inner := range h.Hooks {
+					cmds = append(cmds, inner.Command)
+				}
+			}
 		}
 	}
 	return cmds

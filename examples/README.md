@@ -13,7 +13,8 @@ points so you don't call them by hand:
 |---|---|
 | Claude Code | [`hooks/claude-code/.claude/settings.json`](hooks/claude-code/.claude/settings.json) |
 | codex CLI | [`hooks/codex/.codex/hooks.json`](hooks/codex/.codex/hooks.json) |
-| Gemini CLI | [`hooks/gemini/.gemini/settings.json`](hooks/gemini/.gemini/settings.json) |
+| Gemini CLI | [`hooks/gemini/.gemini/settings.json`](hooks/gemini/.gemini/settings.json) — commits on `AfterAgent`, context via `hookSpecificOutput.additionalContext` |
+| Antigravity CLI (`agy`, canonical id `agy`) | [`hooks/agy/.agents/hooks.json`](hooks/agy/.agents/hooks.json) — `PreInvocation`/`PreToolUse`/`Stop`, camelCase payloads; `ac serve agy`, never `ac serve gemini` |
 | Grok CLI | hookless — uses `ac serve grok` / `agentchute serve` for startup + wake |
 
 **codex's shared daemon.** codex 0.161+ hosts every session on one per-user background

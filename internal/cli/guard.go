@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/agentchute/agentchute/internal/loop"
@@ -199,7 +200,7 @@ func cmdGuard(args []string) error {
 	fs := flag.NewFlagSet("guard", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, controlRepo, loopDir, codexHook, geminiHook string
+	var agentID, controlRepo, loopDir, codexHook, geminiHook, agyHook string
 	var preToolUse bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
@@ -207,6 +208,7 @@ func cmdGuard(args []string) error {
 	fs.BoolVar(&preToolUse, "pre-tool-use", false, "evaluate a PreToolUse-family hook decision from stdin JSON")
 	fs.StringVar(&codexHook, "codex-hook", "", "emit codex's PreToolUse-equivalent decision JSON")
 	fs.StringVar(&geminiHook, "gemini-hook", "", "emit Gemini's BeforeTool-family decision JSON")
+	fs.StringVar(&agyHook, "agy-hook", "", "emit Antigravity CLI's PreToolUse decision JSON")
 
 	if err := fs.Parse(args); err != nil {
 		return guardUsage(err)
@@ -235,6 +237,8 @@ func cmdGuard(args []string) error {
 		return emitCodexGuardDecision(decision)
 	case geminiHook == "BeforeTool":
 		return emitGeminiGuardDecision(decision)
+	case agyHook == "PreToolUse":
+		return emitAgyGuardDecision(decision)
 	default:
 		return emitClaudeGuardDecision(decision)
 	}
@@ -328,7 +332,11 @@ func guardCommandDenied(toolCmd string) bool {
 // to the best-effort substring list.
 func guardDirectSendInvocation(toolCmd string) (candidate, inert bool) {
 	cmd := strings.TrimSpace(toolCmd)
-	for _, prefix := range []string{"Bash ", "functions.exec_command "} {
+	// Tool names each wrapper prepends: Claude's Bash, codex's
+	// functions.exec_command, Gemini CLI's run_shell_command, Antigravity's
+	// run_command (opus-xhigh H6: a latched inert `send --body` under Gemini
+	// was denied because the tool name was never stripped).
+	for _, prefix := range []string{"Bash ", "functions.exec_command ", "run_shell_command ", "run_command "} {
 		if strings.HasPrefix(cmd, prefix) {
 			cmd = strings.TrimSpace(strings.TrimPrefix(cmd, prefix))
 			break
@@ -525,6 +533,12 @@ func guardInertShellWords(cmd string) ([]string, bool) {
 type guardHookInput struct {
 	ToolName  string          `json:"tool_name"`
 	ToolInput json.RawMessage `json:"tool_input"`
+	// ToolCall is Antigravity's camelCase shape: {"name": "run_command",
+	// "args": {"CommandLine": "...", ...}} (https://antigravity.google/docs/hooks/).
+	ToolCall *struct {
+		Name string         `json:"name"`
+		Args map[string]any `json:"args"`
+	} `json:"toolCall"`
 }
 
 // parseGuardToolCommand extracts the best-effort command text to match
@@ -539,6 +553,23 @@ func parseGuardToolCommand(body []byte) string {
 	parts := make([]string, 0, 2)
 	if in.ToolName != "" {
 		parts = append(parts, in.ToolName)
+	}
+	if in.ToolCall != nil {
+		// Antigravity: the tool name plus every string argument, in key
+		// order (run_command's command line is `CommandLine`).
+		if in.ToolCall.Name != "" {
+			parts = append(parts, in.ToolCall.Name)
+		}
+		keys := make([]string, 0, len(in.ToolCall.Args))
+		for k := range in.ToolCall.Args {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if s, ok := in.ToolCall.Args[k].(string); ok {
+				parts = append(parts, s)
+			}
+		}
 	}
 	if len(in.ToolInput) > 0 {
 		var asMap map[string]any
@@ -624,8 +655,23 @@ func emitGeminiGuardDecision(d guardDecision) error {
 		return nil
 	}
 	out := map[string]any{
-		"decision": "block",
+		// "deny" is the documented value; "block" is its alias
+		// (geminicli.com/docs/hooks/reference).
+		"decision": "deny",
 		"reason":   d.Reason,
+	}
+	enc := json.NewEncoder(os.Stdout)
+	return enc.Encode(out)
+}
+
+// emitAgyGuardDecision is Antigravity's PreToolUse shape: `decision` is
+// REQUIRED on every response (allow|deny|ask|force_ask|deny_unless_prior_grant),
+// so an allow is emitted explicitly, unlike the other vendors' silent allow
+// (https://antigravity.google/docs/hooks/).
+func emitAgyGuardDecision(d guardDecision) error {
+	out := map[string]any{"decision": "allow"}
+	if !d.Allowed {
+		out = map[string]any{"decision": "deny", "reason": d.Reason}
 	}
 	enc := json.NewEncoder(os.Stdout)
 	return enc.Encode(out)
@@ -661,5 +707,6 @@ Flags:
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --codex-hook <event>  emit codex's decision shape (PreToolUse)
   --gemini-hook <event> emit Gemini's decision shape (BeforeTool)
+  --agy-hook <event>    emit Antigravity CLI's decision shape (PreToolUse)
 `)
 }

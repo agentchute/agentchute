@@ -46,7 +46,7 @@ var hooksFS fs.FS
 // that install from any subdirectory writes to the same place a
 // wrapper-at-repo-root looks for its hooks.
 type hookWrapper struct {
-	Name string // user-facing wrapper key (claude-code | codex | gemini-cli)
+	Name string // user-facing wrapper key (claude-code | codex | gemini-cli | agy)
 	Src  string // path inside hooksFS (relative to embed root)
 	Dest string // path relative to install scope root
 }
@@ -66,6 +66,13 @@ var hookWrappers = []hookWrapper{
 		Name: "gemini-cli",
 		Src:  "examples/hooks/gemini/.gemini/settings.json",
 		Dest: ".gemini/settings.json",
+	},
+	{
+		// Antigravity CLI: named-hook file, PreInvocation/PreToolUse/Stop,
+		// camelCase payloads (https://antigravity.google/docs/hooks/).
+		Name: "agy",
+		Src:  "examples/hooks/agy/.agents/hooks.json",
+		Dest: ".agents/hooks.json",
 	},
 }
 
@@ -95,7 +102,7 @@ func cmdHooksInstall(args []string) error {
 	// Operators who want only one wrapper still pass --wrapper explicitly.
 	var wrapper, scope string
 	var dryRun, force bool
-	fs.StringVar(&wrapper, "wrapper", "all", "wrapper key: claude-code | codex | gemini-cli | all (default: all)")
+	fs.StringVar(&wrapper, "wrapper", "all", "wrapper key: claude-code | codex | gemini-cli | agy | all (default: all)")
 	fs.StringVar(&scope, "scope", "repo", "install scope: repo (control-repo root) | user ($HOME-relative)")
 	fs.BoolVar(&dryRun, "dry-run", false, "print what would be written without touching the filesystem")
 	fs.BoolVar(&force, "force", false, "overwrite an existing hook file (default refuses)")
@@ -376,7 +383,7 @@ Writes the canonical hook template(s) into the operator's
 0700 parent dir. Idempotent re-runs report "already current".
 
 Flags:
-  --wrapper <name>      claude-code | codex | gemini-cli | all
+  --wrapper <name>      claude-code | codex | gemini-cli | agy | all
                         (default: all)
   --scope <scope>       repo (control-repo root) | user ($HOME)
                         (default: repo)

@@ -1011,7 +1011,45 @@ func hookCommandBody(data []byte) (string, error) {
 			}
 		}
 	}
+	if len(commands) == 0 {
+		// Antigravity's .agents/hooks.json nests events under a NAMED hook
+		// and puts PreInvocation/Stop handlers directly under the event key,
+		// so the shared shape above finds nothing there: walk the whole
+		// document for `command` strings instead.
+		var tree any
+		if err := json.Unmarshal(data, &tree); err != nil {
+			return "", err
+		}
+		commands = collectHookCommands(tree, nil)
+	}
 	return strings.Join(commands, "\n"), nil
+}
+
+// collectHookCommands returns every string value keyed `command` anywhere in
+// a decoded JSON tree, in document order.
+func collectHookCommands(node any, out []string) []string {
+	switch v := node.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if k == "command" {
+				if s, ok := v[k].(string); ok {
+					out = append(out, s)
+					continue
+				}
+			}
+			out = collectHookCommands(v[k], out)
+		}
+	case []any:
+		for _, item := range v {
+			out = collectHookCommands(item, out)
+		}
+	}
+	return out
 }
 
 // hookBodyUnknownSubcommands returns, in first-occurrence order, the
