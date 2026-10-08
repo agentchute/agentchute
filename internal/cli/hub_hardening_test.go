@@ -183,3 +183,11 @@ func TestHubAutoAuthorizeSSHDisablesAgentAndX11Forwarding(t *testing.T) {
 		t.Fatalf("remote command must stay the last argument, got %q", last)
 	}
 }
+
+// `hub session` is the hub's forced command; run directly it serves the wire for
+// whatever --agent it is given, so it is held like authorize and join.
+func TestGuardDeniesHubSessionWhileLatched(t *testing.T) {
+	if !guardCommandDenied("Bash agentchute hub session --agent claude-code --pool /p --pool-id 0123456789ab") {
+		t.Fatal("guard allowed a direct hub session while latched")
+	}
+}

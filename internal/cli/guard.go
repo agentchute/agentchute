@@ -156,17 +156,23 @@ var guardDispatchPrefixRE = regexp.MustCompile(`\bdispatch\b(?:[ \t]+--shim-dir(
 // this file's own test suite once both forms were exercised together.
 // `check` is deliberately absent (see the file header): a compound that
 // pairs it with any listed token is still denied whole by that token.
-// guardHubSubcmdRE is the same binary-token match for the two hub commands an
-// inbox message must not be able to drive while mail is held (review
-// 2026-10-08, S10): `hub authorize` binds a key to an identity, and `hub join`
-// rewrites this checkout's pointer to a hub of the sender's choosing.
+// guardHubSubcmdRE is the same binary-token match for the hub commands an inbox
+// message must not be able to drive while mail is held (review 2026-10-08,
+// S10): `hub authorize` binds a key to an identity, `hub join` rewrites this
+// checkout's pointer to a hub of the sender's choosing, and `hub session` (the
+// forced command) serves the wire for whatever --agent it is given.
+//
+// This list is a speed bump, like the rest of the guard, and it is not the
+// control for S10: shell text can always be spelled around a matcher. The
+// control is hub authorize's own --takeover-on-a-terminal refusal, which does
+// not depend on what the guard saw.
 //
 // It is matched on the text with quotes and backslashes removed, and allows
 // anything but a command separator between the binary and `hub`: the ac
 // dispatcher takes global flags there (`ac --as x hub join`), and a quoted word
 // or a line continuation reaches the same command. Still best-effort — a binary
 // named through a variable is not seen.
-var guardHubSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin(?::-agentchute)?\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[^;&|\n]*?\bhub\s+(?:authorize|join)\b`)
+var guardHubSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin(?::-agentchute)?\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[^;&|\n]*?\bhub\s+(?:authorize|join|session)\b`)
 
 // guardShellFold undoes the spellings the executing shell folds back into one
 // command before the hub rule matches: a backslash-newline continuation, $IFS,
