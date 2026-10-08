@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agentchute/agentchute/internal/hubclient"
@@ -242,42 +245,63 @@ func printConsumedBody(msg loop.Message, content []byte, redelivered bool, now t
 		fmt.Printf("[!] STALE: sent %s, %s ago — this is history, not a live instruction; confirm with %s before acting on it.\n",
 			msg.Timestamp.UTC().Format("2006-01-02"), humanAge(age), msg.Sender)
 	}
+	nonce := checkFrameNonce()
 	if redelivered {
-		fmt.Printf("---- %s [REDELIVERED — uncommitted from a prior turn; `agentchute ack` to commit] ----\n", msg.Filename)
+		fmt.Printf("---- %s [REDELIVERED — uncommitted from a prior turn; `agentchute ack` to commit] [frame %s] ----\n", msg.Filename, nonce)
 	} else {
-		fmt.Printf("---- %s ----\n", msg.Filename)
+		fmt.Printf("---- %s [frame %s] ----\n", msg.Filename, nonce)
 	}
-	sanitized := sanitizeControlBytes(string(content))
-	fmt.Print(sanitized)
-	if !strings.HasSuffix(sanitized, "\n") {
-		fmt.Println()
+	// The filename is the authenticated sender (§6.1); a frontmatter `from`
+	// that disagrees is a forgery attempt that send now refuses — a file that
+	// still carries one came in by hand or from an older peer, so say so
+	// loudly, above the body (opus-xhigh S1).
+	// The claimed value is printed QUOTED and capped, as one physical line: a
+	// quoted frontmatter scalar decodes escapes, so it can carry real line
+	// breaks, control bytes and Unicode separators (gate reviews of #215).
+	if claimed := op.ClaimedSenderMismatch(content, msg.Sender); claimed != "" {
+		fmt.Println(op.SenderMismatchWarning(claimed, msg.Sender))
 	}
-	fmt.Println()
+	printFramedBody(content)
+	fmt.Printf("==== end of %s [frame %s] ====\n\n", msg.Filename, nonce)
+}
+
+// checkFramePrefix opens every body line; a body cannot contain a line that
+// starts at column 0, so nothing inside it parses as a header, a delimiter,
+// a reply-required hint or a CLAIMED note.
+const checkFramePrefix = op.FramePrefix
+
+// printFramedBody prints a peer-controlled body with every line prefixed by
+// checkFramePrefix: op.FramedBodyLines is the one definition of those lines,
+// shared with Claim's byte budget.
+func printFramedBody(content []byte) {
+	for _, line := range op.FramedBodyLines(content) {
+		fmt.Print(checkFramePrefix, line, "\n")
+	}
+}
+
+// frameNonce is one random value per check invocation, carried by the begin
+// and end delimiters of every rendered body: a body can imitate a delimiter's
+// shape but cannot know the nonce (and its lines are prefixed anyway).
+var (
+	frameNonceOnce sync.Once
+	frameNonce     string
+)
+
+func checkFrameNonce() string {
+	frameNonceOnce.Do(func() {
+		var b [6]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			frameNonce = fmt.Sprintf("%d", time.Now().UnixNano())
+			return
+		}
+		frameNonce = hex.EncodeToString(b[:])
+	})
+	return frameNonce
 }
 
 // sanitizeControlBytes strips C0/C1 control code points from peer-controlled
-// text before it reaches a raw terminal (N3, deep-analysis-v2): a body
-// carrying ANSI/OSC escape sequences or bare C1 codes can repaint the
-// operator's screen, spoof a prompt, or set the window title. Applied
-// unconditionally (not just when stdout is a TTY) because message bodies are
-// spec'd UTF-8 free-form text — a control sequence is never legitimate
-// payload — and unconditional stripping avoids needing platform-specific
-// stdout-TTY detection. \n and \t are the only control code points kept.
-func sanitizeControlBytes(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r == '\n' || r == '\t':
-			b.WriteRune(r)
-		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
-			// drop: C0 (incl. ESC, CR), DEL, and C1 control code points.
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
+// text before it reaches a raw terminal; see op.SanitizeControlBytes.
+func sanitizeControlBytes(s string) string { return op.SanitizeControlBytes(s) }
 
 func checkUsage(err error) error {
 	return fmt.Errorf("%w\nusage: agentchute check [--as <agent-id>] [--vendor <v>] [--control-repo <path>] [--loop-dir <path>] [--no-archive] [--limit <n>] [--budget-bytes <n>]\n  check CLAIMS + displays (at-least-once); run `agentchute ack` to commit (archive).", err)

@@ -66,11 +66,13 @@ func QuarantineInboxFile(srcPath, malformedDir, recipient string, now time.Time)
 	quarantineTS := now.UTC().Format("2006-01-02T15-04-05Z")
 	destName := fmt.Sprintf("%s_to-%s_%s", quarantineTS, recipient, base)
 	destPath := filepath.Join(malformedDir, destName)
+	// Both errors name the source (and the link error the destination), whose
+	// base name is what the peer chose: one line at every sink.
 	if err := linkNoClobber(srcPath, destPath); err != nil {
-		return "", fmt.Errorf("quarantine %s -> %s: %w", srcPath, destPath, err)
+		return "", OneLineError(fmt.Errorf("quarantine %s -> %s: %w", srcPath, destPath, err))
 	}
 	if err := os.Remove(srcPath); err != nil {
-		return "", fmt.Errorf("remove source %s after quarantine: %w", srcPath, err)
+		return "", OneLineError(fmt.Errorf("remove source %s after quarantine: %w", srcPath, err))
 	}
 	if err := syncDir(filepath.Dir(srcPath)); err != nil {
 		return "", err
@@ -213,7 +215,8 @@ func isRegularDirEntry(entry os.DirEntry) (bool, time.Time, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, time.Time{}, nil
 		}
-		return false, time.Time{}, err
+		// The error names the entry, which any peer can choose.
+		return false, time.Time{}, OneLineError(err)
 	}
 	mode := info.Mode()
 	return mode&os.ModeSymlink == 0 && mode.IsRegular(), info.ModTime(), nil

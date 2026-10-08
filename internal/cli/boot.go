@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -97,6 +98,21 @@ func cmdBoot(args []string) error {
 
 	now := time.Now().UTC()
 	hookMode := contextOnly || codexHook == "SessionStart" || geminiHook == "SessionStart" || agyHook == "PreInvocation"
+	// A boot under a foreign runner's env (AGENTCHUTE_RUNNER_PID set but not
+	// an ancestor — a shared daemon or background host) would register the
+	// wrong lane's identity from the wrong process tree: fail closed, write
+	// nothing. Hook modes still exit 0 so the harness is never failed, but
+	// they say so on stderr and skip the write (#211 follow-up).
+	if err := runnerAncestryCheck(); err != nil {
+		if errors.Is(err, errForeignRunnerEnv) {
+			fmt.Fprintf(os.Stderr, "agentchute boot: refusing to register: %v\n", err)
+			if hookMode {
+				return nil
+			}
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "warning: agentchute boot: %v\n", err)
+	}
 	if cfg.Remote != nil && hookMode && remoteHookCached(cfg) {
 		fmt.Fprintln(os.Stderr, "hub unreachable; skipping (will retry next event)")
 		return nil
