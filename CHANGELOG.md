@@ -4,6 +4,12 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## Unreleased
+
+**Consume-path fence**
+- `check`, `ack` and `turn-end`'s archive step are fenced like `send`. While a fresh serve claim owns an id, a process whose `AGENTCHUTE_SERVE_TOKEN` differs is refused (`serve lease fenced`), and one with no token is refused (`serve lease already held`); `turn-end` then does not archive. Before this, a process on a stale or foreign env — a codex 0.161 shared daemon started by another lane, or a hand-run session that exported the id — could claim a live lane's mail, show it to the wrong agent, and archive it, while its sends were already refused. `check --no-archive` stays the read-only peek; with no claim, or a stale one, nothing changes. The hub applies the same rule to `check`/`ack` frames, which now carry `serve_token`; a frame without the key (an older client) is served as before, so the hub can upgrade first. There is no `--force` takeover: an injected "run check --force" would reopen the hole, and stopping the live lane releases its claim.
+- Runner ancestry: when `AGENTCHUTE_RUNNER_PID` is set, `check`, `ack`, `turn-end` and `send` refuse unless that runner is this process or an ancestor; `guard`, `pending` and `self-check` warn on stderr and do not block (`self-check` skips its registration write). Lookup is `sysctl kern.proc.pid` on macOS and `/proc/<pid>/stat` on Linux; other platforms skip the check, and a lookup that cannot finish only warns.
+
 ## v1.6.2 (2026-09-18) — mail that lands mid-turn no longer costs the turn
 
 No new capability. v1.6.2 fixes how a working lane meets its mail — a message arriving mid-turn forced the recipient to end its turn to read it, and a runner whose wrapper never went quiet could wait forever on a wake that was already moot — plus the post-v1.6.1 UX wave and one CI failure that was a real race. Protocol v2.5 and registration wire `v: 3` are unchanged; `E_RESULT_UNKNOWN` (client-emitted, not retriable) is the only registry surface. The two runtime changes take effect when a lane is relaunched on the new binary; a joined machine and its hub still need matching versions.
