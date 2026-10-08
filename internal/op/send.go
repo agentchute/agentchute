@@ -2,6 +2,8 @@ package op
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
@@ -118,6 +120,12 @@ func sendWithDelivery(cfg *loop.Config, ctx Context, req SendReq, deliver sendDe
 
 	if err := SendPreflight(cfg, ctx, req.To); err != nil {
 		return SendResp{}, err
+	}
+	// The filename is the authenticated sender; a frontmatter `from` may only
+	// agree with it. Checked here, in the op, so the hub (ctx.ActorID pinned
+	// by its key) and the local CLI (--from) refuse the same content.
+	if from := strings.TrimSpace(loop.ParseMessageFrontmatter(req.Content)["from"]); from != "" && from != ctx.ActorID {
+		return SendResp{}, fmt.Errorf("%w: frontmatter says from: %q but the sender is %q", ErrSenderMismatch, from, ctx.ActorID)
 	}
 
 	// serveToken fences the write: a send from a child launched under

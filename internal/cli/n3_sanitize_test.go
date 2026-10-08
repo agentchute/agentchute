@@ -57,7 +57,7 @@ func TestCheckSanitizesControlBytesInConsumedBody(t *testing.T) {
 	// point: it sits immediately before "line two" in evilBody, with only
 	// stripped bytes in between, so it must still sit immediately before
 	// "line two" in the sanitized output.
-	if !strings.Contains(out, "\nline two") {
+	if !strings.Contains(out, "\n"+checkFramePrefix+"line two") {
 		t.Fatalf("sanitization dropped \\n; got:\n%q", out)
 	}
 }

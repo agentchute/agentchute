@@ -28,12 +28,12 @@ type wrapperSpec struct {
 	// arming a latch nothing can clear would wedge every serve lane.
 	Guarded bool
 	// UnguardedBinaries lists candidate binaries that do NOT load this
-	// wrapper's hook template even though they answer to its name: the
-	// gemini wrapper's third candidate `agy` (Antigravity CLI 1.3.1) reads
-	// `.agents/hooks.json` with different events and has no BeforeAgent/
-	// BeforeTool at all, so a latch armed for it would never be cleared
-	// (opus-xhigh H5). Guarded is resolved per launched binary (guardedFor),
-	// never from the spec alone.
+	// wrapper's hook template even though they answer to its name, so a latch
+	// armed for them would never be cleared (opus-xhigh H5). No shipped
+	// wrapper has one any more: Antigravity CLI (`agy`), once the gemini
+	// wrapper's third candidate, is its own guarded wrapper with its own
+	// template since #214. Guarded is still resolved per launched binary
+	// (guardedFor), never from the spec alone.
 	UnguardedBinaries []string
 }
 

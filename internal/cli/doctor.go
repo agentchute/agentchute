@@ -524,7 +524,9 @@ type staleTempFile struct {
 func checkStaleTempFiles(cfg *loop.Config, now time.Time) doctorCheck {
 	stale, err := findStaleTempFiles(cfg, now, staleTempFileAge)
 	if err != nil {
-		return doctorCheck{Name: "stale_temp_files", Severity: severityWarn, Message: fmt.Sprintf("stale temp scan error: %v", err)}
+		// The scan descends into directories peers name (inbox/<x>), and the
+		// error names the path.
+		return doctorCheck{Name: "stale_temp_files", Severity: severityWarn, Message: "stale temp scan error: " + loop.OneLine(err.Error(), loop.MaxPeerErrorRunes)}
 	}
 	if len(stale) == 0 {
 		return doctorCheck{Name: "stale_temp_files", Severity: severityOK, Message: "no stale .tmp_* files found"}
@@ -603,7 +605,8 @@ func formatStaleTempFiles(cfg *loop.Config, files []staleTempFile) string {
 		if rel, err := filepath.Rel(cfg.ControlRepo, f.path); err == nil && !strings.HasPrefix(rel, "..") {
 			path = rel
 		}
-		parts = append(parts, fmt.Sprintf("%s (%s old)", path, f.age.Round(time.Minute)))
+		// A .tmp_ name is whatever the writing process chose.
+		parts = append(parts, fmt.Sprintf("%s (%s old)", loop.OneLine(path, loop.MaxPeerErrorRunes), f.age.Round(time.Minute)))
 	}
 	if len(files) > maxShown {
 		parts = append(parts, fmt.Sprintf("... %d more", len(files)-maxShown))
