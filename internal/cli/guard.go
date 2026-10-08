@@ -156,6 +156,12 @@ var guardDispatchPrefixRE = regexp.MustCompile(`\bdispatch\b(?:[ \t]+--shim-dir(
 // this file's own test suite once both forms were exercised together.
 // `check` is deliberately absent (see the file header): a compound that
 // pairs it with any listed token is still denied whole by that token.
+// guardHubSubcmdRE is the same binary-token match for the two hub commands an
+// inbox message must not be able to drive while mail is held (review
+// 2026-10-08, S10): `hub authorize` binds a key to an identity, and `hub join`
+// rewrites this checkout's pointer to a hub of the sender's choosing.
+var guardHubSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+hub[ \t]+(authorize|join)\b`)
+
 var guardAgentchuteSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)[ \t]+(ack|turn-end|update|setup|clean)\b`)
 
 // guardStaleOwedHintCommand is the command `check` tells a lane to run when it
@@ -372,6 +378,9 @@ func guardCommandDenied(toolCmd string) bool {
 	lower := strings.ToLower(toolCmd)
 	normalized := guardDispatchPrefixRE.ReplaceAllString(lower, "")
 	if guardAgentchuteSubcmdRE.MatchString(normalized) && !guardCleanOwedExempt(normalized) {
+		return true
+	}
+	if guardHubSubcmdRE.MatchString(normalized) {
 		return true
 	}
 	for _, pattern := range guardPipelineDenySubstrings {
