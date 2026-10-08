@@ -170,6 +170,11 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 			body = string(bodyBytes)
 		}
 	}
+	// C2: a body the reader would quarantine is refused here, whatever its
+	// source (--body, --body-file, stdin), before any preflight or delivery.
+	if len(body) > loop.MaxSendBodyBytes {
+		return fmt.Errorf("body is %d bytes; the cap is %d (the %d-byte inbox message limit minus %d bytes of envelope headroom) — a larger message would be quarantined unread by the recipient, so split it or send a path to the file instead", len(body), loop.MaxSendBodyBytes, loop.MaxInboxMessageBytes, loop.SendFrontmatterHeadroom)
+	}
 	rawBody := body
 
 	// --ask salience polish: prepend the `## ASK` heading if not already

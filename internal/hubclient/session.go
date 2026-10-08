@@ -218,7 +218,7 @@ func (s *OneShot) Send(req op.SendReq) (op.SendResp, error) {
 }
 
 func (s *OneShot) Check(req op.ClaimReq, emit func(op.Event) error) (op.ClaimSummary, error) {
-	raw, _, err := s.do(hubwire.Check{RequestBase: hubwire.RequestBase{T: "check", ID: s.nextID}, Limit: req.Limit, NoArchive: req.NoArchive}, nil, emit, false, "check-ok")
+	raw, _, err := s.do(hubwire.Check{RequestBase: hubwire.RequestBase{T: "check", ID: s.nextID}, Limit: req.Limit, BudgetBytes: req.BudgetBytes, NoArchive: req.NoArchive}, nil, emit, false, "check-ok")
 	if err != nil {
 		return op.ClaimSummary{}, err
 	}
