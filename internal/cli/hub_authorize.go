@@ -23,14 +23,13 @@ var (
 	hubAuthorizeExecutable = os.Executable
 	hubAuthorizeLink       = os.Link
 	hubAuthorizeNow        = time.Now
-	hubAuthorizeStdinIsTTY = func() bool {
-		info, err := os.Stdin.Stat()
-		return err == nil && info.Mode()&os.ModeCharDevice != 0
-	}
-	hubSafePathPattern   = regexp.MustCompile(`^[A-Za-z0-9._/+-]+$`)
-	hubKeyTypePattern    = regexp.MustCompile(`^[a-z0-9-]+$`)
-	hubKeyBlobPattern    = regexp.MustCompile(`^[A-Za-z0-9+/=]+$`)
-	hubForcedLinePattern = regexp.MustCompile(`^restrict,command="([^ "\\]+) hub session --agent ([^ "\\]+) --pool ([^ "\\]+) --pool-id ([^ "\\]+)" ([^ ]+) ([^ ]+) (agentchute:([^: ]+):([^ ]+))$`)
+	// A real terminal (termios ioctl), not "a character device": /dev/null is
+	// one, and it is exactly the stdin a script or exec'd tool call gets.
+	hubAuthorizeStdinIsTTY = func() bool { return runnerIsTerminal(os.Stdin) }
+	hubSafePathPattern     = regexp.MustCompile(`^[A-Za-z0-9._/+-]+$`)
+	hubKeyTypePattern      = regexp.MustCompile(`^[a-z0-9-]+$`)
+	hubKeyBlobPattern      = regexp.MustCompile(`^[A-Za-z0-9+/=]+$`)
+	hubForcedLinePattern   = regexp.MustCompile(`^restrict,command="([^ "\\]+) hub session --agent ([^ "\\]+) --pool ([^ "\\]+) --pool-id ([^ "\\]+)" ([^ ]+) ([^ ]+) (agentchute:([^: ]+):([^ ]+))$`)
 )
 
 type hubAuthorizeOptions struct {
