@@ -32,12 +32,30 @@ var hubJoinProbe = func(remote *loop.RemoteConfig, agentID, keyPath string) (hub
 	return hubclient.Probe(context.Background(), remote, agentID, version, keyPath)
 }
 
+// hubJoinPinnedProbe is the migration's same-hub proof (see
+// hubclient.ProbeWithPinnedHostKey).
+var hubJoinPinnedProbe = func(remote *loop.RemoteConfig, agentID, keyPath, pinnedKnownHosts string) (hubwire.HelloOK, []string, error) {
+	return hubclient.ProbeWithPinnedHostKey(context.Background(), remote, agentID, version, keyPath, pinnedKnownHosts)
+}
+
 var hubJoinAutoAuthorize = runHubJoinAutoAuthorize
 var hubJoinReapMux = hubclient.ReapSSHMux
 var hubJoinInstallShims = installHubJoinShims
 var hubJoinHostname = os.Hostname
 var hubJoinFingerprint = readHubJoinFingerprint
-var hubJoinDiscoverFingerprint = discoverHubJoinFingerprint
+
+// The known_hosts files a first join seeds from (seedHubKnownHosts). Vars so a
+// row can point them at fixtures rather than this machine's real trust.
+var (
+	hubJoinUserKnownHosts = func() string {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(home, ".ssh", "known_hosts")
+	}
+	hubJoinSystemKnownHosts = "/etc/ssh/ssh_known_hosts"
+)
 
 // errHubJoinIncomplete is a VERDICT sentinel, not a failure: the local half of
 // the join succeeded, and re-running after authorizing on the hub is the
@@ -159,6 +177,9 @@ func runHubJoin(root string, remote *loop.RemoteConfig, opts hubJoinOptions) err
 			return err
 		}
 	}
+	if err := seedHubKnownHosts(remote); err != nil {
+		return err
+	}
 	existing, err := hubclient.ReadHubConfig(remote.HubID)
 	if err != nil && !errors.Is(err, hubclient.ErrHubConfigNotFound) {
 		return err
@@ -205,23 +226,14 @@ func runHubJoin(root string, remote *loop.RemoteConfig, opts hubJoinOptions) err
 	if err != nil {
 		return err
 	}
+	// Recorded from the per-hub known_hosts, i.e. from the key this join's
+	// authenticated connection verified — never from ssh-keyscan, which shows a
+	// key without proving anyone holds it (review 2026-10-08, S11; the #164
+	// fallback). Migration no longer needs this value to prove a hub: it pins
+	// the old hub's known_hosts directly (findHubMigrationCandidate).
 	fingerprint, readErr := hubJoinFingerprint(remote)
 	if fingerprint == "" {
-		// known_hosts yielded nothing usable. MIGRATION has had an ssh-keyscan
-		// fallback for exactly this since it shipped; join had none, recorded an
-		// empty fingerprint, and discarded the error that said why — and nothing
-		// re-records it, so findHubMigrationCandidate skips that hub forever
-		// (#164). The path that RECORDS a value has to be at least as robust as
-		// the path that CONSUMES it.
-		//
-		// Only when known_hosts fails, deliberately: ssh-keyscan is a second
-		// connection to a host this join has already reached, and a healthy join
-		// should not pay for a probe it does not need.
-		if scanned, scanErr := hubJoinDiscoverFingerprint(remote); scanErr == nil && scanned != "" {
-			fingerprint = scanned
-		} else {
-			warnHubJoinNoFingerprint(remote, readErr, scanErr)
-		}
+		warnHubJoinNoFingerprint(remote, readErr)
 	}
 	if fingerprint != "" {
 		fmt.Printf("hub key recorded: %s\n", fingerprint)
@@ -774,15 +786,12 @@ func installHubJoinShims() error {
 // must not do is stay quiet, and it must say what actually breaks — an operator
 // has no reason to care about a fingerprint field, and the symptom shows up much
 // later wearing someone else's remedy.
-func warnHubJoinNoFingerprint(remote *loop.RemoteConfig, readErr, scanErr error) {
+func warnHubJoinNoFingerprint(remote *loop.RemoteConfig, readErr error) {
 	fmt.Fprintln(os.Stderr, "warning: joined, but this hub's host-key fingerprint could not be recorded.")
 	if readErr != nil {
 		fmt.Fprintf(os.Stderr, "  %s: %v\n", displayHomePath(filepath.Join(remote.HubDir, "known_hosts")), readErr)
 	}
-	if scanErr != nil {
-		fmt.Fprintf(os.Stderr, "  ssh-keyscan %s: %v\n", remote.Host, scanErr)
-	}
-	fmt.Fprintln(os.Stderr, "  The join itself is complete; what this costs you is later. Migrating this hub to a new URL needs the recorded fingerprint to recognise the two directories as the same hub, and with none recorded the move is never offered: a `hub join` at the new URL is treated as a FRESH join and refused for having an authorized key already. Re-run the same `hub join` command once the hub is reachable and this records itself.")
+	fmt.Fprintln(os.Stderr, "  The join itself is complete; what this costs you is later. Migrating this hub to a new URL proves the two are the same hub with the host key pinned in that known_hosts file, and with none pinned the move is never offered: a `hub join` at the new URL is treated as a FRESH join and refused for having an authorized key already. Re-run the same `hub join` command once the hub is reachable and this records itself.")
 }
 
 func readHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
@@ -798,27 +807,53 @@ func readHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
 	return fields[1], nil
 }
 
-func discoverHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
-	args := []string{"-T", "5", "-t", "ed25519"}
+// seedHubKnownHosts copies this machine's existing trust for the hub host into
+// the per-hub known_hosts before the FIRST connection. That file is passed as
+// ssh's UserKnownHostsFile, which replaces ~/.ssh/known_hosts: a hub key the
+// user had already verified was never consulted, and accept-new trusted
+// whatever key answered first (review 2026-10-08, S11). Only when the per-hub
+// file does not exist — once it does, it is the pin, and a seeded copy of a
+// later ~/.ssh change must not silently re-pin it.
+//
+// Listing ~/.ssh/known_hosts beside the per-hub file in UserKnownHostsFile was
+// the other option, and it is weaker: a key the user later accepted with plain
+// ssh would then pass agentchute's pin too, and the fingerprint join records
+// would come from whichever file happened to match.
+func seedHubKnownHosts(remote *loop.RemoteConfig) error {
+	dest := filepath.Join(remote.HubDir, "known_hosts")
+	if _, err := os.Lstat(dest); err == nil || !os.IsNotExist(err) {
+		return nil
+	}
+	spec := remote.Host
 	if remote.Port != 22 {
-		args = append(args, "-p", strconv.Itoa(remote.Port))
+		spec = fmt.Sprintf("[%s]:%d", remote.Host, remote.Port)
 	}
-	args = append(args, remote.Host)
-	keys, err := exec.Command("ssh-keyscan", args...).Output()
-	if err != nil || len(keys) == 0 {
-		return "", &hubclient.Error{Code: "E_CONNECT", Msg: fmt.Sprintf("hub: cannot reach %s:%d (connect failed after 5s). Check network/VPN/tailnet, then retry; `agentchute doctor` runs this same probe. (If this machine should no longer be joined to this hub, delete .agentchute-control-repo.)", remote.Host, remote.Port), Retriable: true, Cause: err}
+	var lines []string
+	for _, src := range []string{hubJoinUserKnownHosts(), hubJoinSystemKnownHosts} {
+		if src == "" {
+			continue
+		}
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		// ssh-keygen -F matches hashed entries too, and exits 1 on no match.
+		out, err := exec.Command("ssh-keygen", "-F", spec, "-f", src).Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if trimmed := strings.TrimSpace(line); trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+				lines = append(lines, trimmed)
+			}
+		}
 	}
-	cmd := exec.Command("ssh-keygen", "-lf", "-")
-	cmd.Stdin = strings.NewReader(string(keys))
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
+	if len(lines) == 0 {
+		return nil
 	}
-	fields := strings.Fields(string(out))
-	if len(fields) < 2 {
-		return "", fmt.Errorf("could not parse host-key fingerprint")
+	if err := os.MkdirAll(remote.HubDir, 0o700); err != nil {
+		return err
 	}
-	return fields[1], nil
+	return os.WriteFile(dest, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
 func warnHubJoinEnv(url string) {

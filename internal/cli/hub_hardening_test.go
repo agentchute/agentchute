@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -230,5 +232,98 @@ func TestHubJoinRefusesToRepointAtADifferentHubWithoutReplace(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(pointer); strings.TrimSpace(string(data)) != remote.URL {
 		t.Fatalf("pointer after --replace = %q, want %s", data, remote.URL)
+	}
+}
+
+// Review 2026-10-08 S11: a migration decided "same hub" from a keyscan
+// fingerprint and an accept-new probe — neither proves the new host holds the
+// old hub's key. It now asks for exactly that proof: a probe pinned to the OLD
+// hub's known_hosts, and nothing else makes it a migration.
+func TestHubMigrationRequiresTheNewHostToProveTheOldHostKey(t *testing.T) {
+	root, oldRemote := setupHubJoinTest(t)
+	seedJoinedHub(t, root, oldRemote)
+	newRemote, err := loop.ParseRemoteURL("ssh://alex@hub-alias.example/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pinnedTo []string
+	proves := false
+	hubJoinPinnedProbe = func(remote *loop.RemoteConfig, agentID, keyPath, pinned string) (hubwire.HelloOK, []string, error) {
+		pinnedTo = append(pinnedTo, pinned)
+		if !proves {
+			return hubwire.HelloOK{}, nil, errors.New("Host key verification failed.")
+		}
+		return successfulHubHello(agentID), nil, nil
+	}
+
+	got, err := findHubMigrationCandidate(newRemote, hubJoinOptions{URL: newRemote.URL, Name: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("migration candidate = %q although the new host never proved the old key", got)
+	}
+	if want := filepath.Join(oldRemote.HubDir, "known_hosts"); len(pinnedTo) != 1 || pinnedTo[0] != want {
+		t.Fatalf("pinned probe used %v, want the old hub's own known_hosts %s", pinnedTo, want)
+	}
+
+	proves = true
+	got, err = findHubMigrationCandidate(newRemote, hubJoinOptions{URL: newRemote.URL, Name: "codex"})
+	if err != nil || got != oldRemote.HubID {
+		t.Fatalf("migration candidate with the proof = %q, %v; want %s", got, err, oldRemote.HubID)
+	}
+}
+
+// Review 2026-10-08 S11: the per-hub known_hosts replaced ~/.ssh/known_hosts, so
+// a hub key the user already trusted was never consulted and the first join
+// trusted whatever key answered. The user's own entries for the host are now
+// copied in before the first connection; an existing per-hub file is the pin
+// and is left alone.
+func TestHubJoinSeedsKnownHostsFromTheUsersOwnTrust(t *testing.T) {
+	root, remote := setupHubJoinTest(t)
+	keyFile := filepath.Join(t.TempDir(), "hostkey")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", keyFile).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, out)
+	}
+	pub, err := os.ReadFile(keyFile + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(string(pub))
+	home, _ := os.UserHomeDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userLine := remote.Host + " " + fields[0] + " " + fields[1] + "\n"
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "known_hosts"), []byte("other.example "+fields[0]+" AAAAother\n"+userLine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hubJoinProbe = func(*loop.RemoteConfig, string, string) (hubwire.HelloOK, []string, error) {
+		return successfulHubHello("codex-tiny"), nil, nil
+	}
+	withCwd(t, root, func() {
+		if err := cmdHubJoin([]string{remote.URL, "--name", "codex"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	seeded, err := os.ReadFile(filepath.Join(remote.HubDir, "known_hosts"))
+	if err != nil {
+		t.Fatalf("no per-hub known_hosts was seeded: %v", err)
+	}
+	if !strings.Contains(string(seeded), fields[1]) || strings.Contains(string(seeded), "AAAAother") {
+		t.Fatalf("seeded known_hosts =\n%s\nwant exactly the user's entry for %s", seeded, remote.Host)
+	}
+
+	// The pin stays the pin: a second join does not re-seed over it.
+	if err := os.WriteFile(filepath.Join(remote.HubDir, "known_hosts"), []byte("pinned-by-first-join\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root, func() {
+		if err := cmdHubJoin([]string{remote.URL, "--name", "codex"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got, _ := os.ReadFile(filepath.Join(remote.HubDir, "known_hosts")); string(got) != "pinned-by-first-join\n" {
+		t.Fatalf("an existing per-hub known_hosts was rewritten: %q", got)
 	}
 }

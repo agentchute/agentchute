@@ -38,6 +38,11 @@ type SSHBuildOptions struct {
 	TempRoots   []string
 	EnsureOwned func(string) error
 	UserID      string
+
+	// PinnedKnownHosts, when set, replaces trust-on-first-use: the server must
+	// match a key in this file (written under pinnedHostAlias), and the
+	// invocation never multiplexes. See ProbeWithPinnedHostKey.
+	PinnedKnownHosts string
 }
 
 type SSHInvocation struct {
@@ -128,9 +133,20 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 	} else {
 		args = append(args, "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2")
 	}
+	if opts.PinnedKnownHosts != "" {
+		args = append(args,
+			"-o", "StrictHostKeyChecking=yes",
+			"-o", "UserKnownHostsFile="+opts.PinnedKnownHosts,
+			"-o", "GlobalKnownHostsFile=/dev/null",
+			"-o", "HostKeyAlias="+pinnedHostAlias,
+		)
+	} else {
+		args = append(args,
+			"-o", "StrictHostKeyChecking=accept-new",
+			"-o", "UserKnownHostsFile="+filepath.Join(stateDir, "known_hosts"),
+		)
+	}
 	args = append(args,
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile="+filepath.Join(stateDir, "known_hosts"),
 		"-o", "IdentitiesOnly=yes", "-i", key,
 		"-o", "ClearAllForwardings=yes",
 		// ClearAllForwardings clears PORT forwards only; a user ssh_config with
@@ -143,7 +159,10 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 	// options: an attached session inherits the master's forwarding, host-key,
 	// and route decisions. User ssh_config alias changes are deliberately not
 	// reimplemented here; a live master retains its resolved route until close.
-	if opts.Channel {
+	// A pinned probe never multiplexes: a live master for this mux key may have
+	// been authenticated under accept-new, which is exactly what it must not
+	// inherit.
+	if opts.Channel || opts.PinnedKnownHosts != "" {
 		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
 	} else {
 		muxDir, attempted, err := selectMuxDir(opts, muxIsolationKey(opts.Remote, opts.AgentID, key))
