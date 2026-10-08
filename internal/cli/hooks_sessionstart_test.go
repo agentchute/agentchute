@@ -15,9 +15,10 @@ import (
 // SessionStart (boot owns it there) while keeping it on the per-turn hook,
 // where no boot runs and last_seen still needs active reconciliation —
 // claude/codex do this via a standalone `self-check` entry
-// on UserPromptSubmit (untouched by A7/A8); gemini does it via `turn-end`'s
-// step 0 (v2.5 plan A7/C24), since self-check folded into turn-end there —
-// BeforeAgent has no separate per-turn event from its end-of-turn one.
+// on UserPromptSubmit (untouched by A7/A8); Gemini CLI via `self-check` on
+// BeforeAgent (its end-of-turn commit is AfterAgent's `turn-end`, see
+// TestGeminiHookTemplateUsesAfterAgentTurnEnd); Antigravity via `boot` on
+// PreInvocation, which registers on every invocation.
 //
 // This pins the contract against the embedded templates `hooks install` ships.
 func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {

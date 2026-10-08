@@ -396,7 +396,8 @@ func emitBootGeminiSessionStart(s bootStatus) error {
 }
 
 // agyPreInvocationInput is the slice of Antigravity's PreInvocation stdin
-// this command reads: invocationNum is 1 on the first model call of a run.
+// this command reads: invocationNum is 0 on the first model call of a run
+// (zero-indexed).
 type agyPreInvocationInput struct {
 	InvocationNum int `json:"invocationNum"`
 }

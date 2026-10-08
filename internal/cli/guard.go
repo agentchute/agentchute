@@ -666,8 +666,8 @@ func emitGeminiGuardDecision(d guardDecision) error {
 
 // emitAgyGuardDecision is Antigravity's PreToolUse shape: `decision` is
 // REQUIRED on every response (allow|deny|ask|force_ask|deny_unless_prior_grant),
-// so an allow is emitted explicitly, unlike the other vendors' silent allow
-// (https://antigravity.google/docs/hooks/).
+// so a no-objection answer is emitted explicitly — as `ask`, never `allow`
+// — unlike the other vendors' silent allow (https://antigravity.google/docs/hooks/).
 func emitAgyGuardDecision(d guardDecision) error {
 	// "ask" is the ordinary approval path (auto-approve rules and prior
 	// grants still apply; "force_ask" is what forces a prompt); "allow" would
