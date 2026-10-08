@@ -25,6 +25,8 @@ func TestPinnedInvocationRequiresAPinnedHostKey(t *testing.T) {
 	for _, want := range []string{
 		"StrictHostKeyChecking=yes", "UserKnownHostsFile=/tmp/pinned", "GlobalKnownHostsFile=/dev/null",
 		"HostKeyAlias=" + pinnedHostAlias, "ControlMaster=no", "ControlPath=none",
+		// A user ssh_config must not add keys behind the pin's back.
+		"VerifyHostKeyDNS=no", "KnownHostsCommand=none",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("pinned argv is missing %q: %v", want, got.Args)

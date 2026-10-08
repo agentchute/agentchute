@@ -327,3 +327,76 @@ func TestHubJoinSeedsKnownHostsFromTheUsersOwnTrust(t *testing.T) {
 		t.Fatalf("an existing per-hub known_hosts was rewritten: %q", got)
 	}
 }
+
+// --reset-hostkey exists to accept a hub's NEW key after a confirmed rebuild.
+// Seeding right after it deleted the pin re-copied the OLD key from
+// ~/.ssh/known_hosts, so the reset never took.
+func TestHubJoinResetHostKeyDoesNotReseedTheOldKey(t *testing.T) {
+	root, remote := setupHubJoinTest(t)
+	home, _ := os.UserHomeDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blob := testHostKeyBlob(t)
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "known_hosts"), []byte(remote.Host+" ssh-ed25519 "+blob+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(remote.HubDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote.HubDir, "known_hosts"), []byte(remote.Host+" ssh-ed25519 "+blob+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hubJoinProbe = func(*loop.RemoteConfig, string, string) (hubwire.HelloOK, []string, error) {
+		return successfulHubHello("codex-tiny"), nil, nil
+	}
+	withCwd(t, root, func() {
+		if err := cmdHubJoin([]string{remote.URL, "--name", "codex", "--reset-hostkey"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got, _ := os.ReadFile(filepath.Join(remote.HubDir, "known_hosts")); strings.Contains(string(got), blob) {
+		t.Fatalf("--reset-hostkey re-pinned the old key from ~/.ssh/known_hosts:\n%s", got)
+	}
+}
+
+// A migration proves the new URL's host holds the old hub's key; that proof has
+// to become the new URL's pin. The moved known_hosts only names the OLD host, so
+// the first connection to the new name fell back to accept-new.
+func TestHubMigrationCarriesTheProvenHostKeyToTheNewHostName(t *testing.T) {
+	root, oldRemote := setupHubJoinTest(t)
+	seedJoinedHub(t, root, oldRemote)
+	blob := testHostKeyBlob(t)
+	if err := os.WriteFile(filepath.Join(oldRemote.HubDir, "known_hosts"), []byte(oldRemote.Host+" ssh-ed25519 "+blob+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newRemote, err := loop.ParseRemoteURL("ssh://alex@hub-alias.example:2222/home/alex/code/agentchute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCwd(t, root, func() {
+		if err := cmdHubJoin([]string{newRemote.URL, "--name", "codex"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	got, err := os.ReadFile(filepath.Join(newRemote.HubDir, "known_hosts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "[hub-alias.example]:2222 ssh-ed25519 " + blob; !strings.Contains(string(got), want) {
+		t.Fatalf("migrated known_hosts =\n%s\nwant the proven key pinned as %q", got, want)
+	}
+}
+
+func testHostKeyBlob(t *testing.T) string {
+	t.Helper()
+	keyFile := filepath.Join(t.TempDir(), "hostkey")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", keyFile).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, out)
+	}
+	pub, err := os.ReadFile(keyFile + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(pub))[1]
+}

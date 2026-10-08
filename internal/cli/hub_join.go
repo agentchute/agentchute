@@ -164,6 +164,12 @@ func cmdHubJoin(args []string) error {
 		if err := migrateHubJoinState(root, oldHubID, remote); err != nil {
 			return err
 		}
+		// The migration was proven: the new URL's host holds a key pinned for
+		// the old hub. The moved known_hosts names only the OLD host, so make
+		// that proof the new name's pin, or its first connection is accept-new.
+		if err := hubclient.CarryHostKeyPin(filepath.Join(remote.HubDir, "known_hosts"), hubKnownHostsSpec(remote)); err != nil {
+			return err
+		}
 		return runHubJoin(root, remote, opts)
 	})
 }
@@ -177,8 +183,13 @@ func runHubJoin(root string, remote *loop.RemoteConfig, opts hubJoinOptions) err
 			return err
 		}
 	}
-	if err := seedHubKnownHosts(remote); err != nil {
-		return err
+	// Not after --reset-hostkey: it exists to accept the hub's NEW key after a
+	// confirmed rebuild, and seeding would re-pin the old one from
+	// ~/.ssh/known_hosts.
+	if !opts.ResetHostKey {
+		if err := seedHubKnownHosts(remote); err != nil {
+			return err
+		}
 	}
 	existing, err := hubclient.ReadHubConfig(remote.HubID)
 	if err != nil && !errors.Is(err, hubclient.ErrHubConfigNotFound) {
@@ -819,15 +830,20 @@ func readHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
 // the other option, and it is weaker: a key the user later accepted with plain
 // ssh would then pass agentchute's pin too, and the fingerprint join records
 // would come from whichever file happened to match.
+// hubKnownHostsSpec is how ssh names this hub in known_hosts.
+func hubKnownHostsSpec(remote *loop.RemoteConfig) string {
+	if remote.Port != 22 {
+		return fmt.Sprintf("[%s]:%d", remote.Host, remote.Port)
+	}
+	return remote.Host
+}
+
 func seedHubKnownHosts(remote *loop.RemoteConfig) error {
 	dest := filepath.Join(remote.HubDir, "known_hosts")
 	if _, err := os.Lstat(dest); err == nil || !os.IsNotExist(err) {
 		return nil
 	}
-	spec := remote.Host
-	if remote.Port != 22 {
-		spec = fmt.Sprintf("[%s]:%d", remote.Host, remote.Port)
-	}
+	spec := hubKnownHostsSpec(remote)
 	var lines []string
 	for _, src := range []string{hubJoinUserKnownHosts(), hubJoinSystemKnownHosts} {
 		if src == "" {

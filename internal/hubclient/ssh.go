@@ -139,6 +139,8 @@ func BuildSSHInvocation(opts SSHBuildOptions) (SSHInvocation, error) {
 			"-o", "UserKnownHostsFile="+opts.PinnedKnownHosts,
 			"-o", "GlobalKnownHostsFile=/dev/null",
 			"-o", "HostKeyAlias="+pinnedHostAlias,
+			// A user ssh_config must not supply keys behind the pin's back.
+			"-o", "VerifyHostKeyDNS=no", "-o", "KnownHostsCommand=none",
 		)
 	} else {
 		args = append(args,

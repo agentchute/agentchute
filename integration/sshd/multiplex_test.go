@@ -91,7 +91,12 @@ func TestSSHDControlPathLengthRuleAndMuxAuthCounts(t *testing.T) {
 		opts := hubclient.SSHBuildOptions{
 			Remote:    remote,
 			TempRoots: []string{"/tmp"}, UserID: uid,
+			// The parent /tmp/ac-<uid> is checked first now (review S9); this
+			// row is about the LEAF, so the spy passes the parent through.
 			EnsureOwned: func(got string) error {
+				if got == filepath.Join("/tmp", "ac-"+uid) {
+					return nil
+				}
 				candidate = got
 				return errors.New("capture candidate")
 			},
@@ -123,6 +128,9 @@ func TestSSHDControlPathLengthRuleAndMuxAuthCounts(t *testing.T) {
 			Remote:    remote,
 			TempRoots: []string{"/tmp"}, UserID: uid,
 			EnsureOwned: func(got string) error {
+				if got == filepath.Join("/tmp", "ac-"+uid) {
+					return nil
+				}
 				candidate = got
 				return errors.New("foreign-owned")
 			},

@@ -3,6 +3,7 @@ package hubclient
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,9 @@ import (
 // to the OLD hub URL, and the probe dials a NEW one, so neither real host name
 // would match.
 const pinnedHostAlias = "agentchute-pinned-hub"
+
+// errNoPinnedHostKey: the file exists but pins nothing.
+var errNoPinnedHostKey = errors.New("holds no host key to verify against")
 
 // ProbeWithPinnedHostKey is Probe with no trust on first use: the server must
 // prove possession of a host key already pinned in pinnedKnownHosts (the old
@@ -91,7 +95,64 @@ func pinnedHostKeyLines(path string) ([]string, error) {
 		return nil, fmt.Errorf("pinned host keys %s: %w", path, err)
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("pinned host keys: %s holds no host key to verify against", path)
+		return nil, fmt.Errorf("pinned host keys: %s %w", path, errNoPinnedHostKey)
 	}
 	return out, nil
+}
+
+// CarryHostKeyPin pins every host key in knownHostsPath for hostSpec as well,
+// after a migration PROVED (ProbeWithPinnedHostKey) that the host behind
+// hostSpec holds them. Keys already pinned for hostSpec are not repeated. A file
+// with no key carries nothing (a pinned probe could not have passed against it).
+func CarryHostKeyPin(knownHostsPath, hostSpec string) error {
+	if _, err := os.Stat(knownHostsPath); os.IsNotExist(err) {
+		return nil
+	}
+	keys, err := knownHostKeys(knownHostsPath)
+	if err != nil {
+		if errors.Is(err, errNoPinnedHostKey) {
+			return nil
+		}
+		return err
+	}
+	data, err := os.ReadFile(knownHostsPath)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		have[strings.TrimSpace(line)] = true
+	}
+	var add []string
+	for _, key := range keys {
+		if line := hostSpec + " " + key; !have[line] {
+			add = append(add, line)
+			have[line] = true
+		}
+	}
+	if len(add) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(knownHostsPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(strings.Join(add, "\n") + "\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// knownHostKeys returns "<type> <blob>" for every usable key line.
+func knownHostKeys(path string) ([]string, error) {
+	lines, err := pinnedHostKeyLines(path)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, len(lines))
+	for i, line := range lines {
+		keys[i] = strings.TrimPrefix(line, pinnedHostAlias+" ")
+	}
+	return keys, nil
 }
