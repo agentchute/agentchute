@@ -88,6 +88,7 @@ func TestGuardHubRuleCoversKeywordsRedirectionsAndFedShells(t *testing.T) {
 		"timeout -s KILL 5 agentchute hub join ssh://h/p --as y",
 		"xargs -I {} agentchute hub join {} < urls",
 		"env -C /tmp agentchute hub join ssh://h/p --as y",
+		"sudo -H agentchute hub authorize --list",
 		"agentchute hub${IFS:0:1}join ssh://h/p --as y",
 		"echo 'agentchute hub join ssh://h/p --as y' | sh",
 		"bash <<< 'agentchute hub authorize --list'",

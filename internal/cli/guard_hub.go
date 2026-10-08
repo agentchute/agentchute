@@ -29,16 +29,8 @@ var guardShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash":
 // being the program (if/then/do/{/! ...).
 var guardReserved = map[string]bool{"if": true, "then": true, "else": true, "elif": true, "fi": true, "do": true, "done": true, "while": true, "until": true, "!": true, "{": true, "}": true, "esac": true}
 
-// guardWrapperValueFlags are wrapper options whose value is the next word.
-// Lower-case: the guard matches lower-cased text (so -I and -i are one key).
-var guardWrapperValueFlags = map[string]map[string]bool{
-	"env":     {"-u": true, "-c": true},
-	"sudo":    {"-u": true, "-g": true, "-c": true, "-d": true, "-h": true, "-p": true, "-r": true, "-t": true},
-	"doas":    {"-u": true, "-c": true},
-	"nice":    {"-n": true},
-	"timeout": {"-s": true, "-k": true},
-	"xargs":   {"-i": true, "-n": true, "-p": true, "-l": true, "-s": true, "-e": true, "-d": true, "-a": true},
-}
+// guardWrappers run another command given as later words.
+var guardWrappers = map[string]bool{"env": true, "command": true, "exec": true, "nohup": true, "time": true, "nice": true, "timeout": true, "sudo": true, "doas": true, "xargs": true, "stdbuf": true, "builtin": true}
 
 // guardHubInvocation reports whether lower-cased command text runs a guarded
 // hub subcommand anywhere in command position.
@@ -75,6 +67,17 @@ func guardHubCommand(words []string, depth int) bool {
 	}
 	i := guardSkipPrefix(words)
 	if i >= len(words) {
+		return false
+	}
+	if guardWrappers[filepath.Base(words[i])] {
+		// Which wrapper options take a value differs per wrapper, and the guard
+		// sees lower-cased text, so it does not guess: every later word is
+		// tried as the program.
+		for j := i + 1; j < len(words); j++ {
+			if guardHubCommand(words[j:], depth) {
+				return true
+			}
+		}
 		return false
 	}
 	prog := words[i]
@@ -139,35 +142,8 @@ func guardHubArgs(args []string) bool {
 // assignments and past wrapper commands with their options.
 func guardSkipPrefix(words []string) int {
 	i := 0
-	for i < len(words) {
-		w := words[i]
-		if guardIsAssignment(w) || guardReserved[w] {
-			i++
-			continue
-		}
-		switch filepath.Base(w) {
-		case "env", "command", "exec", "nohup", "time", "nice", "timeout", "sudo", "doas", "xargs", "stdbuf", "builtin":
-			wrapper := filepath.Base(w)
-			i++
-			for i < len(words) {
-				a := words[i]
-				switch {
-				case guardIsAssignment(a):
-					i++
-				case guardWrapperValueFlags[wrapper][a]:
-					i += 2
-				case strings.HasPrefix(a, "-"):
-					i++
-				case wrapper == "timeout" && a != "" && (a[0] >= '0' && a[0] <= '9'):
-					i++ // the duration
-				default:
-					goto next
-				}
-			}
-		next:
-			continue
-		}
-		return i
+	for i < len(words) && (guardIsAssignment(words[i]) || guardReserved[words[i]]) {
+		i++
 	}
 	return i
 }
