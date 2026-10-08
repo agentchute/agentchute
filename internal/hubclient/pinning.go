@@ -354,7 +354,7 @@ func hubUnpinnedOperatorFallbackMessage(remote *loop.RemoteConfig, agentID strin
 	if remote != nil {
 		host, pool = remote.Host, remote.PoolPath
 	}
-	return "hub: " + host + " authenticated this machine, but NOT with the key agentchute pinned — no forced command was applied, so `agentchute-hub` reached a login shell instead of a hub session. The agentchute key was offered and refused; ssh then fell back to another identity from your ssh config or agent, which the hub accepts unrestricted. The binary on the hub is fine — this is an authorization problem wearing a \"command not found\". On the hub run: agentchute hub authorize --agent " + agentID + " --pool " + pool + " --key \"<this machine's agentchute public key>\", then retry."
+	return "hub: " + host + " authenticated this machine, but NOT with the key agentchute pinned — no forced command was applied, so `agentchute-hub` reached a login shell instead of a hub session. The agentchute key was offered and refused; ssh then fell back to another identity from your ssh config or agent, which the hub accepts unrestricted. The binary on the hub is fine — this is an authorization problem wearing a \"command not found\". On the hub run: " + HubAuthorizeCommand(agentID, pool, "<the agentchute public key of this machine>", false) + ", then retry."
 }
 
 func hubUnpinnedBothRemediesSuffix() string {

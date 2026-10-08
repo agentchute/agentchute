@@ -23,19 +23,28 @@ import (
 const DefaultClaimBudgetBytes = 12 << 10
 
 // renderedMessageOverhead is an UPPER bound on what the CLI renderer adds
-// around one body, per message: the stale banner (~150 bytes incl. the
-// sender), the REDELIVERED header (~90 bytes + filename), the blank-line
-// framing, the reply-required command line (~80 bytes + agent id + sender +
-// the reply ref, which is the filename plus the recipient id), and the budget
-// status line itself. The recipient id appears twice in the reply line
+// around one framed body, per message: the stale banner (~150 bytes incl. the
+// sender), the begin delimiter with its REDELIVERED marker and frame nonce
+// (~110 bytes + filename), the end delimiter (~40 bytes + filename), the
+// blank-line framing, the reply-required command line (~80 bytes + agent id +
+// sender + the reply ref, which is the filename plus the recipient id), and
+// the budget status line itself. The framed body and a sender-mismatch
+// warning are counted exactly, from the renderer's own rules (display.go). The recipient id appears twice in the reply line
 // (`--from <id>` and `to-<id>_` in the ref) and agent ids have no length cap,
 // so it is counted twice explicitly. Bounded generously per filename because the ids inside
 // the ref and header scale with it; a cli test (TestCheckBudgetBoundCoversRenderer)
 // pins that the real renderer never exceeds the estimate.
-const renderedMessageOverhead = 512
+const renderedMessageOverhead = 640
 
 func renderedSize(recipient string, msg loop.Message, content []byte) int {
-	return len(content) + 3*len(msg.Filename) + 2*len(recipient) + renderedMessageOverhead
+	// Exact for the framed body — every line the renderer prints, U+2028 and
+	// U+2029 breaks included, each with its prefix — and for the bounded
+	// sender-mismatch warning (gate reviews of #215); the rest is the bound.
+	size := FramedBodySize(content)
+	if claimed := ClaimedSenderMismatch(content, msg.Sender); claimed != "" {
+		size += len(SenderMismatchWarning(claimed, msg.Sender)) + 1
+	}
+	return size + 4*len(msg.Filename) + 2*len(recipient) + renderedMessageOverhead
 }
 
 // ClaimReq is `check`'s state half. Limit 0 means no limit; BudgetBytes 0
@@ -163,20 +172,20 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 				return sum, ferr
 			}
 			if qerr != nil {
-				if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("failed to quarantine %s: %v", name, qerr))); eerr != nil {
+				if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("failed to quarantine %s: %s", OneLine(name, peerNameMaxRunes), OneLine(qerr.Error(), 4*peerNameMaxRunes)))); eerr != nil {
 					return sum, eerr
 				}
 				continue
 			}
 			sum.Quarantined++
-			if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("quarantined %s (malformed §6.1 filename) -> %s", name, quarantined))); eerr != nil {
+			if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("quarantined %s (malformed §6.1 filename) -> %s", OneLine(name, peerNameMaxRunes), OneLine(quarantined, peerNameMaxRunes*2)))); eerr != nil {
 				return sum, eerr
 			}
 		}
 	} else if len(skipped) > 0 {
 		msg := fmt.Sprintf("%d non-§6.1 file(s) in inbox; --no-archive suppressed §11 enforcement:", len(skipped))
 		for _, name := range skipped {
-			msg += "\n  " + name
+			msg += "\n  " + OneLine(name, peerNameMaxRunes)
 		}
 		if eerr := emit(NewNoteEvent(NoteWarn, msg)); eerr != nil {
 			return sum, eerr

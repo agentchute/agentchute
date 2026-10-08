@@ -374,12 +374,27 @@ func guardCommandDenied(toolCmd string) bool {
 	if guardAgentchuteSubcmdRE.MatchString(normalized) && !guardCleanOwedExempt(normalized) {
 		return true
 	}
+	if guardHubInvocation(guardStripToolName(toolCmd)) {
+		return true
+	}
 	for _, pattern := range guardPipelineDenySubstrings {
 		if strings.Contains(lower, pattern) {
 			return true
 		}
 	}
 	return false
+}
+
+// guardStripToolName drops the tool-name word parseGuardToolCommand puts in
+// front of the command text, so the hub rule sees the command itself in
+// command position. It drops whatever that word is: a list of known tool names
+// failed open for every tool not on it (background security review).
+func guardStripToolName(lower string) string {
+	trimmed := strings.TrimSpace(lower)
+	if i := strings.IndexAny(trimmed, " \t\n"); i >= 0 {
+		return strings.TrimSpace(trimmed[i:])
+	}
+	return ""
 }
 
 // guardDirectSendInvocation recognizes only the literal send binaries this

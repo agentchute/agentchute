@@ -23,6 +23,9 @@ var (
 	hubAuthorizeExecutable = os.Executable
 	hubAuthorizeLink       = os.Link
 	hubAuthorizeNow        = time.Now
+	// A real terminal (termios ioctl), not "a character device": /dev/null is
+	// one, and it is exactly the stdin a script or exec'd tool call gets.
+	hubAuthorizeStdinIsTTY = func() bool { return runnerIsTerminal(os.Stdin) }
 	hubSafePathPattern     = regexp.MustCompile(`^[A-Za-z0-9._/+-]+$`)
 	hubKeyTypePattern      = regexp.MustCompile(`^[a-z0-9-]+$`)
 	hubKeyBlobPattern      = regexp.MustCompile(`^[A-Za-z0-9+/=]+$`)
@@ -36,6 +39,7 @@ type hubAuthorizeOptions struct {
 	List       bool
 	Revoke     string
 	ReplaceKey bool
+	Takeover   bool
 }
 
 type hubAuthorizePool struct {
@@ -61,6 +65,7 @@ func cmdHubAuthorize(args []string) error {
 	fs.BoolVar(&opts.List, "list", false, "list and audit managed authorized keys")
 	fs.StringVar(&opts.Revoke, "revoke", "", "revoke an agent from this pool")
 	fs.BoolVar(&opts.ReplaceKey, "replace-key", false, "replace an existing key for this agent and pool")
+	fs.BoolVar(&opts.Takeover, "takeover", false, "bind the key to an id that already has a local registration or a live serve (interactive terminal only)")
 	if err := fs.Parse(args); err != nil {
 		return hubAuthorizeUsage(err)
 	}
@@ -145,6 +150,13 @@ func authorizeHubKey(opts hubAuthorizeOptions, out io.Writer) error {
 		if len(indexes) > 0 {
 			existing, keyErr := hubKeyFromAuthorizedLine(lines[indexes[0]])
 			sameKey := keyErr == nil && existing.Type == key.Type && existing.Blob == key.Blob
+			if !sameKey && opts.ReplaceKey && !hubAuthorizeStdinIsTTY() {
+				// Swapping the key of an id that already has one is the same
+				// takeover --takeover guards, for a lane that is already remote:
+				// a pasted or scripted --replace-key handed its identity to
+				// whoever supplied the key. Gated exactly like --takeover.
+				return fmt.Errorf("hub authorize: --replace-key of %q's authorized key needs an interactive terminal; it is refused from a script, a pasted ssh command, or an agent's tool call", opts.Agent)
+			}
 			if !sameKey && !opts.ReplaceKey {
 				fingerprint := "unreadable key"
 				if keyErr == nil {
@@ -170,6 +182,9 @@ func authorizeHubKey(opts hubAuthorizeOptions, out io.Writer) error {
 				action = "updated"
 			}
 		} else {
+			if err := refuseHubAuthorizeLocalLane(pool.Config, opts); err != nil {
+				return err
+			}
 			lines = append(lines, line)
 			action = "appended"
 		}
@@ -649,4 +664,43 @@ func hubPathModeIs(path string, requiredType os.FileMode, perm os.FileMode) bool
 func pathExists(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil
+}
+
+// refuseHubAuthorizeLocalLane stops a NEW key line for an id the pool already
+// knows without a hub key: one with a registration row (a local lane, or a
+// remote lane whose key was revoked) or a fresh serve claim. Appending used to
+// be unconditional, so a remote lane that asked an operator — or a hub-side lane
+// — to run the documented paste with its own key received an identity that
+// claims that lane's inbox and sends under its name (review 2026-10-08, S10).
+//
+// --takeover is the explicit override, and only from an interactive terminal:
+// a pasted or scripted run (ssh without -t, an agent's tool call) has no TTY,
+// which is exactly the path an injected request takes.
+func refuseHubAuthorizeLocalLane(cfg *loop.Config, opts hubAuthorizeOptions) error {
+	if cfg == nil {
+		return nil
+	}
+	what := ""
+	if claim, err := loop.ReadServeClaim(cfg, opts.Agent); err == nil && !loop.ClaimIsStale(claim, time.Now().UTC()) {
+		what = fmt.Sprintf("a live serve (pid %d on %s)", claim.PID, claim.Host)
+	} else if _, err := os.Stat(cfg.AgentRegistrationPath(opts.Agent)); err == nil {
+		what = "a registration row"
+	} else if _, err := os.Stat(cfg.AgentInboxDir(opts.Agent)); err == nil {
+		// The sweep removes a stale row but never the inbox (loop/sweep.go), so a
+		// lane offline past stale_after has no row and no claim — and its queued
+		// mail would go to whichever key is bound next.
+		what = "an inbox (its registration row was swept)"
+	} else if _, err := os.Stat(cfg.AgentStateDir(opts.Agent)); err == nil {
+		what = "lane state"
+	}
+	if what == "" {
+		return nil
+	}
+	if !opts.Takeover {
+		return fmt.Errorf("hub authorize: agent %q already has %s in this pool and no hub key — binding a key to it lets that key act as %q (claim its mail, send under its name). If that is intended, re-run from an interactive terminal with --takeover", opts.Agent, what, opts.Agent)
+	}
+	if !hubAuthorizeStdinIsTTY() {
+		return fmt.Errorf("hub authorize: --takeover of %q needs an interactive terminal; it is refused from a script, a pasted ssh command, or an agent's tool call", opts.Agent)
+	}
+	return nil
 }

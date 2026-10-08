@@ -54,7 +54,7 @@ func TestSendHubPathHasNoMutablePackageState(t *testing.T) {
 		"ErrNotRegistered": true, "ErrRecipientUnknown": true,
 		"ErrRecipientUnreadable": true, "ErrFenced": true,
 		"ErrLeaseHeld": true, "ErrRecipientStale": true,
-		"ErrRecipientRacing": true, "ErrOrder": true,
+		"ErrRecipientRacing": true, "ErrOrder": true, "ErrSenderMismatch": true,
 	}
 	visited := map[string]bool{}
 	var walk func(string)

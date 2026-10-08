@@ -133,6 +133,10 @@ func TestHubAuthorizeDuplicateReplaceAndRevoke(t *testing.T) {
 		t.Fatal("duplicate refusal changed authorized_keys")
 	}
 
+	// Swapping a key needs an interactive terminal (hub_replace_tty_test.go).
+	origTTY := hubAuthorizeStdinIsTTY
+	hubAuthorizeStdinIsTTY = func() bool { return true }
+	t.Cleanup(func() { hubAuthorizeStdinIsTTY = origTTY })
 	var output bytes.Buffer
 	if err := runHubAuthorize(hubAuthorizeOptions{Agent: "codex-tiny", Pool: pool, Key: key2, ReplaceKey: true}, &output); err != nil {
 		t.Fatal(err)

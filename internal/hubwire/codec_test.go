@@ -245,14 +245,14 @@ func TestStatusProducerBudgetsAndPrefix(t *testing.T) {
 }
 
 func TestRegistryCompleteness(t *testing.T) {
-	opCodes := []string{"E_NOT_REGISTERED", "E_RECIPIENT_UNKNOWN", "E_RECIPIENT_UNREADABLE", "E_RECIPIENT_STALE", "E_RECIPIENT_RACING", "E_FENCED", "E_LEASE_HELD", "E_ORDER", "E_HUB_IO"}
+	opCodes := []string{"E_NOT_REGISTERED", "E_RECIPIENT_UNKNOWN", "E_RECIPIENT_UNREADABLE", "E_RECIPIENT_STALE", "E_RECIPIENT_RACING", "E_FENCED", "E_LEASE_HELD", "E_ORDER", "E_SENDER_MISMATCH", "E_HUB_IO"}
 	codecCodes := []string{CodeVersion, CodeIdentity, CodePoolNotFound, CodePoolIDInvalid, CodePoolMismatch, CodeMalformedFrame, CodeTooLarge, CodeUnsupported, CodeUnpinned}
 	clientOnly := []string{"E_CONNECT", "E_UNAUTHORIZED", "E_HOSTKEY_CHANGED", "E_CHANNEL_LOST", "E_SEND_UNKNOWN", "E_HELLO_TIMEOUT", "E_HUB_NO_BINARY", "E_NOT_JOINED", "E_NO_SSH", "E_HUB_UNPINNED"}
 	seen := map[string]bool{}
 	opErrors := []error{
 		op.ErrNotRegistered, op.ErrRecipientUnknown, op.ErrRecipientUnreadable,
 		op.ErrRecipientStale, op.ErrRecipientRacing, op.ErrFenced,
-		op.ErrLeaseHeld, op.ErrOrder, errors.New("default I/O"),
+		op.ErrLeaseHeld, op.ErrOrder, op.ErrSenderMismatch, errors.New("default I/O"),
 	}
 	for i, err := range opErrors {
 		if got := op.CodeFor(err); got != opCodes[i] {
@@ -270,8 +270,8 @@ func TestRegistryCompleteness(t *testing.T) {
 			}
 		}
 	}
-	if len(seen) != 18 {
-		t.Fatalf("hub union = %d, want 18", len(seen))
+	if len(seen) != 19 {
+		t.Fatalf("hub union = %d, want 19", len(seen))
 	}
 	for _, code := range clientOnly {
 		if seen[code] || Emitters[code] != EmitterClient {
@@ -285,8 +285,8 @@ func TestRegistryCompleteness(t *testing.T) {
 	// The count is asserted on purpose: a code added to the map and forgotten in
 	// the spec's table is exactly the drift this row exists to catch, so it must
 	// be moved deliberately rather than grow on its own.
-	if len(Emitters) != 30 {
-		t.Fatalf("emitter registry = %d rows, want 30", len(Emitters))
+	if len(Emitters) != 31 {
+		t.Fatalf("emitter registry = %d rows, want 31", len(Emitters))
 	}
 }
 

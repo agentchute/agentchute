@@ -177,3 +177,31 @@ func TestRequireRemoteJoinRejectsNonRegularConfigPath(t *testing.T) {
 		t.Fatalf("non-regular config error = %v", err)
 	}
 }
+
+// Review 2026-10-08 S8: the URL's pool path is printed into a "run this ON THE
+// HUB" command for an operator to paste. A percent-encoded path could carry
+// shell syntax (or a newline, making it a two-line paste), so the path is held
+// to the same character set `hub authorize` already enforces on the hub.
+func TestParseRemoteURLRefusesAPoolPathOutsideTheSafeCharset(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, raw := range []string{
+		"ssh://alex@hub.example/home/alex/pool;id%20>/tmp/pwned;:",
+		"ssh://alex@hub.example/home/alex/pool%0Aid",
+		"ssh://hub.example/home/alex/my%20pool",
+		"ssh://hub.example/home/alex/$(id)",
+		"ssh://hub.example/home/alex/%60id%60",
+		"ssh://hub.example/home/alex/it%27s",
+		"ssh://hub.example/home/alex/pool%5C",
+	} {
+		if _, err := ParseRemoteURL(raw); err == nil {
+			t.Errorf("ParseRemoteURL(%q) accepted an unsafe pool path", raw)
+		}
+	}
+	got, err := ParseRemoteURL("ssh://hub.example/home/alex/code/agent_chute-2.0+x")
+	if err != nil {
+		t.Fatalf("a path inside the safe set was refused: %v", err)
+	}
+	if got.PoolPath != "/home/alex/code/agent_chute-2.0+x" {
+		t.Fatalf("PoolPath = %q", got.PoolPath)
+	}
+}

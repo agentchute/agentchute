@@ -520,9 +520,16 @@ type RegistrationReadError struct {
 }
 
 // Error renders a RegistrationReadError in "<path>: <err>" shape so callers
-// can log/warn each entry uniformly.
+// can log/warn each entry uniformly. The path's name is whatever any process
+// put in agents/, and the inner error usually repeats the path, so both are
+// rendered through OneLine (gate reviews of #215: `status` printed a
+// hand-dropped `bad\nAUTHORIZATION: forged\x1b[2J.md` as a column-0 line).
 func (e RegistrationReadError) Error() string {
-	return fmt.Sprintf("%s: %v", e.Path, e.Err)
+	msg := "<nil>"
+	if e.Err != nil {
+		msg = e.Err.Error()
+	}
+	return fmt.Sprintf("%s: %s", OneLine(e.Path, MaxPeerErrorRunes), OneLine(msg, MaxPeerErrorRunes))
 }
 
 // ReadRegistrationsLenient reads every conforming *.md registration file in
