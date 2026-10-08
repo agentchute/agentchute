@@ -42,10 +42,17 @@ func renderedSize(recipient string, msg loop.Message, content []byte) int {
 // means DefaultClaimBudgetBytes and a negative value lifts the budget;
 // NoArchive is the dry run — display in place, no claim, no quarantine, no
 // owed discharge.
+//
+// ServeToken is the caller's AGENTCHUTE_SERVE_TOKEN, and Unfenced skips the
+// consume fence; see consumeFence.
 type ClaimReq struct {
-	Limit       int  `json:"limit,omitempty"`
-	BudgetBytes int  `json:"budget_bytes,omitempty"`
-	NoArchive   bool `json:"no_archive,omitempty"`
+	Limit       int    `json:"limit,omitempty"`
+	BudgetBytes int    `json:"budget_bytes,omitempty"`
+	NoArchive   bool   `json:"no_archive,omitempty"`
+	ServeToken  string `json:"serve_token,omitempty"`
+	Unfenced    bool   `json:"-"`
+
+	beforeMutation func() // test-only, invocation-scoped
 }
 
 func (r ClaimReq) budget() int {
@@ -60,11 +67,20 @@ func (r ClaimReq) budget() int {
 // filename (§11.1) instead of stopping every future check at it. Under the
 // dry run it is only reported. A quarantine that itself fails returns an
 // error: the caller stops claiming, and what it already claimed stays claimed.
-func quarantineUnreadable(cfg *loop.Config, agentID string, msg loop.Message, readErr error, noArchive bool, now time.Time, sum *ClaimSummary, emit func(Event) error) error {
+// The move itself runs under the consume fence (fenced), like every other
+// quarantine and claim (#211).
+func quarantineUnreadable(cfg *loop.Config, agentID string, msg loop.Message, readErr error, noArchive bool, now time.Time, fenced func(func() error) error, sum *ClaimSummary, emit func(Event) error) error {
 	if noArchive {
 		return emit(NewNoteEvent(NoteWarn, fmt.Sprintf("%s cannot be read (%v); --no-archive suppressed §11 quarantine", msg.Filename, readErr)))
 	}
-	quarantined, qerr := loop.QuarantineInboxFile(msg.Path, cfg.MalformedDir(), agentID, now)
+	var quarantined string
+	var qerr error
+	if ferr := fenced(func() error {
+		quarantined, qerr = loop.QuarantineInboxFile(msg.Path, cfg.MalformedDir(), agentID, now)
+		return nil
+	}); ferr != nil {
+		return ferr
+	}
 	if qerr != nil {
 		return fmt.Errorf("read message %s: %v; quarantine also failed: %w — nothing further claimed", msg.Path, readErr, qerr)
 	}
@@ -115,6 +131,18 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 	if err := requireRegistered(cfg, agentID); err != nil {
 		return sum, err
 	}
+	// The dry run stays the read-only peek an operator can always take.
+	if !req.NoArchive {
+		if err := consumeFence(cfg, agentID, req.ServeToken, req.Unfenced, now); err != nil {
+			return sum, err
+		}
+	}
+
+	// Every mutation below re-checks that fence under the agent lock; the read
+	// above is only the early refusal (fencedMutation).
+	fenced := func(mutate func() error) error {
+		return fencedMutation(cfg, agentID, req.ServeToken, req.Unfenced, req.beforeMutation, mutate)
+	}
 
 	inboxDir := cfg.AgentInboxDir(agentID)
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
@@ -126,7 +154,14 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 	// (file moves), so --no-archive reports and skips it.
 	if !req.NoArchive {
 		for _, name := range skipped {
-			quarantined, qerr := loop.QuarantineInboxFile(filepath.Join(inboxDir, name), cfg.MalformedDir(), agentID, now)
+			var quarantined string
+			var qerr error
+			if ferr := fenced(func() error {
+				quarantined, qerr = loop.QuarantineInboxFile(filepath.Join(inboxDir, name), cfg.MalformedDir(), agentID, now)
+				return nil
+			}); ferr != nil {
+				return sum, ferr
+			}
 			if qerr != nil {
 				if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("failed to quarantine %s: %v", name, qerr))); eerr != nil {
 					return sum, eerr
@@ -178,7 +213,7 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 			if !errors.As(err, &tooLarge) {
 				return sum, fmt.Errorf("read claimed message %s: %w", msg.Path, err)
 			}
-			if qerr := quarantineUnreadable(cfg, agentID, msg, err, req.NoArchive, now, &sum, emit); qerr != nil {
+			if qerr := quarantineUnreadable(cfg, agentID, msg, err, req.NoArchive, now, fenced, &sum, emit); qerr != nil {
 				return sum, qerr
 			}
 			continue
@@ -215,7 +250,7 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 		}
 		content, err := loop.ReadFileLimit(msg.Path, loop.MaxInboxMessageBytes)
 		if err != nil {
-			if qerr := quarantineUnreadable(cfg, agentID, msg, err, req.NoArchive, now, &sum, emit); qerr != nil {
+			if qerr := quarantineUnreadable(cfg, agentID, msg, err, req.NoArchive, now, fenced, &sum, emit); qerr != nil {
 				return sum, qerr
 			}
 			continue
@@ -243,7 +278,14 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 				}
 				continue
 			}
-			quarantined, qerr := loop.QuarantineInboxFile(msg.Path, cfg.MalformedDir(), agentID, now)
+			var quarantined string
+			var qerr error
+			if ferr := fenced(func() error {
+				quarantined, qerr = loop.QuarantineInboxFile(msg.Path, cfg.MalformedDir(), agentID, now)
+				return nil
+			}); ferr != nil {
+				return sum, ferr
+			}
 			if qerr != nil {
 				sum.Claimed++
 				if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("%s has malformed frontmatter but quarantine failed: %v", msg.Filename, qerr))); eerr != nil {
@@ -271,11 +313,16 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 
 		// CLAIM (phase 1): move inbox -> .claimed, then emit from the claimed
 		// copy. NO archive — that is `ack`, phase 2.
-		claimedPath, cerr := loop.ClaimMessage(msg, claimedDir)
-		if cerr != nil {
-			return sum, fmt.Errorf("claim message %s: %w", msg.Filename, cerr)
+		if err := fenced(func() error {
+			claimedPath, cerr := loop.ClaimMessage(msg, claimedDir)
+			if cerr != nil {
+				return fmt.Errorf("claim message %s: %w", msg.Filename, cerr)
+			}
+			msg.Path = claimedPath
+			return nil
+		}); err != nil {
+			return sum, err
 		}
-		msg.Path = claimedPath
 		sum.Claimed++
 		if err := emitMessage(emit, agentID, msg, content, false); err != nil {
 			return sum, err

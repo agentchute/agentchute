@@ -294,7 +294,7 @@ func (s *hubSession) dispatch(raw hubwire.RawFrame) (bool, error) {
 		if err := raw.Decode(&req); err != nil {
 			return true, s.writeError(raw.ID, err)
 		}
-		sum, err := op.Claim(s.cfg, s.ctx, op.ClaimReq{Limit: req.Limit, BudgetBytes: req.BudgetBytes, NoArchive: req.NoArchive}, s.emitter(raw.ID, false))
+		sum, err := op.Claim(s.cfg, s.ctx, op.ClaimReq{Limit: req.Limit, BudgetBytes: req.BudgetBytes, NoArchive: req.NoArchive, ServeToken: derefToken(req.ServeToken), Unfenced: req.ServeToken == nil}, s.emitter(raw.ID, false))
 		if err != nil {
 			if sum.Redelivered > 0 {
 				err = &hubwire.ProtocolError{Code: hubwire.CodeFor(err), Msg: err.Error(), ClaimedHeld: true}
@@ -306,7 +306,11 @@ func (s *hubSession) dispatch(raw hubwire.RawFrame) (bool, error) {
 		if raw.HasBody {
 			return true, s.malformed(raw.ID, "ack cannot carry a body")
 		}
-		sum, err := op.Ack(s.cfg, s.ctx, op.AckReq{}, s.emitter(raw.ID, false))
+		var req hubwire.Ack
+		if err := raw.Decode(&req); err != nil {
+			return true, s.writeError(raw.ID, err)
+		}
+		sum, err := op.Ack(s.cfg, s.ctx, op.AckReq{ServeToken: derefToken(req.ServeToken), Unfenced: req.ServeToken == nil}, s.emitter(raw.ID, false))
 		if err != nil {
 			return true, s.writeError(raw.ID, err)
 		}
@@ -451,6 +455,15 @@ func registerResponse(re int64, resp op.RegisterResp) (hubwire.RegisterOK, []byt
 		Reg:      hubwire.Registration{AgentID: resp.Reg.AgentID, ProtocolVersion: resp.Reg.ProtocolVersion, Vendor: resp.Reg.Vendor, ControlRepo: resp.Reg.ControlRepo, WorkingRepos: resp.Reg.WorkingRepos, Host: resp.Reg.Host, LastSeen: resp.Reg.LastSeen},
 		InboxDir: resp.InboxDir, Refreshed: resp.Refreshed, ExistingFound: resp.ExistingFound, ResolvedHost: resp.ResolvedHost, Warnings: warnings,
 	}, []byte(resp.Reg.Body)
+}
+
+// derefToken reads a check/ack frame's serve_token; nil (a client that predates
+// the consume fence) is also marked Unfenced by the caller.
+func derefToken(token *string) string {
+	if token == nil {
+		return ""
+	}
+	return *token
 }
 
 func (s *hubSession) malformed(re int64, msg string) error {

@@ -72,6 +72,9 @@ func cmdCheck(args []string) error {
 	if fs.NArg() != 0 {
 		return checkUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
+	if err := requireRunnerAncestry("check"); err != nil {
+		return err
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -159,7 +162,9 @@ func cmdCheck(args []string) error {
 	if budgetBytes <= 0 {
 		budgetBytes = -1 // the op's "no budget"; 0 there means the default
 	}
-	claimReq := op.ClaimReq{Limit: limit, BudgetBytes: budgetBytes, NoArchive: noArchive}
+	// The serve token fences the claim as it already fences send: a process
+	// whose env belongs to another runner may not claim a live lane's mail.
+	claimReq := op.ClaimReq{Limit: limit, BudgetBytes: budgetBytes, NoArchive: noArchive, ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
 	var sum op.ClaimSummary
 	if cfg.Remote != nil {
 		session, openErr := openRemoteOneShot(cfg, agentID)

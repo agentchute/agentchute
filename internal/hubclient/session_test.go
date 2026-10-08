@@ -230,7 +230,7 @@ func TestOneShotRegisterStatusSendCheckAck(t *testing.T) {
 		t.Fatalf("claim/messages = %#v/%#v", claimed, messages)
 	}
 
-	acked, err := h.session("claude-code").Ack(func(op.Event) error { return nil })
+	acked, err := h.session("claude-code").Ack(op.AckReq{}, func(op.Event) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,5 +327,42 @@ func TestOneShotCheckCarriesBudgetToTheHub(t *testing.T) {
 	}
 	if sum, n := count(op.ClaimReq{BudgetBytes: -1}); sum.Claimed != 2 || n != 2 || sum.Redelivered != 2 {
 		t.Fatalf("unbounded budget over the wire: %+v messages=%d, want the remaining 2 (plus 2 redelivered)", sum, n)
+	}
+}
+
+// The client puts the caller's serve token on the check and ack frames, so the
+// hub fences the consume path for remote lanes too (review 2026-10-08, S2). A
+// client that dropped the field would be served as a pre-fence client and the
+// foreign rows below would succeed.
+func TestOneShotCheckAndAckCarryTheServeToken(t *testing.T) {
+	h := newHarness(t)
+	h.register("codex", "openai")
+	h.register("grok", "xai")
+	cfg := &loop.Config{ControlRepo: h.pool, LoopDir: filepath.Join(h.pool, ".agentchute", "loop"), Vendor: "agentchute"}
+	lease, err := loop.AcquireServeLease(cfg, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loop.ReleaseLease(lease) })
+	if _, err := h.session("grok").Send(op.SendReq{To: "codex", Content: loop.ComposeMessage("grok", "", "for the live lane")}); err != nil {
+		t.Fatal(err)
+	}
+	noop := func(op.Event) error { return nil }
+	foreign := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	if _, err := h.session("codex").Check(op.ClaimReq{ServeToken: foreign}, noop); hubclient.ErrorCode(err) != "E_FENCED" {
+		t.Fatalf("check with a foreign token = %v (code %q), want E_FENCED", err, hubclient.ErrorCode(err))
+	}
+	if _, err := h.session("codex").Check(op.ClaimReq{}, noop); hubclient.ErrorCode(err) != "E_LEASE_HELD" {
+		t.Fatalf("check with no token = %v (code %q), want E_LEASE_HELD", err, hubclient.ErrorCode(err))
+	}
+	if sum, err := h.session("codex").Check(op.ClaimReq{ServeToken: lease.Token}, noop); err != nil || sum.Claimed != 1 {
+		t.Fatalf("check with the live token = %+v, %v; want 1 claimed", sum, err)
+	}
+	if _, err := h.session("codex").Ack(op.AckReq{ServeToken: foreign}, noop); hubclient.ErrorCode(err) != "E_FENCED" {
+		t.Fatalf("ack with a foreign token = %v (code %q), want E_FENCED", err, hubclient.ErrorCode(err))
+	}
+	if sum, err := h.session("codex").Ack(op.AckReq{ServeToken: lease.Token}, noop); err != nil || sum.Acked != 1 {
+		t.Fatalf("ack with the live token = %+v, %v; want 1 acked", sum, err)
 	}
 }

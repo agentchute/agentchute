@@ -7,8 +7,14 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// AckReq has no fields: ack commits everything `check` claimed, unconditionally.
-type AckReq struct{}
+// AckReq carries only the consume fence: ack commits everything `check`
+// claimed, unconditionally, once the caller passes consumeFence.
+type AckReq struct {
+	ServeToken string `json:"serve_token,omitempty"`
+	Unfenced   bool   `json:"-"`
+
+	beforeMutation func() // test-only, invocation-scoped
+}
 
 // AckSummary is the post-commit report. BlockReasons is the one inline list
 // kept on a summary — a fixed-small set of gate reason strings (§4.4.3).
@@ -31,18 +37,31 @@ type AckSummary struct {
 // Idempotent: an already-archived message (a partial prior ack) is success, and
 // an empty .claimed is a no-op. An emit error aborts after the current item;
 // what committed stays committed and re-acking is a no-op.
-func Ack(cfg *loop.Config, ctx Context, _ AckReq, emit func(Event) error) (AckSummary, error) {
+func Ack(cfg *loop.Config, ctx Context, req AckReq, emit func(Event) error) (AckSummary, error) {
 	var sum AckSummary
 	now := time.Now().UTC()
+
+	if err := consumeFence(cfg, ctx.ActorID, req.ServeToken, req.Unfenced, now); err != nil {
+		return sum, err
+	}
 
 	residue, err := loop.ListClaimedMessages(cfg.AgentClaimedDir(ctx.ActorID))
 	if err != nil {
 		return sum, fmt.Errorf("list claimed residue: %w", err)
 	}
 	for _, msg := range residue {
-		dest, aerr := loop.ArchiveMessage(msg, cfg.ArchiveDir(), ctx.ActorID, now)
-		if aerr != nil {
-			return sum, fmt.Errorf("ack (archive) %s: %w", msg.Filename, aerr)
+		// The authoritative fence: re-checked under the agent lock for each
+		// archive, so a reclaim mid-batch stops this ack (fencedMutation).
+		var dest string
+		if err := fencedMutation(cfg, ctx.ActorID, req.ServeToken, req.Unfenced, req.beforeMutation, func() error {
+			d, aerr := loop.ArchiveMessage(msg, cfg.ArchiveDir(), ctx.ActorID, now)
+			if aerr != nil {
+				return fmt.Errorf("ack (archive) %s: %w", msg.Filename, aerr)
+			}
+			dest = d
+			return nil
+		}); err != nil {
+			return sum, err
 		}
 		sum.Acked++
 		if eerr := emit(NewAckItemEvent(AckItemEvent{Filename: msg.Filename, ArchivePath: dest})); eerr != nil {
