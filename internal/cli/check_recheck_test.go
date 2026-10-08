@@ -85,7 +85,7 @@ func inboxNames(t *testing.T, cfg *loop.Config, id string) []string {
 // redeliveredHeader / freshHeader are the two header lines printConsumedBody
 // can print for a message, so a row can assert WHICH branch displayed it.
 func redeliveredHeader(name string) string { return "---- " + name + " [REDELIVERED" }
-func freshHeader(name string) string       { return "---- " + name + " ----" }
+func freshHeader(name string) string       { return "---- " + name + " [frame" }
 
 func mustLatchSession(t *testing.T, cfg *loop.Config, id, want string) {
 	t.Helper()

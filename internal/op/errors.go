@@ -21,6 +21,13 @@ var (
 	// texts are not byte-identical today and each call site keeps its own.
 	ErrNotRegistered = errors.New("op: agent is not registered")
 
+	// ErrSenderMismatch refuses a send whose frontmatter `from` names a
+	// sender other than the authenticated actor (the --from id locally, the
+	// hub session's pinned id remotely). Only the filename carries the
+	// authenticated sender (§6.1); a body that asserts another one is a
+	// forgery attempt, never a display detail (opus-xhigh S1).
+	ErrSenderMismatch = errors.New("op: frontmatter from contradicts the authenticated sender")
+
 	// ErrRecipientUnknown / ErrRecipientUnreadable / ErrFenced / ErrLeaseHeld
 	// are re-exports: the SAME error values internal/loop raises.
 	ErrRecipientUnknown    = loop.ErrRecipientUnknown
@@ -74,6 +81,8 @@ func CodeFor(err error) string {
 		return "E_LEASE_HELD"
 	case errors.Is(err, ErrOrder):
 		return "E_ORDER"
+	case errors.Is(err, ErrSenderMismatch):
+		return "E_SENDER_MISMATCH"
 	default:
 		return "E_HUB_IO"
 	}
