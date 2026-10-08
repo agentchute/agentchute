@@ -38,6 +38,7 @@ var Emitters = map[string]string{
 	"E_FENCED":               EmitterHub,
 	"E_LEASE_HELD":           EmitterHub,
 	"E_ORDER":                EmitterHub,
+	"E_SENDER_MISMATCH":      EmitterHub,
 	"E_HUB_IO":               EmitterHub,
 	CodeVersion:              EmitterHub,
 	CodeIdentity:             EmitterHub,

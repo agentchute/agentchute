@@ -74,7 +74,7 @@ func AnnounceEnrollment(cfg *Config, self *Registration) (AnnounceResult, error)
 		peerPath := filepath.Join(cfg.AgentsDir(), name)
 		peer, err := ReadRegistration(peerPath)
 		if err != nil {
-			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: %v", name, err))
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: %s", OneLine(name, MaxPeerNameRunes), OneLine(err.Error(), MaxPeerErrorRunes)))
 			continue
 		}
 		if peer.AgentID == self.AgentID {

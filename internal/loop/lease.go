@@ -444,7 +444,10 @@ func InvalidateAllServeLeases(cfg *Config) (int, error) {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			failures = append(failures, fmt.Errorf("%s: inspect serve claim: %w", id, err))
+			// id is not validated yet (a stray state/ entry without a claim
+			// must stay a silent skip), and the PathError repeats it: one
+			// line at every sink (gate r3 on #215).
+			failures = append(failures, OneLineError(fmt.Errorf("%s: inspect serve claim: %w", id, err)))
 			continue
 		}
 		if err := ValidateAgentID(id); err != nil {
