@@ -130,7 +130,7 @@ func TestHooksInstallForceBacksUp(t *testing.T) {
 			t.Errorf("backup content = %q, want %q", bak, original)
 		}
 		merged := string(mustRead(t, path))
-		if !strings.Contains(merged, `"modified": true`) || !strings.Contains(merged, "turn-end --claude-hook Stop") {
+		if !strings.Contains(merged, `"modified": true`) || !strings.Contains(merged, "turn-end --json") {
 			t.Errorf("force install did not merge into the project's file:\n%s", merged)
 		}
 	})

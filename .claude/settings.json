@@ -31,12 +31,22 @@
       "Bash(gh run watch:*)"
     ],
     "deny": [
-      "Bash(go *-exec*)",
-      "Bash(go *-toolexec*)",
-      "Bash(go *-vettool*)",
-      "Bash(git *--output*)",
-      "Bash(git *--upload-pack*)",
-      "Bash(git *--receive-pack*)"
+      "Bash(go * -exec *)",
+      "Bash(go * -exec=*)",
+      "Bash(go * --exec *)",
+      "Bash(go * --exec=*)",
+      "Bash(go * -toolexec *)",
+      "Bash(go * -toolexec=*)",
+      "Bash(go * --toolexec *)",
+      "Bash(go * --toolexec=*)",
+      "Bash(go * -vettool *)",
+      "Bash(go * -vettool=*)",
+      "Bash(go * --vettool *)",
+      "Bash(go * --vettool=*)",
+      "Bash(git * --output *)",
+      "Bash(git * --output=*)",
+      "Bash(git * --upload-pack*)",
+      "Bash(git * --receive-pack*)"
     ]
   },
   "hooks": {
@@ -81,7 +91,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --claude-hook Stop"
+            "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --json"
           }
         ]
       }

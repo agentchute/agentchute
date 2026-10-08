@@ -705,7 +705,7 @@ func TestDoctorAsBlocksWhenNonActingInstalledHookDiverged(t *testing.T) {
 
 	path := filepath.Join(cfg.ControlRepo, ".claude", "settings.json")
 	canonical := string(mustRead(t, path))
-	diverged := strings.Replace(canonical, "turn-end --claude-hook Stop", "gate --before finish --json", 1)
+	diverged := strings.Replace(canonical, "turn-end --json", "gate --before finish --json", 1)
 	if diverged == canonical {
 		t.Fatal("canonical claude-code hook did not contain the expected turn-end command")
 	}

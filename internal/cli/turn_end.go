@@ -66,7 +66,7 @@ func cmdTurnEnd(args []string) error {
 	fs := flag.NewFlagSet("turn-end", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, host, bio, controlRepo, loopDir, claudeHook, codexHook, geminiHook, agyHook string
+	var agentID, vendor, host, bio, controlRepo, loopDir, codexHook, geminiHook, agyHook string
 	var jsonOut bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai, local)")
@@ -75,7 +75,6 @@ func cmdTurnEnd(args []string) error {
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&loopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
-	fs.StringVar(&claudeHook, "claude-hook", "", "Claude Code hook mode for the named event (Stop): --json output, exit 2 on block")
 	fs.StringVar(&codexHook, "codex-hook", "", "codex hook JSON shape for the named event (Stop)")
 	fs.StringVar(&geminiHook, "gemini-hook", "", "Gemini CLI hook JSON shape for the named event (AfterAgent)")
 	fs.StringVar(&agyHook, "agy-hook", "", "Antigravity CLI hook JSON shape for the named event (Stop)")
@@ -92,17 +91,17 @@ func cmdTurnEnd(args []string) error {
 	// Hook stdin is read only in a hook mode: a hand-run turn-end must never
 	// wait on a terminal.
 	// Read once: the codex foreign-thread check and stop_hook_active both
-	// come from the same input.
+	// come from the same input. --json is the Claude Code Stop hook's mode
+	// (the template's command has always been `turn-end --json`, so an
+	// installed older binary keeps working against a newer template): its
+	// stdin is read too, never when it is a terminal.
 	var hookBody []byte
-	if claudeHook == "Stop" || codexHook == "Stop" || geminiHook == "AfterAgent" {
+	if jsonOut || codexHook == "Stop" || geminiHook == "AfterAgent" {
 		hookBody = readHookStdin(hookStdin())
 	}
 	var hookIn turnEndHookInput
 	if len(hookBody) > 0 {
 		_ = json.Unmarshal(hookBody, &hookIn)
-	}
-	if claudeHook == "Stop" {
-		jsonOut = true
 	}
 
 	opts := registerOpts{Host: host, Bio: bio, ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
@@ -223,7 +222,7 @@ func cmdTurnEnd(args []string) error {
 	// Blocking again only re-prompts it until the harness's own continuation
 	// cap overrides us silently; allow the stop and say so instead.
 	stillBlocked := ""
-	if status.Blocked && (claudeHook == "Stop" || codexHook == "Stop") {
+	if status.Blocked && (jsonOut || codexHook == "Stop") {
 		// The record names the session too, and self-check (every turn's
 		// UserPromptSubmit) clears it: stop_hook_active is also true when
 		// ANOTHER Stop hook blocked, and a block from an earlier turn or
@@ -330,11 +329,11 @@ Flags:
   --bio <text>          short self-description
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
-  --json                structured JSON output
-  --claude-hook <event> Claude Code Stop hook mode (Stop): --json output, exit 2 on
-                        block; a Stop our own block caused that finds the same
-                        reasons is let through with a "finish gate still
-                        blocked" systemMessage
+  --json                structured JSON output; also the Claude Code Stop hook
+                        mode: reads the hook input when stdin is not a
+                        terminal, and a Stop our own block caused that finds
+                        the same reasons is let through with a "finish gate
+                        still blocked" systemMessage
   --codex-hook <event>  codex hook JSON shape (Stop)
   --gemini-hook <event> Gemini CLI hook JSON shape (AfterAgent)
   --agy-hook <event>    Antigravity CLI hook JSON shape (Stop)

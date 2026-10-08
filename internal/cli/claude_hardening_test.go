@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -91,7 +92,7 @@ func TestHookMergeKeepsTheProjectsSettings(t *testing.T) {
 
 	perms := v["permissions"].(map[string]any)
 	deny := stringList(perms["deny"])
-	for _, rule := range []string{"Bash(rm:*)", "Read(./.env)", "Bash(go *-exec*)", "Bash(git *--output*)"} {
+	for _, rule := range []string{"Bash(rm:*)", "Read(./.env)", "Bash(go * -exec *)", "Bash(git * --output=*)"} {
 		if !hasString(deny, rule) {
 			t.Errorf("deny lost %q: %q", rule, deny)
 		}
@@ -437,7 +438,24 @@ func TestClaudeTemplatePermissionsArePinned(t *testing.T) {
 	if got := stringList(perms["allow"]); strings.Join(got, "\n") != strings.Join(wantAllow, "\n") {
 		t.Fatalf("allow rules drifted:\n%s", strings.Join(got, "\n"))
 	}
-	wantDeny := []string{"Bash(go *-exec*)", "Bash(go *-toolexec*)", "Bash(go *-vettool*)", "Bash(git *--output*)", "Bash(git *--upload-pack*)", "Bash(git *--receive-pack*)"}
+	wantDeny := []string{
+		"Bash(go * -exec *)",
+		"Bash(go * -exec=*)",
+		"Bash(go * --exec *)",
+		"Bash(go * --exec=*)",
+		"Bash(go * -toolexec *)",
+		"Bash(go * -toolexec=*)",
+		"Bash(go * --toolexec *)",
+		"Bash(go * --toolexec=*)",
+		"Bash(go * -vettool *)",
+		"Bash(go * -vettool=*)",
+		"Bash(go * --vettool *)",
+		"Bash(go * --vettool=*)",
+		"Bash(git * --output *)",
+		"Bash(git * --output=*)",
+		"Bash(git * --upload-pack*)",
+		"Bash(git * --receive-pack*)",
+	}
 	if got := stringList(perms["deny"]); strings.Join(got, "\n") != strings.Join(wantDeny, "\n") {
 		t.Fatalf("deny rules drifted:\n%s", strings.Join(got, "\n"))
 	}
@@ -548,7 +566,7 @@ func TestTurnEndLetsARepeatedUnchangedBlockThrough(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				args := []string{"--as", "bob", "--claude-hook", "Stop"}
+				args := []string{"--as", "bob", "--json"}
 				if mode == "codex" {
 					args = []string{"--as", "bob", "--codex-hook", "Stop"}
 				}
@@ -591,7 +609,7 @@ func TestTurnEndLetsARepeatedUnchangedBlockThrough(t *testing.T) {
 	}
 }
 
-// A clear gate forgets the last block; a hand-run turn-end never reads stdin.
+// A clear gate forgets the last block; a text-mode (hand-run) turn-end never reads stdin.
 func TestTurnEndForgetsTheLastBlockWhenClearAndHandRunsReadNoStdin(t *testing.T) {
 	root, cfg := setupConsumeFixture(t)
 	withCwd(t, root, func() {
@@ -601,10 +619,11 @@ func TestTurnEndForgetsTheLastBlockWhenClearAndHandRunsReadNoStdin(t *testing.T)
 		restore := hookStdin
 		t.Cleanup(func() { hookStdin = restore })
 		hookStdin = func() *os.File {
-			t.Error("a hand-run turn-end read hook stdin")
+			t.Error("a text-mode turn-end read hook stdin")
 			return os.Stdin
 		}
-		if _, err := captureStdout(t, func() error { return cmdTurnEnd([]string{"--as", "bob", "--json"}) }); err != nil {
+		// Text mode is the hand-run form: it never reads stdin.
+		if _, err := captureStdout(t, func() error { return cmdTurnEnd([]string{"--as", "bob"}) }); err != nil {
 			t.Fatalf("clear turn-end: %v", err)
 		}
 		if _, err := os.Stat(turnEndLastBlockFile(cfg, "bob")); !os.IsNotExist(err) {
@@ -663,7 +682,7 @@ func TestTurnEndRepeatedBlockIsScopedToTheTurnAndSession(t *testing.T) {
 		}
 		stop := func(session string, active bool) error {
 			stopInput(t, fmt.Sprintf(`{"hook_event_name":"Stop","session_id":%q,"stop_hook_active":%v}`, session, active))
-			_, _, err := captureStdoutStderr(t, func() error { return cmdTurnEnd([]string{"--as", "bob", "--claude-hook", "Stop"}) })
+			_, _, err := captureStdoutStderr(t, func() error { return cmdTurnEnd([]string{"--as", "bob", "--json"}) })
 			return err
 		}
 		if err := stop("s1", false); err != errBlocked {
@@ -896,5 +915,117 @@ func TestBodyFileSwappedAfterTheCheckIsRefused(t *testing.T) {
 	body, err := readSendBodyFile(cfg, link, "bob")
 	if err == nil || strings.Contains(body, "secret") {
 		t.Fatalf("a body file swapped after the check was read: body=%q err=%v", body, err)
+	}
+}
+
+// claudeBashRuleMatches is Claude Code's Bash(...) rule match for the rule
+// shapes the template uses: `*` matches any run of characters, the pattern
+// matches the whole command, and a trailing `:*` is a prefix match.
+func claudeBashRuleMatches(rule, command string) bool {
+	pattern := strings.TrimSuffix(strings.TrimPrefix(rule, "Bash("), ")")
+	if prefix, ok := strings.CutSuffix(pattern, ":*"); ok {
+		return command == prefix || strings.HasPrefix(command, prefix+" ")
+	}
+	re := "^" + strings.Join(func() []string {
+		parts := strings.Split(pattern, "*")
+		for i := range parts {
+			parts[i] = regexp.QuoteMeta(parts[i])
+		}
+		return parts
+	}(), ".*") + "$"
+	return regexp.MustCompile(re).MatchString(command)
+}
+
+// Deny rules apply even in bypass-permissions mode, so they must hit only
+// the flag that runs a program, never an ordinary command a lane types
+// (claude-code review of #226).
+func TestClaudeTemplateDenyRulesHitOnlyTheDangerousFlags(t *testing.T) {
+	tmpl, err := fs.ReadFile(hooksFS, claudeHook(t).Src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deny := stringList(decodeSettings(t, tmpl)["permissions"].(map[string]any)["deny"])
+	denied := func(cmd string) bool {
+		for _, rule := range deny {
+			if claudeBashRuleMatches(rule, cmd) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, cmd := range []string{
+		"go test -exec sh ./...",
+		"go test ./... -exec=/tmp/x",
+		"go test --exec 'sh -c id' ./...",
+		"go build -toolexec 'sh -c id' ./...",
+		"go build -toolexec=/tmp/x ./...",
+		"go vet -vettool=/tmp/x ./...",
+		"go vet --vettool /tmp/x ./...",
+		"git diff --output=/tmp/x",
+		"git log -p --output /tmp/x",
+		"git fetch --upload-pack='sh -c id' origin",
+		"git fetch origin --upload-pack=/tmp/x",
+	} {
+		if !denied(cmd) {
+			t.Errorf("not denied: %s", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		"go build ./cmd/exec-server",
+		"go test ./... -run 'TestFoo-exec'",
+		"go test -run TestExec ./...",
+		"go test ./internal/cli -run TestGuard -v",
+		"go vet ./...",
+		"git format-patch --output-directory out HEAD~2",
+		"git diff --output-indicator-new=+",
+		"git log --oneline -5",
+		"git fetch origin",
+		"git status",
+	} {
+		if denied(cmd) {
+			t.Errorf("an ordinary command is denied: %s", cmd)
+		}
+	}
+	// The matcher itself: prefix rules and globs behave as documented.
+	if !claudeBashRuleMatches("Bash(git status:*)", "git status --short") || claudeBashRuleMatches("Bash(git status:*)", "git statusx") {
+		t.Fatal("prefix-rule model is wrong")
+	}
+}
+
+// The Claude template's hook COMMANDS stay ones every installed binary since
+// v1.6.2 understands: a repo pull that lands before the binary update must
+// not break a running lane's hooks (claude-code review of #226).
+func TestClaudeTemplateCommandsRunOnOlderBinaries(t *testing.T) {
+	tmpl, err := fs.ReadFile(hooksFS, claudeHook(t).Src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(tmpl, &v); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"} {
+		for _, g := range v.Hooks[event] {
+			for _, h := range g.Hooks {
+				got = append(got, h.Command)
+			}
+		}
+	}
+	want := []string{
+		"${AGENTCHUTE_BIN:-agentchute} boot --context-only",
+		"${AGENTCHUTE_BIN:-agentchute} self-check --quiet",
+		"${AGENTCHUTE_BIN:-agentchute} pending --claude-hook UserPromptSubmit",
+		"${AGENTCHUTE_BIN:-agentchute} guard --pre-tool-use",
+		"${AGENTCHUTE_BIN:-agentchute} turn-end --json",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("hook commands changed:\n%s", strings.Join(got, "\n"))
 	}
 }

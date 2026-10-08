@@ -49,6 +49,10 @@ func TestMain(m *testing.M) {
 	// absolute root exposes the identical layout and stays valid across chdirs.
 	hooksFS = os.DirFS(root)
 
+	// Hooks read no real stdin under test: `go test`'s own stdin may be an
+	// open pipe, and rows that need hook input install it (hookStdin).
+	hookStdin = func() *os.File { return nil }
+
 	if err := os.Chdir(root); err != nil {
 		panic("cli test setup: chdir to repo root: " + err.Error())
 	}
