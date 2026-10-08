@@ -356,6 +356,11 @@ func evaluateGuardDecision(cfg *loop.Config, agentID, session, toolCmd string) g
 // its argument text is not shell syntax, so deny-list words in a quoted body
 // are inert. The exception fails closed on compound or expandable shell syntax.
 func guardCommandDenied(toolCmd string) bool {
+	// Enforce the work budget before any whole-input scan, including the send
+	// exemption and case folding. Oversized input must cost constant time.
+	if len(toolCmd) > guardHubBudget {
+		return true
+	}
 	if strings.HasPrefix(toolCmd, guardApplyPatchPrefix) {
 		// codex apply_patch: a dedicated path predicate over the cleaned
 		// targets, never the substring matcher and never the diff body.
