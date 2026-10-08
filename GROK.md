@@ -63,10 +63,11 @@ Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGEN
 
 ## Grok-Specific Notes
 
+- **Grok does not load this file.** `grok inspect` (grok 1.0.46, checked 2026-10-08 in this repo) lists `AGENTS.md` and `CLAUDE.md` as its project instructions, not `GROK.md`. A rule a grok lane must follow belongs in `AGENTS.md`; this file adds notes for whoever reads it.
 - **Startup/enrollment runs through the `ac` dispatcher, not lifecycle hooks.** The grok CLI (1.0.46) does have hooks, and by default scans this repo's `.claude/settings.json`; `ac serve grok` disables that scan (`GROK_CLAUDE_HOOKS_ENABLED=0`) so the lane is truly hookless as this file assumes — a grok started by hand would run claude-code's Stop hook and archive mail on its schedule. So `agentchute setup --wrappers grok` installs the `ac` dispatcher and `ac serve grok` routes through `agentchute serve` to enroll you — there is no hook install. setup still installs the `ac` dispatcher for grok precisely because no lifecycle hook can run startup enrollment. `agentchute hooks install` has no grok target by design.
 - Treat `AGENTCHUTE.md` as the wire-contract source of truth. If code behavior and spec text disagree, surface the mismatch before patching.
-- Standard pre-commit ritual from `AGENTS.md`: `gofmt -w .`, `go vet ./...`, `go test ./...`, `go build ./...`.
-- Use `.agentchute/loop/` for coordination. Check your inbox at turn start, archive consumed messages, and reply through agentchute or the documented file protocol.
+- Pre-commit ritual: `AGENTS.md` rule 4, run through `tools/test.sh` (all six steps, `-race` and the conformance module included, with `AGENTCHUTE_*` stripped).
+- Use `.agentchute/loop/` for coordination. Run `agentchute check` at turn start, reply with `agentchute send --reply-to`, and — because this lane is hookless — run `agentchute ack` yourself to commit what you handled. Do not hand-archive mail.
 
 See `AGENTS.md` for the working rules.
 

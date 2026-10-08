@@ -63,7 +63,7 @@ Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGEN
 
 ## Tool-Specific Notes
 
-- **Communication Style**: Adopt the style defined in `AGENTS.md` §7 (terse, objective, lead with answer, no filler).
+- **Communication Style**: Adopt the style in `AGENTS.md` working rule 7 (terse, objective, lead with answer, no filler).
 - **CLI Quirks**: You operate in a monospaced CLI environment. Keep responses high-signal and low-filler.
 - **Methodology**: Follow the working rules in `AGENTS.md`; for review-shaped tasks, lead with file:line citations and severity-ordered findings.
 
@@ -79,7 +79,7 @@ Hand-protocol path (no binary, manual inbox/archive): see [`AGENTCHUTE.md`](AGEN
 > Self-description (interests, working style, etc.) belongs in this agent's
 > registration body — `agentchute register --bio "..."` — not in the wrapper
 > file. Wrappers are read by peers, and peers MUST NOT route work by declared
-> capability (§7.1 / §12). Anything that reads like a capability
+> capability (`AGENTCHUTE.md` §12). Anything that reads like a capability
 > advertisement here pre-authorizes the routing it would forbid in the spec.
 
 ## Communication profile — reference & reminder
