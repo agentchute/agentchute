@@ -1,6 +1,7 @@
 package op
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,11 +11,81 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// ClaimReq is `check`'s state half. Limit 0 means no limit; NoArchive is the
-// dry run — display in place, no claim, no quarantine, no owed discharge.
+// DefaultClaimBudgetBytes bounds the rendered bytes one `check` claims (C1).
+// Every harness truncates tool output, and some cut the MIDDLE: codex 0.161
+// keeps 10,000 tokens (~40 KB) with the middle removed, Claude Code inlines
+// ~30,000 chars and past that hands the model a 2,000-char preview. A message
+// the model never saw must never be archived as handled, so a batch has to fit
+// INSIDE the smallest window with room for the residue redelivered ahead of it
+// and the status lines around it: 12 KiB rendered is ~3k tokens, a third of
+// the tightest budget. The runner re-cues while the inbox is non-empty, so a
+// batch that stops early costs one more check, never a message.
+const DefaultClaimBudgetBytes = 12 << 10
+
+// renderedMessageOverhead is an UPPER bound on what the CLI renderer adds
+// around one body, per message: the stale banner (~150 bytes incl. the
+// sender), the REDELIVERED header (~90 bytes + filename), the blank-line
+// framing, the reply-required command line (~80 bytes + agent id + sender +
+// the reply ref, which is the filename plus the recipient id), and the budget
+// status line itself. The recipient id appears twice in the reply line
+// (`--from <id>` and `to-<id>_` in the ref) and agent ids have no length cap,
+// so it is counted twice explicitly. Bounded generously per filename because the ids inside
+// the ref and header scale with it; a cli test (TestCheckBudgetBoundCoversRenderer)
+// pins that the real renderer never exceeds the estimate.
+const renderedMessageOverhead = 512
+
+func renderedSize(recipient string, msg loop.Message, content []byte) int {
+	return len(content) + 3*len(msg.Filename) + 2*len(recipient) + renderedMessageOverhead
+}
+
+// ClaimReq is `check`'s state half. Limit 0 means no limit; BudgetBytes 0
+// means DefaultClaimBudgetBytes and a negative value lifts the budget;
+// NoArchive is the dry run — display in place, no claim, no quarantine, no
+// owed discharge.
+//
+// ServeToken is the caller's AGENTCHUTE_SERVE_TOKEN, and Unfenced skips the
+// consume fence; see consumeFence.
 type ClaimReq struct {
-	Limit     int  `json:"limit,omitempty"`
-	NoArchive bool `json:"no_archive,omitempty"`
+	Limit       int    `json:"limit,omitempty"`
+	BudgetBytes int    `json:"budget_bytes,omitempty"`
+	NoArchive   bool   `json:"no_archive,omitempty"`
+	ServeToken  string `json:"serve_token,omitempty"`
+	Unfenced    bool   `json:"-"`
+
+	beforeMutation func() // test-only, invocation-scoped
+}
+
+func (r ClaimReq) budget() int {
+	if r.BudgetBytes == 0 {
+		return DefaultClaimBudgetBytes
+	}
+	return r.BudgetBytes
+}
+
+// quarantineUnreadable is C2: a file ReadFileLimit refused — over
+// MaxInboxMessageBytes, or unreadable — is quarantined like a malformed
+// filename (§11.1) instead of stopping every future check at it. Under the
+// dry run it is only reported. A quarantine that itself fails returns an
+// error: the caller stops claiming, and what it already claimed stays claimed.
+// The move itself runs under the consume fence (fenced), like every other
+// quarantine and claim (#211).
+func quarantineUnreadable(cfg *loop.Config, agentID string, msg loop.Message, readErr error, noArchive bool, now time.Time, fenced func(func() error) error, sum *ClaimSummary, emit func(Event) error) error {
+	if noArchive {
+		return emit(NewNoteEvent(NoteWarn, fmt.Sprintf("%s cannot be read (%v); --no-archive suppressed §11 quarantine", msg.Filename, readErr)))
+	}
+	var quarantined string
+	var qerr error
+	if ferr := fenced(func() error {
+		quarantined, qerr = loop.QuarantineInboxFile(msg.Path, cfg.MalformedDir(), agentID, now)
+		return nil
+	}); ferr != nil {
+		return ferr
+	}
+	if qerr != nil {
+		return fmt.Errorf("read message %s: %v; quarantine also failed: %w — nothing further claimed", msg.Path, readErr, qerr)
+	}
+	sum.Quarantined++
+	return emit(NewNoteEvent(NoteWarn, fmt.Sprintf("quarantined %s (unreadable or over %d bytes: %v) -> %s", msg.Filename, loop.MaxInboxMessageBytes, readErr, quarantined)))
 }
 
 // ClaimSummary is counts only (D2). Everything unbounded left as events.
@@ -60,6 +131,18 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 	if err := requireRegistered(cfg, agentID); err != nil {
 		return sum, err
 	}
+	// The dry run stays the read-only peek an operator can always take.
+	if !req.NoArchive {
+		if err := consumeFence(cfg, agentID, req.ServeToken, req.Unfenced, now); err != nil {
+			return sum, err
+		}
+	}
+
+	// Every mutation below re-checks that fence under the agent lock; the read
+	// above is only the early refusal (fencedMutation).
+	fenced := func(mutate func() error) error {
+		return fencedMutation(cfg, agentID, req.ServeToken, req.Unfenced, req.beforeMutation, mutate)
+	}
 
 	inboxDir := cfg.AgentInboxDir(agentID)
 	msgs, skipped, err := loop.ListInboxMessagesWithSkipped(inboxDir)
@@ -71,7 +154,14 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 	// (file moves), so --no-archive reports and skips it.
 	if !req.NoArchive {
 		for _, name := range skipped {
-			quarantined, qerr := loop.QuarantineInboxFile(filepath.Join(inboxDir, name), cfg.MalformedDir(), agentID, now)
+			var quarantined string
+			var qerr error
+			if ferr := fenced(func() error {
+				quarantined, qerr = loop.QuarantineInboxFile(filepath.Join(inboxDir, name), cfg.MalformedDir(), agentID, now)
+				return nil
+			}); ferr != nil {
+				return sum, ferr
+			}
 			if qerr != nil {
 				if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("failed to quarantine %s: %v", name, qerr))); eerr != nil {
 					return sum, eerr
@@ -108,14 +198,30 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 	// the CLI arms it; this count is how the seam tells it there is residue at
 	// all when the read below fails and no MessageEvent is ever emitted.
 	sum.Redelivered = len(redelivered)
+	// Residue counts toward the budget: a same-session re-check (#206) renders
+	// every uncommitted message again, so new claims come out of what is left.
+	budget := req.budget()
+	used := 0
 	for _, msg := range redelivered {
 		content, err := loop.ReadFileLimit(msg.Path, loop.MaxInboxMessageBytes)
 		if err != nil {
-			return sum, fmt.Errorf("read claimed message %s: %w", msg.Path, err)
+			// Residue past the size cap can never be displayed: quarantine it
+			// (C2). Any other read failure may be transient and the lane is
+			// already holding the message, so the W6 contract stands: error,
+			// claimed-held, and the next check retries it.
+			var tooLarge *loop.FileTooLargeError
+			if !errors.As(err, &tooLarge) {
+				return sum, fmt.Errorf("read claimed message %s: %w", msg.Path, err)
+			}
+			if qerr := quarantineUnreadable(cfg, agentID, msg, err, req.NoArchive, now, fenced, &sum, emit); qerr != nil {
+				return sum, qerr
+			}
+			continue
 		}
 		if err := emitMessage(emit, agentID, msg, content, true); err != nil {
 			return sum, err
 		}
+		used += renderedSize(agentID, msg, content)
 		// The residue path discharges even under --no-archive, exactly as
 		// today: the shipped loop calls displayConsumed (not the read-only
 		// variant) for redelivered mail regardless of the flag.
@@ -133,9 +239,10 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 		}
 	}
 
-	for _, msg := range msgs {
+	batch := 0 // NEW messages claimed/displayed by this loop; the first is always taken
+	for i, msg := range msgs {
 		if req.Limit > 0 && sum.Claimed >= req.Limit {
-			line := fmt.Sprintf("(reached limit of %d; %d more pending)", req.Limit, len(msgs)-sum.Claimed)
+			line := fmt.Sprintf("(reached limit of %d; %d more pending)", req.Limit, len(msgs)-i)
 			if err := emit(NewNoteEvent(NoteInfo, line)); err != nil {
 				return sum, err
 			}
@@ -143,8 +250,23 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 		}
 		content, err := loop.ReadFileLimit(msg.Path, loop.MaxInboxMessageBytes)
 		if err != nil {
-			return sum, fmt.Errorf("read message %s: %w", msg.Path, err)
+			if qerr := quarantineUnreadable(cfg, agentID, msg, err, req.NoArchive, now, fenced, &sum, emit); qerr != nil {
+				return sum, qerr
+			}
+			continue
 		}
+		// C1: stop BEFORE claiming a message the rendered batch cannot hold.
+		// The first message of a batch is always taken, so a body larger than
+		// the whole budget is delivered rather than starved.
+		if budget > 0 && batch > 0 && used+renderedSize(agentID, msg, content) > budget {
+			line := fmt.Sprintf("(reached budget of %d bytes; %d more pending)", budget, len(msgs)-i)
+			if err := emit(NewNoteEvent(NoteInfo, line)); err != nil {
+				return sum, err
+			}
+			break
+		}
+		used += renderedSize(agentID, msg, content)
+		batch++
 
 		// §11 enforcement on frontmatter. Body-only messages pass through.
 		// Quarantine is a state mutation, so --no-archive suppresses it.
@@ -156,7 +278,14 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 				}
 				continue
 			}
-			quarantined, qerr := loop.QuarantineInboxFile(msg.Path, cfg.MalformedDir(), agentID, now)
+			var quarantined string
+			var qerr error
+			if ferr := fenced(func() error {
+				quarantined, qerr = loop.QuarantineInboxFile(msg.Path, cfg.MalformedDir(), agentID, now)
+				return nil
+			}); ferr != nil {
+				return sum, ferr
+			}
 			if qerr != nil {
 				sum.Claimed++
 				if eerr := emit(NewNoteEvent(NoteWarn, fmt.Sprintf("%s has malformed frontmatter but quarantine failed: %v", msg.Filename, qerr))); eerr != nil {
@@ -184,11 +313,16 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 
 		// CLAIM (phase 1): move inbox -> .claimed, then emit from the claimed
 		// copy. NO archive — that is `ack`, phase 2.
-		claimedPath, cerr := loop.ClaimMessage(msg, claimedDir)
-		if cerr != nil {
-			return sum, fmt.Errorf("claim message %s: %w", msg.Filename, cerr)
+		if err := fenced(func() error {
+			claimedPath, cerr := loop.ClaimMessage(msg, claimedDir)
+			if cerr != nil {
+				return fmt.Errorf("claim message %s: %w", msg.Filename, cerr)
+			}
+			msg.Path = claimedPath
+			return nil
+		}); err != nil {
+			return sum, err
 		}
-		msg.Path = claimedPath
 		sum.Claimed++
 		if err := emitMessage(emit, agentID, msg, content, false); err != nil {
 			return sum, err

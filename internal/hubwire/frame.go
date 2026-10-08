@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 )
 
@@ -13,7 +14,7 @@ const (
 	Version        = 1
 	MinVersion     = 1
 	MaxControlLine = 64 << 10
-	MaxBody        = 4 << 20
+	MaxBody        = loop.MaxInboxMessageBytes // one cap for a body, local or over the wire
 	MaxStatusRows  = 64
 )
 
@@ -86,10 +87,16 @@ type OwedItem struct {
 	Ref        string    `json:"ref"`
 }
 
+// ServeToken on Check and Ack is a POINTER so the hub can tell a client that
+// predates the consume fence (key absent: the hub serves it unfenced, as
+// before) from a fence-aware client that has no token (key present, empty:
+// refused while the id's serve is live). A current client always sends it.
 type Check struct {
 	RequestBase
-	Limit     int  `json:"limit,omitempty"`
-	NoArchive bool `json:"no_archive,omitempty"`
+	Limit       int     `json:"limit,omitempty"`
+	BudgetBytes int     `json:"budget_bytes,omitempty"` // 0 = the hub's default budget; an older hub ignores it
+	NoArchive   bool    `json:"no_archive,omitempty"`
+	ServeToken  *string `json:"serve_token,omitempty"`
 }
 
 type CheckOK struct {
@@ -100,7 +107,10 @@ type CheckOK struct {
 	OwedExpired int `json:"owed_expired"`
 }
 
-type Ack struct{ RequestBase }
+type Ack struct {
+	RequestBase
+	ServeToken *string `json:"serve_token,omitempty"`
+}
 
 type AckItem struct {
 	ResponseBase

@@ -72,6 +72,9 @@ func cmdAck(args []string) error {
 	if fs.NArg() != 0 {
 		return ackUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
+	if err := requireRunnerAncestry("ack"); err != nil {
+		return err
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -163,14 +166,17 @@ func ackClaimed(cfg *loop.Config, agentID string) ([]ackItem, op.AckSummary, err
 	}
 	var sum op.AckSummary
 	var err error
+	// Fenced like check: a process whose env belongs to another runner may not
+	// commit a live lane's claimed mail (op.consumeFence).
+	req := op.AckReq{ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
 	if cfg.Remote != nil {
 		session, openErr := openRemoteOneShot(cfg, agentID)
 		if openErr != nil {
 			return nil, sum, openErr
 		}
-		sum, err = session.Ack(emit)
+		sum, err = session.Ack(req, emit)
 	} else {
-		sum, err = op.Ack(cfg, op.Context{ActorID: agentID}, op.AckReq{}, emit)
+		sum, err = op.Ack(cfg, op.Context{ActorID: agentID}, req, emit)
 	}
 	if err != nil {
 		return nil, sum, err

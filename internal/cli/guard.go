@@ -268,7 +268,14 @@ func cmdGuard(args []string) error {
 	stdinBody, _ := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 	toolCmd := parseGuardToolCommand(stdinBody)
 
-	decision := evaluateGuardInvocation(agentID, controlRepo, loopDir, toolCmd)
+	// A foreign runner env fails open like every other unresolvable guard state:
+	// the latch it would match belongs to another lane, not this process. The
+	// stderr warning is the only signal a lane gets that its hooks run on
+	// someone else's env.
+	decision := guardDecision{Allowed: true}
+	if warnRunnerAncestry("guard") {
+		decision = evaluateGuardInvocation(agentID, controlRepo, loopDir, toolCmd)
+	}
 
 	switch {
 	case codexHook == "PreToolUse":
