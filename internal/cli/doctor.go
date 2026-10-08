@@ -358,7 +358,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 		checkStaleTempFiles(cfg, opts.Now),
 		checkBinaryOnPath(),
 		checkBinaryIdentity(opts),
-		checkHookFilePresence(cfg, agentID),
+		checkHookFilePresence(cfg, agentID, opts),
 		checkHookContentSanity(cfg),
 		checkWrapperShadowing(cfg, agentID, opts),
 		checkCodexDaemonEnv(cfg, agentID),
@@ -899,7 +899,41 @@ func shimNamesForAgent(agentID string) []string {
 // three paths drifted into being during v2; deleted with the v1.5.0
 // cutover fix).
 
-func checkHookFilePresence(cfg *loop.Config, agentID string) doctorCheck {
+// doctorActingBinaryUnguarded resolves the binary `serve` would launch for
+// agentID's wrapper on pathEnv and reports whether serve launches it
+// UNGUARDED (wrapperSpec.guardedFor): doctor must then neither demand nor
+// byte-check a hook template that binary never reads (codex gate on #213).
+func doctorActingBinaryUnguarded(agentID, pathEnv string) (binary, reason string) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return "", ""
+	}
+	for _, spec := range wrapperSpecs {
+		if !registrationMatchesCanonical(agentID, spec.AgentID) {
+			continue
+		}
+		for _, candidate := range spec.Candidates {
+			resolved, err := resolveExecutableOnPath(candidate, pathEnv)
+			if err != nil {
+				continue
+			}
+			if _, why := spec.guardedFor(resolved); why != "" {
+				return resolved, why
+			}
+			return "", ""
+		}
+	}
+	return "", ""
+}
+
+func checkHookFilePresence(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
+	if bin, why := doctorActingBinaryUnguarded(agentID, opts.PathEnv); why != "" {
+		return doctorCheck{
+			Name:     "hook_file_presence",
+			Severity: severitySkip,
+			Message:  fmt.Sprintf("%s launches unguarded under serve: %s has no hook backend for this binary, so no template is required or checked (%s)", agentID, bin, why),
+		}
+	}
 	present := []string{}
 	presentSet := map[string]bool{}
 	drifted := []string{}

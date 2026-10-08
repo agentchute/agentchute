@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -114,16 +116,54 @@ func codexHookEventKey(event string) string {
 	return b.String()
 }
 
-// codexExpectedTrustKeys lists the trust keys codex records for every hook in
-// hooksPath: one per `<event>:<group>:<index>`, keyed by position.
-func codexExpectedTrustKeys(hooksPath string) ([]string, error) {
+// codexTrustEntry is one hook position with the trust hash codex records
+// for it: key `<hooksPath>:<event>:<group>:<index>`, hash `sha256:<64 hex>`.
+type codexTrustEntry struct {
+	Key  string
+	Hash string
+}
+
+// codexHookTrustHash reproduces codex's trust hash for one hook position
+// (codex-rs/hooks/src/engine/discovery.rs hook_hash +
+// codex-rs/config/src/fingerprint.rs version_for_toml): sha256 over the
+// compact, key-sorted JSON of {event_name, matcher (when the group has one),
+// hooks: [normalized handler]} where the handler is {type:"command", command,
+// async:false, timeout (the file's value, else codex's 600 s default),
+// statusMessage (when set)}. Verified against every entry codex wrote for this
+// repo's installed template (PR #213 gate): all five positions match.
+func codexHookTrustHash(event string, matcher *string, hook map[string]any) string {
+	handler := map[string]any{"type": "command", "async": false}
+	if cmd, ok := hook["command"].(string); ok {
+		handler["command"] = cmd
+	}
+	handler["timeout"] = 600
+	if tmo, ok := hook["timeout"]; ok {
+		handler["timeout"] = tmo
+	}
+	if sm, ok := hook["statusMessage"]; ok {
+		handler["statusMessage"] = sm
+	}
+	identity := map[string]any{"event_name": codexHookEventKey(event), "hooks": []any{handler}}
+	if matcher != nil {
+		identity["matcher"] = *matcher
+	}
+	serialized, _ := json.Marshal(identity) // Go sorts map keys, as sort_all_objects does
+	sum := sha256.Sum256(serialized)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// codexExpectedTrust lists the trust entries codex records for every hook in
+// hooksPath: one per `<event>:<group>:<index>`, keyed by position, with the
+// hash the CURRENT file content yields.
+func codexExpectedTrust(hooksPath string) ([]codexTrustEntry, error) {
 	data, err := os.ReadFile(hooksPath)
 	if err != nil {
 		return nil, err
 	}
 	var file struct {
 		Hooks map[string][]struct {
-			Hooks []json.RawMessage `json:"hooks"`
+			Matcher *string          `json:"matcher"`
+			Hooks   []map[string]any `json:"hooks"`
 		} `json:"hooks"`
 	}
 	if err := json.Unmarshal(data, &file); err != nil {
@@ -134,22 +174,70 @@ func codexExpectedTrustKeys(hooksPath string) ([]string, error) {
 		events = append(events, event)
 	}
 	sort.Strings(events)
-	var keys []string
+	var out []codexTrustEntry
 	for _, event := range events {
 		for g, group := range file.Hooks[event] {
-			for i := range group.Hooks {
-				keys = append(keys, fmt.Sprintf("%s:%s:%d:%d", hooksPath, codexHookEventKey(event), g, i))
+			for i, hook := range group.Hooks {
+				out = append(out, codexTrustEntry{
+					Key:  fmt.Sprintf("%s:%s:%d:%d", hooksPath, codexHookEventKey(event), g, i),
+					Hash: codexHookTrustHash(event, group.Matcher, hook),
+				})
 			}
 		}
+	}
+	return out, nil
+}
+
+// codexExpectedTrustKeys is codexExpectedTrust's keys only.
+func codexExpectedTrustKeys(hooksPath string) ([]string, error) {
+	entries, err := codexExpectedTrust(hooksPath)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(entries))
+	for _, e := range entries {
+		keys = append(keys, e.Key)
 	}
 	return keys, nil
 }
 
-// codexHookTrustMissing returns the expected trust keys for hooksPath that
-// configPath does not record, as `<event>:<group>:<index>`. An unreadable
-// config or hooks file is an error; the caller treats both as "not trusted".
+// codexTrustedHashRE matches the one value a trust table carries.
+var codexTrustedHashRE = regexp.MustCompile(`^\s*trusted_hash\s*=\s*"(sha256:[0-9a-f]{64})"\s*$`)
+
+// codexTrustedHashes reads `[hooks.state."<key>"]` tables from a codex
+// config and returns key -> well-formed trusted_hash. A header with no hash,
+// or a malformed one, yields no entry: codex treats such a position as
+// untrusted (HookTrustStatus::Untrusted), and so do we.
+func codexTrustedHashes(data []byte) map[string]string {
+	trusted := map[string]string{}
+	current := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		if m := codexHooksStateKeyRE.FindStringSubmatch(line); m != nil {
+			current = strings.ReplaceAll(m[1], `\"`, `"`)
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "[") {
+			current = ""
+			continue
+		}
+		if current == "" {
+			continue
+		}
+		if m := codexTrustedHashRE.FindStringSubmatch(line); m != nil {
+			trusted[current] = m[1]
+		}
+	}
+	return trusted
+}
+
+// codexHookTrustMissing returns the positions in hooksPath that configPath
+// does not trust AS INSTALLED, as `<event>:<group>:<index>` (suffixed
+// " (modified)" when a hash is recorded but is not the current content's —
+// codex's HookTrustStatus::Modified, skipped just like Untrusted). An
+// unreadable config or hooks file is an error; the caller treats both as
+// "not trusted".
 func codexHookTrustMissing(configPath, hooksPath string) ([]string, error) {
-	expected, err := codexExpectedTrustKeys(hooksPath)
+	expected, err := codexExpectedTrust(hooksPath)
 	if err != nil {
 		return nil, err
 	}
@@ -157,16 +245,16 @@ func codexHookTrustMissing(configPath, hooksPath string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read codex config: %w", err)
 	}
-	trusted := map[string]bool{}
-	for _, line := range strings.Split(string(data), "\n") {
-		if m := codexHooksStateKeyRE.FindStringSubmatch(line); m != nil {
-			trusted[strings.ReplaceAll(m[1], `\"`, `"`)] = true
-		}
-	}
+	trusted := codexTrustedHashes(data)
 	var missing []string
-	for _, key := range expected {
-		if !trusted[key] {
-			missing = append(missing, strings.TrimPrefix(key, hooksPath+":"))
+	for _, e := range expected {
+		pos := strings.TrimPrefix(e.Key, hooksPath+":")
+		got, ok := trusted[e.Key]
+		switch {
+		case !ok:
+			missing = append(missing, pos)
+		case got != e.Hash:
+			missing = append(missing, pos+" (modified)")
 		}
 	}
 	return missing, nil
