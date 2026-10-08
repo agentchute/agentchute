@@ -35,21 +35,28 @@ var guardWrappers = map[string]bool{"env": true, "command": true, "exec": true, 
 // guardHubInvocation reports whether lower-cased command text runs a guarded
 // hub subcommand anywhere in command position.
 func guardHubInvocation(text string) bool {
-	return guardHubInvocationDepth(text, 0)
+	budget := guardHubBudget
+	return guardHubInvocationDepth(text, 0, &budget)
 }
 
-func guardHubInvocationDepth(text string, depth int) bool {
-	if depth > 8 {
-		return true // pathological nesting: fail closed
+// guardHubBudget bounds the rule's work, counted in bytes lexed plus words
+// examined. Nested text and wrappers multiply the work, and a hook killed for
+// running long lets the command through, so past the budget the rule denies.
+const guardHubBudget = 4 << 20
+
+func guardHubInvocationDepth(text string, depth int, budget *int) bool {
+	*budget -= len(text) + 1
+	if depth > 8 || *budget < 0 {
+		return true // pathological nesting or size: fail closed
 	}
 	commands, nested := guardShellCommands(text)
 	for _, inner := range nested {
-		if guardHubInvocationDepth(inner, depth+1) {
+		if guardHubInvocationDepth(inner, depth+1, budget) {
 			return true
 		}
 	}
 	for _, words := range commands {
-		if guardHubCommand(words, depth) {
+		if guardHubCommand(words, depth, budget) {
 			return true
 		}
 	}
@@ -57,10 +64,10 @@ func guardHubInvocationDepth(text string, depth int) bool {
 }
 
 // guardHubCommand examines one simple command.
-func guardHubCommand(words []string, depth int) bool {
+func guardHubCommand(words []string, depth int, budget *int) bool {
 	for j := 0; j+1 < len(words); j++ {
 		if filepath.Base(words[j]) == "env" && (words[j+1] == "-s" || strings.HasPrefix(words[j+1], "--split-string")) && j+2 < len(words) {
-			if guardHubInvocationDepth(words[j+2], depth+1) {
+			if guardHubInvocationDepth(words[j+2], depth+1, budget) {
 				return true
 			}
 		}
@@ -72,14 +79,25 @@ func guardHubCommand(words []string, depth int) bool {
 	if guardWrappers[filepath.Base(words[i])] {
 		// Which wrapper options take a value differs per wrapper, and the guard
 		// sees lower-cased text, so it does not guess: every later word is
-		// tried as the program.
+		// tried as the program, once each (a wrapper found there adds nothing,
+		// since every word after it is already being tried).
 		for j := i + 1; j < len(words); j++ {
-			if guardHubCommand(words[j:], depth) {
+			if guardHubProgramAt(words[j:], depth, budget) {
 				return true
 			}
 		}
 		return false
 	}
+	return guardHubProgramAt(words[i:], depth, budget)
+}
+
+// guardHubProgramAt examines words[0] as the program of a command.
+func guardHubProgramAt(words []string, depth int, budget *int) bool {
+	*budget -= len(words)
+	if *budget < 0 {
+		return true
+	}
+	i := 0
 	prog := words[i]
 	base := filepath.Base(prog)
 	switch {
@@ -95,7 +113,7 @@ func guardHubCommand(words []string, depth int) bool {
 			switch {
 			case len(w) > 1 && w[0] == '-' && w[1] != '-' && strings.ContainsRune(w[1:], 'c'):
 				if j+1 < len(words) {
-					return guardHubInvocationDepth(words[j+1], depth+1)
+					return guardHubInvocationDepth(words[j+1], depth+1, budget)
 				}
 				return true
 			case w == "--rcfile" || w == "--init-file" || w == "-o" || w == "+o":
@@ -107,10 +125,10 @@ func guardHubCommand(words []string, depth int) bool {
 		}
 		return true
 	case base == "eval":
-		return guardHubInvocationDepth(strings.Join(words[i+1:], " "), depth+1)
+		return guardHubInvocationDepth(strings.Join(words[i+1:], " "), depth+1, budget)
 	case base == "ssh":
 		if cmd := guardSSHRemoteCommand(words[i+1:]); cmd != "" {
-			return guardHubInvocationDepth(cmd, depth+1)
+			return guardHubInvocationDepth(cmd, depth+1, budget)
 		}
 	}
 	return false

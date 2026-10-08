@@ -1,6 +1,10 @@
 package cli
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 // PR #216 gate (codex P2): the hub rule matched text, so routine read-only
 // commands that merely MENTION a hub invocation were denied while mail was
@@ -101,5 +105,28 @@ func TestGuardHubRuleCoversKeywordsRedirectionsAndFedShells(t *testing.T) {
 	// A tool name the guard has never heard of still prefixes the command.
 	if !guardCommandDenied("SomeFutureShellTool agentchute hub join ssh://h/p --as y") {
 		t.Error("an unlisted tool-name prefix hid the invocation")
+	}
+}
+
+// The hub rule's work is bounded: a command built from repeated wrapper,
+// shell or ssh words must not make the hook run long enough to be killed
+// (a killed hook lets the command through). Past its budget it denies.
+func TestGuardHubRuleWorkIsBounded(t *testing.T) {
+	for _, cmd := range []string{
+		strings.Repeat("env ", 60) + "true",
+		"env " + strings.Repeat("ssh h ", 60) + "true",
+		"env " + strings.Repeat("sh -c ", 60) + "true",
+		strings.Repeat("timeout 1 nice ", 40) + strings.Repeat("eval ", 40) + "true",
+	} {
+		done := make(chan struct{})
+		go func() {
+			guardCommandDenied("Bash " + cmd)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("guard still running after 2s on %d-byte input %.40q...", len(cmd), cmd)
+		}
 	}
 }
