@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -292,6 +293,40 @@ func TestOneShotBootRegisterSweepsHubSide(t *testing.T) {
 	}
 	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
 		t.Fatalf("stale hub registration still exists: %v", err)
+	}
+}
+
+// The client encodes BudgetBytes and the hub honors it end to end: a default
+// check against four 5,000-byte messages claims two; a -1 (what the CLI sends
+// for --budget-bytes 0) claims the rest in one go.
+func TestOneShotCheckCarriesBudgetToTheHub(t *testing.T) {
+	h := newHarness(t)
+	h.register("codex", "openai")
+	h.register("claude-code", "anthropic")
+	for i := 0; i < 4; i++ {
+		if _, err := h.session("codex").Send(op.SendReq{To: "claude-code", Content: loop.ComposeMessage("codex", "", strings.Repeat("x", 5000))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(req op.ClaimReq) (op.ClaimSummary, int) {
+		t.Helper()
+		n := 0
+		sum, err := h.session("claude-code").Check(req, func(ev op.Event) error {
+			if ev.Message != nil && !ev.Message.Redelivered {
+				n++
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sum, n
+	}
+	if sum, n := count(op.ClaimReq{}); sum.Claimed != 2 || n != 2 {
+		t.Fatalf("default budget over the wire: claimed=%d messages=%d, want 2/2", sum.Claimed, n)
+	}
+	if sum, n := count(op.ClaimReq{BudgetBytes: -1}); sum.Claimed != 2 || n != 2 || sum.Redelivered != 2 {
+		t.Fatalf("unbounded budget over the wire: %+v messages=%d, want the remaining 2 (plus 2 redelivered)", sum, n)
 	}
 }
 

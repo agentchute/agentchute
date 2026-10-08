@@ -166,12 +166,16 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 		// device (TTY), send an empty body and let the caller pass --body
 		// explicitly if they want content.
 		if info, err := sendStdin.Stat(); err == nil && (info.Mode()&os.ModeCharDevice) == 0 {
-			bodyBytes, err := io.ReadAll(sendStdin)
+			body, err = readBodyCapped(sendStdin, "stdin")
 			if err != nil {
-				return fmt.Errorf("read body from stdin: %w", err)
+				return err
 			}
-			body = string(bodyBytes)
 		}
+	}
+	// C2: a body the reader would quarantine is refused here, whatever its
+	// source (--body, --body-file, stdin), before any preflight or delivery.
+	if len(body) > loop.MaxSendBodyBytes {
+		return sendBodyTooLarge(fmt.Sprintf("body is %d bytes", len(body)))
 	}
 	rawBody := body
 
@@ -206,6 +210,12 @@ func cmdSendWithOp(args []string, send sendOperation) error {
 	content := loop.ComposeMessage(fromID, replyTo, body)
 	if ask {
 		content = applyReplyRequiredFrontmatter(content)
+	}
+	// The check that holds: the body cap above is the friendly early error,
+	// but the recipient's reader measures the whole file — envelope included —
+	// against MaxInboxMessageBytes, and `--reply-to` is unbounded.
+	if len(content) > loop.MaxInboxMessageBytes {
+		return fmt.Errorf("message is %d bytes with its envelope (in_reply_to and the --ask heading count); the inbox message limit is %d — a larger message would be quarantined unread by the recipient, so shorten the body", len(content), loop.MaxInboxMessageBytes)
 	}
 
 	// Land the message under a new timestamp+random-suffix identity (v2.5 plan
@@ -659,11 +669,39 @@ func readSendBodyFile(cfg *loop.Config, path string) (string, error) {
 	if err := rejectLoopStateBodyFile(cfg, path); err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(path)
+	// Refuse by size before reading a byte of it: a multi-GB file must not be
+	// buffered to learn it is too big.
+	if info.Size() > loop.MaxSendBodyBytes {
+		return "", sendBodyTooLarge(fmt.Sprintf("--body-file %s is %d bytes", path, info.Size()))
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("--body-file: %w", err)
 	}
+	defer f.Close()
+	body, err := readBodyCapped(f, "--body-file")
+	if err != nil {
+		return "", err
+	}
+	return body, nil
+}
+
+// readBodyCapped reads a body source through a limit of one byte past the
+// cap, so an oversized stdin or file is refused at the cap instead of being
+// buffered whole first.
+func readBodyCapped(r io.Reader, source string) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(r, loop.MaxSendBodyBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read body from %s: %w", source, err)
+	}
+	if len(data) > loop.MaxSendBodyBytes {
+		return "", sendBodyTooLarge(fmt.Sprintf("body from %s exceeds the cap", source))
+	}
 	return string(data), nil
+}
+
+func sendBodyTooLarge(what string) error {
+	return fmt.Errorf("%s; the cap is %d (the %d-byte inbox message limit minus %d bytes of envelope headroom) — a larger message would be quarantined unread by the recipient, so split it or send a path to the file instead", what, loop.MaxSendBodyBytes, loop.MaxInboxMessageBytes, loop.SendFrontmatterHeadroom)
 }
 
 // rejectLoopStateBodyFile refuses a --body-file path that resolves inside the

@@ -294,7 +294,7 @@ func (s *hubSession) dispatch(raw hubwire.RawFrame) (bool, error) {
 		if err := raw.Decode(&req); err != nil {
 			return true, s.writeError(raw.ID, err)
 		}
-		sum, err := op.Claim(s.cfg, s.ctx, op.ClaimReq{Limit: req.Limit, NoArchive: req.NoArchive, ServeToken: derefToken(req.ServeToken), Unfenced: req.ServeToken == nil}, s.emitter(raw.ID, false))
+		sum, err := op.Claim(s.cfg, s.ctx, op.ClaimReq{Limit: req.Limit, BudgetBytes: req.BudgetBytes, NoArchive: req.NoArchive, ServeToken: derefToken(req.ServeToken), Unfenced: req.ServeToken == nil}, s.emitter(raw.ID, false))
 		if err != nil {
 			if sum.Redelivered > 0 {
 				err = &hubwire.ProtocolError{Code: hubwire.CodeFor(err), Msg: err.Error(), ClaimedHeld: true}

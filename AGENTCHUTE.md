@@ -193,7 +193,7 @@ A name that parses as neither grammar is unrecognized: skipped by the lister, qu
 Consumption is at-least-once and split across two verbs:
 
 1. Enumerate and sort inbox messages (per-sender FIFO).
-2. **Check: claim and display.** Re-display every uncommitted claimed message with a REDELIVERED marker, then validate, claim, and display new inbox messages. Residue can belong to an earlier check in this turn or a prior interrupted turn. Each invocation retains the existing limit semantics for new inbox messages. Checking does not archive, clear the guard latch, or refresh registration presence.
+2. **Check: claim and display.** Re-display every uncommitted claimed message with a REDELIVERED marker, then validate, claim, and display new inbox messages. Residue can belong to an earlier check in this turn or a prior interrupted turn. Each invocation retains the existing limit semantics for new inbox messages. Claiming is byte-budgeted: a check stops claiming new messages once the rendered output it has produced would exceed its budget (reference CLI default 12 KiB, `--budget-bytes`; every harness truncates tool output, so a message the model never saw must never reach commit), always claims at least one new message, and reports how many remain pending; the next check (the runner re-cues while the inbox is non-empty) takes the rest. An inbox file the reader cannot read — over the size limit, or unreadable — is quarantined (§11.1) and the check continues; claimed residue past the size limit is quarantined the same way, while any other residue read failure keeps the lane holding it (the check fails, the next check retries it). If a quarantine itself fails the check stops claiming, returns an error, and what it already claimed stays claimed. Checking does not archive, clear the guard latch, or refresh registration presence.
 
 **Re-check during an active turn.** A recipient MAY check again when a new cue or unread/malformed-mail gate result establishes additional inbox work. Handle new messages and recognize already handled identities; handlers remain idempotent because uncommitted residue is replayed. A set guard latch is not evidence that every claimed message was displayed and MUST NOT suppress recovery. A read-only peek does not replace a claiming check. Archival remains the separate commit operation described in step 4 and section 15.
 
@@ -236,7 +236,7 @@ Encoded as optional frontmatter — this section's own flat key:value grammar (b
 Unknown keys are always tolerated (§6.5) — the grammar's strictness is about **shape** (a `:`-bearing key per line, no stray text, no indentation outside a list, no duplicate keys), never about which key names or how many list-item spaces appear.
 
 ### 6.5 Forward compatibility
-Receivers MUST ignore unrecognized frontmatter fields. `from` is required information (§6.4). Conforming v2.5 registrations emit integer `v: 3` in the protocol-version field; the reference CLI renders that value as `v2.5`. Absent `v:` implies a silent legacy/unknown state with no warnings generated. A genuine protocol-version mismatch (where `v:` is present and does not equal 3) surfaces as a diagnostic warning (doctor/status) with pool-wide update/restart guidance, but is never a delivery blocker. Messages MUST be valid UTF-8. The reference CLI accepts up to 4 MiB per message.
+Receivers MUST ignore unrecognized frontmatter fields. `from` is required information (§6.4). Conforming v2.5 registrations emit integer `v: 3` in the protocol-version field; the reference CLI renders that value as `v2.5`. Absent `v:` implies a silent legacy/unknown state with no warnings generated. A genuine protocol-version mismatch (where `v:` is present and does not equal 3) surfaces as a diagnostic warning (doctor/status) with pool-wide update/restart guidance, but is never a delivery blocker. Messages MUST be valid UTF-8. The reference CLI accepts up to 4 MiB per message; an inbox file past that, or one it cannot read, is quarantined to `malformed/` (§11.1) like a malformed name rather than blocking the inbox, and `send` refuses a body that would not fit (4 MiB minus 4 KiB of envelope headroom) with the same constant the hub wire enforces (§13).
 
 ### 6.6 Reply obligations (asker-owned only)
 Reply obligations are **asker-owned only**. The asker's `.owed` ledger is the **sole** reply-obligation mechanism (non-blocking warning + expiry). **Recipients are never blocked at finish by a `reply_required` message** — delivery is best-effort pull, with no forcing function once delivered.
@@ -326,7 +326,7 @@ The liveness-only watchdog and its cooperative-waking step are **removed**. Cros
 Every agent participates in keeping the pool healthy.
 
 ### 11.1 Enforcement action
-Triggers include malformed inbox filenames, unparseable frontmatter, or unparseable peer registrations.
+Triggers include malformed inbox filenames, unparseable frontmatter, inbox files over the size limit or unreadable, or unparseable peer registrations.
 1. **Quarantine**: atomic move to `.agentchute/loop/malformed/`.
 2. **Continue**: do NOT block the sender or the turn.
 

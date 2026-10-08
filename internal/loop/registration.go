@@ -18,6 +18,14 @@ const (
 	MaxRegistrationBytes = 1 << 20 // 1 MiB — registrations are tiny in practice.
 	MaxInboxMessageBytes = 4 << 20 // 4 MiB — free-form markdown bodies.
 
+	// SendFrontmatterHeadroom is what `send` reserves below MaxInboxMessageBytes
+	// for the envelope it composes (from / in_reply_to / reply_required, the
+	// `## ASK` heading): a body of MaxSendBodyBytes always lands as a file a
+	// reader will accept. The wire's body cap is the same constant
+	// (hubwire.MaxBody), so a body is refused by the same rule everywhere.
+	SendFrontmatterHeadroom = 4 << 10
+	MaxSendBodyBytes        = MaxInboxMessageBytes - SendFrontmatterHeadroom
+
 	CurrentProtocolVersion = 3
 )
 
@@ -42,9 +50,21 @@ func ReadFileLimit(path string, max int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > max {
-		return nil, fmt.Errorf("%s: file exceeds %d-byte limit", path, max)
+		return nil, &FileTooLargeError{Path: path, Max: max}
 	}
 	return data, nil
+}
+
+// FileTooLargeError is ReadFileLimit's refusal of a file past its cap. Typed
+// so a reader can tell "can never be read" (quarantine it) from a read error
+// that may be transient (a permissions change).
+type FileTooLargeError struct {
+	Path string
+	Max  int64
+}
+
+func (e *FileTooLargeError) Error() string {
+	return fmt.Sprintf("%s: file exceeds %d-byte limit", e.Path, e.Max)
 }
 
 // Registration is the parsed live agent registration frontmatter plus body.

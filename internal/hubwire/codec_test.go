@@ -160,6 +160,27 @@ func TestUnknownFieldsIgnoredAndMandatoryFieldsEnforced(t *testing.T) {
 	if err := raw.Decode(&hello); err != nil || hello.Agent != "codex" {
 		t.Fatalf("decode = %+v, %v", hello, err)
 	}
+	// check frames in both directions of the budget_bytes compatibility claim:
+	// an older client omits it (0 = the hub's default), a newer client's -1
+	// decodes as -1 (unbounded), and an unknown field never breaks decode.
+	for _, row := range []struct {
+		line string
+		want int
+	}{
+		{`{"t":"check","id":2}` + "\n", 0},
+		{`{"t":"check","id":2,"limit":3,"future":true}` + "\n", 0},
+		{`{"t":"check","id":2,"budget_bytes":-1}` + "\n", -1},
+		{`{"t":"check","id":2,"budget_bytes":6000,"no_archive":true}` + "\n", 6000},
+	} {
+		raw, err := NewReader(strings.NewReader(row.line)).Read()
+		if err != nil {
+			t.Fatalf("%s: %v", row.line, err)
+		}
+		var check Check
+		if err := raw.Decode(&check); err != nil || check.BudgetBytes != row.want {
+			t.Fatalf("%s: decode = %+v, %v (want budget %d)", row.line, check, err, row.want)
+		}
+	}
 	for _, line := range []string{
 		`{"t":"send-ok","re":2,"durability_note":"","owed_note":""}` + "\n",
 		`{"t":"send-ok","re":2,"committed":true,"owed_note":""}` + "\n",

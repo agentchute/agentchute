@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/agentchute/agentchute/internal/loop"
 	"github.com/agentchute/agentchute/internal/op"
 )
 
@@ -13,7 +14,7 @@ const (
 	Version        = 1
 	MinVersion     = 1
 	MaxControlLine = 64 << 10
-	MaxBody        = 4 << 20
+	MaxBody        = loop.MaxInboxMessageBytes // one cap for a body, local or over the wire
 	MaxStatusRows  = 64
 )
 
@@ -92,9 +93,10 @@ type OwedItem struct {
 // refused while the id's serve is live). A current client always sends it.
 type Check struct {
 	RequestBase
-	Limit      int     `json:"limit,omitempty"`
-	NoArchive  bool    `json:"no_archive,omitempty"`
-	ServeToken *string `json:"serve_token,omitempty"`
+	Limit       int     `json:"limit,omitempty"`
+	BudgetBytes int     `json:"budget_bytes,omitempty"` // 0 = the hub's default budget; an older hub ignores it
+	NoArchive   bool    `json:"no_archive,omitempty"`
+	ServeToken  *string `json:"serve_token,omitempty"`
 }
 
 type CheckOK struct {
