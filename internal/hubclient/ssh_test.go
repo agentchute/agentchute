@@ -1,7 +1,6 @@
 package hubclient
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -209,7 +208,7 @@ func TestClassifySSHFailureCodes(t *testing.T) {
 			waitCh := make(chan error, 1)
 			waitCh <- tt.waitErr
 			transport := &processTransport{
-				stdin: stdin, stderr: *bytes.NewBufferString(tt.stderr),
+				stdin: stdin, stderr: tailCapWriter{buf: []byte(tt.stderr), limit: transportStderrLimit},
 				cancel: func() {}, waitCh: waitCh, closeDone: make(chan struct{}),
 			}
 			got := classifySSHFailure(remote, "codex", tt.stage, errors.New("transport failed"), transport)
@@ -266,7 +265,7 @@ func TestUnauthorizedIncludesReadyToPasteAuthorization(t *testing.T) {
 	waitCh := make(chan error, 1)
 	waitCh <- nil
 	transport := &processTransport{
-		stdin: stdin, stderr: *bytes.NewBufferString("Permission denied (publickey)."),
+		stdin: stdin, stderr: tailCapWriter{buf: []byte("Permission denied (publickey)."), limit: transportStderrLimit},
 		cancel: func() {}, waitCh: waitCh, closeDone: make(chan struct{}),
 	}
 	got := classifySSHFailure(remote, "codex", "connect", errors.New("transport failed"), transport)

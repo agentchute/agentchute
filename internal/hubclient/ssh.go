@@ -1,7 +1,6 @@
 package hubclient
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,6 +20,10 @@ import (
 )
 
 const (
+	// transportStderrLimit caps how much of ssh's stderr a transport keeps. The
+	// tail is what classification reads (host-key, permission, exit-127 text).
+	transportStderrLimit = 64 << 10
+
 	controlPathByteBudget = 100
 	controlPathTokenWidth = 64
 	muxIsolationKeyWidth  = 12
@@ -252,7 +255,7 @@ type processTransport struct {
 	cmd       *exec.Cmd
 	stdin     *os.File
 	stdout    *os.File
-	stderr    bytes.Buffer
+	stderr    tailCapWriter
 	cancel    context.CancelFunc
 	waitCh    chan error
 	closeOnce sync.Once
@@ -306,7 +309,10 @@ func startProcessTransport(cmd *exec.Cmd, cancel context.CancelFunc) (*processTr
 	}
 	cmd.Stdin = childStdin
 	cmd.Stdout = childStdout
-	p := &processTransport{cmd: cmd, stdin: stdin, stdout: stdout, cancel: cancel, waitCh: make(chan error, 1), closeDone: make(chan struct{})}
+	// A capped tail, not the whole stream: a channel lives as long as its lane,
+	// and an unbounded buffer let a chatty or hostile hub grow it without limit
+	// (review 2026-10-08, S11).
+	p := &processTransport{cmd: cmd, stdin: stdin, stdout: stdout, stderr: tailCapWriter{limit: transportStderrLimit}, cancel: cancel, waitCh: make(chan error, 1), closeDone: make(chan struct{})}
 	cmd.Stderr = &p.stderr
 	startErr := cmd.Start()
 	// Load-bearing, on BOTH paths, and not a belt-and-braces double close.
