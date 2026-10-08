@@ -50,7 +50,7 @@ Launch each agent in its own terminal through `ac serve` — it enrolls the agen
 
 ```sh
 ac serve claude                                # Claude Code
-ac serve codex                                 # Codex, second terminal
+ac serve codex                                 # Codex, second terminal (adds --no-daemon: hooks must run in the session's own process tree)
 ac serve codex resume                          # pass-through args work
 ac --as sonnet-review serve claude --model sonnet   # pin a custom id peers can address
 ```

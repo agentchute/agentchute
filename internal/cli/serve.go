@@ -191,6 +191,16 @@ func cmdServe(args []string) error {
 	if err := refreshWrapperHook(cfg.ControlRepo, launchedWrapper); err != nil {
 		return fmt.Errorf("serve: refresh %s hook: %w", launchedWrapper, err)
 	}
+	// Last step before launch, for both launch forms (`ac serve codex ...`
+	// re-execs into here; `agentchute serve -- codex ...` arrives directly):
+	// add codex's --no-daemon when the installed codex advertises it. After
+	// every refusal above, so the `codex --help` probe never runs a wrapper
+	// serve is not going to launch.
+	var spec wrapperSpec
+	opts.WrapperArgs, spec = serveWrapperArgs(opts.WrapperArgs)
+	if spec.Key == "codex" && !dispatchHasFlag(opts.WrapperArgs[1:], codexNoDaemonFlag) {
+		fmt.Fprintf(os.Stderr, "warning: %s does not advertise %s; its shared app-server daemon hosts hooks under the FIRST serve's env (see doctor's codex_daemon_env)\n", opts.WrapperArgs[0], codexNoDaemonFlag)
+	}
 	return runWrapper(cfg, opts, cwd)
 }
 

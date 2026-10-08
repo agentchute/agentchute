@@ -35,6 +35,8 @@ Known wrappers and their canonical IDs:
 
 `ac serve <wrapper>` uses the wrapper's canonical ID when neither `--as` nor `AGENTCHUTE_AGENT_ID` is set. A second lane with that ID refuses to start; give every additional lane its own explicit ID, for example `ac --as claude-l2 serve claude`.
 
+codex 0.161+ runs sessions on a shared per-user `app-server --managed-daemon` whose children (hooks, shell commands) inherit the FIRST launching serve's identity and token, so `serve` passes codex `--no-daemon` when the installed codex advertises it (never duplicated if you pass it yourself). `doctor`'s `codex_daemon_env` check warns when a running daemon is pinned to a stale token or another pool; stop it with `codex app-server daemon stop` and relaunch.
+
 **Identity precedence** (the reference CLI resolves your `agent_id` in this exact order, first match wins):
 
 1. `--as <id>` / `--from <id>` flag
