@@ -295,3 +295,72 @@ func TestClaimReqBudgetDefaults(t *testing.T) {
 		t.Fatalf("explicit budget = %d", got)
 	}
 }
+
+// Residue counts toward the budget: a re-check that redelivers 10 KB of
+// uncommitted mail has little left for new claims, so output cannot grow
+// without bound across same-session re-checks. The first new message is
+// still always taken.
+func TestClaimBudgetCountsResidue(t *testing.T) {
+	cfg := newPool(t)
+	enroll(t, cfg, "claude-code")
+	enroll(t, cfg, "codex")
+	deliver(t, cfg, "codex", "claude-code", bodyOf(5000))
+	if _, err := Claim(cfg, Context{ActorID: "claude-code"}, ClaimReq{}, (&collector{}).emit); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		deliver(t, cfg, "codex", "claude-code", bodyOf(5000))
+	}
+
+	var c collector
+	sum, err := Claim(cfg, Context{ActorID: "claude-code"}, ClaimReq{}, c.emit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Residue ~5.7 KB + one new ~5.7 KB fits 12 KiB; a second new would not.
+	if sum.Redelivered != 1 || sum.Claimed != 1 {
+		t.Fatalf("re-check = %+v, want 1 redelivered / 1 claimed", sum)
+	}
+	if infos := c.notes(NoteInfo); len(infos) == 0 || infos[0] != "(reached budget of 12288 bytes; 2 more pending)" {
+		t.Fatalf("budget line = %q", infos)
+	}
+
+	// Five re-checks in a row: residue grows by at most one message each
+	// time, never by the whole inbox.
+	for i := 0; i < 5; i++ {
+		for j := 0; j < 3; j++ {
+			deliver(t, cfg, "codex", "claude-code", bodyOf(5000))
+		}
+		var again collector
+		sum, err := Claim(cfg, Context{ActorID: "claude-code"}, ClaimReq{}, again.emit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sum.Claimed != 1 {
+			t.Fatalf("re-check %d claimed %d, want exactly the one first-message exception", i, sum.Claimed)
+		}
+	}
+}
+
+// The limit line counts what is left by list position, so a quarantined
+// entry ahead of the limit is not reported as pending.
+func TestClaimLimitPendingIgnoresQuarantined(t *testing.T) {
+	cfg := newPool(t)
+	enroll(t, cfg, "claude-code")
+	enroll(t, cfg, "codex")
+	writeOversize(t, cfg.AgentInboxDir("claude-code"))
+	deliver(t, cfg, "codex", "claude-code", "one")
+	deliver(t, cfg, "codex", "claude-code", "two")
+
+	var c collector
+	sum, err := Claim(cfg, Context{ActorID: "claude-code"}, ClaimReq{Limit: 1}, c.emit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Quarantined != 1 || sum.Claimed != 1 {
+		t.Fatalf("summary = %+v", sum)
+	}
+	if infos := c.notes(NoteInfo); len(infos) == 0 || infos[0] != "(reached limit of 1; 1 more pending)" {
+		t.Fatalf("limit line = %q, want 1 more pending (the quarantined file is not pending)", infos)
+	}
+}

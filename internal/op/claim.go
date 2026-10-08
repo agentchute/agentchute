@@ -22,9 +22,19 @@ import (
 // batch that stops early costs one more check, never a message.
 const DefaultClaimBudgetBytes = 12 << 10
 
-// renderedMessageOverhead approximates the header, separators and reply-ref
-// line the renderer adds around one body.
-const renderedMessageOverhead = 192
+// renderedMessageOverhead is an UPPER bound on what the CLI renderer adds
+// around one body, per message: the stale banner (~150 bytes incl. the
+// sender), the REDELIVERED header (~90 bytes + filename), the blank-line
+// framing, the reply-required command line (~80 bytes + agent id + sender +
+// the reply ref, which is the filename plus the recipient id), and the budget
+// status line itself. Bounded generously per filename because the ids inside
+// the ref and header scale with it; a cli test (TestCheckBudgetBoundCoversRenderer)
+// pins that the real renderer never exceeds the estimate.
+const renderedMessageOverhead = 512
+
+func renderedSize(msg loop.Message, content []byte) int {
+	return len(content) + 3*len(msg.Filename) + renderedMessageOverhead
+}
 
 // ClaimReq is `check`'s state half. Limit 0 means no limit; BudgetBytes 0
 // means DefaultClaimBudgetBytes and a negative value lifts the budget;
@@ -41,10 +51,6 @@ func (r ClaimReq) budget() int {
 		return DefaultClaimBudgetBytes
 	}
 	return r.BudgetBytes
-}
-
-func renderedSize(msg loop.Message, content []byte) int {
-	return len(content) + len(msg.Filename) + renderedMessageOverhead
 }
 
 // quarantineUnreadable is C2: a file ReadFileLimit refused — over
@@ -155,6 +161,10 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 	// the CLI arms it; this count is how the seam tells it there is residue at
 	// all when the read below fails and no MessageEvent is ever emitted.
 	sum.Redelivered = len(redelivered)
+	// Residue counts toward the budget: a same-session re-check (#206) renders
+	// every uncommitted message again, so new claims come out of what is left.
+	budget := req.budget()
+	used := 0
 	for _, msg := range redelivered {
 		content, err := loop.ReadFileLimit(msg.Path, loop.MaxInboxMessageBytes)
 		if err != nil {
@@ -174,6 +184,7 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 		if err := emitMessage(emit, agentID, msg, content, true); err != nil {
 			return sum, err
 		}
+		used += renderedSize(msg, content)
 		// The residue path discharges even under --no-archive, exactly as
 		// today: the shipped loop calls displayConsumed (not the read-only
 		// variant) for redelivered mail regardless of the flag.
@@ -191,11 +202,10 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 		}
 	}
 
-	budget := req.budget()
-	used, batch := 0, 0 // rendered bytes and messages claimed/displayed by THIS loop
+	batch := 0 // NEW messages claimed/displayed by this loop; the first is always taken
 	for i, msg := range msgs {
 		if req.Limit > 0 && sum.Claimed >= req.Limit {
-			line := fmt.Sprintf("(reached limit of %d; %d more pending)", req.Limit, len(msgs)-sum.Claimed)
+			line := fmt.Sprintf("(reached limit of %d; %d more pending)", req.Limit, len(msgs)-i)
 			if err := emit(NewNoteEvent(NoteInfo, line)); err != nil {
 				return sum, err
 			}
