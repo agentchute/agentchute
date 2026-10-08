@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
@@ -250,6 +252,54 @@ func probeCodexMemoriesOff(bin string, env []string, help func(string) (string, 
 		return codexMemoriesUnknown, fmt.Sprintf("%s still reports memories on with %s", bin, strings.Join(codexMemoriesArgs, " "))
 	}
 	return codexMemoriesOffWorks, ""
+}
+
+// ---------- codex lifecycle hooks from a foreign thread ----------
+
+// codexHookStdin is where the codex lifecycle hooks read their input. Tests
+// replace it rather than swap the process-wide os.Stdin, which serve's input
+// copier reads.
+var codexHookStdin = func() *os.File { return os.Stdin }
+
+// readHookStdin reads a hook's JSON input. A terminal is never read, and a
+// pipe that stays open is given up on after two seconds.
+func readHookStdin(f *os.File) []byte {
+	if f == nil {
+		return nil
+	}
+	if info, err := f.Stat(); err != nil || info.Mode()&os.ModeCharDevice != 0 {
+		return nil
+	}
+	done := make(chan []byte, 1)
+	go func() {
+		data, _ := io.ReadAll(io.LimitReader(f, 1<<20))
+		done <- data
+	}()
+	select {
+	case data := <-done:
+		return data
+	case <-time.After(2 * time.Second):
+		return nil
+	}
+}
+
+// codexHookFromForeignThread reads a codex lifecycle hook's input (SessionStart,
+// UserPromptSubmit, Stop: codex 0.162 requires `cwd` in each) and reports
+// whether the event comes from a thread whose working directory is outside
+// cfg's control repo. codex memory consolidation runs such a thread inside
+// the lane's own process, with the lane's env, in ~/.codex/memories; its
+// events reach these hooks too. The caller then does nothing: no
+// registration write, no archive, no gate verdict, no context — otherwise
+// turn-end commits the lane's claimed mail mid-turn and pending and the gate
+// feed "unread mail" into the hidden turn (claude-code and grok reviews of
+// #217). Same containment and the same fail-open cases as the guard rule
+// (guardPathWithin): no input, no cwd, an unresolvable cwd, or a remote lane.
+func codexHookFromForeignThread(cfg *loop.Config) (cwd string, foreign bool) {
+	cwd = parseGuardHookCwd(readHookStdin(codexHookStdin()))
+	if cwd == "" || cfg == nil || cfg.Remote != nil || cfg.ControlRepo == "" {
+		return cwd, false
+	}
+	return cwd, !guardPathWithin(cwd, cfg.ControlRepo)
 }
 
 // ---------- doctor: codex_memories ----------

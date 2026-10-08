@@ -739,3 +739,114 @@ func TestCodexFeatureArgs(t *testing.T) {
 		}
 	}
 }
+
+// ---------- codex lifecycle hooks from a foreign thread ----------
+
+// codexHookFeed makes the codex lifecycle hooks read one input with cwd
+// ("" omits the field).
+func codexHookFeed(t *testing.T, event, cwd string) {
+	t.Helper()
+	in := map[string]any{"hook_event_name": event, "session_id": "s", "turn_id": "t"}
+	if cwd != "" {
+		in["cwd"] = cwd
+	}
+	body, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "hook.json")
+	mustWrite(t, path, body)
+	restore := codexHookStdin
+	t.Cleanup(func() { codexHookStdin = restore })
+	codexHookStdin = func() *os.File {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+		return f
+	}
+}
+
+// The memory thread's SessionStart, UserPromptSubmit and Stop reach the lane's
+// hooks too. From a cwd outside the control repo each does nothing; from the
+// lane's cwd, or with no cwd, each does its job (claude-code and grok reviews
+// of #217: turn-end archived the lane's claimed mail, pending injected the
+// unread count, boot registered).
+func TestCodexLifecycleHooksIgnoreAThreadOutsideTheControlRepo(t *testing.T) {
+	memories := filepath.Join(t.TempDir(), ".codex", "memories")
+	if err := os.MkdirAll(memories, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, where := range []string{"memory thread", "lane", "no cwd"} {
+		t.Run(where, func(t *testing.T) {
+			root, cfg := setupConsumeFixture(t)
+			cwd := map[string]string{"memory thread": memories, "lane": root, "no cwd": ""}[where]
+			foreign := where == "memory thread"
+			withCwd(t, root, func() {
+				clearGuardEnv(t)
+				t.Setenv("AGENTCHUTE_RUNNER_PID", "")
+				t.Setenv("AGENTCHUTE_AGENT_ID", "bob")
+				t.Setenv("AGENTCHUTE_CONTROL_REPO", root)
+				t.Setenv("AGENTCHUTE_LOOP_DIR", cfg.LoopDir)
+
+				// pending (UserPromptSubmit): unread mail → context, or nothing.
+				if err := cmdSend([]string{"--from", "alice", "--to", "bob", "--body", "one"}); err != nil {
+					t.Fatal(err)
+				}
+				codexHookFeed(t, "UserPromptSubmit", cwd)
+				out, err := captureStdout(t, func() error {
+					return cmdPending([]string{"--as", "bob", "--codex-hook", "UserPromptSubmit"})
+				})
+				if err != nil {
+					t.Fatalf("pending: %v", err)
+				}
+				if foreign != (strings.TrimSpace(out) == "") {
+					t.Fatalf("pending output = %q, want empty only for the memory thread", out)
+				}
+
+				// turn-end (Stop): the lane's claimed mail is archived, or untouched.
+				if _, err := checkAs(t, "bob"); err != nil {
+					t.Fatal(err)
+				}
+				codexHookFeed(t, "Stop", cwd)
+				out, err = captureStdout(t, func() error {
+					return cmdTurnEnd([]string{"--as", "bob", "--codex-hook", "Stop"})
+				})
+				if err != nil {
+					t.Fatalf("turn-end: %v", err)
+				}
+				claimed, err := os.ReadDir(cfg.AgentClaimedDir("bob"))
+				if err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+				if foreign != (len(claimed) == 1) {
+					t.Fatalf("claimed after Stop = %d, want the claim kept only for the memory thread", len(claimed))
+				}
+				if foreign && out != "" {
+					t.Fatalf("turn-end printed %q for the memory thread", out)
+				}
+
+				// boot (SessionStart): the registration is written, or not.
+				reg := cfg.AgentRegistrationPath("bob")
+				if err := os.Remove(reg); err != nil {
+					t.Fatal(err)
+				}
+				codexHookFeed(t, "SessionStart", cwd)
+				out, err = captureStdout(t, func() error {
+					return cmdBoot([]string{"--as", "bob", "--vendor", "test", "--codex-hook", "SessionStart"})
+				})
+				if err != nil && !errors.Is(err, errBlocked) {
+					t.Fatalf("boot: %v", err)
+				}
+				_, statErr := os.Stat(reg)
+				if foreign != os.IsNotExist(statErr) {
+					t.Fatalf("registration after SessionStart: stat err = %v, want it written except for the memory thread", statErr)
+				}
+				if foreign && out != "" {
+					t.Fatalf("boot printed %q for the memory thread", out)
+				}
+			})
+		})
+	}
+}
