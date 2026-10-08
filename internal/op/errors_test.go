@@ -107,10 +107,10 @@ func TestReExportedSentinelsAreLoopsOwnValues(t *testing.T) {
 	}
 }
 
-// The sentinel set is CLOSED at eight (F6). This reads the package's own source
+// The sentinel set is CLOSED at nine (F6; ErrSenderMismatch joined for S1). This reads the package's own source
 // rather than a hand-kept list, so adding a ninth exported Err* without giving
 // it a CodeFor arm fails here instead of shipping as a silent E_HUB_IO.
-func TestSentinelSetIsClosedAtEight(t *testing.T) {
+func TestSentinelSetIsClosedAtNine(t *testing.T) {
 	want := []string{
 		"ErrFenced",
 		"ErrLeaseHeld",
@@ -120,6 +120,7 @@ func TestSentinelSetIsClosedAtEight(t *testing.T) {
 		"ErrRecipientStale",
 		"ErrRecipientUnknown",
 		"ErrRecipientUnreadable",
+		"ErrSenderMismatch",
 	}
 	got := exportedErrVars(t)
 	sort.Strings(got)

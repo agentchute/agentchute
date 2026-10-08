@@ -1,6 +1,7 @@
 package op
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -32,10 +33,13 @@ const DefaultClaimBudgetBytes = 12 << 10
 // so it is counted twice explicitly. Bounded generously per filename because the ids inside
 // the ref and header scale with it; a cli test (TestCheckBudgetBoundCoversRenderer)
 // pins that the real renderer never exceeds the estimate.
-const renderedMessageOverhead = 512
+const renderedMessageOverhead = 640
 
 func renderedSize(recipient string, msg loop.Message, content []byte) int {
-	return len(content) + 3*len(msg.Filename) + 2*len(recipient) + renderedMessageOverhead
+	// The frame prefixes every body line with "│ " (4 bytes) and adds an end
+	// delimiter naming the file; the begin delimiter carries a nonce.
+	lines := bytes.Count(content, []byte{'\n'}) + 1
+	return len(content) + 4*lines + 4*len(msg.Filename) + 2*len(recipient) + renderedMessageOverhead
 }
 
 // ClaimReq is `check`'s state half. Limit 0 means no limit; BudgetBytes 0
