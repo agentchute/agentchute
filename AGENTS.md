@@ -89,14 +89,14 @@ Hand-protocol path (no binary): see [`AGENTCHUTE.md`](AGENTCHUTE.md) Appendix C.
 
 ## What this is
 
-**agentchute** is a tiny **pull-only** coordination protocol for AI agents: per-recipient inboxes where senders only ever write files and never poke a recipient. A loopless wrapper is supervised by the runner (`agentchute serve`), a per-agent PTY supervisor that polls the agent's own inbox and injects a `check inbox` cue. The reference implementation stores those inboxes as markdown files on a shared filesystem; alternate transports (queues, object stores, HTTP) are protocol-compatible but don't ship in the reference CLI (see [`EXTENSIONS.md`](EXTENSIONS.md)). Small Go codebase, mostly stdlib, with one PTY dependency for the runner. Ships via `go install` and pre-built binaries on GitHub Releases. MIT.
+**agentchute** is a tiny **pull-only** coordination protocol for AI agents: per-recipient inboxes where senders only ever write files and never poke a recipient. A loopless wrapper is supervised by the runner (`agentchute serve`), a per-agent PTY supervisor that polls the agent's own inbox and injects a `check inbox` cue. The reference implementation stores those inboxes as markdown files on a filesystem; a lane on another machine reaches a pool through the OpenSSH hub that ships in the reference CLI since v1.6.0 (`hub join` / `hub authorize`, see [`docs/hub.md`](docs/hub.md)). Other transports (queues, object stores, HTTP) are protocol-compatible but don't ship in the reference CLI (see [`EXTENSIONS.md`](EXTENSIONS.md)). Small Go codebase, mostly stdlib; `go.mod` has two dependencies, `github.com/creack/pty` for the runner's PTY and `golang.org/x/sys` for platform calls. Ships via `go install` and pre-built binaries on GitHub Releases. MIT.
 
 The pitch is intentionally narrow: agents sharing one inbox medium (typically running side-by-side in tmux panes on the reference CLI's shared filesystem — single-host is the tested, supported configuration; a shared network mount across hosts is a shape some pools already run, riding fail-closed compatibility in two specific paths — lease reclaim and wipe's foreign-claim refusal — with no correctness guarantee beyond them, see AGENTCHUTE.md §2 for the precise boundary) get a markdown-based mailbox so they stop copy-pasting handoffs by hand. That's the entire scope.
 
 ## Reading order on first session
 
 1. `README.md` — 2 minutes, orients you. The public-facing pitch and quickstart.
-2. `docs/internal/HANDOFF.md` — current state, pending work, decisions log, what NOT to do. Read this BEFORE touching anything.
+2. `CHANGELOG.md` and `docs/releases/` — what shipped and what is current. `docs/internal/HANDOFF.md` is design history: it was last updated at v1.0.0 (2026-07-02), so its "current state" and release lines are stale. Check installed and remote state yourself rather than trusting either file's snapshot.
 3. `AGENTCHUTE.md` — the protocol spec. Source of truth for any reimplementation.
 4. `EXTENSIONS.md` — community-extension space (cross-folder enrollment, alternate substrates/transports, cross-pool agents); informs which changes belong in the core spec vs. an extension.
 5. `CONTRIBUTING.md` — PR process, style details, scope criteria, bug-report template.
@@ -108,7 +108,7 @@ These rules apply to every agent. They are the discipline that keeps agentchute 
 
 **1. Spec is source of truth.** `AGENTCHUTE.md` defines the wire contract. If a code change implies a spec change, propose the spec change first in its own PR. Don't sneak protocol changes into a code PR.
 
-**2. Intentionally small surface.** No new third-party Go dependencies beyond the existing PTY runner dependency (`github.com/creack/pty`) without strong justification — the bar is high. The pitch is *"a few markdown files and a recipient that polls its own inbox"*; adding layers undermines that.
+**2. Intentionally small surface.** No new third-party Go dependencies beyond the existing two (`github.com/creack/pty` for the runner's PTY, `golang.org/x/sys` for platform calls) without strong justification — the bar is high. The pitch is *"a few markdown files and a recipient that polls its own inbox"*; adding layers undermines that.
 
 **3. Stay in scope.** Only modify files, sections, functions, or lines directly related to the current task. Don't refactor, rename, reorganize, reformat, or "improve" anything that wasn't asked about. If you notice something worth fixing elsewhere, mention it at the end of your response. Do not touch it.
 
@@ -145,7 +145,7 @@ Apply to every response, all contexts:
 ## Style
 
 - Stdlib `flag` for argument parsing. No cobra, no kingpin.
-- Commands are flat files in `internal/cli/` (`register.go`, `send.go`, `check.go`, etc.); the repo root is a thin `main.go` wiring layer. No `cmd/` subdirectory.
+- Commands are flat files in `internal/cli/` (`register.go`, `send.go`, `check.go`, etc.); the repo root is a thin `main.go` wiring layer that also embeds `AGENTCHUTE.md`, `templates/enrollment/` and `examples/hooks/`. No `cmd/` subdirectory. The rest of `internal/`: `op/` (operations shared by the local CLI and the hub), `loop/` (the on-disk pool), `hubclient/` and `hubwire/` (the SSH hub client and its wire format), `runner/`, `spectest/`. `conformance/` is a separate Go module; `integration/sshd/` is the real-sshd suite (build tag `sshd_integration`, run by `tools/sshd-test.sh`).
 - Integration tests > deep unit-test scaffolding.
 - `gofmt -w .` before commit.
 - Comments only when WHY is non-obvious. Don't restate what code does.
@@ -154,7 +154,7 @@ Apply to every response, all contexts:
 
 agentchute dogfoods itself: agents working on agentchute coordinate through agentchute. The loop lives at `.agentchute/loop/`. **The project is the communication boundary**: agents by default only see and talk to peers in the same pool. Enrollment commands are at the top of this file. After enrolling:
 
-- **Each turn:** run `agentchute check --as "$AGENTCHUTE_AGENT_ID"` first (claims + displays). If it says you are not registered, immediately run `agentchute boot --as "$AGENTCHUTE_AGENT_ID" --vendor <vendor>`, then rerun `check`. Process any messages, then `agentchute ack` to commit (the Stop hook does this for you).
+- **Each turn:** run `agentchute check --as "$AGENTCHUTE_AGENT_ID"` first (claims + displays). If it says you are not registered, immediately run `agentchute boot --as "$AGENTCHUTE_AGENT_ID" --vendor <vendor>`, then rerun `check`. Process any messages. Committing them depends on the lane: a guarded lane (claude-code, codex; gemini-cli and agy per their vendor docs, not yet live-verified) leaves it to its end-of-turn hook, which runs `agentchute turn-end` — a manual `ack` is refused while its latch is armed; a hookless lane (grok, which loads this file and not `GROK.md`) runs `agentchute ack` itself.
 - **Sending:** `agentchute send --to <peer> --body ...` from a registered lane, or pass `--from <id>` explicitly (or follow `AGENTCHUTE.md` §6 directly — the binary just makes it ergonomic). Sending only writes the recipient's inbox; it never wakes them.
 - **No watchdog / cooperative waking:** coordination is pull-only. There is no watchdog and no sender-side or cooperative poke — a recipient discovers its own mail via the runner / its native loop, and a dead recipient is detected via stale registration age + the asker's expired `.owed` (not by a liveness daemon). The `watchdog` command was removed.
 - **Gitignore check:** `git check-ignore .agentchute/loop/agents/<your-id>.md` should print the path.
