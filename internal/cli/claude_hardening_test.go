@@ -437,7 +437,7 @@ func TestClaudeTemplatePermissionsArePinned(t *testing.T) {
 	if got := stringList(perms["allow"]); strings.Join(got, "\n") != strings.Join(wantAllow, "\n") {
 		t.Fatalf("allow rules drifted:\n%s", strings.Join(got, "\n"))
 	}
-	wantDeny := []string{"Bash(go *-exec*)", "Bash(go *-toolexec*)", "Bash(go *-vettool*)", "Bash(git *--output*)"}
+	wantDeny := []string{"Bash(go *-exec*)", "Bash(go *-toolexec*)", "Bash(go *-vettool*)", "Bash(git *--output*)", "Bash(git *--upload-pack*)", "Bash(git *--receive-pack*)"}
 	if got := stringList(perms["deny"]); strings.Join(got, "\n") != strings.Join(wantDeny, "\n") {
 		t.Fatalf("deny rules drifted:\n%s", strings.Join(got, "\n"))
 	}
@@ -524,9 +524,9 @@ func stopInput(t *testing.T, body string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "stop.json")
 	mustWrite(t, path, []byte(body))
-	restore := turnEndStdin
-	t.Cleanup(func() { turnEndStdin = restore })
-	turnEndStdin = func() *os.File {
+	restore := hookStdin
+	t.Cleanup(func() { hookStdin = restore })
+	hookStdin = func() *os.File {
 		f, err := os.Open(path)
 		if err != nil {
 			t.Fatal(err)
@@ -553,7 +553,9 @@ func TestTurnEndLetsARepeatedUnchangedBlockThrough(t *testing.T) {
 					args = []string{"--as", "bob", "--codex-hook", "Stop"}
 				}
 				stop := func(active bool) (stdout, stderr string, err error) {
-					stopInput(t, fmt.Sprintf(`{"hook_event_name":"Stop","session_id":"s1","stop_hook_active":%v}`, active))
+					// The lane's cwd is in the input, as codex sends it: the
+					// foreign-thread check and stop_hook_active read ONE input.
+					stopInput(t, fmt.Sprintf(`{"hook_event_name":"Stop","cwd":%q,"session_id":"s1","stop_hook_active":%v}`, root, active))
 					return captureStdoutStderr(t, func() error { return cmdTurnEnd(args) })
 				}
 				blocks := func(stdout string, err error) bool {
@@ -596,9 +598,9 @@ func TestTurnEndForgetsTheLastBlockWhenClearAndHandRunsReadNoStdin(t *testing.T)
 		clearGuardEnv(t)
 		t.Setenv("AGENTCHUTE_RUNNER_PID", "")
 		writeTurnEndLastBlock(cfg, "bob", "agentchute gate --before finish: stale")
-		restore := turnEndStdin
-		t.Cleanup(func() { turnEndStdin = restore })
-		turnEndStdin = func() *os.File {
+		restore := hookStdin
+		t.Cleanup(func() { hookStdin = restore })
+		hookStdin = func() *os.File {
 			t.Error("a hand-run turn-end read hook stdin")
 			return os.Stdin
 		}

@@ -34,7 +34,9 @@
       "Bash(go *-exec*)",
       "Bash(go *-toolexec*)",
       "Bash(go *-vettool*)",
-      "Bash(git *--output*)"
+      "Bash(git *--output*)",
+      "Bash(git *--upload-pack*)",
+      "Bash(git *--receive-pack*)"
     ]
   },
   "hooks": {

@@ -91,9 +91,15 @@ func cmdTurnEnd(args []string) error {
 	}
 	// Hook stdin is read only in a hook mode: a hand-run turn-end must never
 	// wait on a terminal.
-	var hookIn turnEndHookInput
+	// Read once: the codex foreign-thread check and stop_hook_active both
+	// come from the same input.
+	var hookBody []byte
 	if claudeHook == "Stop" || codexHook == "Stop" || geminiHook == "AfterAgent" {
-		hookIn = readTurnEndHookInput(turnEndStdin())
+		hookBody = readHookStdin(hookStdin())
+	}
+	var hookIn turnEndHookInput
+	if len(hookBody) > 0 {
+		_ = json.Unmarshal(hookBody, &hookIn)
 	}
 	if claudeHook == "Stop" {
 		jsonOut = true
@@ -124,6 +130,13 @@ func cmdTurnEnd(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if codexHook == "Stop" {
+		// A codex thread outside the control repo (memory consolidation's
+		// hidden thread) gets nothing from this hook: no registration write, no archive of the lane's claimed mail, no latch change, no gate verdict.
+		if _, foreign := codexHookForeignCwd(cfg, hookBody); foreign {
+			return nil
+		}
 	}
 
 	now := time.Now().UTC()
@@ -346,31 +359,6 @@ func (in turnEndHookInput) session() string {
 }
 
 func (in turnEndHookInput) active() bool { return in.StopHookActive || in.StopHookActiveCamel }
-
-// turnEndStdin is the hook input source; tests replace it rather than swap
-// the process-wide os.Stdin, which serve's input copier reads.
-var turnEndStdin = func() *os.File { return os.Stdin }
-
-// readTurnEndHookInput reads a hook's JSON stdin. A terminal is never read,
-// and a pipe that stays open is given up on after two seconds: the decision
-// then falls back to an ordinary block.
-func readTurnEndHookInput(stdin *os.File) turnEndHookInput {
-	var in turnEndHookInput
-	if info, err := stdin.Stat(); err != nil || info.Mode()&os.ModeCharDevice != 0 {
-		return in
-	}
-	done := make(chan []byte, 1)
-	go func() {
-		data, _ := io.ReadAll(io.LimitReader(stdin, 1<<20))
-		done <- data
-	}()
-	select {
-	case data := <-done:
-		_ = json.Unmarshal(data, &in)
-	case <-time.After(2 * time.Second):
-	}
-	return in
-}
 
 // turnEndLastBlockFile holds the reasons of the last block turn-end returned
 // in a hook mode, so a Stop it caused can tell whether anything changed.
