@@ -81,7 +81,7 @@ func TestSSHDRotationConvergesFromEitherRemoteBoundary(t *testing.T) {
 			}
 
 			if tc.authorizeStaged {
-				stdout, stderr, err := h.runCLI(checkout, "hub", "authorize",
+				stdout, stderr, err := h.runCLITTY(checkout, "hub", "authorize",
 					"--agent", agentID, "--pool", h.pool,
 					"--key", strings.TrimSpace(readFileString(t, stagedPriv+".pub")),
 					"--replace-key")
@@ -102,7 +102,9 @@ func TestSSHDRotationConvergesFromEitherRemoteBoundary(t *testing.T) {
 
 			// The recovery IS a plain re-run. Not --rotate-key: the operator does not
 			// know a rotation was in flight, they just run the command again.
-			stdout, stderr, err := h.runCLI(checkout, "hub", "join", h.remote.URL, "--name", "codex")
+			// At a terminal: finishing the rotation may need the hub-side
+			// --replace-key, which the hub only accepts with one.
+			stdout, stderr, err := h.runCLITTY(checkout, "hub", "join", h.remote.URL, "--name", "codex")
 			if err != nil {
 				t.Fatalf("recovery re-run (%s): %v\nstdout:\n%s\nstderr:\n%s", tc.why, err, stdout, stderr)
 			}
