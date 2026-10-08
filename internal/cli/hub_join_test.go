@@ -427,8 +427,10 @@ func TestHubJoinRecoveryBranchWithCompletedFreshJoinPreservesOldKey(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A complete, ordinary join to the new URL: config.json and all.
-	if err := runHubJoin(root, newRemote, hubJoinOptions{URL: newRemote.URL, Name: "codex"}); err != nil {
+	// A complete, ordinary join to the new URL: config.json and all. The
+	// checkout points at the old URL, a different hub id, so constructing this
+	// state now takes --replace (review 2026-10-08, S11).
+	if err := runHubJoin(root, newRemote, hubJoinOptions{URL: newRemote.URL, Name: "codex", Replace: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(newRemote.HubDir, "config.json")); err != nil {

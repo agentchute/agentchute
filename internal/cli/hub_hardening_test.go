@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentchute/agentchute/internal/hubwire"
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
@@ -189,5 +190,45 @@ func TestHubAutoAuthorizeSSHDisablesAgentAndX11Forwarding(t *testing.T) {
 func TestGuardDeniesHubSessionWhileLatched(t *testing.T) {
 	if !guardCommandDenied("Bash agentchute hub session --agent claude-code --pool /p --pool-id 0123456789ab") {
 		t.Fatal("guard allowed a direct hub session while latched")
+	}
+}
+
+// Review 2026-10-08 S11: joining replaced an existing ssh:// pointer to a
+// DIFFERENT hub without asking, repointing every lane in this checkout at a hub
+// of the caller's choosing. That now needs --replace, and it is refused before
+// any key is minted or any connection is made.
+func TestHubJoinRefusesToRepointAtADifferentHubWithoutReplace(t *testing.T) {
+	root, remote := setupHubJoinTest(t)
+	other := "ssh://alex@other-hub.example/home/alex/pool"
+	pointer := filepath.Join(root, loop.PointerFileName)
+	if err := os.WriteFile(pointer, []byte(other+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probes := 0
+	hubJoinProbe = func(*loop.RemoteConfig, string, string) (hubwire.HelloOK, []string, error) {
+		probes++
+		return successfulHubHello("codex-tiny"), nil, nil
+	}
+	var err error
+	withCwd(t, root, func() { err = cmdHubJoin([]string{remote.URL, "--name", "codex"}) })
+	if err == nil || !strings.Contains(err.Error(), "--replace") {
+		t.Fatalf("join over another hub's pointer = %v, want a refusal naming --replace", err)
+	}
+	if data, _ := os.ReadFile(pointer); strings.TrimSpace(string(data)) != other {
+		t.Fatalf("pointer = %q, want it untouched", data)
+	}
+	if probes != 0 {
+		t.Fatalf("the refused join still dialed the hub %d time(s)", probes)
+	}
+	if _, statErr := os.Stat(filepath.Join(remote.HubDir, "keys")); !os.IsNotExist(statErr) {
+		t.Fatalf("the refused join minted a key (stat: %v)", statErr)
+	}
+
+	withCwd(t, root, func() { err = cmdHubJoin([]string{remote.URL, "--name", "codex", "--replace"}) })
+	if err != nil {
+		t.Fatalf("join --replace = %v, want it to proceed", err)
+	}
+	if data, _ := os.ReadFile(pointer); strings.TrimSpace(string(data)) != remote.URL {
+		t.Fatalf("pointer after --replace = %q, want %s", data, remote.URL)
 	}
 }

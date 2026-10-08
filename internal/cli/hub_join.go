@@ -25,6 +25,7 @@ type hubJoinOptions struct {
 	AgentID      string
 	ResetHostKey bool
 	RotateKey    bool
+	Replace      bool
 }
 
 var hubJoinProbe = func(remote *loop.RemoteConfig, agentID, keyPath string) (hubwire.HelloOK, []string, error) {
@@ -53,6 +54,7 @@ func cmdHubJoin(args []string) error {
 	fs.StringVar(&opts.AgentID, "as", "", "pool-wide agent id")
 	fs.BoolVar(&opts.ResetHostKey, "reset-hostkey", false, "replace the pinned host key after operator confirmation")
 	fs.BoolVar(&opts.RotateKey, "rotate-key", false, "rotate this joined identity's key")
+	fs.BoolVar(&opts.Replace, "replace", false, "repoint a checkout that already points at a DIFFERENT hub")
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		opts.URL = args[0]
 		args = args[1:]
@@ -149,6 +151,9 @@ func cmdHubJoin(args []string) error {
 }
 
 func runHubJoin(root string, remote *loop.RemoteConfig, opts hubJoinOptions) error {
+	if err := refuseHubJoinRepoint(root, remote, opts); err != nil {
+		return err
+	}
 	if opts.ResetHostKey {
 		if err := os.Remove(filepath.Join(remote.HubDir, "known_hosts")); err != nil && !os.IsNotExist(err) {
 			return err
@@ -543,6 +548,31 @@ func updateHubJoinConfig(cfg *hubclient.HubConfig, remote *loop.RemoteConfig, ag
 	if localName != "" {
 		cfg.Names[localName] = agentID
 	}
+}
+
+// refuseHubJoinRepoint stops a join from silently repointing a checkout that
+// already points at a DIFFERENT hub: every lane in it would follow the new
+// pointer to a hub of the caller's choosing (review 2026-10-08, S11). It runs
+// before any key is minted or any connection made. A same-hub migration has
+// already rewritten the pointer to this URL by the time it gets here, and a
+// local (non-ssh) pointer is not a hub, so neither needs --replace.
+func refuseHubJoinRepoint(root string, remote *loop.RemoteConfig, opts hubJoinOptions) error {
+	if opts.Replace {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(root, loop.PointerFileName))
+	if err != nil {
+		return nil
+	}
+	old, _ := loop.ParsePointerFile(string(data))
+	if !strings.HasPrefix(strings.TrimSpace(old), "ssh://") {
+		return nil
+	}
+	oldRemote, err := loop.ParseRemoteURL(old)
+	if err == nil && oldRemote.HubID == remote.HubID {
+		return nil
+	}
+	return fmt.Errorf("hub join: this checkout already points at another hub (%s); joining %s would repoint every lane here. If that is intended, re-run with --replace", strings.TrimSpace(old), remote.URL)
 }
 
 func writeHubJoinPointer(root, url string) error {
