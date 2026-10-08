@@ -412,6 +412,9 @@ func TestHubJoinSeedsUnderTheNameSSHChecks(t *testing.T) {
 	}{
 		{"HostKeyAlias", "Host hub.example\n  HostKeyAlias trusted-hub\n", "trusted-hub"},
 		{"configured Port", "Host hub.example\n  Port 2222\n", "[hub.example]:2222"},
+		{"HostName", "Host hub.example\n  HostName 127.0.0.1\n", "127.0.0.1"},
+		{"HostName and Port", "Host hub.example\n  HostName 127.0.0.1\n  Port 2222\n", "[127.0.0.1]:2222"},
+		{"HostKeyAlias precedes HostName", "Host hub.example\n  HostName 127.0.0.1\n  HostKeyAlias trusted-hub\n  Port 2222\n", "trusted-hub"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, remote := setupHubJoinTest(t)
@@ -446,7 +449,9 @@ func TestHubJoinSeedsUnderTheNameSSHChecks(t *testing.T) {
 func TestHubJoinSeedingRefusesWhenSSHCannotResolveTheName(t *testing.T) {
 	_, remote := setupHubJoinTest(t)
 	orig := hubJoinResolveSSH
-	hubJoinResolveSSH = func(*loop.RemoteConfig) (string, int, error) { return "", 0, errors.New("Bad configuration option") }
+	hubJoinResolveSSH = func(*loop.RemoteConfig) (string, string, int, error) {
+		return "", "", 0, errors.New("Bad configuration option")
+	}
 	t.Cleanup(func() { hubJoinResolveSSH = orig })
 	err := seedHubKnownHosts(remote)
 	if err == nil || !strings.Contains(err.Error(), "ssh -G") {

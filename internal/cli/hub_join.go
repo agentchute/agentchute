@@ -837,10 +837,10 @@ func readHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
 // hubKnownHostsSpec is the name ssh checks this hub's host key under. The hub
 // connection honours the user's ssh_config, so that is a HostKeyAlias when one
 // is configured, and otherwise the host with the EFFECTIVE port — which a
-// configured Port can change (PR #216 gate, codex P2). ssh -G resolves both the
+// configured HostName or Port can change (PR #216 gate, codex P2). ssh -G resolves them the
 // way the connection will. If it cannot, the fallback is loud, never silent.
 func hubKnownHostsSpec(remote *loop.RemoteConfig) (string, error) {
-	alias, port, err := hubJoinResolveSSH(remote)
+	host, alias, port, err := hubJoinResolveSSH(remote)
 	if err != nil {
 		// Fail closed: guessing the name would seed (or pin) the wrong entry and
 		// leave the real one to accept-new. ssh -G failing means the connection
@@ -851,9 +851,9 @@ func hubKnownHostsSpec(remote *loop.RemoteConfig) (string, error) {
 		return alias, nil
 	}
 	if port != 22 {
-		return fmt.Sprintf("[%s]:%d", remote.Host, port), nil
+		return fmt.Sprintf("[%s]:%d", host, port), nil
 	}
-	return remote.Host, nil
+	return host, nil
 }
 
 // hubJoinSSHConfig, when set, is passed to ssh -G as -F. Production leaves it
@@ -861,9 +861,9 @@ func hubKnownHostsSpec(remote *loop.RemoteConfig) (string, error) {
 // through the account's passwd home, not $HOME — which is why a row needs it).
 var hubJoinSSHConfig = ""
 
-// hubJoinResolveSSH asks ssh for the effective HostKeyAlias and port of the
+// hubJoinResolveSSH asks ssh for the effective HostName, HostKeyAlias and port of the
 // hub destination.
-var hubJoinResolveSSH = func(remote *loop.RemoteConfig) (alias string, port int, err error) {
+var hubJoinResolveSSH = func(remote *loop.RemoteConfig) (host, alias string, port int, err error) {
 	args := []string{"-G"}
 	if hubJoinSSHConfig != "" {
 		args = append(args, "-F", hubJoinSSHConfig)
@@ -873,15 +873,16 @@ var hubJoinResolveSSH = func(remote *loop.RemoteConfig) (alias string, port int,
 	}
 	out, err := exec.Command("ssh", append(args, remote.Destination())...).Output()
 	if err != nil {
-		return "", 0, err
+		return "", "", 0, err
 	}
-	port = remote.Port
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
 			continue
 		}
 		switch strings.ToLower(fields[0]) {
+		case "hostname":
+			host = fields[1]
 		case "hostkeyalias":
 			alias = fields[1]
 		case "port":
@@ -890,7 +891,10 @@ var hubJoinResolveSSH = func(remote *loop.RemoteConfig) (alias string, port int,
 			}
 		}
 	}
-	return alias, port, nil
+	if host == "" || port < 1 || port > 65535 {
+		return "", "", 0, fmt.Errorf("ssh -G returned no usable hostname and port")
+	}
+	return host, alias, port, nil
 }
 
 func seedHubKnownHosts(remote *loop.RemoteConfig) error {
