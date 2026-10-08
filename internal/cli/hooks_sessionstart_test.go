@@ -85,7 +85,8 @@ func TestHookTemplatesSessionStartHasNoRedundantSelfCheck(t *testing.T) {
 // THERE — `turn-end --gemini-hook AfterAgent`, silent on clear and
 // `{"decision":"deny",...}` exit 0 on block — not on BeforeAgent, where it
 // committed turn N's mail only when turn N+1's prompt arrived (never, if the
-// inbox stayed empty) and exited 2 into a prompt-erasing abort. BeforeAgent
+// inbox stayed empty) and, on block, exited 2 into BeforeAgent's
+// prompt-erasing abort. BeforeAgent
 // keeps only self-check and the pending context emitter.
 func TestGeminiHookTemplateUsesAfterAgentTurnEnd(t *testing.T) {
 	data, err := fs.ReadFile(hooksFS, "examples/hooks/gemini/.gemini/settings.json")

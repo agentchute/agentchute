@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 // ---------- Gemini CLI emitters (H6) ----------
@@ -101,6 +103,27 @@ func TestAgyGuardDecisionAlwaysCarriesDecision(t *testing.T) {
 	if m := decodeJSON(t, out); m["decision"] != "ask" {
 		t.Fatalf("allow shape = %v (decision is REQUIRED; ask = the ordinary approval path, never allow)", m)
 	}
+	// The fail-open path (no serve token at all) must not become automatic
+	// approval either: it is the same ask.
+	root, cfg := setupConsumeFixture(t)
+	withCwd(t, root, func() {
+		if err := loop.SetGuardLatch(cfg, "bob", "tok-1"); err != nil {
+			t.Fatal(err)
+		}
+		clearGuardEnv(t)
+		t.Setenv("AGENTCHUTE_AGENT_ID", "bob")
+		d := evaluateGuardInvocation("", "", "", "run_command rm -rf /tmp/x")
+		if !d.Allowed {
+			t.Fatalf("no token must fail open: %+v", d)
+		}
+		out, err := captureStdout(t, func() error { return emitAgyGuardDecision(d) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := decodeJSON(t, out); m["decision"] != "ask" {
+			t.Fatalf("fail-open shape = %v, want ask (never allow)", m)
+		}
+	})
 	out, err = captureStdout(t, func() error {
 		return emitAgyGuardDecision(guardDecision{Allowed: false, Reason: guardDenyReason})
 	})
@@ -158,14 +181,16 @@ func TestAgyStopAndPreInvocationShapes(t *testing.T) {
 	if step, _ := steps[0].(map[string]any); step["ephemeralMessage"] == nil {
 		t.Fatalf("first invocation step = %v, want ephemeralMessage", steps[0])
 	}
-	out, err = captureStdout(t, func() error {
-		return emitBootAgyPreInvocation(bootStatus{Agent: "agy"}, strings.NewReader(`{"invocationNum":1}`))
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(out) != "{}" {
-		t.Fatalf("later invocation = %q, want {}", out)
+	for _, n := range []string{"1", "2"} {
+		out, err = captureStdout(t, func() error {
+			return emitBootAgyPreInvocation(bootStatus{Agent: "agy"}, strings.NewReader(`{"invocationNum":`+n+`}`))
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(out) != "{}" {
+			t.Fatalf("invocation %s = %q, want {} (only invocation 0 injects)", n, out)
+		}
 	}
 	// pending: {} when nothing is pending, injectSteps otherwise.
 	out, _ = captureStdout(t, func() error { return emitAgyInjectSteps("") })

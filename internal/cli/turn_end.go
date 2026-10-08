@@ -289,11 +289,12 @@ type geminiAfterAgentInput struct {
 }
 
 // emitTurnEndGeminiAfterAgent is the Gemini CLI end-of-turn contract: silent
-// and exit 0 on clear; `{"decision":"deny","reason":…}` with exit 0 on block
-// (never exit 2 — documented as "rejects the response and triggers a retry
-// using stderr as the prompt"). A second AfterAgent raised by our own deny
-// (stop_hook_active) is never denied again, so a lane that cannot clear the
-// gate is not spun in retries.
+// and exit 0 on clear; `{"decision":"deny","reason":…}` with exit 0 on block —
+// the documented AfterAgent deny (geminicli.com/docs/hooks/reference#afteragent),
+// which rejects the response and retries with the reason; exit 2 is the
+// stderr spelling of the same rejection and is not used. A second AfterAgent
+// raised by our own deny (stop_hook_active) is never denied again, so a lane
+// that cannot clear the gate is not spun in retries.
 func emitTurnEndGeminiAfterAgent(s gateStatus, stdin io.Reader) error {
 	if !s.Blocked {
 		return nil
