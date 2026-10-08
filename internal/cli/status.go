@@ -54,12 +54,7 @@ func cmdStatus(args []string) error {
 	now := time.Now().UTC()
 	// Read errors arrive as warn notes DURING the read, so they land on stderr
 	// before the table exactly as they always have — position included.
-	emit := func(ev op.Event) error {
-		if ev.Note != nil && ev.Note.Level == op.NoteWarn {
-			fmt.Fprintf(os.Stderr, "warning: %s\n", ev.Note.Msg)
-		}
-		return nil
-	}
+	emit := statusWarnEmitter(os.Stderr)
 	var resp op.StatusResp
 	if cfg.Remote != nil {
 		session, openErr := openRemoteOneShot(cfg, agentID)
@@ -83,6 +78,18 @@ func cmdStatus(args []string) error {
 		printStatus(os.Stdout, cfg, registrationsOf(resp.Agents), now)
 	}
 	return nil
+}
+
+// statusWarnEmitter prints status's warn notes to w, one line each even when
+// the note came from an older hub that did not quote the peer-chosen file name
+// inside it.
+func statusWarnEmitter(w io.Writer) func(op.Event) error {
+	return func(ev op.Event) error {
+		if ev.Note != nil && ev.Note.Level == op.NoteWarn {
+			fmt.Fprintf(w, "warning: %s\n", loop.OneLine(ev.Note.Msg, loop.MaxPeerErrorRunes))
+		}
+		return nil
+	}
 }
 
 // registrationsOf rebuilds the map printStatus takes from the seam's status

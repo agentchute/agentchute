@@ -2,9 +2,7 @@ package op
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/agentchute/agentchute/internal/loop"
 )
@@ -20,7 +18,7 @@ const FramePrefix = "│ "
 
 // peerNameMaxRunes caps a peer-chosen name (a malformed inbox filename, a
 // registration's host) when it is printed outside a frame.
-const peerNameMaxRunes = 256
+const peerNameMaxRunes = loop.MaxPeerNameRunes
 
 // PeerNameMaxRunes is peerNameMaxRunes for callers outside the package.
 const PeerNameMaxRunes = peerNameMaxRunes
@@ -73,36 +71,13 @@ func FramedBodySize(content []byte) int {
 	return n
 }
 
-// QuotedCapped renders s as ONE physical line: Go-quoted, so every line
-// break, control byte and Unicode separator is an escape, and capped at max
-// runes with the original length noted.
-func QuotedCapped(s string, max int) string {
-	if utf8.RuneCountInString(s) <= max {
-		return strconv.Quote(s)
-	}
-	r := []rune(s)
-	return fmt.Sprintf("%s… (%d characters)", strconv.Quote(string(r[:max])), len(r))
-}
+// QuotedCapped renders s as ONE physical line, Go-quoted and capped; see
+// loop.QuotedCapped.
+func QuotedCapped(s string, max int) string { return loop.QuotedCapped(s, max) }
 
-// OneLine renders a peer-controlled string inside a line of program output
-// that is NOT framed: unchanged when it is valid UTF-8, at most max runes, and
-// every rune printable; otherwise QuotedCapped. Peer text outside a frame must
-// never start a line of its own.
-func OneLine(s string, max int) string {
-	if utf8.ValidString(s) && utf8.RuneCountInString(s) <= max {
-		printable := true
-		for _, r := range s {
-			if !strconv.IsPrint(r) {
-				printable = false
-				break
-			}
-		}
-		if printable {
-			return s
-		}
-	}
-	return QuotedCapped(s, max)
-}
+// OneLine renders peer-controlled text for an unframed line of output; see
+// loop.OneLine.
+func OneLine(s string, max int) string { return loop.OneLine(s, max) }
 
 // SenderMismatchWarning is the line `check` prints above a body whose
 // frontmatter `from` disagrees with the filename's (authenticated) sender.

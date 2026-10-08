@@ -731,7 +731,7 @@ func printWipePlan(w io.Writer, plan wipePlan) {
 		}
 		fmt.Fprintf(w, "  %s/ (%s): delete %d entr%s\n", cat.Name, cat.Parent, len(cat.Targets), plural(len(cat.Targets)))
 		for _, t := range cat.Targets {
-			fmt.Fprintf(w, "      - %s\n", filepath.Base(t))
+			fmt.Fprintf(w, "      - %s\n", loop.OneLine(filepath.Base(t), loop.MaxPeerNameRunes))
 		}
 		if len(cat.Preserved) > 0 {
 			fmt.Fprintf(w, "      preserved: %s\n", strings.Join(cat.Preserved, ", "))
@@ -740,14 +740,14 @@ func printWipePlan(w io.Writer, plan wipePlan) {
 	if len(plan.LegacyDirs) > 0 {
 		fmt.Fprintf(w, "  legacy namespace loops (RemoveAll): %d\n", len(plan.LegacyDirs))
 		for _, d := range plan.LegacyDirs {
-			fmt.Fprintf(w, "      - %s\n", d)
+			fmt.Fprintf(w, "      - %s\n", loop.OneLine(d, loop.MaxPeerErrorRunes))
 		}
 		total += len(plan.LegacyDirs)
 	}
 	if len(plan.ManualCleanup) > 0 {
 		fmt.Fprintln(w, "  manual cleanup (NOT deleted):")
 		for _, m := range plan.ManualCleanup {
-			fmt.Fprintf(w, "      - %s\n", m)
+			fmt.Fprintf(w, "      - %s\n", loop.OneLine(m, loop.MaxPeerErrorRunes))
 		}
 	}
 	fmt.Fprintf(w, "  total delete targets: %d\n", total)
