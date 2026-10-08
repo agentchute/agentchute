@@ -563,8 +563,8 @@ func TestGuardGeminiDenyJSONShapeIsTopLevelNotNested(t *testing.T) {
 	if jerr := json.Unmarshal([]byte(out), &wrap); jerr != nil {
 		t.Fatalf("unmarshal: %v\n%s", jerr, out)
 	}
-	if wrap.Decision != "block" {
-		t.Errorf("decision = %q, want block", wrap.Decision)
+	if wrap.Decision != "deny" {
+		t.Errorf("decision = %q, want deny (the documented value; block is its alias)", wrap.Decision)
 	}
 	if wrap.Reason != guardDenyReason {
 		t.Errorf("reason = %q, want %q", wrap.Reason, guardDenyReason)

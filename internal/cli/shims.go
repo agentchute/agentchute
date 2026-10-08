@@ -56,18 +56,25 @@ func (s wrapperSpec) guardedFor(binary string) (bool, string) {
 var wrapperSpecs = []wrapperSpec{
 	{Key: "claude", Name: "ac-claude", Aliases: []string{"claude", "claude-code"}, AgentID: "claude-code", Vendor: "anthropic", Candidates: []string{"claude", "claude-code"}, Guarded: true},
 	{Key: "codex", Name: "ac-codex", Aliases: []string{"codex"}, AgentID: "codex", Vendor: "openai", Candidates: []string{"codex"}, Guarded: true},
-	{Key: "gemini", Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli", "agy"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli", "agy"}, Guarded: true, UnguardedBinaries: []string{"agy"}},
+	{Key: "gemini", Name: "ac-gemini", Aliases: []string{"gemini", "gemini-cli"}, AgentID: "gemini-cli", Vendor: "google", Candidates: []string{"gemini", "gemini-cli"}, Guarded: true},
+	// Antigravity CLI replaced Gemini CLI for unpaid/Google One users on
+	// 2026-06-18 and is a different program: .agents/hooks.json with
+	// PreToolUse/PreInvocation/Stop and camelCase payloads, no BeforeAgent/
+	// BeforeTool. Its own wrapper and canonical id, so the roster says which
+	// binary a lane runs and `ac serve gemini` never silently launches it.
+	{Key: "agy", Name: "ac-agy", Aliases: []string{"agy", "antigravity"}, AgentID: "agy", Vendor: "google", Candidates: []string{"agy"}, Guarded: true},
 	{Key: "grok", Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}, Guarded: false},
 }
 
 var legacyShimNamesBySetupWrapper = map[string][]string{
 	"claude-code": {"ac-claude", "claude", "claude-code"},
 	"codex":       {"ac-codex", "codex"},
-	"gemini-cli":  {"ac-gemini", "gemini", "gemini-cli", "agy"},
+	"gemini-cli":  {"ac-gemini", "gemini", "gemini-cli"},
+	"agy":         {"ac-agy", "agy"},
 	"grok":        {"ac-grok", "grok"},
 }
 
-var legacyShimSetupWrapperOrder = []string{"claude-code", "codex", "gemini-cli", "grok"}
+var legacyShimSetupWrapperOrder = []string{"claude-code", "codex", "gemini-cli", "agy", "grok"}
 
 // wrapperForToken resolves a dispatcher wrapper token (`ac serve <token>`) by
 // canonical Key or alias. It deliberately does NOT match the legacy ac-* Name —

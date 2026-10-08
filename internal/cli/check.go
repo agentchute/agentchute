@@ -271,6 +271,10 @@ const checkFramePrefix = "│ "
 // checkFramePrefix, control bytes stripped.
 func printFramedBody(content []byte) {
 	sanitized := sanitizeControlBytes(string(content))
+	// Unicode line and paragraph separators are not control code points, so
+	// the sanitizer keeps them, but a renderer may break a line at them: treat
+	// them as newlines so every visual line still carries the prefix.
+	sanitized = strings.NewReplacer(" ", "\n", " ", "\n").Replace(sanitized)
 	sanitized = strings.TrimSuffix(sanitized, "\n")
 	for _, line := range strings.Split(sanitized, "\n") {
 		fmt.Print(checkFramePrefix, line, "\n")

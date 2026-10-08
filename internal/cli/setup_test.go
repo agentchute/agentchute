@@ -188,9 +188,9 @@ esac
 }
 
 func TestSetupShimWrappersForWake(t *testing.T) {
-	// runner is the only wake path: it installs all four shims.
-	if got := setupShimWrappers("runner"); len(got) != 4 {
-		t.Errorf(`setupShimWrappers("runner") = %v, want all 4`, got)
+	// runner is the only wake path: it installs all five shims.
+	if got := setupShimWrappers("runner"); len(got) != 5 {
+		t.Errorf(`setupShimWrappers("runner") = %v, want all 5`, got)
 	}
 	if !setupNeedsShims("runner") {
 		t.Errorf(`setupNeedsShims("runner") = false, want true`)
@@ -639,8 +639,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v33 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v33 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v34 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v34 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)

@@ -7,7 +7,7 @@
           {
             "name": "agentchute-boot",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} boot --context-only"
+            "command": "${AGENTCHUTE_BIN:-agentchute} boot --gemini-hook SessionStart"
           }
         ]
       }
@@ -17,14 +17,14 @@
         "matcher": "*",
         "hooks": [
           {
-            "name": "agentchute-turn-end",
+            "name": "agentchute-self-check",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} self-check --quiet"
           },
           {
             "name": "agentchute-pending",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} pending --json"
+            "command": "${AGENTCHUTE_BIN:-agentchute} pending --gemini-hook BeforeAgent"
           }
         ]
       }
@@ -36,7 +36,21 @@
           {
             "name": "agentchute-guard",
             "type": "command",
-            "command": "${AGENTCHUTE_BIN:-agentchute} guard --pre-tool-use --gemini-hook BeforeTool"
+            "command": "${AGENTCHUTE_BIN:-agentchute} guard --pre-tool-use --gemini-hook BeforeTool",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "agentchute-turn-end",
+            "type": "command",
+            "command": "${AGENTCHUTE_BIN:-agentchute} turn-end --gemini-hook AfterAgent",
+            "timeout": 30000
           }
         ]
       }

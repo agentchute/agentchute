@@ -362,28 +362,29 @@ func TestRemoveSetupShimsForWrapperPreservesUserOwnedTargetName(t *testing.T) {
 	}
 }
 
-// WI-E3 (gemini input): `agy` is the actual gemini-cli binary name on PATH, so
-// the launcher must recognize it as the gemini-cli wrapper / ac-gemini.
-func TestShims_AgyResolvesToGeminiWrapper(t *testing.T) {
+// `agy` (Antigravity CLI) is its own wrapper since the Google-templates PR:
+// it replaced Gemini CLI for unpaid/Google One users on 2026-06-18 and reads a
+// different hook file with different events, so `ac serve gemini` must never
+// resolve to it and the roster must say which binary a lane runs.
+func TestShims_AgyIsItsOwnWrapper(t *testing.T) {
 	spec, ok := wrapperSpecForName("agy")
 	if !ok {
-		t.Fatal("wrapperSpecForName(\"agy\") not recognized; want the gemini-cli wrapper")
+		t.Fatal("wrapperSpecForName(\"agy\") not recognized; want the agy wrapper")
 	}
-	if spec.Name != "ac-gemini" || spec.AgentID != "gemini-cli" {
-		t.Fatalf("agy resolved to %s/%s, want ac-gemini/gemini-cli", spec.Name, spec.AgentID)
+	if spec.Name != "ac-agy" || spec.AgentID != "agy" || spec.Vendor != "google" {
+		t.Fatalf("agy resolved to %s/%s/%s, want ac-agy/agy/google", spec.Name, spec.AgentID, spec.Vendor)
 	}
-	// agy must also remain in the keyed legacy cleanup map and real-binary candidates.
-	if !stringSliceContains(legacyShimNamesForSetupWrapper("gemini-cli"), "agy") {
-		t.Fatalf("gemini-cli legacy cleanup names %v missing agy", legacyShimNamesForSetupWrapper("gemini-cli"))
+	if !stringSliceContains(legacyShimNamesForSetupWrapper("agy"), "agy") {
+		t.Fatalf("agy legacy cleanup names %v missing agy", legacyShimNamesForSetupWrapper("agy"))
 	}
-	foundCandidate := false
-	for _, c := range spec.Candidates {
+	if stringSliceContains(legacyShimNamesForSetupWrapper("gemini-cli"), "agy") {
+		t.Fatalf("gemini-cli legacy cleanup names %v still claim agy", legacyShimNamesForSetupWrapper("gemini-cli"))
+	}
+	gemini, _ := wrapperSpecForName("gemini")
+	for _, c := range gemini.Candidates {
 		if c == "agy" {
-			foundCandidate = true
+			t.Fatalf("ac-gemini candidates %v still include agy", gemini.Candidates)
 		}
-	}
-	if !foundCandidate {
-		t.Fatalf("ac-gemini candidates %v missing agy (real binary cannot be resolved)", spec.Candidates)
 	}
 }
 

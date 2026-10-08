@@ -28,7 +28,7 @@ func cmdBoot(args []string) error {
 	fs := flag.NewFlagSet("boot", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, host, controlRepo, loopDir, bio, codexHook string
+	var agentID, vendor, host, controlRepo, loopDir, bio, codexHook, geminiHook, agyHook string
 	var quiet, jsonOut, contextOnly bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google, xai, local, human)")
@@ -40,6 +40,8 @@ func cmdBoot(args []string) error {
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
 	fs.BoolVar(&contextOnly, "context-only", false, "hook-safe mode: emit unread/pending state as text and always exit 0 (unless command failure)")
 	fs.StringVar(&codexHook, "codex-hook", "", "codex hook JSON shape for the named event (SessionStart)")
+	fs.StringVar(&geminiHook, "gemini-hook", "", "Gemini CLI hook JSON shape for the named event (SessionStart)")
+	fs.StringVar(&agyHook, "agy-hook", "", "Antigravity CLI hook JSON shape for the named event (PreInvocation)")
 
 	if err := fs.Parse(args); err != nil {
 		return bootUsage(err)
@@ -95,7 +97,7 @@ func cmdBoot(args []string) error {
 	}
 
 	now := time.Now().UTC()
-	hookMode := contextOnly || codexHook == "SessionStart"
+	hookMode := contextOnly || codexHook == "SessionStart" || geminiHook == "SessionStart" || agyHook == "PreInvocation"
 	// A boot under a foreign runner's env (AGENTCHUTE_RUNNER_PID set but not
 	// an ancestor — a shared daemon or background host) would register the
 	// wrong lane's identity from the wrong process tree: fail closed, write
@@ -207,6 +209,10 @@ func cmdBoot(args []string) error {
 	switch {
 	case codexHook == "SessionStart":
 		return emitBootCodexSessionStart(status)
+	case geminiHook == "SessionStart":
+		return emitBootGeminiSessionStart(status)
+	case agyHook == "PreInvocation":
+		return emitBootAgyPreInvocation(status, os.Stdin)
 	case contextOnly:
 		return emitBootContextOnly(status)
 	case jsonOut:
@@ -378,7 +384,7 @@ Exit codes (interactive mode):
   2  unread direct mail present
   1  command failure (binary error, filesystem error, etc.)
 
-Exit codes (--context-only / --codex-hook): always 0 unless command failure.
+Exit codes (--context-only / --codex-hook / --gemini-hook / --agy-hook): always 0 unless command failure.
 
 Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
@@ -391,5 +397,41 @@ Flags:
   --json                structured JSON output
   --context-only        hook-safe mode; always exits 0 unless command failure
   --codex-hook <event>  codex hook JSON shape (SessionStart)
+  --gemini-hook <event> Gemini CLI hook JSON shape (SessionStart)
+  --agy-hook <event>    Antigravity CLI hook JSON shape (PreInvocation)
 `)
+}
+
+// emitBootGeminiSessionStart wraps the context-only text into Gemini CLI's
+// SessionStart hookSpecificOutput.additionalContext — the only channel Gemini
+// injects into the model (geminicli.com/docs/hooks/reference).
+func emitBootGeminiSessionStart(s bootStatus) error {
+	var ctx strings.Builder
+	writeBootContext(&ctx, s)
+	return emitHookContextJSON("SessionStart", ctx.String())
+}
+
+// agyPreInvocationInput is the slice of Antigravity's PreInvocation stdin
+// this command reads: invocationNum is 0 on the first model call of a run
+// (zero-indexed).
+type agyPreInvocationInput struct {
+	InvocationNum int `json:"invocationNum"`
+}
+
+// emitBootAgyPreInvocation injects the boot context once per run, on the
+// first invocation (invocationNum is ZERO-indexed: 0 is the first model call;
+// codex gate on #214), as an ephemeralMessage (Antigravity's documented way
+// for a PreInvocation hook to add transient context). Later invocations emit
+// an empty object. An unreadable stdin counts as the first invocation.
+func emitBootAgyPreInvocation(s bootStatus, stdin io.Reader) error {
+	var in agyPreInvocationInput
+	if data, err := io.ReadAll(io.LimitReader(stdin, 1<<20)); err == nil && len(data) > 0 {
+		_ = json.Unmarshal(data, &in)
+	}
+	if in.InvocationNum > 0 {
+		return emitAgyInjectSteps("")
+	}
+	var ctx strings.Builder
+	writeBootContext(&ctx, s)
+	return emitAgyInjectSteps(ctx.String())
 }
