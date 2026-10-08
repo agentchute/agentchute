@@ -98,8 +98,8 @@ func TestAgyGuardDecisionAlwaysCarriesDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := decodeJSON(t, out); m["decision"] != "allow" {
-		t.Fatalf("allow shape = %v (decision is REQUIRED for Antigravity)", m)
+	if m := decodeJSON(t, out); m["decision"] != "ask" {
+		t.Fatalf("allow shape = %v (decision is REQUIRED; ask = the ordinary approval path, never allow)", m)
 	}
 	out, err = captureStdout(t, func() error {
 		return emitAgyGuardDecision(guardDecision{Allowed: false, Reason: guardDenyReason})
@@ -145,7 +145,7 @@ func TestAgyStopAndPreInvocationShapes(t *testing.T) {
 
 	// PreInvocation: boot context only on the first invocation.
 	out, err = captureStdout(t, func() error {
-		return emitBootAgyPreInvocation(bootStatus{Agent: "agy", Vendor: "google"}, strings.NewReader(`{"invocationNum":1,"initialNumSteps":0}`))
+		return emitBootAgyPreInvocation(bootStatus{Agent: "agy", Vendor: "google"}, strings.NewReader(`{"invocationNum":0,"initialNumSteps":0}`))
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestAgyStopAndPreInvocationShapes(t *testing.T) {
 		t.Fatalf("first invocation step = %v, want ephemeralMessage", steps[0])
 	}
 	out, err = captureStdout(t, func() error {
-		return emitBootAgyPreInvocation(bootStatus{Agent: "agy"}, strings.NewReader(`{"invocationNum":2}`))
+		return emitBootAgyPreInvocation(bootStatus{Agent: "agy"}, strings.NewReader(`{"invocationNum":1}`))
 	})
 	if err != nil {
 		t.Fatal(err)

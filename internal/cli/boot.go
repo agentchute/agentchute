@@ -402,15 +402,16 @@ type agyPreInvocationInput struct {
 }
 
 // emitBootAgyPreInvocation injects the boot context once per run, on the
-// first invocation, as an ephemeralMessage (Antigravity's documented way for
-// a PreInvocation hook to add transient context). Later invocations emit an
-// empty object. An unreadable stdin counts as the first invocation.
+// first invocation (invocationNum is ZERO-indexed: 0 is the first model call;
+// codex gate on #214), as an ephemeralMessage (Antigravity's documented way
+// for a PreInvocation hook to add transient context). Later invocations emit
+// an empty object. An unreadable stdin counts as the first invocation.
 func emitBootAgyPreInvocation(s bootStatus, stdin io.Reader) error {
 	var in agyPreInvocationInput
 	if data, err := io.ReadAll(io.LimitReader(stdin, 1<<20)); err == nil && len(data) > 0 {
 		_ = json.Unmarshal(data, &in)
 	}
-	if in.InvocationNum > 1 {
+	if in.InvocationNum > 0 {
 		return emitAgyInjectSteps("")
 	}
 	var ctx strings.Builder

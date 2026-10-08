@@ -669,7 +669,11 @@ func emitGeminiGuardDecision(d guardDecision) error {
 // so an allow is emitted explicitly, unlike the other vendors' silent allow
 // (https://antigravity.google/docs/hooks/).
 func emitAgyGuardDecision(d guardDecision) error {
-	out := map[string]any{"decision": "allow"}
+	// "ask" is the ordinary approval path (auto-approve rules and prior
+	// grants still apply; "force_ask" is what forces a prompt); "allow" would
+	// auto-approve every tool call for a mail-integrity guard that has no
+	// opinion (codex gate on #214).
+	out := map[string]any{"decision": "ask"}
 	if !d.Allowed {
 		out = map[string]any{"decision": "deny", "reason": d.Reason}
 	}
