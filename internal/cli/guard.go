@@ -348,19 +348,31 @@ func evaluateGuardInvocation(agentIDFlag, controlRepo, loopDir, toolCmd string) 
 	return evaluateGuardDecision(cfg, id, session, toolCmd)
 }
 
-// guardBusSubcmdRE matches the agentchute subcommands that move mail or
-// rewire the pool, under every spelling guardAgentchuteSubcmdRE knows (plus a
-// quote closing a quoted binary token). Apply AFTER guardDispatchPrefixRE.
-var guardBusSubcmdRE = regexp.MustCompile(`(?:\$\{agentchute_bin:-agentchute\}|\$agentchute_bin|\b(?:agentchute|ac)\b)["']?[ \t]+(send|check|ack|turn-end|clean|setup|update)\b`)
+// guardBusAfterBinaryRE matches an agentchute binary token — the name, a
+// path ending in it, the `ac` dispatcher, `$AGENTCHUTE_BIN` in any expansion
+// form — followed ANYWHERE later by a bus subcommand word. Applied to text
+// guardBusCommand has already normalized.
+var guardBusAfterBinaryRE = regexp.MustCompile(`(?s)\b(?:agentchute_bin|agentchute|ac)\b.*?\b(send|check|ack|turn-end|clean|setup|update)\b`)
 
-// guardBusCommand reports whether toolCmd runs an agentchute bus command. An
-// apply_patch runs nothing.
+// guardBusQuoting is what the executing shell removes from a word before
+// running it: quotes, backslash escapes and line continuations. Dropping them
+// here closes spellings such as `agentchute 'send'`, `agent""chute send` and
+// `agentchute \<newline> send`; a backtick becomes a word break.
+var guardBusQuoting = strings.NewReplacer("\\\n", "", `"`, "", "'", "", `\`, "", "`", " ")
+
+// guardBusCommand reports whether toolCmd may run an agentchute bus command.
+// It decides only for a codex thread OUTSIDE the control repo, where no bus
+// command is legitimate, so it errs toward yes: quoting is dropped the way the
+// shell drops it, and the subcommand may come anywhere after the binary token
+// (a variable, flags or another command between). An apply_patch runs
+// nothing. Still text matching, not a shell: a name assembled at run time
+// (`$(printf agent%s chute) send`) is not seen.
 func guardBusCommand(toolCmd string) bool {
 	if strings.HasPrefix(toolCmd, guardApplyPatchPrefix) {
 		return false
 	}
-	normalized := guardDispatchPrefixRE.ReplaceAllString(strings.ToLower(toolCmd), "")
-	return guardBusSubcmdRE.MatchString(normalized)
+	normalized := guardBusQuoting.Replace(strings.ToLower(toolCmd))
+	return guardBusAfterBinaryRE.MatchString(normalized)
 }
 
 // parseGuardHookCwd returns the hook input's `cwd` (codex's PreToolUse input
