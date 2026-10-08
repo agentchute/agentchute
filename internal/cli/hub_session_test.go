@@ -504,30 +504,39 @@ func mustChmod(t *testing.T, path string, mode os.FileMode) {
 func bytesOf(b byte, n int) []byte { return []byte(strings.Repeat(string(b), n)) }
 
 func TestHubSessionReleasesLeaseOnEveryExitPath(t *testing.T) {
+	// Issue #219: every row used to share a 25 ms read deadline and a 10 ms write
+	// deadline. The write deadline also bounds hello-ok and lease-ok, which the
+	// test must receive, so a reader stalled past 10 ms got EOF instead; and the
+	// read deadline could end an EOF, cancellation or framing row before its own
+	// exit path ran, so those rows passed without testing that path. Only the
+	// read-deadline row now has a short deadline; the rest keep the production
+	// defaults, so the named exit path is the only way the session ends in time.
 	tests := []struct {
-		name  string
-		exit  func(t *testing.T, s *runningHubSession)
-		after func()
+		name   string
+		timing hubSessionTiming
+		exit   func(t *testing.T, s *runningHubSession)
+		after  func()
 	}{
-		{"EOF", func(t *testing.T, s *runningHubSession) { t.Helper(); _ = s.conn.Close() }, nil},
-		{"read deadline", func(t *testing.T, _ *runningHubSession) { t.Helper() }, nil},
-		{"signal cancellation", func(t *testing.T, s *runningHubSession) { t.Helper(); s.cancel() }, nil},
-		{"framing violation", func(t *testing.T, s *runningHubSession) {
+		{"EOF", hubSessionTiming{}, func(t *testing.T, s *runningHubSession) { t.Helper(); _ = s.conn.Close() }, nil},
+		{"read deadline", hubSessionTiming{ChannelRead: 25 * time.Millisecond}, func(t *testing.T, _ *runningHubSession) { t.Helper() }, nil},
+		{"signal cancellation", hubSessionTiming{}, func(t *testing.T, s *runningHubSession) { t.Helper(); s.cancel() }, nil},
+		{"framing violation", hubSessionTiming{}, func(t *testing.T, s *runningHubSession) {
 			t.Helper()
 			_, _ = s.conn.Write([]byte("not-json\n"))
 			_, _ = s.reader.Read()
 		}, nil},
-		{"panic recovery", func(t *testing.T, _ *runningHubSession) { t.Helper() }, func() { panic("forced") }},
+		{"panic recovery", hubSessionTiming{}, func(t *testing.T, _ *runningHubSession) { t.Helper() }, func() { panic("forced") }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, cfg := newHubPool(t)
-			timing := hubSessionTiming{ChannelRead: 25 * time.Millisecond, Write: 10 * time.Millisecond}
-			s := startHubSession(t, pool, "codex", timing, nil, tc.after)
+			s := startHubSession(t, pool, "codex", tc.timing, nil, tc.after)
 			helloHub(t, s, "codex", 1)
 			if err := s.writer.Write(hubwire.LeaseAcquire{RequestBase: hubwire.RequestBase{T: "lease-acquire", ID: 2}}, nil); err != nil {
 				t.Fatal(err)
 			}
+			// A slow reader must still get lease-ok: stand in for a scheduler stall.
+			time.Sleep(hubSlowPeer)
 			raw, err := s.reader.Read()
 			if err != nil || raw.T != "lease-ok" {
 				t.Fatalf("lease = %s, %v", raw.T, err)
@@ -535,7 +544,7 @@ func TestHubSessionReleasesLeaseOnEveryExitPath(t *testing.T) {
 			tc.exit(t, s)
 			select {
 			case <-s.done:
-			case <-time.After(time.Second):
+			case <-time.After(hubExitWait):
 				t.Fatal("session did not exit")
 			}
 			if _, err := os.Stat(filepath.Join(cfg.AgentStateDir("codex"), "serve.claim")); !os.IsNotExist(err) {
@@ -724,67 +733,82 @@ func TestHubW6UnreadableResidueSetsClaimedHeld(t *testing.T) {
 	}
 }
 
+// hubSlowPeer stands in for a test goroutine the scheduler has not run yet (a
+// loaded CI runner, -race). A frame the test must receive has to survive it.
+const hubSlowPeer = 50 * time.Millisecond
+
+// hubExitWait bounds how long a test waits for a deadline that fires after
+// tens of milliseconds. It only limits a hang; a passing run never waits it out.
+const hubExitWait = 10 * time.Second
+
+// Issue #219: each row sets only the deadline it tests. The write deadline also
+// bounds hello-ok and lease-ok, so a row that needs one of those to arrive keeps
+// the production write bound; the write rows instead block on hello-ok itself,
+// the first frame the hub writes, so no frame has to succeed under a tight bound.
 func TestHubSessionDeadlines(t *testing.T) {
 	t.Run("hello", func(t *testing.T) {
 		pool, _ := newHubPool(t)
-		s := startHubSession(t, pool, "codex", hubSessionTiming{Hello: 20 * time.Millisecond, Write: 10 * time.Millisecond}, nil, nil)
+		s := startHubSession(t, pool, "codex", hubSessionTiming{Hello: 20 * time.Millisecond}, nil, nil)
 		select {
 		case <-s.done:
-		case <-time.After(time.Second):
+		case <-time.After(hubExitWait):
 			t.Fatal("hello deadline did not close")
 		}
 	})
 	t.Run("one-shot idle", func(t *testing.T) {
 		pool, _ := newHubPool(t)
-		s := startHubSession(t, pool, "codex", hubSessionTiming{OneShotRead: 20 * time.Millisecond, Write: 10 * time.Millisecond}, nil, nil)
+		s := startHubSession(t, pool, "codex", hubSessionTiming{OneShotRead: 20 * time.Millisecond}, nil, nil)
 		helloHub(t, s, "codex", 1)
 		select {
 		case <-s.done:
-		case <-time.After(time.Second):
+		case <-time.After(hubExitWait):
 			t.Fatal("one-shot idle deadline did not close")
 		}
 	})
 	t.Run("one-shot lifetime", func(t *testing.T) {
 		pool, _ := newHubPool(t)
-		s := startHubSession(t, pool, "codex", hubSessionTiming{OneShotRead: time.Second, OneShotLifetime: 20 * time.Millisecond, Write: 10 * time.Millisecond}, nil, nil)
+		s := startHubSession(t, pool, "codex", hubSessionTiming{OneShotRead: time.Minute, OneShotLifetime: 20 * time.Millisecond}, nil, nil)
 		helloHub(t, s, "codex", 1)
 		select {
 		case <-s.done:
-		case <-time.After(time.Second):
+		case <-time.After(hubExitWait):
 			t.Fatal("one-shot lifetime did not close")
 		}
 	})
-	t.Run("write", func(t *testing.T) {
-		pool, cfg := newHubPool(t)
-		enrollHubAgent(t, cfg, "codex")
-		s := startHubSession(t, pool, "codex", hubSessionTiming{Write: 20 * time.Millisecond}, nil, nil)
-		helloHub(t, s, "codex", 1)
-		if err := s.writer.Write(hubwire.Status{RequestBase: hubwire.RequestBase{T: "status", ID: 2}}, nil); err != nil {
+	writeBlocked := func(t *testing.T, transport func(net.Conn) hubSessionTransport) {
+		t.Helper()
+		pool, _ := newHubPool(t)
+		s := startHubSession(t, pool, "codex", hubSessionTiming{Write: 20 * time.Millisecond}, transport, nil)
+		if err := s.writer.Write(hubwire.Hello{RequestBase: hubwire.RequestBase{T: "hello", ID: 1}, Proto: hubwire.Protocol, V: 1, MinV: 1, Agent: "codex", Bin: "test"}, nil); err != nil {
 			t.Fatal(err)
 		}
-		// Do not read status-ok: net.Pipe makes the hub's response write block
-		// until the configured write deadline expires.
+		// Never read hello-ok: net.Pipe blocks the hub's write until its write
+		// deadline (or, without deadlines, its watchdog) closes the session.
 		select {
 		case <-s.done:
-		case <-time.After(time.Second):
+		case <-time.After(hubExitWait):
 			t.Fatal("write deadline did not close")
 		}
-	})
+	}
+	t.Run("write", func(t *testing.T) { writeBlocked(t, nil) })
 	t.Run("pipe read watchdog releases lease", func(t *testing.T) {
 		pool, cfg := newHubPool(t)
-		s := startHubSession(t, pool, "codex", hubSessionTiming{ChannelRead: 20 * time.Millisecond, Write: 10 * time.Millisecond}, func(conn net.Conn) hubSessionTransport {
+		s := startHubSession(t, pool, "codex", hubSessionTiming{ChannelRead: 20 * time.Millisecond}, func(conn net.Conn) hubSessionTransport {
 			return &noDeadlineTransport{Conn: conn}
 		}, nil)
 		helloHub(t, s, "codex", 1)
 		if err := s.writer.Write(hubwire.LeaseAcquire{RequestBase: hubwire.RequestBase{T: "lease-acquire", ID: 2}}, nil); err != nil {
 			t.Fatal(err)
 		}
+		// The CI failure: a reader not run within the old 10 ms write bound got
+		// EOF here instead of lease-ok.
+		time.Sleep(hubSlowPeer)
 		if raw, err := s.reader.Read(); err != nil || raw.T != "lease-ok" {
 			t.Fatalf("lease = %s, %v", raw.T, err)
 		}
 		select {
 		case <-s.done:
-		case <-time.After(time.Second):
+		case <-time.After(hubExitWait):
 			t.Fatal("pipe read watchdog did not close")
 		}
 		if _, err := os.Stat(filepath.Join(cfg.AgentStateDir("codex"), "serve.claim")); !os.IsNotExist(err) {
@@ -792,20 +816,7 @@ func TestHubSessionDeadlines(t *testing.T) {
 		}
 	})
 	t.Run("pipe write watchdog", func(t *testing.T) {
-		pool, cfg := newHubPool(t)
-		enrollHubAgent(t, cfg, "codex")
-		s := startHubSession(t, pool, "codex", hubSessionTiming{Write: 20 * time.Millisecond}, func(conn net.Conn) hubSessionTransport {
-			return &noDeadlineTransport{Conn: conn}
-		}, nil)
-		helloHub(t, s, "codex", 1)
-		if err := s.writer.Write(hubwire.Status{RequestBase: hubwire.RequestBase{T: "status", ID: 2}}, nil); err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case <-s.done:
-		case <-time.After(time.Second):
-			t.Fatal("pipe write watchdog did not close")
-		}
+		writeBlocked(t, func(conn net.Conn) hubSessionTransport { return &noDeadlineTransport{Conn: conn} })
 	})
 }
 

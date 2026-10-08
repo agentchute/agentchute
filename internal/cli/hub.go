@@ -51,6 +51,12 @@ func cmdHubSession(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
+	// Issue #219: stdout is sshd's pipe, and it breaks when the client goes
+	// away. A Go program that has not asked for SIGPIPE is killed by a write to
+	// a broken stdout, which skipped the deferred lease release and left the
+	// serve claim behind. Asking for it turns that write into an EPIPE error,
+	// which ends the session through its normal exit path.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 	transport := &stdioHubTransport{in: os.Stdin, out: os.Stdout}
 
 	// The pinning check lives HERE, at the CLI seam, and deliberately not inside
