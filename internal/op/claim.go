@@ -12,9 +12,14 @@ import (
 
 // ClaimReq is `check`'s state half. Limit 0 means no limit; NoArchive is the
 // dry run — display in place, no claim, no quarantine, no owed discharge.
+//
+// ServeToken is the caller's AGENTCHUTE_SERVE_TOKEN, and Unfenced skips the
+// consume fence; see consumeFence.
 type ClaimReq struct {
-	Limit     int  `json:"limit,omitempty"`
-	NoArchive bool `json:"no_archive,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+	NoArchive  bool   `json:"no_archive,omitempty"`
+	ServeToken string `json:"serve_token,omitempty"`
+	Unfenced   bool   `json:"-"`
 }
 
 // ClaimSummary is counts only (D2). Everything unbounded left as events.
@@ -59,6 +64,12 @@ func Claim(cfg *loop.Config, ctx Context, req ClaimReq, emit func(Event) error) 
 	// archives, quarantines and notifies, all of which imply enrollment.
 	if err := requireRegistered(cfg, agentID); err != nil {
 		return sum, err
+	}
+	// The dry run stays the read-only peek an operator can always take.
+	if !req.NoArchive {
+		if err := consumeFence(cfg, agentID, req.ServeToken, req.Unfenced, now); err != nil {
+			return sum, err
+		}
 	}
 
 	inboxDir := cfg.AgentInboxDir(agentID)

@@ -218,7 +218,8 @@ func (s *OneShot) Send(req op.SendReq) (op.SendResp, error) {
 }
 
 func (s *OneShot) Check(req op.ClaimReq, emit func(op.Event) error) (op.ClaimSummary, error) {
-	raw, _, err := s.do(hubwire.Check{RequestBase: hubwire.RequestBase{T: "check", ID: s.nextID}, Limit: req.Limit, NoArchive: req.NoArchive}, nil, emit, false, "check-ok")
+	token := req.ServeToken
+	raw, _, err := s.do(hubwire.Check{RequestBase: hubwire.RequestBase{T: "check", ID: s.nextID}, Limit: req.Limit, NoArchive: req.NoArchive, ServeToken: &token}, nil, emit, false, "check-ok")
 	if err != nil {
 		return op.ClaimSummary{}, err
 	}
@@ -229,8 +230,9 @@ func (s *OneShot) Check(req op.ClaimReq, emit func(op.Event) error) (op.ClaimSum
 	return op.ClaimSummary{Claimed: resp.Claimed, Redelivered: resp.Redelivered, Quarantined: resp.Quarantined, OwedExpired: resp.OwedExpired}, nil
 }
 
-func (s *OneShot) Ack(emit func(op.Event) error) (op.AckSummary, error) {
-	raw, _, err := s.do(hubwire.Ack{RequestBase: hubwire.RequestBase{T: "ack", ID: s.nextID}}, nil, emit, false, "ack-ok")
+func (s *OneShot) Ack(req op.AckReq, emit func(op.Event) error) (op.AckSummary, error) {
+	token := req.ServeToken
+	raw, _, err := s.do(hubwire.Ack{RequestBase: hubwire.RequestBase{T: "ack", ID: s.nextID}, ServeToken: &token}, nil, emit, false, "ack-ok")
 	if err != nil {
 		return op.AckSummary{}, err
 	}

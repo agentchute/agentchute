@@ -7,8 +7,12 @@ import (
 	"github.com/agentchute/agentchute/internal/loop"
 )
 
-// AckReq has no fields: ack commits everything `check` claimed, unconditionally.
-type AckReq struct{}
+// AckReq carries only the consume fence: ack commits everything `check`
+// claimed, unconditionally, once the caller passes consumeFence.
+type AckReq struct {
+	ServeToken string `json:"serve_token,omitempty"`
+	Unfenced   bool   `json:"-"`
+}
 
 // AckSummary is the post-commit report. BlockReasons is the one inline list
 // kept on a summary — a fixed-small set of gate reason strings (§4.4.3).
@@ -31,9 +35,13 @@ type AckSummary struct {
 // Idempotent: an already-archived message (a partial prior ack) is success, and
 // an empty .claimed is a no-op. An emit error aborts after the current item;
 // what committed stays committed and re-acking is a no-op.
-func Ack(cfg *loop.Config, ctx Context, _ AckReq, emit func(Event) error) (AckSummary, error) {
+func Ack(cfg *loop.Config, ctx Context, req AckReq, emit func(Event) error) (AckSummary, error) {
 	var sum AckSummary
 	now := time.Now().UTC()
+
+	if err := consumeFence(cfg, ctx.ActorID, req.ServeToken, req.Unfenced, now); err != nil {
+		return sum, err
+	}
 
 	residue, err := loop.ListClaimedMessages(cfg.AgentClaimedDir(ctx.ActorID))
 	if err != nil {

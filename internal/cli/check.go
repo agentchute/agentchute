@@ -70,6 +70,9 @@ func cmdCheck(args []string) error {
 	if fs.NArg() != 0 {
 		return checkUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
+	if err := requireRunnerAncestry("check"); err != nil {
+		return err
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -154,7 +157,9 @@ func cmdCheck(args []string) error {
 	// archiving DURING check (the old behavior) is at-most-once for the WORK. A
 	// crash between claim and ack now RE-DELIVERS (at-least-once); handlers must
 	// be idempotent.
-	claimReq := op.ClaimReq{Limit: limit, NoArchive: noArchive}
+	// The serve token fences the claim as it already fences send: a process
+	// whose env belongs to another runner may not claim a live lane's mail.
+	claimReq := op.ClaimReq{Limit: limit, NoArchive: noArchive, ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
 	var sum op.ClaimSummary
 	if cfg.Remote != nil {
 		session, openErr := openRemoteOneShot(cfg, agentID)
