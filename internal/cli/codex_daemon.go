@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,14 +36,22 @@ const codexNoDaemonFlag = "--no-daemon"
 // codexHelpProbeTimeout bounds the `codex --help` probe serve runs at launch.
 const codexHelpProbeTimeout = 10 * time.Second
 
-// codexHelpOutput runs `<bin> --help` and returns its combined output. A
-// variable so tests can install a fake; nothing is cached — the installed
-// codex can change between launches.
-var codexHelpOutput = func(bin string) (string, error) {
+// codexHelpProbeWaitDelay bounds how long the probe waits for the help
+// process's pipes after it exits: a wrapper whose background child inherits
+// stdout would otherwise hold CombinedOutput open past the deadline.
+const codexHelpProbeWaitDelay = 2 * time.Second
+
+// codexHelpOutput runs `<bin> --help` under env and returns its combined
+// output. A variable so tests can install a fake; nothing is cached — the
+// installed codex can change between launches.
+var codexHelpOutput = func(bin string, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), codexHelpProbeTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "--help").CombinedOutput()
-	if err != nil {
+	cmd := exec.CommandContext(ctx, bin, "--help")
+	cmd.Env = env
+	cmd.WaitDelay = codexHelpProbeWaitDelay
+	out, err := cmd.CombinedOutput()
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return string(out), err
 	}
 	return string(out), nil
@@ -52,9 +61,10 @@ var codexHelpOutput = func(bin string) (string, error) {
 // --no-daemon as a top-level option. The flag must appear as its own word:
 // an older codex, a failed probe, or a lookalike flag all answer no, and the
 // launch proceeds unchanged (the daemon hazard then remains; doctor's
-// codex_daemon_env check reports it).
-func codexSupportsNoDaemon(bin string) bool {
-	out, err := codexHelpOutput(bin)
+// codex_daemon_env check reports it). env is the child env the wrapper itself
+// will be launched with.
+func codexSupportsNoDaemon(bin string, env []string) bool {
+	out, err := codexHelpOutput(bin, env)
 	if err != nil {
 		return false
 	}
@@ -120,7 +130,7 @@ func ensureCodexNoDaemon(spec wrapperSpec, args []string, probe func(bin string)
 // (dispatch.go / shims.go), and a hand-typed `agentchute serve -- codex ...`
 // arrives here directly. The spec is resolved from argv[0]'s basename, so an
 // absolute path from the dispatcher and a bare name both match.
-func serveWrapperArgs(args []string) ([]string, wrapperSpec) {
+func serveWrapperArgs(args []string, env []string) ([]string, wrapperSpec) {
 	if len(args) == 0 {
 		return args, wrapperSpec{}
 	}
@@ -128,7 +138,22 @@ func serveWrapperArgs(args []string) ([]string, wrapperSpec) {
 	if !ok {
 		return args, wrapperSpec{}
 	}
-	return ensureCodexNoDaemon(spec, args, codexSupportsNoDaemon), spec
+	probe := func(bin string) bool { return codexSupportsNoDaemon(bin, env) }
+	return ensureCodexNoDaemon(spec, args, probe), spec
+}
+
+// applyCodexLaunchArgs is serve's launch-time argv step, run only AFTER the
+// serve lease is admitted (both local and remote paths) and with the child's
+// own env, so a duplicate lane never executes the wrapper's --help before
+// being refused, and the probe sees what the wrapper will see. Only the
+// probe-said-no case warns: a deliberate skip (queue, agents, --remote) is
+// codex's own rule, not a missing flag.
+func applyCodexLaunchArgs(args []string, env []string) []string {
+	out, spec := serveWrapperArgs(args, env)
+	if spec.Key == "codex" && !dispatchHasFlag(out[1:], codexNoDaemonFlag) && !codexNoDaemonIncompatible(out[1:]) {
+		fmt.Fprintf(os.Stderr, "warning: %s does not advertise %s; its shared app-server daemon hosts hooks under the FIRST serve's env (see doctor's codex_daemon_env)\n", out[0], codexNoDaemonFlag)
+	}
+	return out
 }
 
 // ---------- doctor: codex_daemon_env ----------
@@ -263,20 +288,17 @@ func poolServeTokens(cfg *loop.Config) map[string]string {
 	return tokens
 }
 
-func tokenPrefix(token string) string {
-	if len(token) > 8 {
-		return token[:8] + "…"
-	}
-	return token
-}
-
 // checkCodexDaemonEnv reports whether a running shared codex daemon carries
-// this pool's live serve token and control repo. A daemon pinned elsewhere
-// hosts every codex session's hooks and shell commands under a stale or
-// foreign identity (the hazard above). Always WARN, never BLOCKER: the daemon
-// is a per-user host condition outside the pool, and an unreadable process
-// table or environment must not fail doctor for the other lanes.
-func checkCodexDaemonEnv(cfg *loop.Config) doctorCheck {
+// THIS lane's live serve token and this pool's control repo. A daemon pinned
+// elsewhere hosts every codex session's hooks and shell commands under a stale
+// or foreign identity (the hazard above). Without --as there is no lane to
+// pin against, so the check only lists what it found (SKIP): a token that
+// matches some other lane's claim is exactly the cross-lane false-OK codex
+// reproduced (codex vs codex-l2). Never BLOCKER: the daemon is a per-user host
+// condition outside the pool, and an unreadable process table or environment
+// must not fail doctor for the other lanes. No token characters are ever
+// printed — only which lane's live claim a token matched, if any.
+func checkCodexDaemonEnv(cfg *loop.Config, agentID string) doctorCheck {
 	const name = "codex_daemon_env"
 	daemons, err := listCodexDaemons()
 	if err != nil {
@@ -286,6 +308,12 @@ func checkCodexDaemonEnv(cfg *loop.Config) doctorCheck {
 		return doctorCheck{Name: name, Severity: severityOK, Message: "no shared codex app-server daemon is running"}
 	}
 	tokens := poolServeTokens(cfg)
+	laneToken := ""
+	if agentID != "" {
+		if claim, cerr := loop.ReadServeClaim(cfg, agentID); cerr == nil {
+			laneToken = claim.ServeToken
+		}
+	}
 	var rows []string
 	problems := 0
 	for _, d := range daemons {
@@ -295,29 +323,53 @@ func checkCodexDaemonEnv(cfg *loop.Config) doctorCheck {
 			continue
 		}
 		token := d.Env["AGENTCHUTE_SERVE_TOKEN"]
-		repo := d.Env["AGENTCHUTE_CONTROL_REPO"]
+		repo, hasRepo := d.Env["AGENTCHUTE_CONTROL_REPO"]
+		owner, ownerLive := tokens[token]
 		var faults []string
-		if token == "" {
-			faults = append(faults, "no AGENTCHUTE_SERVE_TOKEN")
-		} else if _, live := tokens[token]; !live {
-			faults = append(faults, "token mismatch: no live serve.claim in this pool carries it")
+		tokenDesc := "token matches no live serve.claim in this pool"
+		switch {
+		case token == "":
+			tokenDesc = "no AGENTCHUTE_SERVE_TOKEN"
+			faults = append(faults, tokenDesc)
+		case agentID == "":
+			if ownerLive {
+				tokenDesc = "token matches " + owner + "'s live serve"
+			}
+		case laneToken == "":
+			if ownerLive {
+				tokenDesc = "token matches " + owner + "'s live serve"
+			}
+			faults = append(faults, agentID+" has no live serve.claim to match")
+		case token == laneToken:
+			tokenDesc = "token matches " + agentID + "'s live serve"
+		default:
+			if ownerLive {
+				tokenDesc = "token matches " + owner + "'s live serve, not " + agentID + "'s"
+			}
+			faults = append(faults, "token mismatch: not "+agentID+"'s live serve token")
 		}
-		if repo != "" && repo != cfg.ControlRepo {
+		repoDesc := "AGENTCHUTE_CONTROL_REPO=" + repo
+		switch {
+		case !hasRepo || repo == "":
+			repoDesc = "no AGENTCHUTE_CONTROL_REPO"
+			faults = append(faults, repoDesc)
+		case repo != cfg.ControlRepo:
 			faults = append(faults, "control repo mismatch: daemon has "+repo)
 		}
 		sort.Strings(faults)
-		row := fmt.Sprintf("pid %d: AGENTCHUTE_SERVE_TOKEN=%s AGENTCHUTE_CONTROL_REPO=%s", d.PID, tokenPrefix(token), repo)
+		row := fmt.Sprintf("pid %d: %s, %s", d.PID, tokenDesc, repoDesc)
 		if len(faults) > 0 {
 			problems++
 			row += " — " + strings.Join(faults, "; ")
-		} else {
-			row += " (matches " + tokens[token] + "'s live serve)"
 		}
 		rows = append(rows, row)
 	}
 	table := strings.Join(rows, "; ")
-	if problems == 0 {
-		return doctorCheck{Name: name, Severity: severityOK, Message: fmt.Sprintf("shared codex app-server daemon is pinned to this pool: %s. Hooks of every codex session on this host still run under that one env; --no-daemon (ac serve codex adds it) avoids the daemon entirely", table)}
+	if agentID == "" {
+		return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("shared codex app-server daemon running: %s. No --as / $AGENTCHUTE_AGENT_ID, so it cannot be verified against a specific lane's serve token; run doctor --as <codex lane>", table)}
 	}
-	return doctorCheck{Name: name, Severity: severityWarn, Message: fmt.Sprintf("shared codex app-server daemon is not pinned to this pool's live serve: %s. Every codex session on this host runs its hooks and shell commands as children of that daemon, inheriting its env — sends fence (token mismatch) and turn-end exits 1. Fix: `codex app-server daemon stop` (ends the sessions it hosts), then relaunch each codex lane with --no-daemon (ac serve codex adds it when codex advertises the flag)", table)}
+	if problems == 0 {
+		return doctorCheck{Name: name, Severity: severityOK, Message: fmt.Sprintf("shared codex app-server daemon is pinned to %s's live serve in this pool: %s. Hooks of every codex session on this host still run under that one env; --no-daemon (ac serve codex adds it) avoids the daemon entirely", agentID, table)}
+	}
+	return doctorCheck{Name: name, Severity: severityWarn, Message: fmt.Sprintf("shared codex app-server daemon is not pinned to %s's live serve: %s. Every codex session on this host runs its hooks and shell commands as children of that daemon, inheriting its env — sends fence (token mismatch) and turn-end exits 1. Fix: `codex app-server daemon stop` (ends the sessions it hosts), then relaunch each codex lane with --no-daemon (ac serve codex adds it when codex advertises the flag)", agentID, table)}
 }

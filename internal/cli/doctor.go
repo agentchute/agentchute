@@ -361,7 +361,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 		checkHookFilePresence(cfg, agentID),
 		checkHookContentSanity(cfg),
 		checkWrapperShadowing(cfg, agentID, opts),
-		checkCodexDaemonEnv(cfg),
+		checkCodexDaemonEnv(cfg, agentID),
 		checkHubAuthorizedKeysAudit(),
 	}
 	if agentID != "" {

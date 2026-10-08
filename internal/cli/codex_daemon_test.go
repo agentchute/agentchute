@@ -199,7 +199,7 @@ func TestServeWrapperArgs_CoversDispatchAndHandTypedServe(t *testing.T) {
 	restore := codexHelpOutput
 	t.Cleanup(func() { codexHelpOutput = restore })
 	var probedBin string
-	codexHelpOutput = func(bin string) (string, error) {
+	codexHelpOutput = func(bin string, _ []string) (string, error) {
 		probedBin = bin
 		return "Usage: codex [OPTIONS] [PROMPT]\n\n      --no-daemon\n          Run without the shared background server\n", nil
 	}
@@ -221,7 +221,7 @@ func TestServeWrapperArgs_CoversDispatchAndHandTypedServe(t *testing.T) {
 	if sep < 0 {
 		t.Fatalf("no -- separator in %q", runArgs)
 	}
-	got, spec := serveWrapperArgs(runArgs[sep+1:])
+	got, spec := serveWrapperArgs(runArgs[sep+1:], nil)
 	want := []string{"/opt/homebrew/bin/codex", "--no-daemon", "--dangerously-bypass-approvals-and-sandbox", "resume"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("dispatch→serve argv = %q, want %q", got, want)
@@ -232,7 +232,7 @@ func TestServeWrapperArgs_CoversDispatchAndHandTypedServe(t *testing.T) {
 
 	// hand-typed layer: `agentchute serve -- codex resume`
 	probedBin = ""
-	got, _ = serveWrapperArgs([]string{"codex", "resume"})
+	got, _ = serveWrapperArgs([]string{"codex", "resume"}, nil)
 	want = []string{"codex", "--no-daemon", "resume"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("hand-typed serve argv = %q, want %q", got, want)
@@ -259,8 +259,8 @@ func TestCodexSupportsNoDaemon_Probe(t *testing.T) {
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			codexHelpOutput = func(string) (string, error) { return row.out, row.err }
-			if got := codexSupportsNoDaemon("codex"); got != row.want {
+			codexHelpOutput = func(string, []string) (string, error) { return row.out, row.err }
+			if got := codexSupportsNoDaemon("codex", nil); got != row.want {
 				t.Fatalf("codexSupportsNoDaemon = %v, want %v", got, row.want)
 			}
 		})
@@ -377,69 +377,92 @@ func TestDoctorCodexDaemonEnv(t *testing.T) {
 	restore := listCodexDaemons
 	t.Cleanup(func() { listCodexDaemons = restore })
 
-	const live = "eccdff90eccdff90eccdff90eccdff90"
-	const dead = "d7ab11fed7ab11fed7ab11fed7ab11fe"
+	const live = "eccdff90eccdff90eccdff90eccdff90"  // codex's live claim
+	const other = "0fa78b310fa78b310fa78b310fa78b31" // codex-l2's live claim
+	const dead = "d7ab11fed7ab11fed7ab11fed7ab11fe"  // nobody's
+	daemon := func(env map[string]string) []codexDaemonProcess {
+		return []codexDaemonProcess{{PID: 13818, Command: "codex app-server --managed-daemon", Env: env}}
+	}
 
 	rows := []struct {
 		name         string
+		agent        string
 		daemons      []codexDaemonProcess
 		listErr      error
 		wantSeverity string
 		wantContains []string
-		wantAbsent   []string
 	}{
 		{
-			name:         "no daemon running",
+			name: "no daemon running", agent: "codex",
 			wantSeverity: severityOK,
 			wantContains: []string{"no shared codex app-server daemon"},
 		},
 		{
-			name:         "process table unreadable is a warning, not a failure",
+			name: "process table unreadable is a warning, not a failure", agent: "codex",
 			listErr:      errors.New("ps: boom"),
 			wantSeverity: severityWarn,
 			wantContains: []string{"could not enumerate", "ps: boom"},
 		},
 		{
-			name: "daemon pinned to this pool's live serve",
-			daemons: []codexDaemonProcess{{PID: 13818, Command: "codex app-server --managed-daemon",
-				Env: map[string]string{"AGENTCHUTE_SERVE_TOKEN": live, "AGENTCHUTE_CONTROL_REPO": "{repo}"}}},
+			name: "daemon pinned to this lane's live serve", agent: "codex",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": live, "AGENTCHUTE_CONTROL_REPO": "{repo}"}),
 			wantSeverity: severityOK,
-			wantContains: []string{"13818", "eccdff90"},
+			wantContains: []string{"13818", "token matches codex's live serve"},
 		},
 		{
-			name: "token mismatch: daemon carries a fenced serve's token",
-			daemons: []codexDaemonProcess{{PID: 13818, Command: "codex app-server --managed-daemon",
-				Env: map[string]string{"AGENTCHUTE_SERVE_TOKEN": dead, "AGENTCHUTE_CONTROL_REPO": "{repo}"}}},
+			name: "token mismatch: daemon carries a fenced serve's token", agent: "codex",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": dead, "AGENTCHUTE_CONTROL_REPO": "{repo}"}),
 			wantSeverity: severityWarn,
-			wantContains: []string{"13818", "d7ab11fe", "token mismatch", "--no-daemon", "codex app-server daemon stop"},
-			wantAbsent:   []string{dead}, // tokens are shown as a prefix, never in full
+			wantContains: []string{"13818", "token mismatch: not codex's live serve token", "matches no live serve.claim", "--no-daemon", "codex app-server daemon stop"},
 		},
 		{
-			name: "control repo mismatch: daemon belongs to another pool",
-			daemons: []codexDaemonProcess{{PID: 13818, Command: "codex app-server --managed-daemon",
-				Env: map[string]string{"AGENTCHUTE_SERVE_TOKEN": live, "AGENTCHUTE_CONTROL_REPO": "/Users/alex/code"}}},
+			name: "token is another lane's: a false OK before (codex vs codex-l2)", agent: "codex",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": other, "AGENTCHUTE_CONTROL_REPO": "{repo}"}),
+			wantSeverity: severityWarn,
+			wantContains: []string{"token matches codex-l2's live serve, not codex's", "token mismatch"},
+		},
+		{
+			name: "the requested lane has no live claim", agent: "codex-l3",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": live, "AGENTCHUTE_CONTROL_REPO": "{repo}"}),
+			wantSeverity: severityWarn,
+			wantContains: []string{"codex-l3 has no live serve.claim to match", "token matches codex's live serve"},
+		},
+		{
+			name: "control repo mismatch: daemon belongs to another pool", agent: "codex",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": live, "AGENTCHUTE_CONTROL_REPO": "/Users/alex/code"}),
 			wantSeverity: severityWarn,
 			wantContains: []string{"/Users/alex/code", "control repo mismatch"},
 		},
 		{
-			name: "daemon without agentchute env at all: not ours, still a hazard",
-			daemons: []codexDaemonProcess{{PID: 13818, Command: "codex app-server --managed-daemon",
-				Env: map[string]string{"HOME": "/Users/alex"}}},
+			name: "matching token but no control repo var: a false OK before", agent: "codex",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": live}),
 			wantSeverity: severityWarn,
-			wantContains: []string{"13818", "no AGENTCHUTE_SERVE_TOKEN"},
+			wantContains: []string{"no AGENTCHUTE_CONTROL_REPO"},
 		},
 		{
-			name: "env unreadable: warning that names the pid",
-			daemons: []codexDaemonProcess{{PID: 13818, Command: "codex app-server --managed-daemon",
-				EnvErr: errors.New("permission denied")}},
+			name: "daemon without agentchute env at all: not ours, still a hazard", agent: "codex",
+			daemons:      daemon(map[string]string{"HOME": "/Users/alex"}),
+			wantSeverity: severityWarn,
+			wantContains: []string{"13818", "no AGENTCHUTE_SERVE_TOKEN", "no AGENTCHUTE_CONTROL_REPO"},
+		},
+		{
+			name: "env unreadable: warning that names the pid", agent: "codex",
+			daemons:      []codexDaemonProcess{{PID: 13818, Command: "codex app-server --managed-daemon", EnvErr: errors.New("permission denied")}},
 			wantSeverity: severityWarn,
 			wantContains: []string{"13818", "permission denied", "could not read"},
+		},
+		{
+			name: "no --as: listed, not verified", agent: "",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": other, "AGENTCHUTE_CONTROL_REPO": "{repo}"}),
+			wantSeverity: severitySkip,
+			wantContains: []string{"token matches codex-l2's live serve", "cannot be verified against a specific lane"},
 		},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			cfg := newDoctorCfg(t)
 			writeServeClaim(t, cfg, "codex", live)
+			writeServeClaim(t, cfg, "codex-l2", other)
 			daemons := make([]codexDaemonProcess, 0, len(row.daemons))
 			for _, d := range row.daemons {
 				env := map[string]string{}
@@ -451,7 +474,7 @@ func TestDoctorCodexDaemonEnv(t *testing.T) {
 			}
 			listCodexDaemons = func() ([]codexDaemonProcess, error) { return daemons, row.listErr }
 
-			r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
+			r := runDoctorChecks(cfg, row.agent, doctorOptions{Now: time.Now().UTC()})
 			c := findCheck(t, r, "codex_daemon_env")
 			if c.Severity != row.wantSeverity {
 				t.Fatalf("severity = %s, want %s; message: %s", c.Severity, row.wantSeverity, c.Message)
@@ -461,14 +484,66 @@ func TestDoctorCodexDaemonEnv(t *testing.T) {
 					t.Errorf("message lacks %q: %s", want, c.Message)
 				}
 			}
-			for _, absent := range row.wantAbsent {
-				if strings.Contains(c.Message, absent) {
-					t.Errorf("message leaks %q: %s", absent, c.Message)
+			// No token characters, ever: not the full token, not a prefix.
+			for _, tok := range []string{live, other, dead} {
+				if strings.Contains(c.Message, tok[:4]) {
+					t.Errorf("message leaks token characters %q: %s", tok[:4], c.Message)
 				}
 			}
-			if r.Blockers != 0 {
-				t.Fatalf("codex daemon check must never block; blockers=%d", r.Blockers)
+			if c.Severity == severityBlocker {
+				t.Fatal("codex daemon check must never block")
 			}
 		})
+	}
+}
+
+// The real probe against a wrapper whose background child inherits stdout:
+// without WaitDelay, CombinedOutput waits for that child to close the pipe
+// (codex measured 13 s past a 10 s deadline). With it, the probe returns
+// shortly after the help process exits, with the output it printed.
+func TestCodexHelpProbeDoesNotWaitForInheritedPipes(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 20 &\nprintf '      --no-daemon\\n'\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	got := codexSupportsNoDaemon(script, os.Environ())
+	if took := time.Since(start); took > codexHelpProbeWaitDelay+5*time.Second {
+		t.Fatalf("probe took %s; the inherited pipe held it open", took)
+	}
+	if !got {
+		t.Fatal("probe lost the help output that was printed before the pipe was held open")
+	}
+}
+
+// A duplicate lane is refused at lease admission BEFORE the probe runs: the
+// wrapper's --help must never execute for a serve that will not launch.
+func TestServeProbesCodexOnlyAfterLeaseAdmission(t *testing.T) {
+	root := setupShortRunFixture(t)
+	invokedPath := filepath.Join(root, "invoked")
+	wrapper := filepath.Join(root, "codex")
+	mustWrite(t, wrapper, []byte("#!/bin/sh\nprintf -- \"$*\" > "+shellQuote(invokedPath)+"\n"))
+	if err := os.Chmod(wrapper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := loop.AcquireServeLease(cfg, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = loop.ReleaseLease(lease) })
+
+	var serveErr error
+	withCwd(t, root, func() {
+		serveErr = cmdServe([]string{"--as", "codex", "--control-repo", root, "--loop-dir", filepath.Join(root, ".agentchute", "loop"), "--interval", "5", "--idle-grace", "100ms", "--", wrapper})
+	})
+	if serveErr == nil {
+		t.Fatal("cmdServe succeeded while another live serve owns the id")
+	}
+	if _, err := os.Stat(invokedPath); !os.IsNotExist(err) {
+		t.Fatalf("wrapper was executed (--help probe) before lease admission refused the launch: stat err = %v", err)
 	}
 }

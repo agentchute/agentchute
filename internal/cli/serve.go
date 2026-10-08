@@ -191,18 +191,6 @@ func cmdServe(args []string) error {
 	if err := refreshWrapperHook(cfg.ControlRepo, launchedWrapper); err != nil {
 		return fmt.Errorf("serve: refresh %s hook: %w", launchedWrapper, err)
 	}
-	// Last step before launch, for both launch forms (`ac serve codex ...`
-	// re-execs into here; `agentchute serve -- codex ...` arrives directly):
-	// add codex's --no-daemon when the installed codex advertises it. After
-	// every refusal above, so the `codex --help` probe never runs a wrapper
-	// serve is not going to launch.
-	var spec wrapperSpec
-	opts.WrapperArgs, spec = serveWrapperArgs(opts.WrapperArgs)
-	// Only the probe-said-no case warns: a deliberate skip (queue, agents,
-	// --remote) is codex's own rule, not a missing flag.
-	if spec.Key == "codex" && !dispatchHasFlag(opts.WrapperArgs[1:], codexNoDaemonFlag) && !codexNoDaemonIncompatible(opts.WrapperArgs[1:]) {
-		fmt.Fprintf(os.Stderr, "warning: %s does not advertise %s; its shared app-server daemon hosts hooks under the FIRST serve's env (see doctor's codex_daemon_env)\n", opts.WrapperArgs[0], codexNoDaemonFlag)
-	}
 	return runWrapper(cfg, opts, cwd)
 }
 
@@ -523,9 +511,13 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		return err
 	}
 
+	// Lease admitted: now (and only now) probe codex for --no-daemon, with the
+	// env the child itself gets.
+	childEnv := runnerChildEnv(cfg, opts, lease.Token)
+	opts.WrapperArgs = applyCodexLaunchArgs(opts.WrapperArgs, childEnv)
 	cmd := exec.Command(opts.WrapperArgs[0], opts.WrapperArgs[1:]...)
 	cmd.Dir = cwd
-	cmd.Env = runnerChildEnv(cfg, opts, lease.Token)
+	cmd.Env = childEnv
 	// Size the child's PTY from our own terminal before the child starts —
 	// a TUI that reads a 0x0 winsize on first draw renders a blank screen.
 	ptmx, err := runnerpty.StartInheritSize(cmd, os.Stdin)
@@ -726,9 +718,13 @@ func runRemoteWrapperOnce(cfg *loop.Config, opts runnerOptions, cwd string) remo
 		return remoteRunResult{err: err}
 	}
 
+	// Lease admitted and registered: probe codex for --no-daemon with the
+	// child env (the deferred release covers a failure after this point).
+	childEnv := runnerChildEnv(cfg, opts, channel.Token())
+	opts.WrapperArgs = applyCodexLaunchArgs(opts.WrapperArgs, childEnv)
 	cmd := exec.Command(opts.WrapperArgs[0], opts.WrapperArgs[1:]...)
 	cmd.Dir = cwd
-	cmd.Env = runnerChildEnv(cfg, opts, channel.Token())
+	cmd.Env = childEnv
 	ptmx, err := runnerpty.StartInheritSize(cmd, os.Stdin)
 	if err != nil {
 		return remoteRunResult{err: fmt.Errorf("start wrapper under PTY: %w", err)}
