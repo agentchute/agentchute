@@ -23,6 +23,23 @@ import (
 
 var guardHubSubcommands = map[string]bool{"authorize": true, "join": true, "session": true}
 
+var guardShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "fish": true}
+
+// guardReserved are shell words that can stand in command position without
+// being the program (if/then/do/{/! ...).
+var guardReserved = map[string]bool{"if": true, "then": true, "else": true, "elif": true, "fi": true, "do": true, "done": true, "while": true, "until": true, "!": true, "{": true, "}": true, "esac": true}
+
+// guardWrapperValueFlags are wrapper options whose value is the next word.
+// Lower-case: the guard matches lower-cased text (so -I and -i are one key).
+var guardWrapperValueFlags = map[string]map[string]bool{
+	"env":     {"-u": true, "-c": true},
+	"sudo":    {"-u": true, "-g": true, "-c": true, "-d": true, "-h": true, "-p": true, "-r": true, "-t": true},
+	"doas":    {"-u": true, "-c": true},
+	"nice":    {"-n": true},
+	"timeout": {"-s": true, "-k": true},
+	"xargs":   {"-i": true, "-n": true, "-p": true, "-l": true, "-s": true, "-e": true, "-d": true, "-a": true},
+}
+
 // guardHubInvocation reports whether lower-cased command text runs a guarded
 // hub subcommand anywhere in command position.
 func guardHubInvocation(text string) bool {
@@ -49,6 +66,13 @@ func guardHubInvocationDepth(text string, depth int) bool {
 
 // guardHubCommand examines one simple command.
 func guardHubCommand(words []string, depth int) bool {
+	for j := 0; j+1 < len(words); j++ {
+		if filepath.Base(words[j]) == "env" && (words[j+1] == "-s" || strings.HasPrefix(words[j+1], "--split-string")) && j+2 < len(words) {
+			if guardHubInvocationDepth(words[j+2], depth+1) {
+				return true
+			}
+		}
+	}
 	i := guardSkipPrefix(words)
 	if i >= len(words) {
 		return false
@@ -58,12 +82,27 @@ func guardHubCommand(words []string, depth int) bool {
 	switch {
 	case base == "agentchute" || base == "ac" || prog == "${agentchute_bin:-agentchute}" || prog == "${agentchute_bin}" || prog == "$agentchute_bin":
 		return guardHubArgs(words[i+1:])
-	case base == "sh" || base == "bash" || base == "zsh" || base == "dash" || base == "ksh" || base == "fish":
+	case guardShells[base]:
+		// -c (alone or in a short-option cluster such as -ec) runs its string;
+		// with no -c and no script operand the shell reads its commands from
+		// stdin — a pipe, a here-string, a file — which the guard cannot see, so
+		// that fails closed.
 		for j := i + 1; j < len(words); j++ {
-			if strings.HasPrefix(words[j], "-") && strings.Contains(words[j], "c") && j+1 < len(words) {
-				return guardHubInvocationDepth(words[j+1], depth+1)
+			w := words[j]
+			switch {
+			case len(w) > 1 && w[0] == '-' && w[1] != '-' && strings.ContainsRune(w[1:], 'c'):
+				if j+1 < len(words) {
+					return guardHubInvocationDepth(words[j+1], depth+1)
+				}
+				return true
+			case w == "--rcfile" || w == "--init-file" || w == "-o" || w == "+o":
+				j++
+			case strings.HasPrefix(w, "-") || strings.HasPrefix(w, "+"):
+			default:
+				return false // a script operand: a file the guard cannot read
 			}
 		}
+		return true
 	case base == "eval":
 		return guardHubInvocationDepth(strings.Join(words[i+1:], " "), depth+1)
 	case base == "ssh":
@@ -102,7 +141,7 @@ func guardSkipPrefix(words []string) int {
 	i := 0
 	for i < len(words) {
 		w := words[i]
-		if guardIsAssignment(w) {
+		if guardIsAssignment(w) || guardReserved[w] {
 			i++
 			continue
 		}
@@ -115,7 +154,7 @@ func guardSkipPrefix(words []string) int {
 				switch {
 				case guardIsAssignment(a):
 					i++
-				case a == "-u" && (wrapper == "env" || wrapper == "sudo"), a == "-n" && wrapper == "nice", a == "-g" && wrapper == "sudo":
+				case guardWrapperValueFlags[wrapper][a]:
 					i += 2
 				case strings.HasPrefix(a, "-"):
 					i++
@@ -208,6 +247,28 @@ func guardShellCommands(s string) (commands [][]string, nested []string) {
 		case c == ' ' || c == '\t' || c == '\r':
 			endWord()
 			i++
+		case c == '>' || c == '<' || (c == '&' && i+1 < len(s) && s[i+1] == '>'):
+			// A redirection: its fd number, operator and target are not words of
+			// the command. A heredoc's body is data until its delimiter line.
+			if inWord && guardAllDigits(word.String()) {
+				word.Reset()
+				inWord = false
+			}
+			endWord()
+			j := i
+			for j < len(s) && strings.IndexByte("<>&|-", s[j]) >= 0 {
+				j++
+			}
+			op := s[i:j]
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+				j++
+			}
+			target, n := guardReadWord(s[j:])
+			j += n
+			if strings.HasPrefix(op, "<<") && !strings.HasPrefix(op, "<<<") && target != "" {
+				j = guardSkipHeredoc(s, j, target)
+			}
+			i = j
 		case c == '\n' || c == ';' || c == '&' || c == '|' || c == '(' || c == ')':
 			endCommand()
 			i++
@@ -270,9 +331,14 @@ func guardShellCommands(s string) (commands [][]string, nested []string) {
 				word.WriteString(lit.String())
 				inWord = true
 			}
-		case strings.HasPrefix(s[i:], "${ifs}"):
+		case strings.HasPrefix(s[i:], "${ifs"):
+			// Any expansion of IFS (${IFS}, ${IFS:0:1}, ...) splits words.
 			endWord()
-			i += len("${ifs}")
+			if j := strings.IndexByte(s[i:], '}'); j >= 0 {
+				i += j + 1
+			} else {
+				i = len(s)
+			}
 		case strings.HasPrefix(s[i:], "$ifs") && (i+4 == len(s) || !guardIsNameByte(s[i+4])):
 			endWord()
 			i += len("$ifs")
@@ -323,4 +389,69 @@ func guardBalanced(s string) (string, int) {
 
 func guardIsNameByte(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+func guardAllDigits(w string) bool {
+	if w == "" {
+		return false
+	}
+	for _, c := range w {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// guardReadWord reads one shell word (quotes removed) from the start of s.
+func guardReadWord(s string) (string, int) {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == ';' || c == '&' || c == '|' || c == '(' || c == ')' || c == '<' || c == '>':
+			return b.String(), i
+		case c == '\'' || c == '"':
+			j := strings.IndexByte(s[i+1:], c)
+			if j < 0 {
+				b.WriteString(s[i+1:])
+				return b.String(), len(s)
+			}
+			b.WriteString(s[i+1 : i+1+j])
+			i += j + 2
+		case c == '\\' && i+1 < len(s):
+			b.WriteByte(s[i+1])
+			i += 2
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String(), i
+}
+
+// guardSkipHeredoc returns the index just past a heredoc body that starts on
+// the line after position i and ends at a line equal to delim (leading tabs
+// allowed, as <<- permits).
+func guardSkipHeredoc(s string, i int, delim string) int {
+	nl := strings.IndexByte(s[i:], '\n')
+	if nl < 0 {
+		return len(s)
+	}
+	j := i + nl + 1
+	for j < len(s) {
+		end := strings.IndexByte(s[j:], '\n')
+		line := s[j:]
+		next := len(s)
+		if end >= 0 {
+			line = s[j : j+end]
+			next = j + end + 1
+		}
+		if strings.TrimLeft(line, "\t") == delim {
+			return next
+		}
+		j = next
+	}
+	return len(s)
 }

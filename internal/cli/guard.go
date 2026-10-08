@@ -387,15 +387,14 @@ func guardCommandDenied(toolCmd string) bool {
 
 // guardStripToolName drops the tool-name word parseGuardToolCommand puts in
 // front of the command text, so the hub rule sees the command itself in
-// command position (lower-cased input).
+// command position. It drops whatever that word is: a list of known tool names
+// failed open for every tool not on it (background security review).
 func guardStripToolName(lower string) string {
 	trimmed := strings.TrimSpace(lower)
-	for _, name := range []string{"bash", "functions.exec_command", "exec_command", "run_shell_command", "run_command", "run_terminal_command", "shell", "local_shell"} {
-		if strings.HasPrefix(trimmed, name+" ") {
-			return strings.TrimSpace(trimmed[len(name):])
-		}
+	if i := strings.IndexAny(trimmed, " \t\n"); i >= 0 {
+		return strings.TrimSpace(trimmed[i:])
 	}
-	return trimmed
+	return ""
 }
 
 // guardDirectSendInvocation recognizes only the literal send binaries this

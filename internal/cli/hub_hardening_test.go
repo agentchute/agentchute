@@ -439,3 +439,27 @@ func TestHubJoinSeedsUnderTheNameSSHChecks(t *testing.T) {
 		})
 	}
 }
+
+// If ssh cannot say what name it checks, seeding refuses rather than guessing:
+// a guess would leave the real entry unseeded and the first connection on
+// accept-new (background security review of the ssh -G change).
+func TestHubJoinSeedingRefusesWhenSSHCannotResolveTheName(t *testing.T) {
+	_, remote := setupHubJoinTest(t)
+	orig := hubJoinResolveSSH
+	hubJoinResolveSSH = func(*loop.RemoteConfig) (string, int, error) { return "", 0, errors.New("Bad configuration option") }
+	t.Cleanup(func() { hubJoinResolveSSH = orig })
+	err := seedHubKnownHosts(remote)
+	if err == nil || !strings.Contains(err.Error(), "ssh -G") {
+		t.Fatalf("seedHubKnownHosts with an unresolvable ssh config = %v, want a refusal naming ssh -G", err)
+	}
+	// An existing pin is never re-examined, so a later broken config cannot strand a joined machine.
+	if err := os.MkdirAll(remote.HubDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote.HubDir, "known_hosts"), []byte("pinned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedHubKnownHosts(remote); err != nil {
+		t.Fatalf("with a pin already present = %v, want no lookup at all", err)
+	}
+}

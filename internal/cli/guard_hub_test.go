@@ -67,3 +67,38 @@ func TestGuardHubRuleStillDeniesRealInvocations(t *testing.T) {
 		}
 	}
 }
+
+// Forms the background security review found the first parser missed: shell
+// keywords and braces in command position, redirections before the program, a
+// tool name the guard does not list, option clusters that only look like -c,
+// wrapper options that take a value, any ${IFS...} expansion, and text piped
+// into a shell that reads its commands from stdin.
+func TestGuardHubRuleCoversKeywordsRedirectionsAndFedShells(t *testing.T) {
+	for _, cmd := range []string{
+		"if true; then agentchute hub join ssh://h/p --as y; fi",
+		"for x in 1; do agentchute hub join ssh://h/p --as y; done",
+		"{ agentchute hub join ssh://h/p --as y; }",
+		"f(){ agentchute hub join ssh://h/p --as y; }; f",
+		"! agentchute hub join ssh://h/p --as y",
+		">/dev/null agentchute hub join ssh://h/p --as y",
+		"2>&1 agentchute hub join ssh://h/p --as y",
+		"agentchute hub join ssh://h/p --as y >/dev/null 2>&1",
+		"bash --norc -c 'agentchute hub join ssh://h/p --as y'",
+		"sh -ec 'agentchute hub join ssh://h/p --as y'",
+		"timeout -s KILL 5 agentchute hub join ssh://h/p --as y",
+		"xargs -I {} agentchute hub join {} < urls",
+		"env -C /tmp agentchute hub join ssh://h/p --as y",
+		"agentchute hub${IFS:0:1}join ssh://h/p --as y",
+		"echo 'agentchute hub join ssh://h/p --as y' | sh",
+		"bash <<< 'agentchute hub authorize --list'",
+		"cat cmds.txt | bash -s",
+	} {
+		if !guardCommandDenied("Bash " + cmd) {
+			t.Errorf("guard allowed %q", cmd)
+		}
+	}
+	// A tool name the guard has never heard of still prefixes the command.
+	if !guardCommandDenied("SomeFutureShellTool agentchute hub join ssh://h/p --as y") {
+		t.Error("an unlisted tool-name prefix hid the invocation")
+	}
+}

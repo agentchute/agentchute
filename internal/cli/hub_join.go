@@ -167,7 +167,11 @@ func cmdHubJoin(args []string) error {
 		// The migration was proven: the new URL's host holds a key pinned for
 		// the old hub. The moved known_hosts names only the OLD host, so make
 		// that proof the new name's pin, or its first connection is accept-new.
-		if err := hubclient.CarryHostKeyPin(filepath.Join(remote.HubDir, "known_hosts"), hubKnownHostsSpec(remote)); err != nil {
+		spec, err := hubKnownHostsSpec(remote)
+		if err != nil {
+			return err
+		}
+		if err := hubclient.CarryHostKeyPin(filepath.Join(remote.HubDir, "known_hosts"), spec); err != nil {
 			return err
 		}
 		return runHubJoin(root, remote, opts)
@@ -835,19 +839,21 @@ func readHubJoinFingerprint(remote *loop.RemoteConfig) (string, error) {
 // is configured, and otherwise the host with the EFFECTIVE port — which a
 // configured Port can change (PR #216 gate, codex P2). ssh -G resolves both the
 // way the connection will. If it cannot, the fallback is loud, never silent.
-func hubKnownHostsSpec(remote *loop.RemoteConfig) string {
+func hubKnownHostsSpec(remote *loop.RemoteConfig) (string, error) {
 	alias, port, err := hubJoinResolveSSH(remote)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not resolve %s through your ssh config (ssh -G: %v); looking up its host key as %s:%d\n", remote.Host, err, remote.Host, remote.Port)
-		alias, port = "", remote.Port
+		// Fail closed: guessing the name would seed (or pin) the wrong entry and
+		// leave the real one to accept-new. ssh -G failing means the connection
+		// would be reading the same broken config anyway.
+		return "", fmt.Errorf("hub join: cannot resolve how ssh names %s for its host key (ssh -G: %v); fix the ssh config and re-run", remote.Host, err)
 	}
 	if alias != "" {
-		return alias
+		return alias, nil
 	}
 	if port != 22 {
-		return fmt.Sprintf("[%s]:%d", remote.Host, port)
+		return fmt.Sprintf("[%s]:%d", remote.Host, port), nil
 	}
-	return remote.Host
+	return remote.Host, nil
 }
 
 // hubJoinSSHConfig, when set, is passed to ssh -G as -F. Production leaves it
@@ -892,7 +898,10 @@ func seedHubKnownHosts(remote *loop.RemoteConfig) error {
 	if _, err := os.Lstat(dest); err == nil || !os.IsNotExist(err) {
 		return nil
 	}
-	spec := hubKnownHostsSpec(remote)
+	spec, err := hubKnownHostsSpec(remote)
+	if err != nil {
+		return err
+	}
 	var lines []string
 	for _, src := range []string{hubJoinUserKnownHosts(), hubJoinSystemKnownHosts} {
 		if src == "" {
