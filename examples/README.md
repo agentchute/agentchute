@@ -15,7 +15,7 @@ points so you don't call them by hand:
 | codex CLI | [`hooks/codex/.codex/hooks.json`](hooks/codex/.codex/hooks.json) |
 | Gemini CLI | [`hooks/gemini/.gemini/settings.json`](hooks/gemini/.gemini/settings.json) — commits on `AfterAgent`, context via `hookSpecificOutput.additionalContext` |
 | Antigravity CLI (`agy`, canonical id `agy`) | [`hooks/agy/.agents/hooks.json`](hooks/agy/.agents/hooks.json) — `PreInvocation`/`PreToolUse`/`Stop`, camelCase payloads; `ac serve agy`, never `ac serve gemini` |
-| Grok CLI | hookless — uses `ac serve grok` / `agentchute serve` for startup + wake |
+| Grok CLI | hookless — `ac serve grok` / `agentchute serve` handle startup + wake and set `GROK_CLAUDE_HOOKS_ENABLED=0` so grok does not run the Claude Code template above |
 
 **codex's shared daemon.** codex 0.161+ hosts every session on one per-user background
 process (`codex app-server --managed-daemon`), forked by the first `codex` launch and

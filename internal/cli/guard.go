@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -74,6 +75,52 @@ var guardPipelineDenySubstrings = []string{
 	".claude/settings.json",
 	".codex/hooks.json",
 	".gemini/settings.json",
+	".agents/hooks.json", // Antigravity CLI (agy): its own wrapper since the Google-templates PR
+}
+
+// guardApplyPatchTargetRE captures the file paths an `apply_patch` body
+// touches. codex fires PreToolUse for apply_patch with the WHOLE patch in
+// tool_input.command, so matching it like a shell command denied every doc
+// edit whose diff text merely mentioned `agentchute ack` (opus-xhigh H3c).
+// Only the targets can touch a hook config file; the diff body cannot run
+// anything.
+var guardApplyPatchTargetRE = regexp.MustCompile(`(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$`)
+
+// guardApplyPatchTargets returns the paths a patch adds, updates, deletes or
+// moves to, one per line of command text; the diff body is dropped.
+func guardApplyPatchTargets(patch string) []string {
+	var out []string
+	for _, m := range guardApplyPatchTargetRE.FindAllStringSubmatch(patch, -1) {
+		for _, g := range m[1:] {
+			if g = strings.TrimSpace(g); g != "" {
+				// Normalize before comparing: `.codex/./hooks.json` and
+				// `.claude/sub/../settings.json` name the protected files
+				// (codex gate on #213).
+				out = append(out, filepath.ToSlash(filepath.Clean(g)))
+			}
+		}
+	}
+	return out
+}
+
+// guardApplyPatchPrefix marks parseGuardToolCommand's apply_patch form: the
+// tool name, then one cleaned target path per line.
+const guardApplyPatchPrefix = "apply_patch\n"
+
+// guardHookConfigPath reports whether a cleaned patch target names one of the
+// hook config files: the path itself, or a longer path ending in it
+// (`/repo/.codex/hooks.json`, `sub/.claude/settings.json`).
+func guardHookConfigPath(target string) bool {
+	target = strings.ToLower(filepath.ToSlash(filepath.Clean(target)))
+	for _, p := range guardPipelineDenySubstrings {
+		if !strings.Contains(p, "/") {
+			continue // the command words, not the hook paths
+		}
+		if target == p || strings.HasSuffix(target, "/"+p) {
+			return true
+		}
+	}
+	return false
 }
 
 // guardDispatchPrefixRE strips a `dispatch [--shim-dir[= |] <path>] [--] `
@@ -309,6 +356,16 @@ func evaluateGuardDecision(cfg *loop.Config, agentID, session, toolCmd string) g
 // its argument text is not shell syntax, so deny-list words in a quoted body
 // are inert. The exception fails closed on compound or expandable shell syntax.
 func guardCommandDenied(toolCmd string) bool {
+	if strings.HasPrefix(toolCmd, guardApplyPatchPrefix) {
+		// codex apply_patch: a dedicated path predicate over the cleaned
+		// targets, never the substring matcher and never the diff body.
+		for _, target := range strings.Split(strings.TrimPrefix(toolCmd, guardApplyPatchPrefix), "\n") {
+			if target != "" && guardHookConfigPath(target) {
+				return true
+			}
+		}
+		return false
+	}
 	if candidate, inert := guardDirectSendInvocation(toolCmd); candidate {
 		return !inert
 	}
@@ -574,6 +631,18 @@ func parseGuardToolCommand(body []byte) string {
 	if len(in.ToolInput) > 0 {
 		var asMap map[string]any
 		if err := json.Unmarshal(in.ToolInput, &asMap); err == nil {
+			if in.ToolName == "apply_patch" {
+				// codex: only the patch's cleaned target paths are matched,
+				// never the diff body (see guardApplyPatchTargetRE and
+				// guardCommandDenied's apply_patch branch).
+				var targets []string
+				for _, key := range []string{"command", "cmd", "patch", "input"} {
+					if s, ok := asMap[key].(string); ok {
+						targets = append(targets, guardApplyPatchTargets(s)...)
+					}
+				}
+				return guardApplyPatchPrefix + strings.Join(targets, "\n")
+			}
 			for _, key := range []string{"command", "cmd"} {
 				if s, ok := asMap[key].(string); ok {
 					parts = append(parts, s)

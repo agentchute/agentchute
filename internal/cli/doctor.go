@@ -358,7 +358,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 		checkStaleTempFiles(cfg, opts.Now),
 		checkBinaryOnPath(),
 		checkBinaryIdentity(opts),
-		checkHookFilePresence(cfg, agentID),
+		checkHookFilePresence(cfg, agentID, opts),
 		checkHookContentSanity(cfg),
 		checkWrapperShadowing(cfg, agentID, opts),
 		checkCodexDaemonEnv(cfg, agentID),
@@ -899,7 +899,55 @@ func shimNamesForAgent(agentID string) []string {
 // three paths drifted into being during v2; deleted with the v1.5.0
 // cutover fix).
 
-func checkHookFilePresence(cfg *loop.Config, agentID string) doctorCheck {
+// doctorActingBinaryUnguarded resolves the binary `serve` would launch for
+// agentID's wrapper on pathEnv and reports whether serve launches it
+// UNGUARDED (wrapperSpec.guardedFor): doctor must then neither demand nor
+// byte-check a hook template that binary never reads (codex gate on #213).
+func doctorActingBinaryUnguarded(agentID, shimDir, pathEnv string) (binary, reason string) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return "", ""
+	}
+	for _, spec := range wrapperSpecs {
+		if !registrationMatchesCanonical(agentID, spec.AgentID) {
+			continue
+		}
+		// The same selection serve makes: resolveRealWrapperOnPath walks
+		// PATH directories first and skips the shim directory.
+		resolved, err := resolveRealWrapperOnPath(spec, shimDir, pathEnv)
+		if err != nil {
+			return "", ""
+		}
+		if _, why := spec.guardedFor(resolved); why != "" {
+			return resolved, why
+		}
+		return "", ""
+	}
+	return "", ""
+}
+
+// doctorShimDir is the shim directory doctor excludes from wrapper
+// resolution, as serve's dispatcher does: setup's recorded dir, else the
+// default under $HOME.
+func doctorShimDir(opts doctorOptions) string {
+	if opts.GlobalState != nil && opts.GlobalState.ShimDir != "" {
+		return opts.GlobalState.ShimDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".agentchute", "bin")
+}
+
+func checkHookFilePresence(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
+	if bin, why := doctorActingBinaryUnguarded(agentID, doctorShimDir(opts), opts.PathEnv); why != "" {
+		return doctorCheck{
+			Name:     "hook_file_presence",
+			Severity: severitySkip,
+			Message:  fmt.Sprintf("%s launches unguarded under serve: %s has no hook backend for this binary, so no template is required or checked (%s)", agentID, bin, why),
+		}
+	}
 	present := []string{}
 	presentSet := map[string]bool{}
 	drifted := []string{}
