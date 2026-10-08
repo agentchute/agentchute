@@ -136,12 +136,24 @@ func cmdServe(args []string) error {
 	}
 	opts.Vendor = strings.TrimSpace(opts.Vendor)
 	launchedWrapper := ""
+	hookWrapperName := "" // whose hook template to refresh; "" when the binary does not load it
+	launchedSpec := wrapperSpec{}
 	if spec, ok := wrapperSpecForName(filepath.Base(opts.WrapperArgs[0])); ok {
 		if opts.Vendor == "" {
 			opts.Vendor = spec.Vendor
 		}
-		opts.Guarded = spec.Guarded
+		launchedSpec = spec
 		launchedWrapper = spec.AgentID
+		hookWrapperName = spec.AgentID
+		// Guarded follows the BINARY, not the spec (opus-xhigh H5): `ac serve
+		// gemini` resolving to `agy` must not arm a latch no hook will clear,
+		// and must not rewrite a .gemini/settings.json that agy never reads.
+		var reason string
+		opts.Guarded, reason = spec.guardedFor(opts.WrapperArgs[0])
+		if reason != "" {
+			fmt.Fprintf(os.Stderr, "agentchute serve: %s\n", reason)
+			hookWrapperName = ""
+		}
 	}
 
 	cwd, err := os.Getwd()
@@ -188,8 +200,24 @@ func cmdServe(args []string) error {
 			return fmt.Errorf("--vendor: %w", err)
 		}
 	}
-	if err := refreshWrapperHook(cfg.ControlRepo, launchedWrapper); err != nil {
-		return fmt.Errorf("serve: refresh %s hook: %w", launchedWrapper, err)
+	if err := refreshWrapperHook(cfg.ControlRepo, hookWrapperName); err != nil {
+		return fmt.Errorf("serve: refresh %s hook: %w", hookWrapperName, err)
+	}
+	// codex trusts hooks per position in ~/.codex/config.toml (opus-xhigh
+	// H3a): a hook that is not trusted is skipped, so a latch armed for it
+	// would never be cleared. Launch UNGUARDED when any expected trust entry
+	// is missing, and say so; the lane acks itself until the operator trusts
+	// the hooks in the TUI ("Review hooks" / "Trust all") and relaunches.
+	if launchedSpec.Key == "codex" && opts.Guarded && cfg.Remote == nil {
+		missing, terr := codexHookTrustMissing(codexConfigPath(), filepath.Join(cfg.ControlRepo, ".codex", "hooks.json"))
+		if terr != nil || len(missing) > 0 {
+			detail := "untrusted hook positions: " + strings.Join(missing, ", ")
+			if terr != nil {
+				detail = terr.Error()
+			}
+			fmt.Fprintf(os.Stderr, "agentchute serve: codex has not trusted every agentchute hook in %s (%s); launching UNGUARDED — trust the hooks in codex (Review hooks → Trust all) and relaunch to get the guard, and commit mail with `agentchute ack` yourself until then\n", codexConfigPath(), detail)
+			opts.Guarded = false
+		}
 	}
 	return runWrapper(cfg, opts, cwd)
 }
@@ -852,6 +880,15 @@ func runnerChildEnv(cfg *loop.Config, opts runnerOptions, serveToken string) []s
 		// (grok: hookless) never see this bit, so guard.go's session
 		// resolution always allows them.
 		env = append(env, "AGENTCHUTE_GUARD=1")
+	}
+	if len(opts.WrapperArgs) > 0 && filepath.Base(opts.WrapperArgs[0]) == "grok" {
+		// grok 1.0.46 scans the project's .claude/settings.json hooks by
+		// default (`compat.claude.hooks`, env GROK_CLAUDE_HOOKS_ENABLED —
+		// ~/.grok/docs/user-guide/26-config-reference.md) and would run
+		// claude-code's Stop `turn-end` unguarded, archiving claimed mail at
+		// every turn and at session exit (opus-xhigh H4). The documented
+		// contract is hookless: make it so.
+		env = append(withoutEnv(env, "GROK_CLAUDE_HOOKS_ENABLED"), "GROK_CLAUDE_HOOKS_ENABLED=0")
 	}
 	return env
 }

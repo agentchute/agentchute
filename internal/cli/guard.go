@@ -73,6 +73,29 @@ var guardPipelineDenySubstrings = []string{
 	".claude/settings.json",
 	".codex/hooks.json",
 	".gemini/settings.json",
+	".agents/hooks.json", // Antigravity CLI (agy) — the binary `ac serve gemini` resolves to where Gemini CLI is absent
+}
+
+// guardApplyPatchTargetRE captures the file paths an `apply_patch` body
+// touches. codex fires PreToolUse for apply_patch with the WHOLE patch in
+// tool_input.command, so matching it like a shell command denied every doc
+// edit whose diff text merely mentioned `agentchute ack` (opus-xhigh H3c).
+// Only the targets can touch a hook config file; the diff body cannot run
+// anything.
+var guardApplyPatchTargetRE = regexp.MustCompile(`(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$`)
+
+// guardApplyPatchTargets returns the paths a patch adds, updates, deletes or
+// moves to, one per line of command text; the diff body is dropped.
+func guardApplyPatchTargets(patch string) []string {
+	var out []string
+	for _, m := range guardApplyPatchTargetRE.FindAllStringSubmatch(patch, -1) {
+		for _, g := range m[1:] {
+			if g = strings.TrimSpace(g); g != "" {
+				out = append(out, g)
+			}
+		}
+	}
+	return out
 }
 
 // guardDispatchPrefixRE strips a `dispatch [--shim-dir[= |] <path>] [--] `
@@ -536,6 +559,16 @@ func parseGuardToolCommand(body []byte) string {
 	if len(in.ToolInput) > 0 {
 		var asMap map[string]any
 		if err := json.Unmarshal(in.ToolInput, &asMap); err == nil {
+			if in.ToolName == "apply_patch" {
+				// codex: only the patch's target paths are matched, never
+				// the diff body (see guardApplyPatchTargetRE).
+				for _, key := range []string{"command", "cmd", "patch", "input"} {
+					if s, ok := asMap[key].(string); ok {
+						parts = append(parts, guardApplyPatchTargets(s)...)
+					}
+				}
+				return strings.Join(parts, " ")
+			}
 			for _, key := range []string{"command", "cmd"} {
 				if s, ok := asMap[key].(string); ok {
 					parts = append(parts, s)

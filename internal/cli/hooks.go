@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -58,6 +60,13 @@ var hookWrappers = []hookWrapper{
 		Dest: ".claude/settings.json",
 	},
 	{
+		// codex trusts hooks PER POSITION: ~/.codex/config.toml records
+		// `[hooks.state."<root>/.codex/hooks.json:<event>:<group>:<index>"]`,
+		// so inserting or reordering an entry in the template silently
+		// untrusts every later one (they are skipped until re-trusted in the
+		// TUI). Append new hooks at the END of their group, never in the
+		// middle; codexHookTrustMissing is what serve checks before arming
+		// the guard.
 		Name: "codex",
 		Src:  "examples/hooks/codex/.codex/hooks.json",
 		Dest: ".codex/hooks.json",
@@ -67,6 +76,100 @@ var hookWrappers = []hookWrapper{
 		Src:  "examples/hooks/gemini/.gemini/settings.json",
 		Dest: ".gemini/settings.json",
 	},
+}
+
+// ---------- codex hook trust (opus-xhigh H3a) ----------
+
+// codexConfigPath is codex's user config: $CODEX_HOME/config.toml, else
+// ~/.codex/config.toml.
+func codexConfigPath() string {
+	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
+		return filepath.Join(home, "config.toml")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".codex", "config.toml")
+	}
+	return filepath.Join(home, ".codex", "config.toml")
+}
+
+// codexHooksStateKeyRE matches one trust entry header:
+// [hooks.state."<abs>/.codex/hooks.json:<event>:<group>:<index>"].
+var codexHooksStateKeyRE = regexp.MustCompile(`^\s*\[hooks\.state\."((?:[^"\\]|\\.)*)"\]\s*$`)
+
+// codexHookEventKey maps a hooks.json event name to codex's trust-key
+// spelling (SessionStart -> session_start).
+func codexHookEventKey(event string) string {
+	var b strings.Builder
+	for i, r := range event {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r + ('a' - 'A'))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// codexExpectedTrustKeys lists the trust keys codex records for every hook in
+// hooksPath: one per `<event>:<group>:<index>`, keyed by position.
+func codexExpectedTrustKeys(hooksPath string) ([]string, error) {
+	data, err := os.ReadFile(hooksPath)
+	if err != nil {
+		return nil, err
+	}
+	var file struct {
+		Hooks map[string][]struct {
+			Hooks []json.RawMessage `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", hooksPath, err)
+	}
+	events := make([]string, 0, len(file.Hooks))
+	for event := range file.Hooks {
+		events = append(events, event)
+	}
+	sort.Strings(events)
+	var keys []string
+	for _, event := range events {
+		for g, group := range file.Hooks[event] {
+			for i := range group.Hooks {
+				keys = append(keys, fmt.Sprintf("%s:%s:%d:%d", hooksPath, codexHookEventKey(event), g, i))
+			}
+		}
+	}
+	return keys, nil
+}
+
+// codexHookTrustMissing returns the expected trust keys for hooksPath that
+// configPath does not record, as `<event>:<group>:<index>`. An unreadable
+// config or hooks file is an error; the caller treats both as "not trusted".
+func codexHookTrustMissing(configPath, hooksPath string) ([]string, error) {
+	expected, err := codexExpectedTrustKeys(hooksPath)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("read codex config: %w", err)
+	}
+	trusted := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if m := codexHooksStateKeyRE.FindStringSubmatch(line); m != nil {
+			trusted[strings.ReplaceAll(m[1], `\"`, `"`)] = true
+		}
+	}
+	var missing []string
+	for _, key := range expected {
+		if !trusted[key] {
+			missing = append(missing, strings.TrimPrefix(key, hooksPath+":"))
+		}
+	}
+	return missing, nil
 }
 
 func cmdHooks(args []string) error {
