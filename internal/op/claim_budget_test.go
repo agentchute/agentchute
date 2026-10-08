@@ -251,13 +251,14 @@ func TestClaimNoArchiveReportsOversizeWithoutMoving(t *testing.T) {
 func TestClaimStopsClaimingWhenQuarantineFails(t *testing.T) {
 	cfg := newPool(t)
 	enroll(t, cfg, "claude-code")
+	enroll(t, cfg, "alpha")
 	enroll(t, cfg, "codex")
-	deliver(t, cfg, "codex", "claude-code", "first, claimable")
-	writeOversize(t, cfg.AgentInboxDir("claude-code")) // sorts after: later stamp than "first"? no — see below
-	// The oversize name carries a 2026-01-01 stamp, so it sorts FIRST among
-	// codex's mail; put the claimable message ahead of it by a different sender.
 	enroll(t, cfg, "grok")
-	deliver(t, cfg, "grok", "claude-code", "from grok")
+	// Inbox order is by sender name, then per-sender FIFO: alpha's message
+	// sorts AHEAD of the oversize codex file, grok's behind it.
+	deliver(t, cfg, "alpha", "claude-code", "ahead of the bad file: claimed")
+	writeOversize(t, cfg.AgentInboxDir("claude-code"))
+	deliver(t, cfg, "grok", "claude-code", "behind the bad file: never claimed")
 	// Make malformed/ a regular file so the quarantine move must fail.
 	if err := os.WriteFile(cfg.MalformedDir(), []byte("not a dir"), 0o600); err != nil {
 		t.Fatal(err)
@@ -271,12 +272,26 @@ func TestClaimStopsClaimingWhenQuarantineFails(t *testing.T) {
 	if !strings.Contains(err.Error(), oversizeName) {
 		t.Fatalf("error should name the file: %v", err)
 	}
-	inbox := countFiles(t, cfg.AgentInboxDir("claude-code"))
-	claimed := countFiles(t, cfg.AgentClaimedDir("claude-code"))
-	if sum.Claimed != claimed || inbox+claimed != 3 {
-		t.Fatalf("claimed=%d .claimed=%d inbox=%d: nothing after the error may be claimed, nothing before it un-claimed", sum.Claimed, claimed, inbox)
+	msgs := c.messages()
+	if sum.Claimed != 1 || len(msgs) != 1 || msgs[0].Sender != "alpha" {
+		t.Fatalf("claimed=%d messages=%+v: exactly alpha's message, which sorted ahead of the error, may be claimed", sum.Claimed, msgs)
 	}
-	if inbox < 1 {
-		t.Fatal("the unreadable file and everything after it must stay in the inbox")
+	if n := countFiles(t, cfg.AgentClaimedDir("claude-code")); n != 1 {
+		t.Fatalf(".claimed = %d, want alpha's message to stay claimed", n)
+	}
+	if n := countFiles(t, cfg.AgentInboxDir("claude-code")); n != 2 {
+		t.Fatalf("inbox = %d, want the unreadable file and grok's message behind it untouched", n)
+	}
+}
+
+func TestClaimReqBudgetDefaults(t *testing.T) {
+	if got := (ClaimReq{}).budget(); got != DefaultClaimBudgetBytes {
+		t.Fatalf("zero budget = %d, want the default %d", got, DefaultClaimBudgetBytes)
+	}
+	if got := (ClaimReq{BudgetBytes: -1}).budget(); got != -1 {
+		t.Fatalf("negative budget = %d, want -1 (unlimited)", got)
+	}
+	if got := (ClaimReq{BudgetBytes: 6000}).budget(); got != 6000 {
+		t.Fatalf("explicit budget = %d", got)
 	}
 }
