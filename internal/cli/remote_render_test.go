@@ -85,7 +85,7 @@ func TestRemoteSendUnknownSpoolsOutsideShadowWithBodyFileRetry(t *testing.T) {
 	if readErr != nil || string(data) != "body" {
 		t.Fatalf("spool body = %q, err=%v", data, readErr)
 	}
-	retryBody, retryErr := readSendBodyFile(cfg, spool)
+	retryBody, retryErr := readSendBodyFile(cfg, spool, "")
 	if retryErr != nil || retryBody != "body" {
 		t.Fatalf("printed --body-file retry was not accepted: body=%q err=%v", retryBody, retryErr)
 	}
@@ -98,8 +98,8 @@ func TestW6ClientRemoteCheckClaimedHeldArmsLocalLatch(t *testing.T) {
 	t.Setenv("AGENTCHUTE_LOOP_DIR", "")
 	t.Setenv("AGENTCHUTE_GUARD", "1")
 	t.Setenv("AGENTCHUTE_SERVE_TOKEN", "session-token")
-	t.Setenv("AGENTCHUTE_W6_TEST_BINARY", os.Args[0])
-	t.Setenv("AGENTCHUTE_W6_TEST_HELPER", "1")
+	t.Setenv("ACTEST_W6_BINARY", os.Args[0])
+	t.Setenv("ACTEST_W6_HELPER", "1")
 
 	remote, err := loop.ParseRemoteURL("ssh://hub.example/remote/pool")
 	if err != nil {
@@ -112,7 +112,7 @@ func TestW6ClientRemoteCheckClaimedHeldArmsLocalLatch(t *testing.T) {
 	}
 	binDir := t.TempDir()
 	ssh := filepath.Join(binDir, "ssh")
-	script := "#!/bin/sh\nexec \"$AGENTCHUTE_W6_TEST_BINARY\" -test.run '^TestW6ClientRemoteCheckClaimedHeldSSHHelper$'\n"
+	script := "#!/bin/sh\nexec \"$ACTEST_W6_BINARY\" -test.run '^TestW6ClientRemoteCheckClaimedHeldSSHHelper$'\n"
 	if err := os.WriteFile(ssh, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestW6ClientRemoteCheckClaimedHeldArmsLocalLatch(t *testing.T) {
 }
 
 func TestW6ClientRemoteCheckClaimedHeldSSHHelper(t *testing.T) {
-	if os.Getenv("AGENTCHUTE_W6_TEST_HELPER") != "1" {
+	if os.Getenv("ACTEST_W6_HELPER") != "1" {
 		return
 	}
 	fail := func(err error) {

@@ -200,8 +200,27 @@ func cmdServe(args []string) error {
 			return fmt.Errorf("--vendor: %w", err)
 		}
 	}
-	if err := refreshWrapperHook(cfg.ControlRepo, hookWrapperName); err != nil {
-		return fmt.Errorf("serve: refresh %s hook: %w", hookWrapperName, err)
+	// serve creates a missing hook file but never rewrites an existing one
+	// (opus-xhigh S3): an out-of-date file is refused with the repair
+	// command, and on a remote lane whose control repo is only its working
+	// directory nothing is written at all — the lane then launches unguarded
+	// unless its hook file is already current.
+	unguardedNote, err := prepareServeHook(cfg.ControlRepo, hookWrapperName)
+	if err != nil {
+		return fmt.Errorf("serve: %s hook: %w", hookWrapperName, err)
+	}
+	if unguardedNote != "" {
+		fmt.Fprintf(os.Stderr, "agentchute serve: %s\n", unguardedNote)
+		opts.Guarded = false
+	}
+	// Claude Code skips every hook when `disableAllHooks` resolves to true:
+	// a latch armed then is one no Stop hook would clear, and the guard
+	// would never run. Launch UNGUARDED and say where the setting is.
+	if launchedSpec.Key == "claude" && opts.Guarded {
+		if where, off := claudeHooksDisabled(cfg.ControlRepo, opts.WrapperArgs[1:]); off {
+			fmt.Fprintf(os.Stderr, "agentchute serve: Claude Code hooks are switched off (disableAllHooks: true in %s), so agentchute's guard and end-of-turn hooks will not run; launching UNGUARDED — commit mail with `agentchute ack` yourself, or remove the setting and relaunch\n", where)
+			opts.Guarded = false
+		}
 	}
 	// codex trusts hooks per position in ~/.codex/config.toml (opus-xhigh
 	// H3a): a hook that is not trusted is skipped, so a latch armed for it

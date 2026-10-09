@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -956,29 +955,23 @@ func checkHookFilePresence(cfg *loop.Config, agentID string, opts doctorOptions)
 	presentSet := map[string]bool{}
 	drifted := []string{}
 	for _, h := range hookWrappers {
-		full := filepath.Join(cfg.ControlRepo, filepath.FromSlash(h.Dest))
-		installed, err := os.ReadFile(full)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
+		// The same plan setup and serve act on (opus-xhigh S3): a settings
+		// file is current when agentchute's part of it matches, whatever
+		// else the project keeps there.
+		plan, err := planHookFile(h, cfg.ControlRepo)
 		if err != nil {
 			return doctorCheck{
 				Name:     "hook_file_presence",
 				Severity: severityBlocker,
-				Message:  fmt.Sprintf("installed hook for %s is unreadable at %s: %v", h.Name, full, err),
+				Message:  fmt.Sprintf("installed hook for %s is unreadable: %v", h.Name, err),
 			}
+		}
+		if plan.State == hookFileMissing {
+			continue
 		}
 		present = append(present, h.Name)
 		presentSet[h.Name] = true
-		canonical, err := fs.ReadFile(hooksFS, h.Src)
-		if err != nil {
-			return doctorCheck{
-				Name:     "hook_file_presence",
-				Severity: severityBlocker,
-				Message:  fmt.Sprintf("canonical hook template for %s is unreadable: %v", h.Name, err),
-			}
-		}
-		if !bytes.Equal(installed, canonical) {
+		if plan.State != hookFileCurrent {
 			drifted = append(drifted, h.Name)
 		}
 	}
@@ -995,7 +988,7 @@ func checkHookFilePresence(cfg *loop.Config, agentID string, opts doctorOptions)
 		return doctorCheck{
 			Name:     "hook_file_presence",
 			Severity: severityBlocker,
-			Message:  fmt.Sprintf("installed hook template(s) differ from the canonical embed: %s; run `agentchute hooks install --wrapper all --scope repo --force`", strings.Join(drifted, ", ")),
+			Message:  fmt.Sprintf("installed hook template(s) differ from the canonical embed: %s; run `agentchute hooks install --wrapper all --scope repo --force` (settings files are merged — every key agentchute does not own is kept — and the old file is backed up)", strings.Join(drifted, ", ")),
 		}
 	}
 	if len(present) == 0 {
@@ -1003,6 +996,15 @@ func checkHookFilePresence(cfg *loop.Config, agentID string, opts doctorOptions)
 			Name:     "hook_file_presence",
 			Severity: severityWarn,
 			Message:  "no wrapper hook templates installed in this control repo; copy from examples/hooks/<wrapper>/ to wire up SessionStart/UserPromptSubmit/Stop automation",
+		}
+	}
+	if presentSet["claude-code"] {
+		if where, off := claudeHooksDisabled(cfg.ControlRepo, nil); off {
+			return doctorCheck{
+				Name:     "hook_file_presence",
+				Severity: severityWarn,
+				Message:  fmt.Sprintf("Claude Code hooks are switched off (disableAllHooks: true in %s): agentchute's claude-code hooks are installed but will not run, and serve launches claude lanes unguarded", where),
+			}
 		}
 	}
 	return doctorCheck{

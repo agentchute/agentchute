@@ -756,9 +756,9 @@ func codexHookFeed(t *testing.T, event, cwd string) {
 	}
 	path := filepath.Join(t.TempDir(), "hook.json")
 	mustWrite(t, path, body)
-	restore := codexHookStdin
-	t.Cleanup(func() { codexHookStdin = restore })
-	codexHookStdin = func() *os.File {
+	restore := hookStdin
+	t.Cleanup(func() { hookStdin = restore })
+	hookStdin = func() *os.File {
 		f, err := os.Open(path)
 		if err != nil {
 			t.Fatal(err)

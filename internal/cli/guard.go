@@ -74,14 +74,52 @@ const guardDenyReason = "claimed mail is not yet committed; commands that could 
 // subcommands themselves are NOT here: they need word-bounded,
 // binary-token-aware matching (guardAgentchuteSubcmdRE below), not a literal
 // substring — see that regex's doc comment.
-var guardPipelineDenySubstrings = []string{
+var guardPipelineDenySubstrings = append([]string{
 	"curl",
 	"wget",
 	"rm -rf",
+}, guardHookConfigPaths...)
+
+func init() {
+	// Every hook file agentchute installs is a guarded path: derived from
+	// hookWrappers, so adding a wrapper cannot leave its file unguarded.
+	for _, w := range hookWrappers {
+		dest := strings.ToLower(filepathToSlash(w.Dest))
+		found := false
+		for _, p := range guardHookConfigPaths {
+			if p == dest {
+				found = true
+				break
+			}
+		}
+		if !found {
+			guardHookConfigPaths = append(guardHookConfigPaths, dest)
+			guardPipelineDenySubstrings = append(guardPipelineDenySubstrings, dest)
+		}
+	}
+}
+
+func filepathToSlash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
+
+// guardHookConfigPaths are the files — and directories, with a trailing "/" —
+// that configure a harness's hooks, so a write there can disable the
+// end-of-turn handler: each vendor's project file, the local and user files
+// that outrank or extend it (opus-xhigh S5: settings.local.json can set
+// disableAllHooks; codex's config.toml holds inline [hooks] and the trust
+// table; grok and Antigravity keep hooks in their own trees). Shell text is
+// matched against them by substring (guardPipelineDenySubstrings); a file
+// tool's target path by guardHookConfigPath.
+var guardHookConfigPaths = []string{
 	".claude/settings.json",
+	".claude/settings.local.json",
 	".codex/hooks.json",
+	".codex/config.toml",
 	".gemini/settings.json",
-	".agents/hooks.json", // Antigravity CLI (agy): its own wrapper since the Google-templates PR
+	".gemini/config/hooks.json",
+	".gemini/antigravity-cli/settings.json",
+	".agents/hooks.json",
+	".grok/hooks/",
+	".grok/config.toml",
 }
 
 // guardApplyPatchTargetRE captures the file paths an `apply_patch` body
@@ -109,20 +147,62 @@ func guardApplyPatchTargets(patch string) []string {
 	return out
 }
 
-// guardApplyPatchPrefix marks parseGuardToolCommand's apply_patch form: the
-// tool name, then one cleaned target path per line.
-const guardApplyPatchPrefix = "apply_patch\n"
-
-// guardHookConfigPath reports whether a cleaned patch target names one of the
-// hook config files: the path itself, or a longer path ending in it
-// (`/repo/.codex/hooks.json`, `sub/.claude/settings.json`).
+// guardHookConfigPath reports whether a file tool's target names a hook
+// config file or a path inside a hook config directory: the entry itself or a
+// longer path ending in it (`/repo/.codex/hooks.json`, `~/.codex/config.toml`,
+// `sub/.grok/hooks/x.json`), after cleaning `.` and `..` segments.
 func guardHookConfigPath(target string) bool {
-	target = strings.ToLower(filepath.ToSlash(filepath.Clean(target)))
-	for _, p := range guardPipelineDenySubstrings {
-		if !strings.Contains(p, "/") {
-			continue // the command words, not the hook paths
+	return guardHookConfigPathAt(target, "")
+}
+
+func guardHookConfigPathAt(target, cwd string) bool {
+	if cwd != "" && !filepath.IsAbs(target) {
+		target = filepath.Join(cwd, target)
+	}
+	if guardHookConfigPathText(target) {
+		return true
+	}
+	// Judge where the write really lands too: a symlinked directory
+	// (`/repo/cfg -> /repo/.claude`) or a symlinked file names a hook config
+	// file only once resolved. The file may not exist yet, so its directory
+	// is resolved and the name re-joined.
+	if resolved, ok := guardResolveTarget(target); ok && resolved != target {
+		return guardHookConfigPathText(resolved)
+	}
+	return false
+}
+
+// guardResolveTarget resolves the symlinks in a path-shaped string: the whole
+// path when it exists, else its directory plus the final name. Strings that
+// cannot be a path (a line break or more than PATH_MAX bytes) are not resolved.
+// Callers supply actual target fields, so a single-component relative name
+// must be resolved too: it can itself be a symlink.
+func guardResolveTarget(target string) (string, bool) {
+	if target == "" || len(target) > 4096 || strings.ContainsAny(target, "\n\r\x00") {
+		return "", false
+	}
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		return resolved, true
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(dir, filepath.Base(target)), true
+}
+
+// guardHookConfigPathText is the spelling-only match: the cleaned path equals
+// a hook config path or ends in one; a directory entry matches below it.
+func guardHookConfigPathText(target string) bool {
+	t := strings.ToLower(filepath.ToSlash(filepath.Clean(target)))
+	for _, p := range guardHookConfigPaths {
+		if dir, isDir := strings.CutSuffix(p, "/"); isDir {
+			if strings.HasPrefix(t, dir+"/") || strings.Contains(t, "/"+dir+"/") {
+				return true
+			}
+			continue
 		}
-		if target == p || strings.HasSuffix(target, "/"+p) {
+		if t == p || strings.HasSuffix(t, "/"+p) {
 			return true
 		}
 	}
@@ -280,8 +360,11 @@ func runGuardHook(args []string, stdin io.Reader) error {
 		return guardUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
-	stdinBody, _ := io.ReadAll(io.LimitReader(stdin, 1<<20))
-	toolCmd := parseGuardToolCommand(stdinBody)
+	stdinBody, readErr := io.ReadAll(io.LimitReader(stdin, guardMaxInputBytes+1))
+	use := parseGuardToolUse(stdinBody)
+	if readErr != nil {
+		use.Invalid = true
+	}
 
 	// A foreign runner env fails open like every other unresolvable guard state:
 	// the latch it would match belongs to another lane, not this process. The
@@ -295,7 +378,7 @@ func runGuardHook(args []string, stdin io.Reader) error {
 			decision = evaluateCodexThreadCwd(controlRepo, loopDir, parseGuardHookCwd(stdinBody), toolName, inputText)
 		}
 		if decision.Allowed {
-			decision = evaluateGuardInvocation(agentID, controlRepo, loopDir, toolCmd)
+			decision = evaluateGuardToolUse(agentID, controlRepo, loopDir, use)
 		}
 	}
 
@@ -311,11 +394,17 @@ func runGuardHook(args []string, stdin io.Reader) error {
 	}
 }
 
-// evaluateGuardInvocation is cmdGuard's testable core: resolves the session,
+// evaluateGuardInvocation is the shell-text form of evaluateGuardToolUse,
+// kept for callers that hold a command line.
+func evaluateGuardInvocation(agentIDFlag, controlRepo, loopDir, toolCmd string) guardDecision {
+	return evaluateGuardToolUse(agentIDFlag, controlRepo, loopDir, guardToolUse{Text: toolCmd})
+}
+
+// evaluateGuardToolUse is cmdGuard's testable core: resolves the session,
 // the agent id, and (only when both resolve) this agent's latch, then
 // applies the deny list. Every failure-to-resolve path allows — see the
 // guard.go doc comment on why fail-open is the only safe default here.
-func evaluateGuardInvocation(agentIDFlag, controlRepo, loopDir, toolCmd string) guardDecision {
+func evaluateGuardToolUse(agentIDFlag, controlRepo, loopDir string, use guardToolUse) guardDecision {
 	session := resolveGuardSession()
 	if session == "" {
 		return guardDecision{Allowed: true}
@@ -346,7 +435,7 @@ func evaluateGuardInvocation(agentIDFlag, controlRepo, loopDir, toolCmd string) 
 		return guardDecision{Allowed: true}
 	}
 
-	return evaluateGuardDecision(cfg, id, session, toolCmd)
+	return evaluateGuardDecisionFor(cfg, id, session, use)
 }
 
 // guardBusAfterBinaryRE matches an agentchute binary token — the name, a
@@ -501,14 +590,19 @@ func evaluateCodexThreadCwd(controlRepo, loopDir, hookCwd, toolName, inputText s
 	return guardDecision{Allowed: false, Reason: fmt.Sprintf(codexThreadCwdReasonFmt, hookCwd, cfg.ControlRepo)}
 }
 
-// evaluateGuardDecision applies the C25 deny list against toolCmd, but ONLY
+// evaluateGuardDecision is the shell-text form of evaluateGuardDecisionFor.
+func evaluateGuardDecision(cfg *loop.Config, agentID, session, toolCmd string) guardDecision {
+	return evaluateGuardDecisionFor(cfg, agentID, session, guardToolUse{Text: toolCmd})
+}
+
+// evaluateGuardDecisionFor applies the C25 deny list to one tool use, but ONLY
 // when this agent's guard latch is currently held by `session` (C23): a
 // latch that is absent, unreadable/corrupt, or belongs to a different
 // (foreign/dead) session never triggers a deny (loop.ReadGuardLatch's own
 // doc comment covers the foreign-latch case; this function fails open on any
 // read error rather than propagate it, since a corrupt latch file must never
 // become a way to wedge a lane shut).
-func evaluateGuardDecision(cfg *loop.Config, agentID, session, toolCmd string) guardDecision {
+func evaluateGuardDecisionFor(cfg *loop.Config, agentID, session string, use guardToolUse) guardDecision {
 	latch, err := loop.ReadGuardLatch(cfg, agentID)
 	if err != nil {
 		return guardDecision{Allowed: true}
@@ -516,7 +610,7 @@ func evaluateGuardDecision(cfg *loop.Config, agentID, session, toolCmd string) g
 	if latch.Session != session {
 		return guardDecision{Allowed: true}
 	}
-	if guardCommandDenied(toolCmd) {
+	if use.denied() {
 		return guardDecision{Allowed: false, Reason: guardDenyReason}
 	}
 	return guardDecision{Allowed: true}
@@ -532,16 +626,6 @@ func guardCommandDenied(toolCmd string) bool {
 	// exemption and case folding. Oversized input must cost constant time.
 	if len(toolCmd) > guardHubBudget {
 		return true
-	}
-	if strings.HasPrefix(toolCmd, guardApplyPatchPrefix) {
-		// codex apply_patch: a dedicated path predicate over the cleaned
-		// targets, never the substring matcher and never the diff body.
-		for _, target := range strings.Split(strings.TrimPrefix(toolCmd, guardApplyPatchPrefix), "\n") {
-			if target != "" && guardHookConfigPath(target) {
-				return true
-			}
-		}
-		return false
 	}
 	if candidate, inert := guardDirectSendInvocation(toolCmd); candidate {
 		return !inert
@@ -562,7 +646,7 @@ func guardCommandDenied(toolCmd string) bool {
 	return false
 }
 
-// guardStripToolName drops the tool-name word parseGuardToolCommand puts in
+// guardStripToolName drops the tool-name word parseGuardToolUse puts in
 // front of the command text, so the hub rule sees the command itself in
 // command position. It drops whatever that word is: a list of known tool names
 // failed open for every tool not on it (background security review).
@@ -575,7 +659,7 @@ func guardStripToolName(lower string) string {
 }
 
 // guardDirectSendInvocation recognizes only the literal send binaries this
-// repo teaches, optionally preceded by the tool-name text parseGuardToolCommand
+// repo teaches, optionally preceded by the tool-name text parseGuardToolUse
 // adds. It returns candidate=true for a send prefix even when later shell
 // syntax is unsafe, so a compound send is denied rather than falling through
 // to the best-effort substring list.
@@ -780,8 +864,13 @@ func guardInertShellWords(cmd string) ([]string, bool) {
 // JSON. Only the fields this guard consults are bound; everything else is
 // ignored.
 type guardHookInput struct {
+	Cwd       string          `json:"cwd"`
 	ToolName  string          `json:"tool_name"`
 	ToolInput json.RawMessage `json:"tool_input"`
+	// Grok's camelCase spelling of the same two fields
+	// (~/.grok/docs/user-guide/10-hooks.md "Input"; opus-xhigh S5).
+	ToolNameCamel  string          `json:"toolName"`
+	ToolInputCamel json.RawMessage `json:"toolInput"`
 	// ToolCall is Antigravity's camelCase shape: {"name": "run_command",
 	// "args": {"CommandLine": "...", ...}} (https://antigravity.google/docs/hooks/).
 	ToolCall *struct {
@@ -790,66 +879,175 @@ type guardHookInput struct {
 	} `json:"toolCall"`
 }
 
-// parseGuardToolCommand extracts the best-effort command text to match
-// against the deny list. Never errors: a missing/malformed body yields "",
-// which matches nothing — a denial must be POSITIVELY matched from real
-// input, never inferred from a parse failure (fail open, not fail deny).
-func parseGuardToolCommand(body []byte) string {
+// guardToolUse separates command fields from the target fields of recognized
+// file-writing tools. Read/search tools and document content are never write
+// targets. Unknown MCP schemas need an explicit mapping, not a guess based on
+// every string they happen to receive. apply_patch uses its own grammar.
+type guardToolUse struct {
+	Text     string
+	Paths    []string
+	Cwd      string
+	Oversize bool // the input exceeded guardMaxInputBytes and was not judged
+	Invalid  bool // non-empty input could not be decoded completely
+}
+
+func (u guardToolUse) denied() bool {
+	if u.Oversize || u.Invalid {
+		return true
+	}
+	if u.Text != "" && guardCommandDenied(u.Text) {
+		return true
+	}
+	for _, p := range u.Paths {
+		if guardHookConfigPathAt(p, u.Cwd) {
+			return true
+		}
+	}
+	return false
+}
+
+// guardMaxInputBytes bounds the hook input the guard reads. An input past it
+// cannot be judged, so it is denied while latched (guardToolUse.Oversize)
+// instead of failing to parse and being allowed: a write of a large file onto
+// a hook config path must not pass by being large.
+const guardMaxInputBytes = 32 << 20
+
+// guardCommandKeys are the input fields that carry a command line, compared
+// case-insensitively.
+var guardCommandKeys = map[string]bool{"command": true, "cmd": true, "chars": true, "commandline": true, "args": true}
+
+// parseGuardToolUse extracts what to judge from a hook's stdin JSON. Never
+// errors: an absent body yields an empty use. A malformed non-empty body is
+// denied while latched, so truncation cannot silently bypass the rules. Claude Code,
+// codex and Gemini send snake_case `tool_name`/`tool_input`, grok camelCase
+// `toolName`/`toolInput`, Antigravity `toolCall{name,args}`.
+func parseGuardToolUse(body []byte) guardToolUse {
+	if len(body) > guardMaxInputBytes {
+		return guardToolUse{Oversize: true}
+	}
 	var in guardHookInput
 	if err := json.Unmarshal(body, &in); err != nil {
-		return ""
+		return guardToolUse{Invalid: len(body) != 0}
 	}
-	parts := make([]string, 0, 2)
-	if in.ToolName != "" {
-		parts = append(parts, in.ToolName)
+	name, input := in.ToolName, in.ToolInput
+	if name == "" {
+		name = in.ToolNameCamel
 	}
+	if len(input) == 0 {
+		input = in.ToolInputCamel
+	}
+	var args map[string]any
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &args); err != nil {
+			return guardToolUse{Invalid: true}
+		}
+	}
+	agyArgs := false
 	if in.ToolCall != nil {
-		// Antigravity: the tool name plus every string argument, in key
-		// order (run_command's command line is `CommandLine`).
-		if in.ToolCall.Name != "" {
-			parts = append(parts, in.ToolCall.Name)
+		if name == "" {
+			name = in.ToolCall.Name
 		}
-		keys := make([]string, 0, len(in.ToolCall.Args))
-		for k := range in.ToolCall.Args {
-			keys = append(keys, k)
+		if args == nil {
+			args = in.ToolCall.Args
+			agyArgs = true
 		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			if s, ok := in.ToolCall.Args[k].(string); ok {
-				parts = append(parts, s)
+	}
+	tool := guardToolBaseName(name)
+	cwd := in.Cwd
+	for _, key := range []string{"cwd", "workdir", "Cwd"} {
+		if dir, ok := args[key].(string); ok && dir != "" {
+			if cwd != "" && !filepath.IsAbs(dir) {
+				dir = filepath.Join(cwd, dir)
+			}
+			cwd = dir
+			break
+		}
+	}
+	if tool == "apply_patch" {
+		var targets []string
+		for _, key := range []string{"command", "cmd", "patch", "input"} {
+			if s, ok := args[key].(string); ok {
+				targets = append(targets, guardApplyPatchTargets(s)...)
+			}
+		}
+		return guardToolUse{Paths: targets, Cwd: cwd}
+	}
+	if keys := guardWriteTargetKeys(tool); keys != nil {
+		var targets []string
+		for _, key := range keys {
+			if target, ok := args[key].(string); ok && target != "" {
+				targets = append(targets, target)
+			}
+		}
+		return guardToolUse{Paths: targets, Cwd: cwd}
+	}
+	text := make([]string, 0, 2)
+	if name != "" {
+		text = append(text, name)
+	}
+	// Every string under a command key is command text, whatever the
+	// value's shape: a string, codex's older shell tool's argv array
+	// ("command": ["bash", "-lc", "…"]), or a nested object.
+	var collect func(v any)
+	collect = func(v any) {
+		switch x := v.(type) {
+		case string:
+			text = append(text, x)
+		case []any:
+			for _, e := range x {
+				collect(e)
+			}
+		case map[string]any:
+			for _, k := range sortedKeys(x) {
+				collect(x[k])
 			}
 		}
 	}
-	if len(in.ToolInput) > 0 {
-		var asMap map[string]any
-		if err := json.Unmarshal(in.ToolInput, &asMap); err == nil {
-			if in.ToolName == "apply_patch" {
-				// codex: only the patch's cleaned target paths are matched,
-				// never the diff body (see guardApplyPatchTargetRE and
-				// guardCommandDenied's apply_patch branch).
-				var targets []string
-				for _, key := range []string{"command", "cmd", "patch", "input"} {
-					if s, ok := asMap[key].(string); ok {
-						targets = append(targets, guardApplyPatchTargets(s)...)
-					}
-				}
-				return guardApplyPatchPrefix + strings.Join(targets, "\n")
-			}
-			for _, key := range []string{"command", "cmd"} {
-				if s, ok := asMap[key].(string); ok {
-					parts = append(parts, s)
-				}
-			}
-			if arr, ok := asMap["args"].([]any); ok {
-				for _, item := range arr {
-					if s, ok := item.(string); ok {
-						parts = append(parts, s)
-					}
-				}
-			}
+	for _, k := range sortedKeys(args) {
+		if guardCommandKeys[strings.ToLower(k)] {
+			collect(args[k])
+			continue
+		}
+		if agyArgs && tool == "run_command" {
+			// Preserve the command runner's extra command arguments, without
+			// interpreting file content or read-tool paths as shell text.
+			collect(args[k])
 		}
 	}
-	return strings.Join(parts, " ")
+	return guardToolUse{Text: strings.Join(text, " "), Cwd: cwd}
+}
+
+func guardToolBaseName(name string) string {
+	if i := strings.LastIndex(name, "__"); i >= 0 {
+		name = name[i+2:]
+	}
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.ToLower(name)
+}
+
+func guardWriteTargetKeys(tool string) []string {
+	switch tool {
+	case "write", "edit", "multiedit":
+		return []string{"file_path"}
+	case "notebookedit":
+		return []string{"notebook_path", "file_path"}
+	case "write_file", "edit_file", "append_file":
+		return []string{"path", "file_path"}
+	case "write_to_file", "replace_file_content", "multi_replace_file_content":
+		return []string{"TargetFile"}
+	}
+	return nil
+}
+
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // emitPreToolUseDenyJSON writes the canonical hookSpecificOutput

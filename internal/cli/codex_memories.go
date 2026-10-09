@@ -256,10 +256,10 @@ func probeCodexMemoriesOff(bin string, env []string, help func(string) (string, 
 
 // ---------- codex lifecycle hooks from a foreign thread ----------
 
-// codexHookStdin is where the codex lifecycle hooks read their input. Tests
-// replace it rather than swap the process-wide os.Stdin, which serve's input
-// copier reads.
-var codexHookStdin = func() *os.File { return os.Stdin }
+// hookStdin is where the lifecycle hooks (boot, pending, turn-end) read
+// their input. Tests replace it rather than swap the process-wide os.Stdin,
+// which serve's input copier reads.
+var hookStdin = func() *os.File { return os.Stdin }
 
 // readHookStdin reads a hook's JSON input. A terminal is never read, and a
 // pipe that stays open is given up on after two seconds.
@@ -295,7 +295,13 @@ func readHookStdin(f *os.File) []byte {
 // #217). Same containment and the same fail-open cases as the guard rule
 // (guardPathWithin): no input, no cwd, an unresolvable cwd, or a remote lane.
 func codexHookFromForeignThread(cfg *loop.Config) (cwd string, foreign bool) {
-	cwd = parseGuardHookCwd(readHookStdin(codexHookStdin()))
+	return codexHookForeignCwd(cfg, readHookStdin(hookStdin()))
+}
+
+// codexHookForeignCwd is codexHookFromForeignThread over an input already
+// read (turn-end reads its input once for this and for stop_hook_active).
+func codexHookForeignCwd(cfg *loop.Config, body []byte) (cwd string, foreign bool) {
+	cwd = parseGuardHookCwd(body)
 	if cwd == "" || cfg == nil || cfg.Remote != nil || cfg.ControlRepo == "" {
 		return cwd, false
 	}

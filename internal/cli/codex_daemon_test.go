@@ -326,7 +326,7 @@ func TestReadProcessEnv_Self(t *testing.T) {
 	// binary re-executed into the sleep branch below, not `sleep`: macOS hides
 	// the environment of platform (restricted) binaries from kern.procargs2,
 	// and codex is not one.
-	if os.Getenv("AGENTCHUTE_TEST_SLEEP_CHILD") == "1" {
+	if os.Getenv("ACTEST_SLEEP_CHILD") == "1" {
 		time.Sleep(30 * time.Second)
 		return
 	}
@@ -335,7 +335,7 @@ func TestReadProcessEnv_Self(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(self, "-test.run", "^TestReadProcessEnv_Self$")
-	cmd.Env = append(os.Environ(), "AGENTCHUTE_TEST_SLEEP_CHILD=1", "AGENTCHUTE_CONTROL_REPO=/Users/alex/code/Tmux workflow", "AGENTCHUTE_SERVE_TOKEN=abc123")
+	cmd.Env = append(os.Environ(), "ACTEST_SLEEP_CHILD=1", "AGENTCHUTE_CONTROL_REPO=/Users/alex/code/Tmux workflow", "AGENTCHUTE_SERVE_TOKEN=abc123")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

@@ -127,3 +127,35 @@ func mustExampleRepo(t *testing.T, root string) {
 	mustWrite(t, filepath.Join(root, "AGENTCHUTE.md"), []byte("# Spec"))
 	mustMkdir(t, filepath.Join(root, ".agentchute", "loop"))
 }
+
+// hookBackups lists the timestamped backups writeHookFile kept beside dest,
+// and any legacy dest.bak.
+func hookBackups(t *testing.T, dest string) []string {
+	t.Helper()
+	found, err := filepath.Glob(dest + hookBackupSuffix + "*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dest + ".bak"); err == nil {
+		found = append(found, dest+".bak")
+	}
+	return found
+}
+
+// mustOneHookBackup asserts exactly one backup of dest exists and returns it.
+func mustOneHookBackup(t *testing.T, dest string) string {
+	t.Helper()
+	found := hookBackups(t, dest)
+	if len(found) != 1 {
+		t.Fatalf("backups of %s = %q, want exactly one", dest, found)
+	}
+	return found[0]
+}
+
+// mustNoHookBackup asserts no backup of dest exists.
+func mustNoHookBackup(t *testing.T, dest string) {
+	t.Helper()
+	if found := hookBackups(t, dest); len(found) != 0 {
+		t.Fatalf("backups of %s = %q, want none", dest, found)
+	}
+}

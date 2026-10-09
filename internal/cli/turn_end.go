@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -87,6 +88,21 @@ func cmdTurnEnd(args []string) error {
 	if err := requireRunnerAncestry("turn-end"); err != nil {
 		return err
 	}
+	// Hook stdin is read only in a hook mode: a hand-run turn-end must never
+	// wait on a terminal.
+	// Read once: the codex foreign-thread check and stop_hook_active both
+	// come from the same input. --json is the Claude Code Stop hook's mode
+	// (the template's command has always been `turn-end --json`, so an
+	// installed older binary keeps working against a newer template): its
+	// stdin is read too, never when it is a terminal.
+	var hookBody []byte
+	if jsonOut || codexHook == "Stop" || geminiHook == "AfterAgent" {
+		hookBody = readHookStdin(hookStdin())
+	}
+	var hookIn turnEndHookInput
+	if len(hookBody) > 0 {
+		_ = json.Unmarshal(hookBody, &hookIn)
+	}
 
 	opts := registerOpts{Host: host, Bio: bio, ServeToken: os.Getenv("AGENTCHUTE_SERVE_TOKEN")}
 	fs.Visit(func(f *flag.Flag) {
@@ -117,7 +133,7 @@ func cmdTurnEnd(args []string) error {
 	if codexHook == "Stop" {
 		// A codex thread outside the control repo (memory consolidation's
 		// hidden thread) gets nothing from this hook: no registration write, no archive of the lane's claimed mail, no latch change, no gate verdict.
-		if _, foreign := codexHookFromForeignThread(cfg); foreign {
+		if _, foreign := codexHookForeignCwd(cfg, hookBody); foreign {
 			return nil
 		}
 	}
@@ -201,24 +217,52 @@ func cmdTurnEnd(args []string) error {
 		return err
 	}
 
+	// A retry may stop only for the same blocking snapshot in the same turn.
+	// Counts alone miss a new message replacing one that was just consumed.
+	stillBlocked := ""
+	if status.Blocked && (jsonOut || codexHook == "Stop" || geminiHook == "AfterAgent") {
+		reasons := gateBlockedReasonLine(status)
+		record := turnEndBlockRecord{Session: hookIn.session(), Turn: hookIn.turn(), Fingerprint: status.BlockingFingerprint}
+		if !record.valid() {
+			// Missing turn identity, unreadable transcript, and remote gate
+			// responses all lack evidence for the exception: fail closed.
+			clearTurnEndLastBlock(cfg, agentID)
+		} else if hookIn.active() && readTurnEndBlockRecord(cfg, agentID) == record {
+			stillBlocked = "finish gate still blocked: " + reasons
+		} else {
+			data, _ := json.Marshal(record)
+			writeTurnEndLastBlock(cfg, agentID, string(data))
+		}
+	} else if !status.Blocked {
+		clearTurnEndLastBlock(cfg, agentID)
+	}
+
 	if codexHook == "Stop" {
+		if stillBlocked != "" {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"systemMessage": stillBlocked})
+		}
 		// Identical contract to gate.go's own codex Stop path: silent + exit 0
 		// on clear, block-JSON + exit 0 on block (codex reads the JSON, not
 		// the exit code, for this event).
 		return emitGateCodexStop(status)
 	}
 	if geminiHook == "AfterAgent" {
-		return emitTurnEndGeminiAfterAgent(status, os.Stdin)
+		return emitTurnEndGeminiAfterAgent(status, stillBlocked != "")
 	}
 	if agyHook == "Stop" {
 		return emitTurnEndAgyStop(status)
 	}
 	if jsonOut {
-		if err := emitTurnEndJSON(status, acked); err != nil {
+		if err := emitTurnEndJSON(status, acked, stillBlocked); err != nil {
 			return err
 		}
 	} else {
 		emitTurnEndText(status, acked)
+	}
+	if stillBlocked != "" {
+		// Exit 0: Claude Code stops, and shows systemMessage to the user.
+		fmt.Fprintln(os.Stderr, stillBlocked)
+		return nil
 	}
 
 	emitGateBlockedStderr(status)
@@ -233,10 +277,13 @@ func cmdTurnEnd(args []string) error {
 type turnEndJSON struct {
 	gateStatus
 	Archived []ackItem `json:"archived,omitempty"`
+	// SystemMessage is Claude Code's common hook output field ("shown to the
+	// user"): set only when a repeated, unchanged block is let through.
+	SystemMessage string `json:"systemMessage,omitempty"`
 }
 
-func emitTurnEndJSON(status gateStatus, acked []ackItem) error {
-	out := turnEndJSON{gateStatus: status, Archived: acked}
+func emitTurnEndJSON(status gateStatus, acked []ackItem, systemMessage string) error {
+	out := turnEndJSON{gateStatus: status, Archived: acked, SystemMessage: systemMessage}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
@@ -281,36 +328,78 @@ Flags:
   --bio <text>          short self-description
   --control-repo <p>    control repo path (or $AGENTCHUTE_CONTROL_REPO)
   --loop-dir <p>        loop dir path (or $AGENTCHUTE_LOOP_DIR)
-  --json                structured JSON output
+  --json                structured JSON output; also the Claude Code Stop hook
+                        mode: reads the hook input when stdin is not a
+                        terminal, and a Stop our own block caused that finds
+                        the same reasons is let through with a "finish gate
+                        still blocked" systemMessage
   --codex-hook <event>  codex hook JSON shape (Stop)
   --gemini-hook <event> Gemini CLI hook JSON shape (AfterAgent)
   --agy-hook <event>    Antigravity CLI hook JSON shape (Stop)
 `)
 }
 
-// geminiAfterAgentInput is the slice of Gemini CLI's AfterAgent stdin this
-// command reads: stop_hook_active is true when the hook is already running as
-// part of a retry it caused (geminicli.com/docs/hooks/reference).
-type geminiAfterAgentInput struct {
-	StopHookActive bool `json:"stop_hook_active"`
+// turnEndHookInput is the slice of an end-of-turn hook's stdin turn-end
+// reads: whether this run was caused by a block we returned. Claude Code,
+// codex and Gemini CLI send stop_hook_active, grok stopHookActive.
+type turnEndHookInput struct {
+	StopHookActive      bool   `json:"stop_hook_active"`
+	StopHookActiveCamel bool   `json:"stopHookActive"`
+	SessionID           string `json:"session_id"`
+	SessionIDCamel      string `json:"sessionId"`
+	TurnID              string `json:"turn_id"`
+	TurnIDCamel         string `json:"turnId"`
+	TranscriptPath      string `json:"transcript_path"`
+}
+
+func (in turnEndHookInput) session() string {
+	if in.SessionID != "" {
+		return in.SessionID
+	}
+	return in.SessionIDCamel
+}
+
+func (in turnEndHookInput) active() bool { return in.StopHookActive || in.StopHookActiveCamel }
+
+// turnEndLastBlockFile holds the reasons of the last block turn-end returned
+// in a hook mode, so a Stop it caused can tell whether anything changed.
+func turnEndLastBlockFile(cfg *loop.Config, agentID string) string {
+	return filepath.Join(cfg.AgentStateDir(agentID), "turn-end.last-block")
+}
+
+func readTurnEndLastBlock(cfg *loop.Config, agentID string) string {
+	data, err := os.ReadFile(turnEndLastBlockFile(cfg, agentID))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// writeTurnEndLastBlock records a block's reasons. Best effort: without the
+// record the next Stop simply blocks again, as it always did.
+func writeTurnEndLastBlock(cfg *loop.Config, agentID, reasons string) {
+	path := turnEndLastBlockFile(cfg, agentID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte(reasons), 0o600)
+}
+
+func clearTurnEndLastBlock(cfg *loop.Config, agentID string) {
+	_ = os.Remove(turnEndLastBlockFile(cfg, agentID))
 }
 
 // emitTurnEndGeminiAfterAgent is the Gemini CLI end-of-turn contract: silent
 // and exit 0 on clear; `{"decision":"deny","reason":…}` with exit 0 on block —
 // the documented AfterAgent deny (geminicli.com/docs/hooks/reference#afteragent),
 // which rejects the response and retries with the reason; exit 2 is the
-// stderr spelling of the same rejection and is not used. A second AfterAgent
-// raised by our own deny (stop_hook_active) is never denied again, so a lane
-// that cannot clear the gate is not spun in retries.
-func emitTurnEndGeminiAfterAgent(s gateStatus, stdin io.Reader) error {
+// stderr spelling of the same rejection and is not used. Only a retry already
+// proven to have the same blocking identities and turn is allowed through.
+func emitTurnEndGeminiAfterAgent(s gateStatus, unchangedBlock bool) error {
 	if !s.Blocked {
 		return nil
 	}
-	var in geminiAfterAgentInput
-	if data, err := io.ReadAll(io.LimitReader(stdin, 1<<20)); err == nil && len(data) > 0 {
-		_ = json.Unmarshal(data, &in)
-	}
-	if in.StopHookActive {
+	if unchangedBlock {
 		return nil
 	}
 	enc := json.NewEncoder(os.Stdout)
