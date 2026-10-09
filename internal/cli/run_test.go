@@ -589,7 +589,11 @@ func TestRunExportsRunnerPIDToWrapper(t *testing.T) {
 	}
 }
 
-func TestServeRefreshesLaunchedWrapperHookBeforeLaunch(t *testing.T) {
+// serve creates a MISSING hook file for the launched wrapper, but never
+// rewrites an existing one (opus-xhigh S3): an out-of-date file is refused
+// with the repair command — repairing a project's settings is setup's job —
+// and the wrapper does not launch.
+func TestServePreparesLaunchedWrapperHook(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		stale bool
@@ -605,44 +609,51 @@ func TestServeRefreshesLaunchedWrapperHookBeforeLaunch(t *testing.T) {
 			if err := os.Chmod(wrapper, 0o755); err != nil {
 				t.Fatal(err)
 			}
+			hookPath := filepath.Join(root, ".codex", "hooks.json")
+			var before []byte
 			if tc.stale {
 				mustWriteStaleHook(t, root, "codex")
+				before = mustRead(t, hookPath)
 			}
 
+			var serveErr error
 			withCwd(t, root, func() {
-				if err := cmdServe([]string{
+				serveErr = cmdServe([]string{
 					"--as", "codex",
 					"--control-repo", root,
 					"--loop-dir", filepath.Join(root, ".agentchute", "loop"),
 					"--interval", "5",
 					"--idle-grace", "100ms",
 					"--", wrapper,
-				}); err != nil {
-					t.Fatalf("cmdServe err = %v", err)
-				}
+				})
 			})
 
+			if tc.stale {
+				if serveErr == nil || !strings.Contains(serveErr.Error(), "agentchute setup") || !strings.Contains(serveErr.Error(), "never rewrites") {
+					t.Fatalf("cmdServe err = %v, want a refusal naming `agentchute setup`", serveErr)
+				}
+				if _, err := os.Stat(launchedPath); !os.IsNotExist(err) {
+					t.Fatalf("wrapper launched over a drifted hook file: stat err = %v", err)
+				}
+				if got := mustRead(t, hookPath); string(got) != string(before) {
+					t.Fatalf("serve rewrote the drifted hook file:\n%s", got)
+				}
+				mustNoHookBackup(t, hookPath)
+				return
+			}
+			if serveErr != nil {
+				t.Fatalf("cmdServe err = %v", serveErr)
+			}
 			if _, err := os.Stat(launchedPath); err != nil {
 				t.Fatalf("wrapper was not launched: %v", err)
 			}
-			for _, h := range hookWrappers {
-				if h.Name != "codex" {
-					continue
-				}
-				want, err := fs.ReadFile(hooksFS, h.Src)
-				if err != nil {
-					t.Fatal(err)
-				}
-				got, err := os.ReadFile(filepath.Join(root, h.Dest))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(got, want) {
-					t.Fatal("launched wrapper hook does not match the executing binary's canonical template")
-				}
-				return
+			want, err := fs.ReadFile(hooksFS, "examples/hooks/codex/.codex/hooks.json")
+			if err != nil {
+				t.Fatal(err)
 			}
-			t.Fatal("codex hook descriptor not found")
+			if got := mustRead(t, hookPath); !bytes.Equal(got, want) {
+				t.Fatal("serve did not create the missing hook file from the canonical template")
+			}
 		})
 	}
 }

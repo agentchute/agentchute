@@ -1,9 +1,12 @@
 package op
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/agentchute/agentchute/internal/loop"
@@ -55,6 +58,10 @@ type GateResp struct {
 	Blocked         bool     `json:"blocked"`
 	Reasons         []string `json:"reasons,omitempty"`
 	Warnings        []string `json:"warnings,omitempty"` // non-blocking signals
+	// BlockingFingerprint binds a local Stop retry to this exact gate snapshot.
+	// It is deliberately not a wire field: remote peers without identities
+	// cannot prove an unchanged blocker and must retain the blocking verdict.
+	BlockingFingerprint string `json:"-"`
 }
 
 // Gate performs the full read-only gate evaluation for a phase. It is the
@@ -182,6 +189,19 @@ func evaluateGate(cfg *loop.Config, agentID string, req GateReq, now time.Time) 
 		status.Warnings = append(status.Warnings, fmt.Sprintf("%d claimed-but-unacked message(s) in .claimed; run `agentchute ack --as %s` to commit", status.ClaimedResidue, status.Agent))
 	}
 	status.Blocked = len(status.Reasons) > 0
+	unread := make([]string, 0, len(msgs))
+	for _, msg := range msgs {
+		unread = append(unread, msg.Filename)
+	}
+	sort.Strings(unread)
+	sort.Strings(skipped)
+	blocking, _ := json.Marshal(struct {
+		Unread, Malformed    []string
+		MissingReg, StaleReg bool
+		Phase                string
+		Reasons              []string
+	}{unread, skipped, missingReg, staleReg, req.Phase, status.Reasons})
+	status.BlockingFingerprint = fmt.Sprintf("%x", sha256.Sum256(blocking))
 	return status, nil
 }
 

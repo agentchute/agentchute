@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/agentchute/agentchute/internal/loop"
 )
 
 // TestMain injects the build-time assets that Main normally supplies (the
@@ -27,6 +29,8 @@ import (
 // when the test binary is re-exec'd as a subprocess helper with a different
 // cwd, which runs TestMain too.
 func TestMain(m *testing.M) {
+	// Before anything reads the environment (opus-xhigh C4).
+	loop.MustStripTestEnv()
 	root := repoRootForTests()
 
 	mustRead := func(rel string) string {
@@ -44,6 +48,10 @@ func TestMain(m *testing.M) {
 	// rooted at the repo (e.g. "examples/hooks/..."). os.DirFS(root) with an
 	// absolute root exposes the identical layout and stays valid across chdirs.
 	hooksFS = os.DirFS(root)
+
+	// Hooks read no real stdin under test: `go test`'s own stdin may be an
+	// open pipe, and rows that need hook input install it (hookStdin).
+	hookStdin = func() *os.File { return nil }
 
 	if err := os.Chdir(root); err != nil {
 		panic("cli test setup: chdir to repo root: " + err.Error())

@@ -122,13 +122,16 @@ func TestHooksInstallForceBacksUp(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("force install err = %v", err)
 		}
-		// .bak file holds the pre-overwrite content; main file is the canonical template.
-		bak, err := os.ReadFile(path + ".bak")
-		if err != nil {
-			t.Fatalf("backup missing: %v", err)
-		}
+		// The old file is kept as ONE timestamped backup, and a settings file
+		// is merged (opus-xhigh S3): the project's own key survives next to
+		// agentchute's hooks.
+		bak := mustRead(t, mustOneHookBackup(t, path))
 		if string(bak) != string(original) {
 			t.Errorf("backup content = %q, want %q", bak, original)
+		}
+		merged := string(mustRead(t, path))
+		if !strings.Contains(merged, `"modified": true`) || !strings.Contains(merged, "turn-end --json") {
+			t.Errorf("force install did not merge into the project's file:\n%s", merged)
 		}
 	})
 }
@@ -361,7 +364,7 @@ func TestRefreshHookCompatibilityRefreshesStaleExistingFile(t *testing.T) {
 	if string(got) != string(canonical) {
 		t.Errorf("hook file not refreshed to the canonical template")
 	}
-	bak := mustRead(t, filepath.Join(root, ".claude", "settings.json.bak"))
+	bak := mustRead(t, mustOneHookBackup(t, filepath.Join(root, ".claude", "settings.json")))
 	if string(bak) != string(stale) {
 		t.Errorf("backup = %q, want the stale original %q", bak, stale)
 	}
@@ -395,9 +398,7 @@ func TestRefreshHookCompatibilityAlreadyCurrentGetsNoBackup(t *testing.T) {
 	if len(refreshed) != 0 {
 		t.Errorf("refreshed = %v, want none (file was already current)", refreshed)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".codex", "hooks.json.bak")); !os.IsNotExist(err) {
-		t.Errorf("no backup should be written for an already-current file; stat err = %v", err)
-	}
+	mustNoHookBackup(t, filepath.Join(root, ".codex", "hooks.json"))
 }
 
 func TestVerifyHookCompatibilityCatchesUnknownSubcommand(t *testing.T) {
