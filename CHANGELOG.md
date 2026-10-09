@@ -4,7 +4,7 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
-## v1.7.0 (DATE AT TAG — draft) — fenced consumption, honest sender lines, agy as its own wrapper, and a hardened SSH hub
+## v1.7.0 (2026-10-09) — fenced consumption, honest sender lines, agy as its own wrapper, and a hardened SSH hub
 
 The 2026-10-08 review release. The consume path is fenced, `check` no longer archives mail the model never saw and frames every body so a peer cannot fake a second message, hook installs merge into a project's settings and the Claude guard sees every tool, Antigravity (`agy`) becomes its own wrapper, Gemini CLI commits at the end of its turn, codex lanes launch without the shared daemon and without memories, and the SSH hub gets terminal gates, host-key seeding and a cleaner session exit. See [docs/releases/v1.7.0.md](docs/releases/v1.7.0.md) for upgrade steps and known limitations.
 
