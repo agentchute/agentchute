@@ -114,6 +114,13 @@ func cmdTurnEnd(args []string) error {
 	if err != nil {
 		return err
 	}
+	if codexHook == "Stop" {
+		// A codex thread outside the control repo (memory consolidation's
+		// hidden thread) gets nothing from this hook: no registration write, no archive of the lane's claimed mail, no latch change, no gate verdict.
+		if _, foreign := codexHookFromForeignThread(cfg); foreign {
+			return nil
+		}
+	}
 
 	now := time.Now().UTC()
 

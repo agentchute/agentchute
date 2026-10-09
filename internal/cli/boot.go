@@ -80,6 +80,13 @@ func cmdBoot(args []string) error {
 	if err != nil {
 		return err
 	}
+	if codexHook == "SessionStart" {
+		// A codex thread outside the control repo (memory consolidation's
+		// hidden thread) gets nothing from this hook: no registration write, no context.
+		if _, foreign := codexHookFromForeignThread(cfg); foreign {
+			return nil
+		}
+	}
 
 	agentID, err = resolveAgentID(agentID, cfg)
 	if err != nil {
