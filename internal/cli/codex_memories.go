@@ -299,7 +299,30 @@ func codexHookFromForeignThread(cfg *loop.Config) (cwd string, foreign bool) {
 	if cwd == "" || cfg == nil || cfg.Remote != nil || cfg.ControlRepo == "" {
 		return cwd, false
 	}
-	return cwd, !guardPathWithin(cwd, cfg.ControlRepo)
+	return cwd, codexHomeContains(cwd) || !guardPathWithin(cwd, cfg.ControlRepo)
+}
+
+// codexHomeContains reports whether dir is inside codex's home ($CODEX_HOME,
+// default ~/.codex), where codex runs its memory thread. That counts as a
+// foreign thread even when the control repo contains it — a pool at $HOME
+// (#222). A missing home or an unresolvable dir answers false, leaving the
+// control-repo rule to decide.
+func codexHomeContains(dir string) bool {
+	home := os.Getenv("CODEX_HOME")
+	if home == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+		home = filepath.Join(userHome, ".codex")
+	}
+	if _, err := os.Stat(home); err != nil {
+		return false
+	}
+	if _, err := filepath.EvalSymlinks(dir); err != nil {
+		return false
+	}
+	return guardPathWithin(dir, home)
 }
 
 // ---------- doctor: codex_memories ----------
