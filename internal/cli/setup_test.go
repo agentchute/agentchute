@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -74,6 +75,59 @@ func TestSetupRunnerInstallsAllFourShimsRegardlessOfDetection(t *testing.T) {
 	}
 	if count := strings.Count(string(data), setupPathBlockBegin); count != 1 {
 		t.Fatalf("profile block count = %d, want 1\n%s", count, data)
+	}
+	exe, _ := os.Executable()
+	if !strings.Contains(string(data), setupPathExpr(filepath.Dir(exe))) {
+		t.Fatalf("profile lost the dispatcher's binary directory:\n%s", data)
+	}
+}
+
+func TestSetupPathKeepsBinaryAfterInstallerBlock(t *testing.T) {
+	for _, shell := range []string{"bash", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			bin, err := exec.LookPath(shell)
+			if err != nil {
+				t.Skip(err)
+			}
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			binaryDir, shimDir := filepath.Join(home, ".local", "bin"), filepath.Join(home, ".agentchute", "bin")
+			profile := filepath.Join(home, ".bash_profile")
+			if shell == "fish" {
+				profile = filepath.Join(home, ".config", "fish", "config.fish")
+			}
+			for _, path := range []string{filepath.Join(binaryDir, "agentchute"), filepath.Join(shimDir, "ac")} {
+				mustWrite(t, path, []byte("#!/bin/sh\nexit 0\n"))
+				if err := os.Chmod(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, existing := range []string{"# user profile\n", "# agentchute PATH entry for binary ($HOME/.local/bin) begin\n# legacy\n# agentchute PATH entry for binary ($HOME/.local/bin) end\n"} {
+				mustWrite(t, profile, []byte(existing))
+				if err := setupWritePathBlock(profile, binaryDir, shimDir); err != nil {
+					t.Fatal(err)
+				}
+				first := string(mustRead(t, profile))
+				if err := setupWritePathBlock(profile, binaryDir, shimDir); err != nil {
+					t.Fatal(err)
+				}
+				if string(mustRead(t, profile)) != first || strings.Contains(first, installShPathMarkerPrefix) {
+					t.Fatal("profile rewrite is not idempotent or retained the installer block")
+				}
+			}
+			for _, path := range []string{"/usr/bin:/bin", "/usr/bin:/bin:" + binaryDir} {
+				cmd := exec.Command(bin, "-lc", "source "+shellQuote(profile)+"; command -v ac; command -v agentchute; /usr/bin/printenv PATH")
+				cmd.Env = []string{"HOME=" + home, "PATH=" + path, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config")}
+				out, err := cmd.CombinedOutput()
+				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+				if err != nil || len(lines) != 3 || lines[0] != filepath.Join(shimDir, "ac") || lines[1] != filepath.Join(binaryDir, "agentchute") {
+					t.Fatalf("fresh login shell: %v\n%s", err, out)
+				}
+				if strings.Count(lines[2], binaryDir) != 1 || strings.Count(lines[2], shimDir) != 1 {
+					t.Fatalf("PATH entries duplicated: %s", lines[2])
+				}
+			}
+		})
 	}
 }
 
