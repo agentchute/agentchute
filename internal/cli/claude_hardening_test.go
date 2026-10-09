@@ -898,10 +898,7 @@ func TestSpoolExemptionRefusesAHardLinkToTheClaim(t *testing.T) {
 }
 
 // A path swapped between the check and the open (a symlink re-pointed at
-// serve.claim) never yields the claim: what is read must be what was checked.
-// Since S6 the path is resolved before the checks and the open uses the
-// resolved file, so re-aiming the caller's symlink afterwards either reads
-// the checked file or is refused — never the new target.
+// serve.claim) is refused: what is read must be what was checked.
 func TestBodyFileSwappedAfterTheCheckIsRefused(t *testing.T) {
 	_, cfg := setupConsumeFixture(t)
 	claim := filepath.Join(cfg.AgentStateDir("bob"), "serve.claim")
@@ -922,7 +919,7 @@ func TestBodyFileSwappedAfterTheCheckIsRefused(t *testing.T) {
 		}
 	}
 	body, err := readSendBodyFile(cfg, link, "bob")
-	if strings.Contains(body, "secret") || (err == nil && body != "hello") {
+	if err == nil || strings.Contains(body, "secret") {
 		t.Fatalf("a body file swapped after the check was read: body=%q err=%v", body, err)
 	}
 }

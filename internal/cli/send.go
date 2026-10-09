@@ -709,6 +709,12 @@ func readSendBodyFile(cfg *loop.Config, path, spoolOwner string) (string, error)
 	if opened, err := f.Stat(); err != nil || !os.SameFile(opened, info) {
 		return "", fmt.Errorf("--body-file: %s changed while it was being read; refusing it", path)
 	}
+	// The name the caller gave must still lead to the checked file: a symlink
+	// on that path re-aimed after the check is refused, not silently read
+	// through its old target.
+	if again, err := filepath.EvalSymlinks(abs); err != nil || again != resolved {
+		return "", fmt.Errorf("--body-file: %s changed while it was being read; refusing it", path)
+	}
 	body, err := readBodyCapped(f, "--body-file")
 	if err != nil {
 		return "", err
