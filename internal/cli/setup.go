@@ -898,6 +898,15 @@ func runInDir(dir string, fn func() error) error {
 }
 
 func setupEnsureShimPath(opts setupOptions) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// Retiring install.sh's block must keep the dispatcher's binary reachable.
+	dirs := []string{opts.ShimDir}
+	if binDir := filepath.Dir(exe); !samePath(binDir, opts.ShimDir) {
+		dirs = append([]string{binDir}, dirs...)
+	}
 	// The PATH advice is emitted AFTER the profile work, not before it. It used
 	// to come first, so a run that was about to fix PATH itself opened with
 	//     warning: add /Users/alex/.agentchute/bin to PATH
@@ -934,14 +943,14 @@ func setupEnsureShimPath(opts setupOptions) error {
 				continue
 			}
 		}
-		if err := setupWritePathBlock(profile, opts.ShimDir); err != nil {
+		if err := setupWritePathBlock(profile, dirs...); err != nil {
 			return err
 		}
 		wrote = append(wrote, profile)
 	}
 	if len(wrote) == 0 {
 		fmt.Printf("no shell profile found to update, and none was created (looked for: %s).\n", strings.Join(displayHomePaths(profiles), ", "))
-		fmt.Printf("Add this to your shell's startup file yourself:\n\n%s\n", setupRenderPathBlock(profiles[0], opts.ShimDir))
+		fmt.Printf("Add this to your shell's startup file yourself:\n\n%s\n", setupRenderPathBlock(profiles[0], dirs...))
 		fmt.Printf("Or re-run with --profile <path> to name one (it will be created), or --no-profile to skip this step.\n")
 		return nil
 	}
@@ -1002,12 +1011,12 @@ func setupPlausibleProfiles(override string) []string {
 	return profiles
 }
 
-func setupWritePathBlock(profile, dir string) error {
+func setupWritePathBlock(profile string, dirs ...string) error {
 	existing, err := os.ReadFile(profile)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read profile %s: %w", profile, err)
 	}
-	block := setupRenderPathBlock(profile, dir)
+	block := setupRenderPathBlock(profile, dirs...)
 	next := replaceSetupBlock(string(existing), block)
 	if string(existing) == next {
 		fmt.Printf("PATH profile block already current in %s\n", profile)
@@ -1065,36 +1074,33 @@ func setupProfileHasBlock(profile string) bool {
 		strings.Contains(string(data), setupPathBlockEnd)
 }
 
-func setupRenderPathBlock(profile, dir string) string {
-	expr := setupPathExpr(dir)
-	if strings.HasSuffix(profile, "config.fish") {
-		return fmt.Sprintf("%s\nif test \"$PATH[1]\" != %s\n    set -gx PATH %s $PATH\nend\n%s\n",
-			setupPathBlockBegin, expr, expr, setupPathBlockEnd)
+func setupRenderPathBlock(profile string, dirs ...string) string {
+	block := setupPathBlockBegin + "\n"
+	for _, dir := range dirs {
+		expr := setupPathExpr(dir)
+		if strings.HasSuffix(profile, "config.fish") {
+			block += fmt.Sprintf("if not contains -- %s $PATH\n    set -gx PATH %s $PATH\nend\n", expr, expr)
+		} else {
+			block += fmt.Sprintf("case \":$PATH:\" in\n  *:%s:*) ;;\n  *) export PATH=%s:\"$PATH\" ;;\nesac\n", expr, expr)
+		}
 	}
-	return fmt.Sprintf("%s\ncase \"$PATH\" in\n  \"%s:\"*) ;;\n  *) export PATH=\"%s:$PATH\" ;;\nesac\n%s\n",
-		setupPathBlockBegin, expr, expr, setupPathBlockEnd)
+	return block + setupPathBlockEnd + "\n"
 }
 
 func setupPathExpr(dir string) string {
 	home := strings.TrimSpace(os.Getenv("HOME"))
 	if home != "" && strings.HasPrefix(dir, home+string(os.PathSeparator)) {
-		return "$HOME/" + filepath.ToSlash(strings.TrimPrefix(dir, home+string(os.PathSeparator)))
+		return `"$HOME"` + shellQuote("/"+filepath.ToSlash(strings.TrimPrefix(dir, home+string(os.PathSeparator))))
 	}
-	return dir
+	return shellQuote(dir)
 }
 
 func replaceSetupBlock(existing, block string) string {
-	without, changed := removeSetupBlock(existing)
+	without, _ := removeSetupBlock(existing)
 	if strings.TrimSpace(without) == "" {
 		return block
 	}
-	if !strings.HasSuffix(without, "\n") {
-		without += "\n"
-	}
-	if changed {
-		return without + block
-	}
-	return without + "\n" + block
+	return strings.TrimRight(without, "\n") + "\n\n" + block
 }
 
 func removeSetupBlock(existing string) (string, bool) {
