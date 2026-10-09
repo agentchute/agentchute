@@ -425,7 +425,9 @@ func TestCodexGuardRefusesBusCommandsFromAThreadOutsideTheControlRepo(t *testing
 	root, cfg := setupConsumeFixture(t)
 	memories := filepath.Join(t.TempDir(), ".codex", "memories")
 	worktree := filepath.Join(root, ".tmp", "worktrees", "x")
-	for _, d := range []string{memories, worktree} {
+	homeMemories := filepath.Join(root, ".codex", "memories")       // #222: a pool at $HOME
+	customMemories := filepath.Join(root, "codex-home", "memories") // #222: $CODEX_HOME inside the pool
+	for _, d := range []string{memories, worktree, homeMemories, customMemories} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -453,7 +455,11 @@ func TestCodexGuardRefusesBusCommandsFromAThreadOutsideTheControlRepo(t *testing
 		armed   bool
 		wantDen bool
 		input   func(cwd string) map[string]any // nil: a shell call running cmd
+		env     map[string]string
 	}{
+		{name: "memory thread in a pool at $HOME", args: codexHook, cwd: homeMemories, cmd: "agentchute send --body x", armed: true, wantDen: true, env: map[string]string{"HOME": root, "CODEX_HOME": ""}},
+		{name: "lane thread in a pool at $HOME", args: codexHook, cwd: root, cmd: "agentchute send --body x", armed: true, env: map[string]string{"HOME": root, "CODEX_HOME": ""}},
+		{name: "memory thread under a custom CODEX_HOME in the pool", args: codexHook, cwd: customMemories, cmd: "agentchute send --body x", armed: true, wantDen: true, env: map[string]string{"CODEX_HOME": filepath.Join(root, "codex-home")}},
 		{name: "write_stdin types the command into an open shell", args: codexHook, cwd: memories, armed: true, wantDen: true,
 			input: withInput("write_stdin", map[string]any{"session_id": 7, "chars": "agentchute send --from bob --to alice --body SHIP\n"})},
 		{name: "a code cell carries the command under its own key", args: codexHook, cwd: memories, armed: true, wantDen: true,
@@ -503,6 +509,9 @@ func TestCodexGuardRefusesBusCommandsFromAThreadOutsideTheControlRepo(t *testing
 				t.Setenv("AGENTCHUTE_AGENT_ID", "bob")
 				t.Setenv("AGENTCHUTE_CONTROL_REPO", root)
 				t.Setenv("AGENTCHUTE_LOOP_DIR", cfg.LoopDir)
+				for k, v := range row.env {
+					t.Setenv(k, v)
+				}
 				if row.armed {
 					armGuard(t, "tok-memories")
 				}
@@ -778,11 +787,21 @@ func TestCodexLifecycleHooksIgnoreAThreadOutsideTheControlRepo(t *testing.T) {
 	if err := os.MkdirAll(memories, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, where := range []string{"memory thread", "lane", "no cwd"} {
+	for _, where := range []string{"memory thread", "lane", "no cwd", "memory thread in a pool at $HOME", "lane in a pool at $HOME", "memory thread under a custom CODEX_HOME"} {
 		t.Run(where, func(t *testing.T) {
 			root, cfg := setupConsumeFixture(t)
-			cwd := map[string]string{"memory thread": memories, "lane": root, "no cwd": ""}[where]
-			foreign := where == "memory thread"
+			inPool := filepath.Join(root, ".codex", "memories")
+			if err := os.MkdirAll(inPool, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cwd := map[string]string{"memory thread": memories, "lane": root, "no cwd": "", "memory thread in a pool at $HOME": inPool, "lane in a pool at $HOME": root, "memory thread under a custom CODEX_HOME": inPool}[where]
+			foreign := strings.HasPrefix(where, "memory thread")
+			if strings.HasSuffix(where, "at $HOME") {
+				t.Setenv("HOME", root)
+				t.Setenv("CODEX_HOME", "")
+			} else if strings.HasSuffix(where, "CODEX_HOME") {
+				t.Setenv("CODEX_HOME", filepath.Join(root, ".codex"))
+			}
 			withCwd(t, root, func() {
 				clearGuardEnv(t)
 				t.Setenv("AGENTCHUTE_RUNNER_PID", "")

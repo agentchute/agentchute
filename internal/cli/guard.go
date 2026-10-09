@@ -549,7 +549,7 @@ func guardPathWithin(path, dir string) bool {
 
 // codexThreadCwdReasonFmt is the deny text for a bus command from a codex
 // thread outside the control repo.
-const codexThreadCwdReasonFmt = "this codex thread runs in %s, outside the control repo %s, so agentchute send/check/ack/turn-end/clean/setup/update are refused from it: codex runs hidden threads (memory consolidation, in ~/.codex/memories) with this lane's identity. A lane's own threads run where serve launched it; if this is one, relaunch the lane from inside the control repo (agentchute §15 guard)"
+const codexThreadCwdReasonFmt = "this codex thread runs in %s, inside codex's home or outside the control repo %s, so agentchute send/check/ack/turn-end/clean/setup/update are refused from it: codex runs hidden threads (memory consolidation, in ~/.codex/memories) with this lane's identity. A lane's own threads run where serve launched it; if this is one, relaunch the lane from inside the control repo (agentchute §15 guard)"
 
 // evaluateCodexThreadCwd refuses agentchute bus commands from a codex thread
 // whose working directory (the hook input's `cwd`) is outside the lane's
@@ -584,7 +584,7 @@ func evaluateCodexThreadCwd(controlRepo, loopDir, hookCwd, toolName, inputText s
 	if err != nil || cfg.Remote != nil || cfg.ControlRepo == "" {
 		return allow
 	}
-	if guardPathWithin(hookCwd, cfg.ControlRepo) {
+	if !codexHomeContains(hookCwd) && guardPathWithin(hookCwd, cfg.ControlRepo) {
 		return allow
 	}
 	return guardDecision{Allowed: false, Reason: fmt.Sprintf(codexThreadCwdReasonFmt, hookCwd, cfg.ControlRepo)}
