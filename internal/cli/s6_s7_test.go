@@ -1,15 +1,20 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/agentchute/agentchute/internal/hubclient"
 	"github.com/agentchute/agentchute/internal/loop"
+	"github.com/agentchute/agentchute/internal/op"
 )
 
 // ---------- S6: --body-file ----------
@@ -256,5 +261,88 @@ func TestServeTypedInsideALaneLaunchesUnderItsOwnID(t *testing.T) {
 	})
 	if got := string(mustRead(t, record)); got != "codex" {
 		t.Fatalf("the nested serve launched its wrapper as %q, want its own id codex (not the parent lane bob)", got)
+	}
+}
+
+// ---------- codex hook trust on a remote lane ----------
+
+// A remote (ssh://) codex lane runs codex on this machine, so serve checks
+// this machine's codex trust for this checkout's hooks file exactly as for a
+// local lane: missing trust launches unguarded with the warning; full trust
+// arms the guard.
+func TestRemoteCodexLaneFollowsLocalHookTrust(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake wrapper")
+	}
+	for _, row := range []struct {
+		name      string
+		trusted   bool
+		wantGuard bool
+	}{
+		{"missing trust entry: unguarded with warning", false, false},
+		{"all trusted: guarded", true, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := newWI57Harness(t, "codex", "openai")
+			bin := t.TempDir()
+			envPath := filepath.Join(bin, "child-env.txt")
+			wrapper := filepath.Join(bin, "codex")
+			mustWrite(t, wrapper, []byte("#!/bin/sh\ncase \"${1-}\" in --help) exit 0;; esac\n"+
+				"env | grep -E '^AGENTCHUTE_GUARD=' > "+shellQuote(envPath+".tmp")+"; mv "+shellQuote(envPath+".tmp")+" "+shellQuote(envPath)+"\n"+
+				"trap 'exit 0' TERM; while :; do sleep 1; done\n"))
+			if err := os.Chmod(wrapper, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// This checkout's hooks file, as serve installs it. A remote
+			// lane's local root comes from the working directory, which the
+			// OS reports with symlinks resolved (macOS: /private/var).
+			realRoot, err := filepath.EvalSymlinks(h.root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			installed := filepath.Join(realRoot, ".codex", "hooks.json")
+			template, err := fs.ReadFile(hooksFS, "examples/hooks/codex/.codex/hooks.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustWrite(t, installed, template)
+			tables := map[string]string{}
+			if row.trusted {
+				tables = realTrust(t, installed)
+			}
+			codexHome := t.TempDir()
+			writeCodexTrustConfig(t, codexHome, tables)
+			t.Setenv("CODEX_HOME", codexHome)
+
+			fake := &fakeRemoteServeChannel{token: "remote-token"}
+			fake.tickFn = func() (op.TickResp, error) {
+				deadline := time.Now().Add(5 * time.Second)
+				for time.Now().Before(deadline) {
+					if _, err := os.Stat(envPath); err == nil {
+						return op.TickResp{}, &hubclient.Error{Code: "E_CHANNEL_LOST", Msg: "test channel drop"}
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				return op.TickResp{}, errors.New("wrapper did not start")
+			}
+			originalOpen := openRemoteServeChannel
+			t.Cleanup(func() { openRemoteServeChannel = originalOpen })
+			openRemoteServeChannel = func(*loop.Config, string) (remoteServeChannel, error) { return fake, nil }
+
+			_, stderr, _ := h.capture(t, func() error {
+				return cmdServe([]string{"--as", h.agent, "--control-repo", h.remote.URL, "--relaunch=false", "--", wrapper})
+			})
+			got, err := os.ReadFile(envPath)
+			if err != nil {
+				t.Fatalf("wrapper did not run: %v\nstderr:\n%s", err, stderr)
+			}
+			if armed := strings.Contains(string(got), "AGENTCHUTE_GUARD=1"); armed != row.wantGuard {
+				t.Fatalf("remote codex lane guard armed=%v, want %v; env:\n%s\nstderr:\n%s", armed, row.wantGuard, got, stderr)
+			}
+			warned := strings.Contains(stderr, "not trusted every agentchute hook") && strings.Contains(stderr, "UNGUARDED")
+			if warned == row.wantGuard {
+				t.Fatalf("warning shown=%v with guard=%v; stderr:\n%s", warned, row.wantGuard, stderr)
+			}
+		})
 	}
 }
