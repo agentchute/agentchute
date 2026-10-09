@@ -306,7 +306,9 @@ func cmdShimsExec(args []string) error {
 	}
 	wrapperArgs := append([]string{realWrapper}, fs.Args()...)
 	if os.Getenv("AGENTCHUTE_SHIM_BYPASS") == "1" || os.Getenv("AGENTCHUTE_RUNNER") == "1" {
-		return execReplace(realWrapper, wrapperArgs, os.Environ())
+		// The runner's own launch keeps the lane's identity; a launch typed
+		// inside the lane runs without it (lane_launch.go, opus-xhigh S7).
+		return execReplace(realWrapper, wrapperArgs, wrapperBypassEnv("shims exec"))
 	}
 
 	cwd, err := os.Getwd()

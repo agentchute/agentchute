@@ -100,6 +100,8 @@ func cmdServe(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return runUsage(err)
 	}
+	// A serve typed inside a lane does not act as that lane (opus-xhigh S7).
+	dropNestedLaneIdentity("serve")
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "vendor":
@@ -227,7 +229,10 @@ func cmdServe(args []string) error {
 	// would never be cleared. Launch UNGUARDED when any expected trust entry
 	// is missing, and say so; the lane acks itself until the operator trusts
 	// the hooks in the TUI ("Review hooks" / "Trust all") and relaunches.
-	if launchedSpec.Key == "codex" && opts.Guarded && cfg.Remote == nil {
+	// Remote lanes too (opus-xhigh): codex runs on THIS machine, with this
+	// machine's config and this checkout's hooks file; for an ssh:// pool
+	// cfg.ControlRepo is that local checkout (loop.remoteLocalControlRepo).
+	if launchedSpec.Key == "codex" && opts.Guarded {
 		missing, terr := codexHookTrustMissing(codexConfigPath(), filepath.Join(cfg.ControlRepo, ".codex", "hooks.json"))
 		if terr != nil || len(missing) > 0 {
 			detail := "untrusted hook positions: " + strings.Join(missing, ", ")
