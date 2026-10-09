@@ -89,6 +89,10 @@ func cmdSelfCheck(args []string) error {
 		return err
 	}
 
+	// A new prompt is a new turn: a Stop block recorded in an earlier turn
+	// must never let this turn's first block through (turn-end, C3).
+	clearTurnEndLastBlock(cfg, agentID)
+
 	status := selfCheckStatus{
 		Agent:    agentID,
 		Vendor:   result.Reg.Vendor,

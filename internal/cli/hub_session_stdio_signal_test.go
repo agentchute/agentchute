@@ -81,8 +81,8 @@ func startStdioHubSession(t *testing.T) *stdioHubSession {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHubSessionStdioHelper$")
 	cmd.Env = append(hubHelperBaseEnv(),
-		"AGENTCHUTE_HUB_SESSION_HELPER=1",
-		"AGENTCHUTE_HUB_SESSION_HELPER_POOL="+pool,
+		"ACTEST_HUB_SESSION_HELPER=1",
+		"ACTEST_HUB_SESSION_HELPER_POOL="+pool,
 		"SSH_ORIGINAL_COMMAND=agentchute-hub",
 	)
 	stdin, err := cmd.StdinPipe()

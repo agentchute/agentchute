@@ -59,7 +59,7 @@ func TestSendSpoolsBodyOnPostStdinFailure(t *testing.T) {
 	spoolPath := onlySendSpool(t, cfg, "claude-code")
 	assertSendSpool(t, spoolPath, body)
 	reportedSpoolPath := canonicalTestPath(t, spoolPath)
-	wantRetry := "retry with: agentchute send --to codex --from claude-code < " + shellQuote(reportedSpoolPath)
+	wantRetry := "retry with: agentchute send --to codex --from claude-code --body-file " + shellQuote(reportedSpoolPath)
 	if !strings.Contains(sendErr.Error(), "body preserved at "+reportedSpoolPath) ||
 		!strings.Contains(sendErr.Error(), wantRetry) {
 		t.Fatalf("error missing spool path/retry:\n%v", sendErr)
@@ -107,7 +107,7 @@ func TestSendSpoolRetryPreservesAskSemantics(t *testing.T) {
 	spoolPath := onlySendSpool(t, cfg, "claude-code")
 	assertSendSpool(t, spoolPath, body)
 	reportedSpoolPath := canonicalTestPath(t, spoolPath)
-	if !strings.Contains(sendErr.Error(), "--ask --reply-by '45m0s' < "+shellQuote(reportedSpoolPath)) ||
+	if !strings.Contains(sendErr.Error(), "--ask --reply-by '45m0s' --body-file "+shellQuote(reportedSpoolPath)) ||
 		strings.Contains(sendErr.Error(), "--reply-by '2h'") {
 		t.Fatalf("retry line lost ask semantics:\n%v", sendErr)
 	}
@@ -163,7 +163,7 @@ func TestSendSpoolRetryPreservesReplyTo(t *testing.T) {
 	spoolPath := onlySendSpool(t, cfg, "claude-code")
 	assertSendSpool(t, spoolPath, body)
 	reportedSpoolPath := canonicalTestPath(t, spoolPath)
-	if !strings.Contains(sendErr.Error(), "--reply-to "+shellQuote(ref)+" < "+shellQuote(reportedSpoolPath)) {
+	if !strings.Contains(sendErr.Error(), "--reply-to "+shellQuote(ref)+" --body-file "+shellQuote(reportedSpoolPath)) {
 		t.Fatalf("retry line lost reply-to semantics:\n%v", sendErr)
 	}
 

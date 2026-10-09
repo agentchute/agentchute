@@ -891,14 +891,12 @@ func TestSetupResync_WrappersNoneCompatibilityInvariants(t *testing.T) {
 	if string(gotCodex) != string(canonicalCodex) {
 		t.Errorf("stale codex hook was not refreshed to the canonical template")
 	}
-	bakCodex := mustRead(t, filepath.Join(root, ".codex", "hooks.json.bak"))
+	bakCodex := mustRead(t, mustOneHookBackup(t, filepath.Join(root, ".codex", "hooks.json")))
 	if string(bakCodex) != string(staleCodex) {
 		t.Errorf("codex backup = %q, want the stale original %q", bakCodex, staleCodex)
 	}
 
-	if _, err := os.Stat(filepath.Join(root, ".claude", "settings.json.bak")); !os.IsNotExist(err) {
-		t.Errorf("claude-code was already current; no backup should exist, stat err = %v", err)
-	}
+	mustNoHookBackup(t, filepath.Join(root, ".claude", "settings.json"))
 }
 
 // codex acceptance item 1: a stale hook file for a wrapper OUTSIDE this
@@ -940,9 +938,7 @@ func TestSetupResync_RefreshesStaleHookOutsideMembership(t *testing.T) {
 	if string(got) != string(canonicalGemini) {
 		t.Errorf("gemini-cli hook, though never in membership, was not refreshed to the canonical template")
 	}
-	if _, err := os.Stat(filepath.Join(root, ".gemini", "settings.json.bak")); err != nil {
-		t.Errorf("expected a backup of the stale gemini-cli hook: %v", err)
-	}
+	mustOneHookBackup(t, filepath.Join(root, ".gemini", "settings.json"))
 }
 
 // TestSetupResync_HookCompatRepairRunsAheadOfFailingInit proves the
@@ -988,9 +984,7 @@ func TestSetupResync_HookCompatRepairRunsAheadOfFailingInit(t *testing.T) {
 	if string(got) != string(canonicalClaude) {
 		t.Errorf("hook compatibility repair must run before, and survive, a later init failure; hook was not refreshed")
 	}
-	if _, err := os.Stat(filepath.Join(root, ".claude", "settings.json.bak")); err != nil {
-		t.Errorf("expected a backup of the stale hook: %v", err)
-	}
+	mustOneHookBackup(t, filepath.Join(root, ".claude", "settings.json"))
 }
 
 // codex acceptance item 3 / brief acceptance 4: a forced verification

@@ -2,7 +2,6 @@
   "permissions": {
     "allow": [
       "Bash(agentchute check:*)",
-      "Bash(agentchute send:*)",
       "Bash(agentchute ack:*)",
       "Bash(agentchute gate:*)",
       "Bash(agentchute turn-end:*)",
@@ -12,16 +11,16 @@
       "Bash(agentchute pending:*)",
       "Bash(agentchute identity:*)",
       "Bash(git status:*)",
-      "Bash(git diff:*)",
-      "Bash(git log:*)",
-      "Bash(git show:*)",
-      "Bash(git fetch:*)",
+      "Bash(git diff)",
+      "Bash(git log)",
+      "Bash(git show)",
+      "Bash(git fetch)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git worktree:*)",
-      "Bash(go test:*)",
-      "Bash(go build:*)",
-      "Bash(go vet:*)",
+      "Bash(go test ./...)",
+      "Bash(go build ./...)",
+      "Bash(go vet ./...)",
       "Bash(gofmt:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr list:*)",
@@ -30,6 +29,24 @@
       "Bash(gh run view:*)",
       "Bash(gh run list:*)",
       "Bash(gh run watch:*)"
+    ],
+    "deny": [
+      "Bash(go * -exec *)",
+      "Bash(go * -exec=*)",
+      "Bash(go * --exec *)",
+      "Bash(go * --exec=*)",
+      "Bash(go * -toolexec *)",
+      "Bash(go * -toolexec=*)",
+      "Bash(go * --toolexec *)",
+      "Bash(go * --toolexec=*)",
+      "Bash(go * -vettool *)",
+      "Bash(go * -vettool=*)",
+      "Bash(go * --vettool *)",
+      "Bash(go * --vettool=*)",
+      "Bash(git * --output *)",
+      "Bash(git * --output=*)",
+      "Bash(git * --upload-pack*)",
+      "Bash(git * --receive-pack*)"
     ]
   },
   "hooks": {
@@ -60,7 +77,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",

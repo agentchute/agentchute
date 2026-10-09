@@ -25,8 +25,8 @@ func TestHubSessionReleasesLeaseWhenItsStdoutBreaks(t *testing.T) {
 	pool, cfg := newHubPool(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHubSessionStdioHelper$")
 	cmd.Env = append(hubHelperBaseEnv(),
-		"AGENTCHUTE_HUB_SESSION_HELPER=1",
-		"AGENTCHUTE_HUB_SESSION_HELPER_POOL="+pool,
+		"ACTEST_HUB_SESSION_HELPER=1",
+		"ACTEST_HUB_SESSION_HELPER_POOL="+pool,
 		"SSH_ORIGINAL_COMMAND=agentchute-hub",
 	)
 	stdin, err := cmd.StdinPipe()
@@ -90,10 +90,10 @@ func TestHubSessionReleasesLeaseWhenItsStdoutBreaks(t *testing.T) {
 // TestHubSessionStdioHelper is the child process for the row above: the real
 // `hub session` command over this process's own stdin and stdout.
 func TestHubSessionStdioHelper(t *testing.T) {
-	if os.Getenv("AGENTCHUTE_HUB_SESSION_HELPER") != "1" {
+	if os.Getenv("ACTEST_HUB_SESSION_HELPER") != "1" {
 		t.Skip("helper process for TestHubSessionReleasesLeaseWhenItsStdoutBreaks")
 	}
-	err := cmdHubSession([]string{"--agent", "codex", "--pool", os.Getenv("AGENTCHUTE_HUB_SESSION_HELPER_POOL"), "--pool-id", fixturePoolID})
+	err := cmdHubSession([]string{"--agent", "codex", "--pool", os.Getenv("ACTEST_HUB_SESSION_HELPER_POOL"), "--pool-id", fixturePoolID})
 	if err != nil {
 		os.Exit(3)
 	}

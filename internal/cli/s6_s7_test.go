@@ -30,13 +30,13 @@ func TestBodyFileRefusesAnyPoolsStateTree(t *testing.T) {
 		filepath.Join(other, ".agentchute", "LOOP", "STATE", "bob", "serve.claim"),
 	} {
 		mustWrite(t, path, []byte(`{"serve_token":"secret"}`))
-		if _, err := readSendBodyFile(cfg, path); err == nil || !strings.Contains(err.Error(), "state/ tree") {
+		if _, err := readSendBodyFile(cfg, path, "bob"); err == nil || !strings.Contains(err.Error(), "state/ tree") {
 			t.Errorf("--body-file %s: err = %v, want the state-tree refusal", path, err)
 		}
 	}
 	ok := filepath.Join(other, "notes", "reply.md")
 	mustWrite(t, ok, []byte("hello"))
-	if body, err := readSendBodyFile(cfg, ok); err != nil || body != "hello" {
+	if body, err := readSendBodyFile(cfg, ok, "bob"); err != nil || body != "hello" {
 		t.Fatalf("an ordinary file: body=%q err=%v", body, err)
 	}
 }
@@ -77,7 +77,7 @@ func TestBodyFileSwappedBetweenCheckAndOpenIsRefused(t *testing.T) {
 					t.Error(err)
 				}
 			}
-			got, err := readSendBodyFile(cfg, body)
+			got, err := readSendBodyFile(cfg, body, "bob")
 			if err == nil || strings.Contains(got, "secret") {
 				t.Fatalf("a swapped body file was read: body=%q err=%v", got, err)
 			}
