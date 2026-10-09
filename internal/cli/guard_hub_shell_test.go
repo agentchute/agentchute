@@ -85,19 +85,33 @@ func TestGuardHubShellDifferentials(t *testing.T) {
 }
 
 func TestGuardHubLargeInputs(t *testing.T) {
-	for _, text := range []string{
-		strings.Repeat("env ", 100000) + "true",
-		strings.Repeat("echo $(", 10000) + "true" + strings.Repeat(")", 10000),
-		"echo " + strings.Repeat("'x'", 100000),
-		strings.Repeat("echo ok;", 100000),
-		strings.Repeat("x", (4<<20)+1),
-		strings.Repeat("{", 100000),
+	for _, tc := range []struct{ name, text string }{
+		{"wrappers", strings.Repeat("env ", 100000) + "true"},
+		{"substitutions", strings.Repeat("echo $(", 10000) + "true" + strings.Repeat(")", 10000)},
+		{"quoted_word", "echo " + strings.Repeat("'x'", 100000)},
+		{"command_list", strings.Repeat("echo ok;", 100000)},
+		{"oversize", strings.Repeat("x", guardHubBudget+1)},
+		{"braces", strings.Repeat("{", 100000)},
 	} {
-		start := time.Now()
-		denied := guardCommandDenied("Bash " + text)
-		t.Logf("bytes=%d denied=%v elapsed=%s", len(text), denied, time.Since(start))
-		if time.Since(start) > 5*time.Second {
-			t.Fatal("guard exceeded 5 seconds")
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			// Exclude allocating/copying the input from the guard's timing.
+			input := "Bash " + tc.text
+			// The parsing rows keep a generous bound for race-instrumented CI;
+			// oversized input must take the constant-time entry check instead.
+			limit := 15 * time.Second
+			if tc.name == "oversize" {
+				limit = 50 * time.Millisecond
+			}
+			start := time.Now()
+			denied := guardCommandDenied(input)
+			elapsed := time.Since(start)
+			t.Logf("bytes=%d denied=%v elapsed=%s limit=%s", len(tc.text), denied, elapsed, limit)
+			if tc.name == "oversize" && !denied {
+				t.Fatal("oversized command was allowed")
+			}
+			if elapsed > limit {
+				t.Fatalf("guard took %s, exceeded %s", elapsed, limit)
+			}
+		})
 	}
 }

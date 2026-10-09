@@ -7,6 +7,7 @@ The repo follows a release-squash convention: each release lands on `main` as a 
 ## Unreleased
 
 **Hub hardening** (review 2026-10-08, S8–S11)
+- The guard rejects command text over its 4 MiB work budget before any scanning or normalization. Oversized inputs now take constant time; the regression test times only the guard call and allows slower race-instrumented parsing for inputs within the budget.
 - A joining URL's pool path must match `[A-Za-z0-9._/+-]+` (what `hub authorize` accepts), and every printed "run this ON THE HUB" command single-quotes its arguments — a percent-encoded `;`, quote or newline in the URL used to become shell syntax in the hub operator's paste.
 - The connection-sharing socket directory `/tmp/ac-<uid>/` is ownership-checked itself, not only its per-key leaf; a parent another user owns disables sharing for that root.
 - `hub authorize` refuses to bind a key to an id the pool already knows without one (registration row, fresh serve claim, inbox, lane state) unless `--takeover` is given with a real terminal on stdin (a termios check, so `</dev/null`, a pipe or a file is refused — a terminal is not proof of a human). While mail is claimed, the guard denies running `hub authorize`, `hub join` or `hub session` — recognised in command position (past assignments, wrappers, global options, and inside `sh -c`, `eval`, `$(…)` and an ssh remote command), so a command that only mentions one, like `git log --grep='agentchute hub join'`, is not denied; a shell reading its commands from stdin is.
