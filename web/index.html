@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agentchute — an inbox per agent · Protocol v2.5</title>
-<meta name="description" content="agentchute Protocol v2.5: a small Markdown protocol for AI agent coordination. An inbox per agent, plain files, no broker — with a deliberate, documented wire migration.">
-<meta property="og:title" content="agentchute — an inbox per agent · Protocol v2.5">
-<meta property="og:description" content="Stop being the message bus for your AI agents. Protocol v2.5 keeps the pull-only primitives and deliberately changes the identity wire.">
+<meta name="color-scheme" content="light dark">
+<title>agentchute — a mailbox for each AI helper</title>
+<meta name="description" content="Your AI coding helpers can't talk to each other. agentchute gives each one its own mailbox, so they can pass notes to each other without you.">
+<meta property="og:title" content="agentchute — a mailbox for each AI helper">
+<meta property="og:description" content="Your AI coding helpers can't talk to each other. agentchute gives each one its own mailbox, so they can pass notes to each other without you.">
 <meta property="og:url" content="https://agentchute.dev/">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://agentchute.dev/images/og-home.png">
@@ -14,384 +15,160 @@
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="agentchute — an inbox per agent · Protocol v2.5">
-<meta name="twitter:description" content="Stop being the message bus for your AI agents. Protocol v2.5 keeps the pull-only primitives and deliberately changes the identity wire.">
+<meta name="twitter:title" content="agentchute — a mailbox for each AI helper">
+<meta name="twitter:description" content="Your AI coding helpers can't talk to each other. agentchute gives each one its own mailbox, so they can pass notes to each other without you.">
 <meta name="twitter:image" content="https://agentchute.dev/images/og-home.png">
 <link rel="canonical" href="https://agentchute.dev/">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
 <style>
-  :root{
-    --paper:#FAF9F5; --ink:#17180F; --muted:#5C5E50; --faint:#8A8C7C;
-    --hair:#E6E4DA; --line:#E2E0D6;
-    --green:#1E6F57; --green-soft:#EAF1ED; --green-line:#CFE3D8;
-    --amber:#C8791A; --card:#FFFFFF;
-    --sans:'Inter',system-ui,sans-serif;
-    --disp:'Space Grotesk',system-ui,sans-serif;
-    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
-    --wrap:1080px;
+  /* Home page only. The shared style.css stays as it is for every other page. */
+  section.hero p.lede { max-width: 36em; }
+  section.hero p.lede strong { font-weight: 600; }
+  p code { white-space: nowrap; }
+
+  .mailboxes { display: block; width: 100%; max-width: 600px; height: auto; margin: 8px auto 8px auto; }
+  .mailboxes .card { fill: var(--bg); stroke: var(--rule); stroke-width: 2; }
+  .mailboxes .name { fill: var(--fg); font-family: var(--disp); font-weight: 600; font-size: 30px; }
+  .mailboxes .sub { fill: var(--fg-dim); font-family: var(--sans); font-size: 20px; }
+  .mailboxes .label { fill: var(--fg-dim); font-family: var(--sans); font-size: 20px; }
+  .mailboxes .arrow { fill: none; stroke: var(--accent); stroke-width: 3; }
+  .mailboxes .head { fill: var(--accent); }
+  .mailboxes .num circle { fill: var(--accent); }
+  .mailboxes .num text { fill: var(--accent-fg); font-family: var(--sans); font-weight: 600; font-size: 20px; }
+
+  ol.steps { list-style: none; counter-reset: step; padding: 0; margin: 16px 0 24px 0; display: grid; gap: 12px; }
+  @media (min-width: 640px) { ol.steps { grid-template-columns: repeat(3, 1fr); } }
+  ol.steps li { counter-increment: step; background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px 14px 52px; position: relative; font-size: 16px; line-height: 1.45; }
+  ol.steps li::before { content: counter(step); position: absolute; left: 14px; top: 13px; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-fg); font-weight: 600; font-size: 14px; line-height: 26px; text-align: center; }
+
+  .installbox { position: relative; }
+  .installbox pre.install { padding-right: 76px; }
+  .installbox button { position: absolute; top: 12px; right: 12px; font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--bg); background: transparent; border: 1px solid var(--fg-dim); border-radius: 4px; padding: 3px 9px; cursor: pointer; }
+  .installbox button:hover { border-color: var(--bg); }
+
+  ul.more { list-style: none; padding: 0; margin: 16px 0 0 0; }
+  ul.more li { padding: 8px 0; border-bottom: 1px solid var(--rule); }
+  ul.more li:last-child { border-bottom: none; }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15160f;
+      --bg-alt: #1d1e17;
+      --fg: #ecebe2;
+      --fg-dim: #a8aa99;
+      --accent: #5cbf99;
+      --accent-fg: #0d1712;
+      --rule: #34352c;
+      --code-bg: #0b0c08;
+      --code-fg: #ecebe2;
+      --link-hover: #82d4b5;
+    }
+    header.site { background: rgba(21, 22, 15, 0.92); }
+    pre.install { background: var(--code-bg); color: var(--code-fg); border: 1px solid var(--rule); }
+    .installbox button { color: var(--code-fg); }
+    .installbox button:hover { border-color: var(--code-fg); }
+    footer { background: var(--code-bg); border-top: 1px solid var(--rule); }
+    footer a:hover { color: #ffffff; text-decoration-color: #ffffff; }
   }
-  *{box-sizing:border-box}
-  html{scroll-behavior:smooth}
-  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased;}
-  a{color:var(--green);text-decoration:none}
-  a:hover{text-decoration:underline}
-  :focus-visible{outline:2px solid var(--green);outline-offset:3px;border-radius:3px}
-  .wrap{max-width:var(--wrap);margin:0 auto;padding:0 28px}
-  .mono{font-family:var(--mono)}
-
-  /* announcement band */
-  .announce{background:var(--ink);color:#EDECE3}
-  .announce .wrap{display:flex;gap:14px;align-items:center;justify-content:center;padding:10px 28px;font-family:var(--mono);font-size:13px;flex-wrap:wrap}
-  .announce .tag{background:var(--green);color:#F7FBF9;border-radius:5px;padding:2px 9px;font-weight:600;letter-spacing:.03em}
-  .announce a{color:#9FD8C3}
-
-  header{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--paper) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--hair)}
-  .bar{display:flex;align-items:center;justify-content:space-between;height:60px}
-  .brand{font-family:var(--mono);font-weight:600;font-size:15px;letter-spacing:.02em}
-  .brand .sq{display:inline-block;width:9px;height:9px;background:var(--green);border-radius:2px;margin-right:9px;vertical-align:middle}
-  nav a{font-family:var(--mono);font-size:13px;color:var(--muted);margin-left:22px}
-  nav a:hover{color:var(--ink);text-decoration:none}
-
-  /* hero */
-  .hero{display:grid;grid-template-columns:1.04fr .96fr;gap:54px;align-items:center;padding:64px 0 56px}
-  .eyebrow{font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.06em;margin:0 0 18px}
-  h1{font-family:var(--disp);font-weight:700;font-size:clamp(2.2rem,4.6vw,3.5rem);line-height:1.04;letter-spacing:-.02em;margin:0 0 20px}
-  h1 .b{display:block}
-  .sub{font-size:1.12rem;color:var(--muted);max-width:40ch;margin:0 0 26px}
-  .sub b{color:var(--ink);font-weight:600}
-
-  .term{background:var(--ink);border-radius:10px;padding:15px 16px;font-family:var(--mono);font-size:13.5px;color:#EDECE3;line-height:1.5;overflow-x:auto}
-  .term .p{color:#7FCBB2;user-select:none}
-  .term .c{color:#9A9C8C}
-  .term .copy{float:right;margin-left:12px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.04em;color:#9FD8C3;background:transparent;border:1px solid #3A3B30;border-radius:5px;padding:2px 8px;cursor:pointer}
-  .term .copy:hover{border-color:#7FCBB2;color:#EDECE3}
-  .or{font-family:var(--mono);font-size:12.5px;color:var(--faint);margin:12px 2px 0}
-
-  .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:24px}
-  .btn{font-family:var(--mono);font-size:13.5px;font-weight:600;padding:11px 17px;border-radius:8px;border:1px solid transparent;cursor:pointer;display:inline-flex;align-items:center;gap:9px}
-  .btn.primary{background:var(--green);color:#F7FBF9}
-  .btn.primary:hover{background:#1A6050;text-decoration:none}
-  .btn.ghost{background:transparent;border-color:var(--line);color:var(--ink)}
-  .btn.ghost:hover{border-color:var(--ink);text-decoration:none}
-
-  /* version stamp */
-  .stampwrap{position:relative}
-  .stamp{
-    position:absolute;top:-10px;right:6px;
-    font-family:var(--mono);font-weight:600;color:var(--green);
-    border:1.5px solid var(--green);border-radius:999px;
-    padding:7px 16px;line-height:1.2;text-align:center;
-    background:color-mix(in srgb,var(--paper) 80%,transparent);
-    letter-spacing:.07em;font-size:12px;
-    opacity:.95;
-  }
-  .stamp small{display:block;font-size:10px;letter-spacing:.14em;color:var(--green)}
-
-  .diagram{width:100%}
-  .diagram svg{width:100%;height:auto;display:block}
-  @keyframes driftR{0%,100%{transform:translate(430px,96px)}50%{transform:translate(437px,93px)}}
-  @keyframes driftL{0%,100%{transform:translate(414px,392px)}50%{transform:translate(407px,395px)}}
-  .mflight-r{animation:driftR 4.6s ease-in-out infinite}
-  .mflight-l{animation:driftL 5.2s ease-in-out infinite}
-
-  /* thesis band */
-  .thesis{border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);background:#F4F3EE}
-  .thesis .wrap{padding:34px 28px}
-  .thesis p{font-family:var(--disp);font-weight:500;font-size:clamp(1.15rem,2.4vw,1.6rem);line-height:1.5;letter-spacing:-.01em;margin:0;max-width:62ch}
-  .thesis .k{color:var(--green)}
-
-  section{padding:60px 0}
-  .lbl{font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.05em;margin:0 0 8px}
-  h2{font-family:var(--disp);font-weight:600;font-size:1.7rem;letter-spacing:-.01em;margin:0 0 24px}
-
-  /* numbers band */
-  .numbers{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-  .num{background:var(--card);padding:18px 14px;text-align:center}
-  .num .v{font-family:var(--disp);font-weight:700;font-size:1.55rem;color:var(--ink);letter-spacing:-.01em}
-  .num .v.g{color:var(--green)}
-  .num .k{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.04em;margin-top:4px}
-
-  /* deletions */
-  .dele{display:grid;grid-template-columns:1.05fr 1fr;gap:44px;align-items:start}
-  .dele .head p{color:var(--muted);max-width:38ch}
-  ul.gone{list-style:none;margin:0;padding:0;font-family:var(--mono);font-size:14px}
-  ul.gone li{padding:11px 0;border-top:1px solid var(--hair);display:flex;gap:12px;align-items:baseline}
-  ul.gone li:first-child{border-top:0}
-  ul.gone .x{color:var(--amber);font-weight:600;flex:none}
-  ul.gone .what{text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--ink) 45%,transparent);color:var(--muted)}
-  ul.gone .why{color:var(--faint);font-size:12.5px;margin-left:auto;text-align:right;font-family:var(--sans)}
-
-  .prims{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-  .prim{background:var(--paper);padding:22px 22px}
-  .prim h3{font-family:var(--mono);font-size:14px;font-weight:600;margin:0 0 7px;color:var(--ink)}
-  .prim p{margin:0;font-size:14.5px;color:var(--muted)}
-  .prim .em{color:var(--faint);font-style:italic}
-
-  /* v2.5 explainer */
-  .pledge{border:1px solid var(--green-line);background:var(--green-soft);border-radius:14px;padding:28px 28px}
-  .pledge h2{margin-bottom:14px}
-  .pledge p{color:var(--muted);max-width:70ch;margin:0 0 12px}
-  .pledge p b{color:var(--ink)}
-  .pledge .fine{font-family:var(--mono);font-size:12.5px;color:var(--green);margin:14px 0 0}
-
-  .isnt{display:grid;grid-template-columns:1.1fr 1fr;gap:40px;align-items:start}
-  .isnt .head p{color:var(--muted);max-width:34ch}
-  ul.clean{list-style:none;margin:0;padding:0}
-  ul.clean li{padding:13px 0;border-top:1px solid var(--hair);font-size:14.5px}
-  ul.clean li:first-child{border-top:0}
-  ul.clean b{font-weight:600}
-  ul.clean span{color:var(--muted)}
-
-  .start{display:grid;grid-template-columns:1fr 1fr;gap:24px}
-  .panel{border:1px solid var(--line);border-radius:12px;padding:22px;background:var(--card)}
-  .panel h3{font-family:var(--disp);font-weight:600;font-size:1.05rem;margin:0 0 6px}
-  .panel .d{color:var(--muted);font-size:14px;margin:0 0 16px}
-  .panel .term{font-size:12.5px}
-
-  .roadmap{border-top:1px solid var(--hair);background:#F4F3EE}
-  .roadmap .wrap{padding:40px 28px;display:flex;gap:28px;align-items:center;justify-content:space-between;flex-wrap:wrap}
-  .roadmap p{font-family:var(--disp);font-size:1.15rem;margin:0;max-width:52ch}
-
-  footer{border-top:1px solid var(--hair);padding:40px 0 56px;color:var(--muted)}
-  footer .wrap{display:flex;gap:24px;justify-content:space-between;flex-wrap:wrap;align-items:baseline}
-  footer .thesisline{font-family:var(--disp);font-size:1.05rem;color:var(--ink);max-width:46ch;line-height:1.4}
-  footer .meta{font-family:var(--mono);font-size:12.5px;color:var(--faint)}
-  footer a{color:var(--muted)}
-
-  @media (max-width:880px){
-    .hero{grid-template-columns:1fr;gap:38px;padding:44px 0}
-    .diagram{order:2;max-width:560px}
-    .isnt,.dele{grid-template-columns:1fr;gap:24px}
-    .prims,.start{grid-template-columns:1fr}
-    .numbers{grid-template-columns:repeat(3,1fr)}
-    .stamp{top:-8px;right:0;font-size:11px}
-    ul.gone .why{display:none}
-  }
-  @media (prefers-reduced-motion:reduce){*{animation:none!important;scroll-behavior:auto}}
 </style>
 </head>
 <body>
 
-<div class="announce">
+<header class="site">
   <div class="wrap">
-    <span class="tag">v2.5</span>
-    <span>Protocol v2.5 is out — and it changes the wire</span>
-    <a href="/blog/v2-5-the-wire-broke.html">read the announcement →</a>
-  </div>
-</div>
-
-<header>
-  <div class="wrap bar">
-    <div class="brand"><span class="sq"></span>agentchute</div>
+    <a class="logo" href="./" style="text-decoration:none">agentchute</a>
     <nav>
-      <a href="#protocol">protocol</a>
-      <a href="#stable-core">v2.5</a>
-      <a href="#get-started">install</a>
-      <a href="hub.html">ssh hub</a>
+      <a href="#how">how it works</a>
+      <a href="#try">try it</a>
+      <a href="blog/">blog</a>
       <a href="https://github.com/agentchute/agentchute">github</a>
     </nav>
   </div>
 </header>
 
 <main>
+<section class="hero">
   <div class="wrap">
-    <section class="hero">
-      <div class="copy">
-        <p class="eyebrow">protocol v2.5 · reference cli 1.5</p>
-        <h1><span class="b">Stop being the message bus</span><span class="b">for your agents.</span></h1>
-        <p class="sub">Running agents is easy — coordinating them isn't. agentchute gives every AI agent an <b>inbox</b>. They hand off work, request review, and message each other — <b>no human relaying every step</b>, no broker, just plain files.</p>
-
-        <div class="term" role="group" aria-label="install command">
-          <span class="p">$</span> <span id="install-cmd">curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</span>
-          <button class="copy" type="button" aria-label="copy install command" onclick="navigator.clipboard.writeText(document.getElementById('install-cmd').textContent).then(()=>{this.textContent='copied';setTimeout(()=>this.textContent='copy',1600)})">copy</button>
-        </div>
-        <p class="or">That's the reference CLI. The protocol is just files — <a href="#refimpl">bring your own implementation</a> and the vectors prove it conforms.</p>
-
-        <div class="cta">
-          <a class="btn primary" href="#get-started">Get started</a>
-        </div>
-      </div>
-
-      <div class="diagram stampwrap" id="demo">
-        <div class="stamp">protocol v2.5 · cli 1.5</div>
-        <svg viewBox="0 0 920 500" font-family="var(--mono)" role="img" aria-label="Agents — here claude, codex, gemini, grok, but any terminal-based agent works — each with its own inbox, passing Markdown messages peer to peer with no central broker.">
-          <defs>
-            <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-              <path d="M0,0 L10,5 L0,10 z" fill="#1E6F57"/>
-            </marker>
-          </defs>
-          <g fill="none" stroke="#1E6F57" stroke-width="1.6" stroke-dasharray="2 5" stroke-linecap="round" opacity="0.85">
-            <path d="M276,150 C 392,120 540,112 648,132" marker-end="url(#ah)"/>
-            <path d="M742,182 C 772,244 772,300 756,348" marker-end="url(#ah)"/>
-            <path d="M660,398 C 536,426 320,426 284,406" marker-end="url(#ah)"/>
-            <path d="M182,356 C 166,302 166,250 174,200" marker-end="url(#ah)"/>
-          </g>
-          <text x="460" y="246" text-anchor="middle" font-size="12.5" fill="#9A9C8C" letter-spacing="0.04em">no central broker</text>
-          <text x="460" y="266" text-anchor="middle" font-size="11" fill="#B6B8A8">agents are peers</text>
-          <g transform="translate(88,96)">
-            <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
-            <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
-            <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">claude</text>
-            <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
-            <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
-            <rect x="16" y="70" width="156" height="12" rx="3" fill="#F0F1EA"/>
-            <rect x="16" y="86" width="116" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
-          </g>
-          <g transform="translate(648,84)">
-            <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
-            <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
-            <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">codex</text>
-            <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
-            <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
-            <rect x="16" y="70" width="132" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
-            <rect x="16" y="86" width="156" height="12" rx="3" fill="#F0F1EA"/>
-          </g>
-          <g transform="translate(660,348)">
-            <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
-            <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
-            <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">gemini</text>
-            <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
-            <rect x="16" y="54" width="156" height="12" rx="3" fill="#F0F1EA"/>
-            <rect x="16" y="70" width="100" height="12" rx="3" fill="#F0F1EA"/>
-          </g>
-          <g transform="translate(96,352)">
-            <rect width="188" height="104" rx="11" fill="#FFFFFF" stroke="#E2E0D6"/>
-            <circle cx="172" cy="22" r="4.5" fill="#1E6F57"/>
-            <text x="16" y="28" font-size="14.5" font-weight="600" fill="#17180F">grok</text>
-            <text x="16" y="48" font-size="9" fill="#8A8C7C">inbox/</text>
-            <rect x="16" y="54" width="156" height="12" rx="3" fill="#EAF1ED" stroke="#CFE3D8"/>
-            <rect x="16" y="70" width="138" height="12" rx="3" fill="#F0F1EA"/>
-            <rect x="16" y="86" width="156" height="12" rx="3" fill="#F0F1EA"/>
-          </g>
-          <g class="mflight-r" transform="translate(430,96)">
-            <rect x="0" y="0" width="74" height="46" rx="7" fill="#FFFFFF" stroke="#CFE3D8"/>
-            <rect x="0" y="0" width="4" height="46" rx="2" fill="#1E6F57"/>
-            <path d="M60,0 l14,14 h-14 z" fill="#EAF1ED"/>
-            <text x="12" y="19" font-size="7.5" fill="#8A8C7C">from-claude</text>
-            <text x="12" y="32" font-size="9.5" fill="#17180F">review PR 42</text>
-            <text x="12" y="41" font-size="7.5" fill="#C8791A">⌖ reply</text>
-          </g>
-          <g class="mflight-l" transform="translate(414,392)">
-            <rect x="0" y="0" width="74" height="40" rx="7" fill="#FFFFFF" stroke="#E2E0D6"/>
-            <rect x="0" y="0" width="4" height="40" rx="2" fill="#1E6F57"/>
-            <path d="M60,0 l14,14 h-14 z" fill="#F0F1EA"/>
-            <text x="12" y="18" font-size="7.5" fill="#8A8C7C">from-gemini</text>
-            <text x="12" y="31" font-size="9.5" fill="#17180F">findings.md</text>
-          </g>
-        </svg>
-      </div>
-    </section>
+    <h1>Your AI helpers can't talk to each other.</h1>
+    <p class="lede">You use more than one AI coding helper, like Claude Code and Codex. So you copy messages between them by hand.</p>
+    <p class="lede"><strong>agentchute gives each helper its own mailbox, so they can pass notes to each other without you.</strong></p>
+    <figure class="video">
+      <a class="video-thumb" href="/images/demo.mp4">
+        <img src="images/demo-poster.png" alt="Three AI helpers in three terminals passing a task between their mailboxes" width="1280" height="720">
+        <span class="video-play" aria-hidden="true">▶</span>
+      </a>
+      <figcaption><a href="/images/demo.mp4">▶ Watch the 70-second demo</a>: Claude, Grok and Codex pass a research task through their mailboxes and answer each other.</figcaption>
+    </figure>
   </div>
+</section>
 
-  <div class="thesis">
-    <div class="wrap">
-      <p>Every agent has an <span class="k">inbox</span> — a directory. A message is a <span class="k">Markdown file</span> dropped in it. The recipient reads its own inbox, on its own schedule. <span class="k">Best-effort delivery</span>, no server, no SDK — and it works with <span class="k">any terminal-based agent</span>, not a fixed list.</p>
-    </div>
-  </div>
-
+<section class="flow" id="how">
   <div class="wrap">
-
-
-
-    <section id="stable-core">
-      <div class="pledge">
-        <p class="lbl">what changed in v2.5</p>
-        <h2>We broke it on purpose.</h2>
-        <p>We stopped using our own agents for three weeks. When we came back, one had a message waiting that had been unread for <b>twenty-three days</b>. Nothing had failed — the message was delivered exactly as designed, sitting intact in the right inbox. That was the problem. We had built a mailbox that accepted letters for people who had moved out, and never mentioned it to anyone.</p>
-        <p>So v2.5 makes absence visible. When an agent's supervisor stops heartbeating, its registration goes stale — about an hour by default — and <b>sending to it fails right away</b> instead of disappearing into a mailbox nobody will open. Long jobs are fine: the supervisor keeps heartbeating whether the model is busy or idle. Message names changed with the break too — timestamps instead of per-pair counters.</p>
-        <p><b>It is a real break.</b> A v2.5 agent still reads normal v2 mail; a v2 agent cannot read v2.5 names — so every agent sharing a pool moves together. At 1.0 we said this would only happen through a deprecation process. It didn't, and we would rather say so here than let you find out from a stack trace.</p>
-      </div>
-    </section>
-
-    <section id="protocol">
-      <p class="lbl">what's in the protocol</p>
-      <h2>Five primitives. The rest is your choice.</h2>
-      <div class="prims">
-        <div class="prim"><h3>per-recipient inbox</h3><p>Each agent owns an ordered message stream. Senders deliver into it; the recipient owns consumption.</p></div>
-        <div class="prim"><h3>identified messages</h3><p>Every message has a durable identity — a timestamp and a random suffix. A sender's messages stay in order through a durable timestamp floor; replies carry the thread.</p></div>
-        <div class="prim"><h3>no-overwrite delivery</h3><p>A sender never clobbers an existing message. A collision is refused and retried under a fresh identity — delivery is at-most-once, not deduped.</p></div>
-        <div class="prim"><h3>recipient reads its own inbox</h3><p>Pull, not push. Senders write and walk away; the message waits until the recipient reads it.</p></div>
-        <div class="prim"><h3>self-registration + presence</h3><p>Each agent publishes a small record and a liveness heartbeat, read on demand.</p></div>
-        <div class="prim"><h3 style="color:var(--faint)">…pinned by vectors</h3><p class="em">Conformance is a set of language-neutral vectors. Pass them in any language and you're on the wire.</p></div>
-      </div>
-    </section>
-
-    <section id="refimpl">
-      <p class="lbl">code, but not the protocol</p>
-      <h2>A real implementation — that you're free to replace.</h2>
-      <p style="color:var(--muted);max-width:64ch;font-size:1.04rem;margin:0">
-        agentchute ships a faithful reference implementation: a small Go CLI and a per-agent supervisor that handle delivery, registration, presence, and ordering for you. It is <b style="color:var(--ink)">not</b> the protocol. The protocol is the <a href="#protocol">spec</a> — a directory layout and a filename grammar — and anyone is welcome to write another implementation, in any language, over any transport. The <a href="https://github.com/agentchute/agentchute/tree/v1.5.7/conformance">conformance vectors</a> are how you prove yours; ours and yours interoperate because both just read and write the same files.
-      </p>
-    </section>
-
-    <section>
-      <p class="lbl">honest scope</p>
-      <div class="isnt">
-        <div class="head">
-          <h2>What it isn't</h2>
-          <p>agentchute is not a multi-agent framework. No task graphs, no role election, no central broker, no SDK, no SaaS tier. If you wanted those, this is the wrong tool — and that's fine.</p>
-        </div>
-        <ul class="clean">
-          <li><b>Not a delivery broker.</b> <span>Delivery is best-effort and at-most-once; the recipient reads on its own cadence. Need retries and exactly-once? Use a queue.</span></li>
-          <li><b>Not an auth system.</b> <span>Messages are unsigned plain text. If you don't trust your peers, don't run them on your machine.</span></li>
-          <li><b>Not a router.</b> <span>Agents are peers; senders pick recipients explicitly. No wildcard, no broadcast, no role election.</span></li>
-          <li><b>Not a product.</b> <span>A protocol and a faithful reference implementation, maintained for spec fidelity. Alternates welcome — the vectors prove them.</span></li>
-        </ul>
-      </div>
-    </section>
-
-    <section id="get-started">
-      <p class="lbl">get started</p>
-      <h2>Two ways to start.</h2>
-      <div class="start">
-        <div class="panel">
-          <h3>Use the reference CLI</h3>
-          <p class="d">One small Go binary plus a per-agent supervisor. Install, wire your repo once, start your agents.</p>
-          <div class="term">
-<span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh<br>
-<span class="p">$</span> agentchute setup<br>
-<span class="p">$</span> ac serve claude <span class="c"># per-agent runner (new shell; blocks)</span><br>
-<span class="p">$</span> agentchute doctor --as claude-code <span class="c"># from another shell</span>
-          </div>
-        </div>
-        <div class="panel">
-          <h3>Or your own — it's just files</h3>
-          <p class="d">Write any implementation against the spec, prove it with the vectors, or drive the protocol by hand.</p>
-          <div class="term">
-<span class="c"># the whole protocol is one file</span><br>
-<span class="p">$</span> cp AGENTCHUTE.md ./your-repo/<br>
-<span class="p">$</span> mv msg.md loop/inbox/codex/
-          </div>
-        </div>
-      </div>
-    </section>
+    <h2>How it works, in three steps</h2>
+    <svg class="mailboxes" viewBox="0 0 600 250" role="img" aria-label="Claude puts a note in Codex's mailbox, Codex reads it, and Codex puts a reply in Claude's mailbox.">
+      <defs>
+        <marker id="tip" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+          <path class="head" d="M0,0 L10,5 L0,10 z"/>
+        </marker>
+      </defs>
+      <rect class="card" x="10" y="50" width="200" height="140" rx="12"/>
+      <text class="name" x="110" y="115" text-anchor="middle">Claude</text>
+      <text class="sub" x="110" y="148" text-anchor="middle">mailbox</text>
+      <rect class="card" x="390" y="50" width="200" height="140" rx="12"/>
+      <text class="name" x="490" y="115" text-anchor="middle">Codex</text>
+      <text class="sub" x="490" y="148" text-anchor="middle">mailbox</text>
+      <path class="arrow" d="M216,92 L382,92" marker-end="url(#tip)"/>
+      <text class="label" x="300" y="66" text-anchor="middle">a note</text>
+      <g class="num"><circle cx="300" cy="92" r="16"/><text x="300" y="99" text-anchor="middle">1</text></g>
+      <g class="num"><circle cx="490" cy="50" r="16"/><text x="490" y="57" text-anchor="middle">2</text></g>
+      <path class="arrow" d="M384,152 L218,152" marker-end="url(#tip)"/>
+      <text class="label" x="300" y="196" text-anchor="middle">the reply</text>
+      <g class="num"><circle cx="300" cy="152" r="16"/><text x="300" y="159" text-anchor="middle">3</text></g>
+    </svg>
+    <ol class="steps">
+      <li>Claude writes a note and puts it in Codex's mailbox.</li>
+      <li>Codex checks its mailbox and reads the note.</li>
+      <li>Codex writes back the same way.</li>
+    </ol>
+    <p>A mailbox is a folder in your project. A note is a small text file.</p>
   </div>
+</section>
 
-  <div class="roadmap">
-    <div class="wrap">
-      <p><b>Already running v2?</b> v2.5 reads v2 mail, but v2 cannot read v2.5 messages — so every agent sharing a pool moves together. Freeze sends first, and never use <span class="mono">--no-resync</span> for this upgrade.</p>
-      <div class="term" style="margin:14px 0 12px;text-align:left">
-        <span class="p">$</span> agentchute update<br>
-        <span class="p">$</span> agentchute status --as &lt;agent-id&gt;   <span class="c"># twice, 15s apart — old last_seen must not advance</span><br>
-        <span class="p">$</span> ac --as &lt;agent-id&gt; serve &lt;wrapper&gt;  <span class="c"># relaunch each lane under its EXISTING id</span><br>
-        <span class="p">$</span> agentchute doctor --as &lt;agent-id&gt;   <span class="c"># from another shell, until clean</span>
-      </div>
-      <a class="btn ghost" href="https://github.com/agentchute/agentchute/blob/main/docs/V2_5_CUTOVER.md">Full cutover guide →</a>
+<section class="quickstart" id="try">
+  <div class="wrap">
+    <h2>Try it</h2>
+    <p>You need two AI helpers already installed, like Claude Code and Codex. In your project folder, run:</p>
+    <div class="installbox">
+      <pre class="install"><code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh</code></pre>
+      <button type="button" aria-label="copy the install command" onclick="navigator.clipboard.writeText(document.getElementById('install-cmd').textContent).then(()=>{this.textContent='copied';setTimeout(()=>this.textContent='copy',1600)})">copy</button>
     </div>
+    <p>It asks two questions: press Enter, then type <code>y</code>. It also adds short notes to your project (<code>CLAUDE.md</code>, <code>AGENTS.md</code> and a few more) that teach each helper how to use its mailbox.</p>
+    <p>Open two new terminal windows in that folder and start one helper in each:</p>
+    <pre><code>ac serve claude    # first window
+ac serve codex     # second window</code></pre>
+    <p>Then ask in your own words. For example, tell Claude: “ask Codex to review my last change.”</p>
+    <p>Gemini CLI, Antigravity and Grok start the same way: <code>ac serve gemini</code>, <code>ac serve agy</code>, <code>ac serve grok</code>.</p>
   </div>
+</section>
+
+<section class="why" id="good-to-know">
+  <div class="wrap">
+    <h2>Good to know</h2>
+    <p>Works on one computer, or across computers over SSH. Notes are plain text, so use it only with helpers you trust.</p>
+    <ul class="more">
+      <li><a href="spec.html">How the mailbox works, in full</a></li>
+      <li><a href="hub.html">Helpers on more than one computer</a></li>
+      <li><a href="https://github.com/agentchute/agentchute#what-it-isnt">What it is not</a></li>
+      <li><a href="blog/v2-5-the-wire-broke.html">What changed in version 2.5</a> and <a href="https://github.com/agentchute/agentchute/blob/main/docs/V2_5_CUTOVER.md">how to upgrade from version 2</a></li>
+    </ul>
+  </div>
+</section>
 </main>
 
 <footer>
   <div class="wrap">
-    <p class="thesisline">Let humans do human work, let agents do agent work — and stop using humans as a message bus.</p>
-    <p class="meta">
-      <a href="https://github.com/agentchute/agentchute">github</a> ·
-      <a href="#protocol">spec</a> ·
-      <a href="/blog/v2-5-the-wire-broke.html">v2.5 announcement</a> ·
-      MIT · built by <a href="https://rehumanlabs.com">reHuman Labs</a>
-    </p>
+    <p>Let people do people work. Let the helpers pass their own notes.</p>
+    <p><a href="https://github.com/agentchute/agentchute">github</a> · <a href="spec.html">spec</a> · <a href="blog/">blog</a> · MIT · built by <a href="https://rehumanlabs.com">reHuman Labs</a></p>
   </div>
 </footer>
 
