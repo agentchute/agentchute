@@ -36,31 +36,44 @@ func TestBodyFileRefusesAnyPoolsStateTree(t *testing.T) {
 	}
 }
 
-// A path re-pointed between the checks and the open is refused, whether the
-// swap is a symlink re-aimed at serve.claim or a different file put in place.
+// A path re-pointed between the checks and the open is refused: a symlink
+// put in the last component (O_NOFOLLOW), and a DIRECTORY of the checked path
+// re-pointed into a state tree (the open follows it; the fstat identity of
+// what was opened is not the checked file's). Replacing the file's content at
+// the same, allowed place is not a swap into a state tree, and Linux may even
+// reuse the inode number for it, so it is not asserted.
 func TestBodyFileSwappedBetweenCheckAndOpenIsRefused(t *testing.T) {
 	_, cfg := setupConsumeFixture(t)
-	claim := filepath.Join(cfg.AgentStateDir("bob"), "serve.claim")
+	stateDir := cfg.AgentStateDir("bob")
+	claim := filepath.Join(stateDir, "serve.claim")
 	mustWrite(t, claim, []byte(`{"serve_token":"secret"}`))
-	for _, swap := range []string{"symlink to the claim", "replaced file"} {
+	for _, swap := range []string{"symlink to the claim", "directory re-pointed into a state tree"} {
 		t.Run(swap, func(t *testing.T) {
-			dir := t.TempDir()
-			body := filepath.Join(dir, "reply.md")
+			base := t.TempDir()
+			dir := filepath.Join(base, "drafts")
+			// Named like the claim, in an ordinary directory: allowed at check.
+			body := filepath.Join(dir, "serve.claim")
 			mustWrite(t, body, []byte("hello"))
 			restore := afterSendBodyFileCheck
 			t.Cleanup(func() { afterSendBodyFileCheck = restore })
 			afterSendBodyFileCheck = func(resolved string) {
-				_ = os.Remove(resolved)
 				if swap == "symlink to the claim" {
+					_ = os.Remove(resolved)
 					if err := os.Symlink(claim, resolved); err != nil {
 						t.Error(err)
 					}
 					return
 				}
-				mustWrite(t, resolved, []byte("other content"))
+				parent := filepath.Dir(resolved)
+				if err := os.Rename(parent, parent+".moved"); err != nil {
+					t.Error(err)
+				}
+				if err := os.Symlink(stateDir, parent); err != nil {
+					t.Error(err)
+				}
 			}
 			got, err := readSendBodyFile(cfg, body)
-			if err == nil || strings.Contains(got, "secret") || got == "other content" {
+			if err == nil || strings.Contains(got, "secret") {
 				t.Fatalf("a swapped body file was read: body=%q err=%v", got, err)
 			}
 		})
