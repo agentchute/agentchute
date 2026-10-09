@@ -32,17 +32,6 @@ import (
 // settingsHookWrappers are the wrappers whose hook file is a settings file.
 var settingsHookWrappers = map[string]bool{"claude-code": true, "gemini-cli": true}
 
-// retiredTemplateAllowRules are permission rules earlier agentchute templates
-// installed and this one no longer wants (opus-xhigh S4): a merge removes them
-// from `permissions.allow`. Exact strings, so a project's own narrower or
-// broader rules are never touched.
-var retiredTemplateAllowRules = map[string]bool{
-	"Bash(agentchute send:*)": true,
-	"Bash(go test:*)":         true,
-	"Bash(go build:*)":        true,
-	"Bash(go vet:*)":          true,
-}
-
 type hookFileState int
 
 const (
@@ -149,7 +138,8 @@ func mergeSettingsHookFile(existing, tmpl []byte) (merged []byte, current bool, 
 
 // settingsHookPartCurrent reports whether agentchute's part of e matches t:
 // the same agentchute hooks in the same groups, every template permission
-// rule present, and no retired allow rule left.
+// rule present. Extra project rules do not imply drift, even if an older
+// template once shipped the same string: there is no ownership evidence.
 func settingsHookPartCurrent(e, t *jsonObject) (bool, error) {
 	ev, err := agentchuteHookView(e)
 	if err != nil {
@@ -187,21 +177,14 @@ func settingsHookPartCurrent(e, t *jsonObject) (bool, error) {
 				return false, nil
 			}
 		}
-		if list == "allow" {
-			for _, rule := range have {
-				if s, ok := rule.(string); ok && retiredTemplateAllowRules[s] {
-					return false, nil
-				}
-			}
-		}
 	}
 	return true, nil
 }
 
 // mergeSettingsInto rewrites e in place: every agentchute hook is removed
 // wherever it sits (a group left empty by that is dropped, and an event left
-// empty), the template's hook groups are appended to their events, retired
-// allow rules are removed, and missing template permission rules appended.
+// empty), the template's hook groups are appended to their events, and missing
+// template permission rules appended. Existing permission rules are retained.
 // Keys the template does not mention are never touched.
 func mergeSettingsInto(e, t *jsonObject) error {
 	for _, key := range t.keys {
@@ -248,13 +231,7 @@ func mergeSettingsInto(e, t *jsonObject) error {
 				if err != nil {
 					return err
 				}
-				out := make([]any, 0, len(cur))
-				for _, rule := range cur {
-					if s, ok := rule.(string); ok && list == "allow" && retiredTemplateAllowRules[s] {
-						continue
-					}
-					out = append(out, rule)
-				}
+				out := append([]any{}, cur...)
 				want, _ := tp.vals[list].([]any)
 				for _, rule := range want {
 					if !containsJSONString(out, rule) {
@@ -273,8 +250,9 @@ func mergeSettingsInto(e, t *jsonObject) error {
 }
 
 // onlyAgentchuteSettings reports whether e holds nothing a project put there:
-// every hook invokes agentchute, every permission rule is one the template (or
-// an earlier template) owns, and no other key differs from the template's.
+// every hook invokes agentchute, every permission rule is still in the current
+// template, and no other key differs from the template's. A retired rule can
+// be user-owned, so it must prevent the whole-file replacement shortcut.
 func onlyAgentchuteSettings(e, t *jsonObject) bool {
 	for _, key := range e.keys {
 		switch key {
@@ -317,8 +295,7 @@ func onlyAgentchuteSettings(e, t *jsonObject) bool {
 					owned, _ = tp.vals[list].([]any)
 				}
 				for _, rule := range rules {
-					s, _ := rule.(string)
-					if containsJSONString(owned, rule) || (list == "allow" && retiredTemplateAllowRules[s]) {
+					if containsJSONString(owned, rule) {
 						continue
 					}
 					return false

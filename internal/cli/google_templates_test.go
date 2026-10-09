@@ -69,12 +69,12 @@ func TestGeminiAfterAgentTurnEndShape(t *testing.T) {
 	if m["decision"] != "deny" || m["reason"] == "" || m["hookSpecificOutput"] != nil {
 		t.Fatalf("blocked AfterAgent shape = %v", m)
 	}
-	// Our own retry (stop_hook_active): never deny again.
+	// The caller already proved that this retry has the same blocker and turn.
 	out, err = captureStdout(t, func() error {
 		return emitTurnEndGeminiAfterAgent(blocked, true)
 	})
 	if err != nil || strings.TrimSpace(out) != "" {
-		t.Fatalf("stop_hook_active retry must be silent: out=%q err=%v", out, err)
+		t.Fatalf("proven unchanged retry must be silent: out=%q err=%v", out, err)
 	}
 }
 

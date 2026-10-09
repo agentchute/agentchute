@@ -217,22 +217,21 @@ func cmdTurnEnd(args []string) error {
 		return err
 	}
 
-	// C3 (opus-xhigh): a Stop our own block caused (stop_hook_active) that
-	// finds the SAME reasons means the agent tried and could not clear them.
-	// Blocking again only re-prompts it until the harness's own continuation
-	// cap overrides us silently; allow the stop and say so instead.
+	// A retry may stop only for the same blocking snapshot in the same turn.
+	// Counts alone miss a new message replacing one that was just consumed.
 	stillBlocked := ""
-	if status.Blocked && (jsonOut || codexHook == "Stop") {
-		// The record names the session too, and self-check (every turn's
-		// UserPromptSubmit) clears it: stop_hook_active is also true when
-		// ANOTHER Stop hook blocked, and a block from an earlier turn or
-		// session must never let this turn's first block through.
+	if status.Blocked && (jsonOut || codexHook == "Stop" || geminiHook == "AfterAgent") {
 		reasons := gateBlockedReasonLine(status)
-		record := hookIn.session() + "\n" + reasons
-		if hookIn.active() && readTurnEndLastBlock(cfg, agentID) == record {
+		record := turnEndBlockRecord{Session: hookIn.session(), Turn: hookIn.turn(), Fingerprint: status.BlockingFingerprint}
+		if !record.valid() {
+			// Missing turn identity, unreadable transcript, and remote gate
+			// responses all lack evidence for the exception: fail closed.
+			clearTurnEndLastBlock(cfg, agentID)
+		} else if hookIn.active() && readTurnEndBlockRecord(cfg, agentID) == record {
 			stillBlocked = "finish gate still blocked: " + reasons
 		} else {
-			writeTurnEndLastBlock(cfg, agentID, record)
+			data, _ := json.Marshal(record)
+			writeTurnEndLastBlock(cfg, agentID, string(data))
 		}
 	} else if !status.Blocked {
 		clearTurnEndLastBlock(cfg, agentID)
@@ -248,7 +247,7 @@ func cmdTurnEnd(args []string) error {
 		return emitGateCodexStop(status)
 	}
 	if geminiHook == "AfterAgent" {
-		return emitTurnEndGeminiAfterAgent(status, hookIn.active())
+		return emitTurnEndGeminiAfterAgent(status, stillBlocked != "")
 	}
 	if agyHook == "Stop" {
 		return emitTurnEndAgyStop(status)
@@ -348,6 +347,9 @@ type turnEndHookInput struct {
 	StopHookActiveCamel bool   `json:"stopHookActive"`
 	SessionID           string `json:"session_id"`
 	SessionIDCamel      string `json:"sessionId"`
+	TurnID              string `json:"turn_id"`
+	TurnIDCamel         string `json:"turnId"`
+	TranscriptPath      string `json:"transcript_path"`
 }
 
 func (in turnEndHookInput) session() string {
@@ -391,14 +393,13 @@ func clearTurnEndLastBlock(cfg *loop.Config, agentID string) {
 // and exit 0 on clear; `{"decision":"deny","reason":…}` with exit 0 on block —
 // the documented AfterAgent deny (geminicli.com/docs/hooks/reference#afteragent),
 // which rejects the response and retries with the reason; exit 2 is the
-// stderr spelling of the same rejection and is not used. A second AfterAgent
-// raised by our own deny (stop_hook_active) is never denied again, so a lane
-// that cannot clear the gate is not spun in retries.
-func emitTurnEndGeminiAfterAgent(s gateStatus, stopHookActive bool) error {
+// stderr spelling of the same rejection and is not used. Only a retry already
+// proven to have the same blocking identities and turn is allowed through.
+func emitTurnEndGeminiAfterAgent(s gateStatus, unchangedBlock bool) error {
 	if !s.Blocked {
 		return nil
 	}
-	if stopHookActive {
+	if unchangedBlock {
 		return nil
 	}
 	enc := json.NewEncoder(os.Stdout)

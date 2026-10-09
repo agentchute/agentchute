@@ -102,8 +102,8 @@ func TestHookMergeKeepsTheProjectsSettings(t *testing.T) {
 		t.Errorf("allow lost the project's rule or missed the template's: %q", allow)
 	}
 	for _, retired := range []string{"Bash(agentchute send:*)", "Bash(go test:*)"} {
-		if hasString(allow, retired) {
-			t.Errorf("retired template rule %q kept: %q", retired, allow)
+		if !hasString(allow, retired) {
+			t.Errorf("preexisting project rule %q lost: %q", retired, allow)
 		}
 	}
 	if perms["defaultMode"] != "acceptEdits" || v["model"] != "opus" {
@@ -429,8 +429,8 @@ func TestClaudeTemplatePermissionsArePinned(t *testing.T) {
 		"Bash(agentchute check:*)", "Bash(agentchute ack:*)", "Bash(agentchute gate:*)",
 		"Bash(agentchute turn-end:*)", "Bash(agentchute boot:*)", "Bash(agentchute doctor:*)",
 		"Bash(agentchute status:*)", "Bash(agentchute pending:*)", "Bash(agentchute identity:*)",
-		"Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
-		"Bash(git fetch:*)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git worktree:*)",
+		"Bash(git status:*)", "Bash(git diff)", "Bash(git log)", "Bash(git show)",
+		"Bash(git fetch)", "Bash(git add:*)", "Bash(git commit:*)", "Bash(git worktree:*)",
 		"Bash(go test ./...)", "Bash(go build ./...)", "Bash(go vet ./...)", "Bash(gofmt:*)",
 		"Bash(gh pr view:*)", "Bash(gh pr list:*)", "Bash(gh pr diff:*)", "Bash(gh pr checks:*)",
 		"Bash(gh run view:*)", "Bash(gh run list:*)", "Bash(gh run watch:*)",
@@ -555,7 +555,7 @@ func stopInput(t *testing.T, body string) {
 }
 
 func TestTurnEndLetsARepeatedUnchangedBlockThrough(t *testing.T) {
-	for _, mode := range []string{"claude", "codex"} {
+	for _, mode := range []string{"claude", "codex", "gemini"} {
 		t.Run(mode, func(t *testing.T) {
 			root, cfg := setupConsumeFixture(t)
 			withCwd(t, root, func() {
@@ -570,15 +570,21 @@ func TestTurnEndLetsARepeatedUnchangedBlockThrough(t *testing.T) {
 				if mode == "codex" {
 					args = []string{"--as", "bob", "--codex-hook", "Stop"}
 				}
+				if mode == "gemini" {
+					args = []string{"--as", "bob", "--gemini-hook", "AfterAgent"}
+				}
 				stop := func(active bool) (stdout, stderr string, err error) {
 					// The lane's cwd is in the input, as codex sends it: the
 					// foreign-thread check and stop_hook_active read ONE input.
-					stopInput(t, fmt.Sprintf(`{"hook_event_name":"Stop","cwd":%q,"session_id":"s1","stop_hook_active":%v}`, root, active))
+					stopInput(t, fmt.Sprintf(`{"hook_event_name":"Stop","cwd":%q,"session_id":"s1","turn_id":"t1","stop_hook_active":%v}`, root, active))
 					return captureStdoutStderr(t, func() error { return cmdTurnEnd(args) })
 				}
 				blocks := func(stdout string, err error) bool {
 					if mode == "codex" {
 						return err == nil && strings.Contains(stdout, `"decision":"block"`)
+					}
+					if mode == "gemini" {
+						return err == nil && strings.Contains(stdout, `"decision":"deny"`)
 					}
 					return err == errBlocked
 				}
@@ -589,7 +595,7 @@ func TestTurnEndLetsARepeatedUnchangedBlockThrough(t *testing.T) {
 					t.Fatalf("first Stop with unread mail did not block: err=%v out=%s", err, out)
 				}
 				out, stderr, err := stop(true)
-				if err != nil || blocks(out, err) || !strings.Contains(out, `"systemMessage"`) || !strings.Contains(out, "finish gate still blocked: ") {
+				if err != nil || blocks(out, err) || (mode != "gemini" && (!strings.Contains(out, `"systemMessage"`) || !strings.Contains(out, "finish gate still blocked: "))) {
 					t.Fatalf("repeated Stop with unchanged reasons: err=%v out=%s stderr=%s", err, out, stderr)
 				}
 				deliver("two")
@@ -681,7 +687,7 @@ func TestTurnEndRepeatedBlockIsScopedToTheTurnAndSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		stop := func(session string, active bool) error {
-			stopInput(t, fmt.Sprintf(`{"hook_event_name":"Stop","session_id":%q,"stop_hook_active":%v}`, session, active))
+			stopInput(t, fmt.Sprintf(`{"hook_event_name":"Stop","session_id":%q,"turn_id":"t1","stop_hook_active":%v}`, session, active))
 			_, _, err := captureStdoutStderr(t, func() error { return cmdTurnEnd([]string{"--as", "bob", "--json"}) })
 			return err
 		}
@@ -972,6 +978,7 @@ func TestClaudeTemplateDenyRulesHitOnlyTheDangerousFlags(t *testing.T) {
 	}
 	for _, cmd := range []string{
 		"go build ./cmd/exec-server",
+		"go build ./cmd/non-exec",
 		"go test ./... -run 'TestFoo-exec'",
 		"go test -run TestExec ./...",
 		"go test ./internal/cli -run TestGuard -v",
