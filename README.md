@@ -1,18 +1,47 @@
 # agentchute
 
-**Your AI coding agents can't talk to each other. agentchute gives each one an inbox — plain Markdown files in a folder — so Claude Code, Codex, Gemini, and Grok can message each other and hand off work without you copying text between windows. And since v1.6.0, they don't have to be on the same computer: laptops, servers, containers, and Kubernetes pods can share one pool over plain SSH.**
+You use more than one AI coding helper, like Claude Code and Codex. They can't talk to each other, so you copy messages between them by hand.
+
+**agentchute gives each helper its own mailbox, so they can pass notes to each other without you.**
+
+[![Three AI helpers in three terminals passing a task between their mailboxes](web/images/demo-poster.png)](https://agentchute.dev/images/demo.mp4)
+
+*[▶ Watch the 70-second demo](https://agentchute.dev/images/demo.mp4): Claude, Grok and Codex pass a research task through their mailboxes and answer each other.*
+
+## Three steps
+
+1. Claude writes a note and puts it in Codex's mailbox.
+2. Codex checks its mailbox and reads the note.
+3. Codex writes back the same way.
+
+A mailbox is a folder in your project. A note is a small text file.
+
+## Try it
+
+You need two AI helpers already installed, like Claude Code and Codex. In your project folder, run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/agentchute/agentchute/main/install.sh | sh
+```
+
+It asks two questions: press Enter, then type `y`. It also adds short notes to your project (`CLAUDE.md`, `AGENTS.md` and a few more) that teach each helper how to use its mailbox.
+
+Open two new terminal windows in that folder and start one helper in each:
+
+```sh
+ac serve claude    # first window
+ac serve codex     # second window
+```
+
+Then ask in your own words. For example, tell Claude: "ask Codex to review my last change". Gemini CLI, Antigravity and Grok start the same way: `ac serve gemini`, `ac serve agy`, `ac serve grok`.
+
+Works on one computer, or across computers over SSH. Notes are plain text, so use it only with helpers you trust.
 
 [Spec](AGENTCHUTE.md) · [Examples](examples) · [Extensions](EXTENSIONS.md) · [agentchute.dev](https://agentchute.dev)
 
-[![Three agent terminals coordinating a research task through agentchute inboxes](web/images/demo-poster.png)](https://agentchute.dev/images/demo.mp4)
-
-*[▶ Watch the 70-second demo](https://agentchute.dev/images/demo.mp4) — Claude, Grok, and Codex hand off a research task through their inboxes, reply, and clear their finish gates.*
-
----
+## How it works
 
 > **agentchute is the protocol, not the program.** The entire protocol is one file, [`AGENTCHUTE.md`](AGENTCHUTE.md): every agent owns an inbox — a folder of plain Markdown files inside your project — and agents communicate by writing message files into each other's inboxes. Any agent that can read and write files can participate. Everything else in this repo is the reference implementation, a Go CLI that was used agent-to-agent to build this very repository. The CLI is a convenience; the files are the contract.
-
-## How it works
 
 ```
  claude                              codex
@@ -59,7 +88,7 @@ That's it. From here the agents coordinate between themselves — request review
 
 ## Multi-machine pools (SSH hub)
 
-Your agents stopped fitting on one computer. The agent that knows your code is on your laptop. The build agent wants the big server. The test agent belongs inside a container. Since v1.6.0, they can all share one pool.
+Your agents stopped fitting on one computer. The agent that knows your code is on your laptop. The build agent wants the big server. The test agent belongs inside a container. Since v1.6.0, they can all share one pool: laptops, servers, containers and Kubernetes pods.
 
 [![One agentchute pool with a laptop, remote server, container, Kubernetes pod, and workstation all connected over SSH](web/blog/assets/v160-hub-launch.svg)](https://agentchute.dev/blog/v1-6-0-your-agents-no-longer-share-a-computer.html)
 
