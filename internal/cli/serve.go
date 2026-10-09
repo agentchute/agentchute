@@ -100,6 +100,8 @@ func cmdServe(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return runUsage(err)
 	}
+	// A serve typed inside a lane does not act as that lane (opus-xhigh S7).
+	dropNestedLaneIdentity("serve")
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "vendor":

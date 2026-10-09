@@ -658,15 +658,29 @@ func applyReplyRequiredFrontmatter(content []byte) []byte {
 // anyone actually sends and one nobody does. guard_test.go's
 // TestGuardDirectSendDataSinkException pins that tokenization; nothing in
 // guard.go had to change for it.
+//
+// The checks and the read are about ONE file (opus-xhigh S6): the path is
+// resolved first, every check runs on the resolved file, the open refuses to
+// follow a symlink in its last component (O_NOFOLLOW), and the opened file
+// must be the checked one (fstat identity). A path re-pointed between the
+// check and the open is refused instead of read.
 func readSendBodyFile(cfg *loop.Config, path string) (string, error) {
-	info, err := os.Stat(path)
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("--body-file: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("--body-file: %w", err)
+	}
+	info, err := os.Stat(resolved)
 	if err != nil {
 		return "", fmt.Errorf("--body-file: %w", err)
 	}
 	if info.IsDir() {
 		return "", fmt.Errorf("--body-file: %s is a directory, not a file", path)
 	}
-	if err := rejectLoopStateBodyFile(cfg, path); err != nil {
+	if err := rejectLoopStateBodyFile(cfg, resolved); err != nil {
 		return "", err
 	}
 	// Refuse by size before reading a byte of it: a multi-GB file must not be
@@ -674,11 +688,17 @@ func readSendBodyFile(cfg *loop.Config, path string) (string, error) {
 	if info.Size() > loop.MaxSendBodyBytes {
 		return "", sendBodyTooLarge(fmt.Sprintf("--body-file %s is %d bytes", path, info.Size()))
 	}
-	f, err := os.Open(path)
+	if afterSendBodyFileCheck != nil {
+		afterSendBodyFileCheck(resolved)
+	}
+	f, err := os.OpenFile(resolved, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
-		return "", fmt.Errorf("--body-file: %w", err)
+		return "", fmt.Errorf("--body-file: %s changed while it was being read, or cannot be opened: %w", path, err)
 	}
 	defer f.Close()
+	if opened, err := f.Stat(); err != nil || !os.SameFile(opened, info) {
+		return "", fmt.Errorf("--body-file: %s changed while it was being read; refusing it", path)
+	}
 	body, err := readBodyCapped(f, "--body-file")
 	if err != nil {
 		return "", err
@@ -741,7 +761,16 @@ func sendBodyTooLarge(what string) error {
 // live serve token went out as a message body (codex review on PR #141,
 // reproduced against e995648). Inode identity has no spelling to alias, and it
 // folds in the symlink and `..` cases for free.
+//
+// Any pool's state tree is refused too (opus-xhigh S6), not only this one's:
+// a lane can name another pool's serve.claim. Every agentchute loop — a
+// repo's `.agentchute/loop`, a hub lane's shadow loop — keeps its state in
+// `<loop>/state`, so a path with a `loop/state` pair among its ancestors is
+// refused whatever pool it belongs to.
 func rejectLoopStateBodyFile(cfg *loop.Config, path string) error {
+	if dir, ok := anyLoopStateAncestor(path); ok {
+		return fmt.Errorf("--body-file: refusing to read %s: it is inside an agentchute loop's state/ tree (%s), which holds serve.claim (a live serve token) — state files are never a message body", path, dir)
+	}
 	loopDir, err := filepath.Abs(cfg.LoopDir)
 	if err != nil {
 		return fmt.Errorf("--body-file: resolve loop dir: %w", err)
@@ -799,4 +828,26 @@ func rejectFrontmatterInjection(name, val string) error {
 		return fmt.Errorf("%s: frontmatter delimiter %q is not allowed", name, "---")
 	}
 	return nil
+}
+
+// afterSendBodyFileCheck runs between the --body-file checks and the open;
+// tests use it to swap the path in that window.
+var afterSendBodyFileCheck func(path string)
+
+// anyLoopStateAncestor reports the first ancestor of path (symlinks already
+// resolved by the caller) that is a `state` directory inside a `loop`
+// directory — the layout of every agentchute pool and hub shadow loop.
+// Names compare case-insensitively: the default macOS file system opens
+// `LOOP/STATE` as `loop/state`.
+func anyLoopStateAncestor(path string) (string, bool) {
+	for dir := filepath.Dir(filepath.Clean(path)); ; {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		if strings.EqualFold(filepath.Base(dir), "state") && strings.EqualFold(filepath.Base(parent), "loop") {
+			return dir, true
+		}
+		dir = parent
+	}
 }

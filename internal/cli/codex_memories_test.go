@@ -589,7 +589,7 @@ func TestDoctorCodexMemories(t *testing.T) {
 			}
 			t.Setenv("AGENTCHUTE_AGENT_ID", "codex")
 			t.Setenv("AGENTCHUTE_RUNNER_PID", fmt.Sprint(servePID))
-			c := checkCodexMemories(cfg, "codex")
+			c := checkCodexMemories(cfg, "codex", codexOnPath(t))
 			if c.Name != "codex_memories" || c.Severity != row.wantSeverity {
 				t.Fatalf("check = %+v, want severity %s", c, row.wantSeverity)
 			}
@@ -649,7 +649,7 @@ func TestDoctorCodexMemoriesFindsServeThroughTheLocalClaim(t *testing.T) {
 				listed = pid
 				return nil, nil
 			}
-			c := checkCodexMemories(cfg, "codex")
+			c := checkCodexMemories(cfg, "codex", codexOnPath(t))
 			if (listed == 31337) != row.wantListed || c.Severity != severitySkip {
 				t.Fatalf("listed pid %d, check %+v; want listed=%v and SKIP", listed, c, row.wantListed)
 			}
@@ -848,5 +848,87 @@ func TestCodexLifecycleHooksIgnoreAThreadOutsideTheControlRepo(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// codexOnPath is a doctor PATH holding an executable named codex; the help
+// and features probes are faked, so it is never run.
+func codexOnPath(t *testing.T) doctorOptions {
+	t.Helper()
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "codex"), []byte("#!/bin/sh\nexit 0\n"))
+	if err := os.Chmod(filepath.Join(dir, "codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return doctorOptions{PathEnv: dir}
+}
+
+// doctor never executes the argv[0] it read off the running lane process —
+// relative or absolute, it is not trusted — and asks the codex serve would
+// launch from doctor's own PATH instead.
+func TestDoctorCodexMemoriesNeverRunsTheObservedArgv0(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fakes")
+	}
+	for _, observed := range []string{"absolute", "relative"} {
+		t.Run(observed, func(t *testing.T) {
+			_, cfg := setupConsumeFixture(t)
+			marks := t.TempDir()
+			evilDir := t.TempDir()
+			evil := filepath.Join(evilDir, "codex")
+			mustWrite(t, evil, []byte("#!/bin/sh\ntouch "+shellQuote(filepath.Join(marks, "observed-ran"))+"\n"))
+			pathDir := t.TempDir()
+			mustWrite(t, filepath.Join(pathDir, "codex"), []byte("#!/bin/sh\ntouch "+shellQuote(filepath.Join(marks, "path-ran"))+"\nprintf 'Usage: codex\\n'\n"))
+			for _, f := range []string{evil, filepath.Join(pathDir, "codex")} {
+				if err := os.Chmod(f, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			argv0 := evil
+			if observed == "relative" {
+				argv0 = "./codex" // resolvable from evilDir, where the check runs
+			}
+			restore := listServeChildren
+			t.Cleanup(func() { listServeChildren = restore })
+			listServeChildren = func(int) ([]laneProcess, error) {
+				return []laneProcess{{PID: 777, Argv: []string{argv0, "--no-daemon"}}}, nil
+			}
+			t.Setenv("AGENTCHUTE_AGENT_ID", "codex")
+			t.Setenv("AGENTCHUTE_RUNNER_PID", "4242")
+			var c doctorCheck
+			run := func() {
+				// withCwd clears the AGENTCHUTE_* variables: set them inside.
+				t.Setenv("AGENTCHUTE_AGENT_ID", "codex")
+				t.Setenv("AGENTCHUTE_RUNNER_PID", "4242")
+				c = checkCodexMemories(cfg, "codex", doctorOptions{PathEnv: pathDir})
+			}
+			if observed == "relative" {
+				withCwd(t, evilDir, run)
+			} else {
+				run()
+			}
+			if _, err := os.Stat(filepath.Join(marks, "observed-ran")); err == nil {
+				t.Fatalf("doctor executed the observed argv[0] %q", argv0)
+			}
+			if _, err := os.Stat(filepath.Join(marks, "path-ran")); err != nil {
+				t.Fatalf("doctor did not ask the codex on its PATH: %+v", c)
+			}
+		})
+	}
+}
+
+// No codex on doctor's PATH: WARN without executing anything.
+func TestDoctorCodexMemoriesWarnsWithoutACodexOnPath(t *testing.T) {
+	_, cfg := setupConsumeFixture(t)
+	restore := listServeChildren
+	t.Cleanup(func() { listServeChildren = restore })
+	listServeChildren = func(int) ([]laneProcess, error) {
+		return []laneProcess{{PID: 777, Argv: []string{"/somewhere/codex"}}}, nil
+	}
+	t.Setenv("AGENTCHUTE_AGENT_ID", "codex")
+	t.Setenv("AGENTCHUTE_RUNNER_PID", "4242")
+	c := checkCodexMemories(cfg, "codex", doctorOptions{PathEnv: t.TempDir()})
+	if c.Severity != severityWarn || !strings.Contains(c.Message, "no codex is on this PATH") {
+		t.Fatalf("check = %+v", c)
 	}
 }
