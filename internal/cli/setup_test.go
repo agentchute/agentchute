@@ -131,6 +131,58 @@ func TestSetupPathKeepsBinaryAfterInstallerBlock(t *testing.T) {
 	}
 }
 
+// #234: with --no-profile, the PATH hint must name every directory the
+// managed block would have written (#232) that is missing from PATH — the
+// binary's own directory included — and stay byte-identical when only the
+// shim dir is missing.
+func TestSetupNoProfilePathHintNamesMissingDirs(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Dir(exe)
+	shimDir := filepath.Join(t.TempDir(), ".agentchute", "bin")
+	if samePath(binDir, shimDir) {
+		t.Skip("test binary lives in the shim dir; dirs not distinguishable")
+	}
+	sep := string(os.PathListSeparator)
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "binary dir missing names both",
+			path: "/usr/bin" + sep + "/bin",
+			want: fmt.Sprintf("warning: add %s to PATH\nwarning: add %s to PATH\n", binDir, shimDir),
+		},
+		{
+			name: "binary dir present leaves hint unchanged",
+			path: "/usr/bin" + sep + binDir,
+			want: fmt.Sprintf("warning: add %s to PATH\n", shimDir),
+		},
+		{
+			name: "both present stays silent",
+			path: binDir + sep + shimDir,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PATH", tc.path)
+			out, err := captureStdout(t, func() error {
+				return setupEnsureShimPath(setupOptions{ShimDir: shimDir, NoProfile: true})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out != tc.want {
+				t.Fatalf("PATH=%q hint = %q, want %q", tc.path, out, tc.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeSetupWakeCombinations(t *testing.T) {
 	cases := []struct {
 		in      string
