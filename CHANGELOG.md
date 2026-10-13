@@ -4,6 +4,14 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## v1.7.3 (2026-10-13) — three fixes from the first live run of v1.7.2
+
+Hotfix. No wire change, no enrollment change. See [docs/releases/v1.7.3.md](docs/releases/v1.7.3.md).
+
+- `doctor`'s `codex_daemon_env` no longer warns a lane about a codex app-server daemon that cannot host it: a lane whose codex child runs `--no-daemon` reports OK, a lane whose serve child is not codex is skipped, and only a codex lane launched without `--no-daemon` (or one whose serve process cannot be found) keeps the token/repo verdict. The message no longer claims every codex session on the host runs under the daemon (#239).
+- `boot`'s "inbox contains mail from before this registration" note compared message stamps with the registration's `last_seen`, which boot had just refreshed, so it fired for every unread message on a first-turn boot. It now compares with the lane's `serve.claim` `started_at` and reads "from before this serve started"; a lane without a local serve.claim (hand-run sessions, hub lanes) gets no note (#238).
+- The repo's own `.gitignore` ignores `/.muse/` and `/.agents/`, the hook files `hooks install` writes for Muse Code and agy, like `/.codex/` and `/.gemini/` (#238).
+
 ## v1.7.2 (2026-10-13) — Muse Code joins the wrappers
 
 Muse Code (`ac serve muse`, vendor `meta`) becomes a guarded wrapper, `setup --no-profile` names every missing PATH directory, and the front page is rewritten in plain words. See [docs/releases/v1.7.2.md](docs/releases/v1.7.2.md) for upgrade steps and known limitations.
