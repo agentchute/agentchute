@@ -66,7 +66,7 @@ func cmdTurnEnd(args []string) error {
 	fs := flag.NewFlagSet("turn-end", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, host, bio, controlRepo, loopDir, codexHook, geminiHook, agyHook string
+	var agentID, vendor, host, bio, controlRepo, loopDir, codexHook, geminiHook, agyHook, museHook string
 	var jsonOut bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai, local)")
@@ -78,12 +78,16 @@ func cmdTurnEnd(args []string) error {
 	fs.StringVar(&codexHook, "codex-hook", "", "codex hook JSON shape for the named event (Stop)")
 	fs.StringVar(&geminiHook, "gemini-hook", "", "Gemini CLI hook JSON shape for the named event (AfterAgent)")
 	fs.StringVar(&agyHook, "agy-hook", "", "Antigravity CLI hook JSON shape for the named event (Stop)")
+	fs.StringVar(&museHook, "muse-hook", "", "Muse Code hook JSON shape for the named event (Stop)")
 
 	if err := fs.Parse(args); err != nil {
 		return turnEndUsage(err)
 	}
 	if fs.NArg() != 0 {
 		return turnEndUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
+	}
+	if err := recoverServeIdentity(museHook != ""); err != nil {
+		return err
 	}
 	if err := requireRunnerAncestry("turn-end"); err != nil {
 		return err
@@ -96,7 +100,7 @@ func cmdTurnEnd(args []string) error {
 	// installed older binary keeps working against a newer template): its
 	// stdin is read too, never when it is a terminal.
 	var hookBody []byte
-	if jsonOut || codexHook == "Stop" || geminiHook == "AfterAgent" {
+	if jsonOut || codexHook == "Stop" || geminiHook == "AfterAgent" || museHook == "Stop" {
 		hookBody = readHookStdin(hookStdin())
 	}
 	var hookIn turnEndHookInput
@@ -237,6 +241,12 @@ func cmdTurnEnd(args []string) error {
 		clearTurnEndLastBlock(cfg, agentID)
 	}
 
+	if museHook == "Stop" {
+		if !status.Blocked || hookIn.active() {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{})
+		}
+		return emitGateCodexStop(status)
+	}
 	if codexHook == "Stop" {
 		if stillBlocked != "" {
 			return json.NewEncoder(os.Stdout).Encode(map[string]any{"systemMessage": stillBlocked})
@@ -336,6 +346,7 @@ Flags:
   --codex-hook <event>  codex hook JSON shape (Stop)
   --gemini-hook <event> Gemini CLI hook JSON shape (AfterAgent)
   --agy-hook <event>    Antigravity CLI hook JSON shape (Stop)
+  --muse-hook <event>   Muse Code hook JSON shape (Stop)
 `)
 }
 

@@ -24,8 +24,9 @@ import (
 // EnvPrefix is the namespace of every agentchute environment variable.
 const EnvPrefix = "AGENTCHUTE_"
 
-// StripTestEnv unsets every AGENTCHUTE_* variable in this process, then
-// reports any that is still visible.
+// StripTestEnv unsets every AGENTCHUTE_* variable and Muse identity marker,
+// then reports any that is still visible. A surviving Muse marker could
+// restore a live lane's identity through ancestor recovery.
 func StripTestEnv() error { return stripTestEnv(os.Environ, os.Unsetenv) }
 
 func stripTestEnv(environ func() []string, unset func(string) error) error {
@@ -42,7 +43,7 @@ func agentchuteNames(env []string) []string {
 	var names []string
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(name, EnvPrefix) {
+		if strings.HasPrefix(name, EnvPrefix) || name == "MUSE_SESSION_ID" || name == "MUSE_THREAD_ID" {
 			names = append(names, name)
 		}
 	}

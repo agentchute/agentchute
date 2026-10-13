@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "*",
+      "hooks": [{"type": "command", "command": "agentchute boot --muse-hook SessionStart", "timeout": 10}]
+    }],
+    "UserPromptSubmit": [{
+      "matcher": "*",
+      "hooks": [{"type": "command", "command": "agentchute self-check --muse-hook UserPromptSubmit", "timeout": 10}]
+    }],
+    "PreToolUse": [{
+      "matcher": "*",
+      "hooks": [{"type": "command", "command": "agentchute guard --pre-tool-use --muse-hook PreToolUse", "timeout": 10}]
+    }],
+    "Stop": [{
+      "matcher": "*",
+      "hooks": [{"type": "command", "command": "agentchute turn-end --muse-hook Stop", "timeout": 10}]
+    }]
+  }
+}

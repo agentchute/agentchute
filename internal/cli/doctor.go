@@ -369,7 +369,7 @@ func runDoctorChecks(cfg *loop.Config, agentID string, opts doctorOptions) docto
 			checkRegistrationFreshness(cfg, agentID, opts.Now),
 			checkInboxState(cfg, agentID),
 			checkGuardLatchAge(cfg, agentID, opts.Now),
-			checkCodexMemories(cfg, agentID),
+			checkCodexMemories(cfg, agentID, opts),
 		)
 	} else {
 		checks = append(checks, doctorCheck{

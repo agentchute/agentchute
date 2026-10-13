@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -74,6 +75,111 @@ func TestSetupRunnerInstallsAllFourShimsRegardlessOfDetection(t *testing.T) {
 	}
 	if count := strings.Count(string(data), setupPathBlockBegin); count != 1 {
 		t.Fatalf("profile block count = %d, want 1\n%s", count, data)
+	}
+	exe, _ := os.Executable()
+	if !strings.Contains(string(data), setupPathExpr(filepath.Dir(exe))) {
+		t.Fatalf("profile lost the dispatcher's binary directory:\n%s", data)
+	}
+}
+
+func TestSetupPathKeepsBinaryAfterInstallerBlock(t *testing.T) {
+	for _, shell := range []string{"bash", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			bin, err := exec.LookPath(shell)
+			if err != nil {
+				t.Skip(err)
+			}
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			binaryDir, shimDir := filepath.Join(home, ".local", "bin"), filepath.Join(home, ".agentchute", "bin")
+			profile := filepath.Join(home, ".bash_profile")
+			if shell == "fish" {
+				profile = filepath.Join(home, ".config", "fish", "config.fish")
+			}
+			for _, path := range []string{filepath.Join(binaryDir, "agentchute"), filepath.Join(shimDir, "ac")} {
+				mustWrite(t, path, []byte("#!/bin/sh\nexit 0\n"))
+				if err := os.Chmod(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, existing := range []string{"# user profile\n", "# agentchute PATH entry for binary ($HOME/.local/bin) begin\n# legacy\n# agentchute PATH entry for binary ($HOME/.local/bin) end\n"} {
+				mustWrite(t, profile, []byte(existing))
+				if err := setupWritePathBlock(profile, binaryDir, shimDir); err != nil {
+					t.Fatal(err)
+				}
+				first := string(mustRead(t, profile))
+				if err := setupWritePathBlock(profile, binaryDir, shimDir); err != nil {
+					t.Fatal(err)
+				}
+				if string(mustRead(t, profile)) != first || strings.Contains(first, installShPathMarkerPrefix) {
+					t.Fatal("profile rewrite is not idempotent or retained the installer block")
+				}
+			}
+			for _, path := range []string{"/usr/bin:/bin", "/usr/bin:/bin:" + binaryDir} {
+				cmd := exec.Command(bin, "-lc", "source "+shellQuote(profile)+"; command -v ac; command -v agentchute; /usr/bin/printenv PATH")
+				cmd.Env = []string{"HOME=" + home, "PATH=" + path, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config")}
+				out, err := cmd.CombinedOutput()
+				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+				if err != nil || len(lines) != 3 || lines[0] != filepath.Join(shimDir, "ac") || lines[1] != filepath.Join(binaryDir, "agentchute") {
+					t.Fatalf("fresh login shell: %v\n%s", err, out)
+				}
+				if strings.Count(lines[2], binaryDir) != 1 || strings.Count(lines[2], shimDir) != 1 {
+					t.Fatalf("PATH entries duplicated: %s", lines[2])
+				}
+			}
+		})
+	}
+}
+
+// #234: with --no-profile, the PATH hint must name every directory the
+// managed block would have written (#232) that is missing from PATH — the
+// binary's own directory included — and stay byte-identical when only the
+// shim dir is missing.
+func TestSetupNoProfilePathHintNamesMissingDirs(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Dir(exe)
+	shimDir := filepath.Join(t.TempDir(), ".agentchute", "bin")
+	if samePath(binDir, shimDir) {
+		t.Skip("test binary lives in the shim dir; dirs not distinguishable")
+	}
+	sep := string(os.PathListSeparator)
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "binary dir missing names both",
+			path: "/usr/bin" + sep + "/bin",
+			want: fmt.Sprintf("warning: add %s to PATH\nwarning: add %s to PATH\n", binDir, shimDir),
+		},
+		{
+			name: "binary dir present leaves hint unchanged",
+			path: "/usr/bin" + sep + binDir,
+			want: fmt.Sprintf("warning: add %s to PATH\n", shimDir),
+		},
+		{
+			name: "both present stays silent",
+			path: binDir + sep + shimDir,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PATH", tc.path)
+			out, err := captureStdout(t, func() error {
+				return setupEnsureShimPath(setupOptions{ShimDir: shimDir, NoProfile: true})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out != tc.want {
+				t.Fatalf("PATH=%q hint = %q, want %q", tc.path, out, tc.want)
+			}
+		})
 	}
 }
 
@@ -188,9 +294,9 @@ esac
 }
 
 func TestSetupShimWrappersForWake(t *testing.T) {
-	// runner is the only wake path: it installs all five shims.
-	if got := setupShimWrappers("runner"); len(got) != 5 {
-		t.Errorf(`setupShimWrappers("runner") = %v, want all 5`, got)
+	// runner is the only wake path: it installs all six shims.
+	if got := setupShimWrappers("runner"); len(got) != 6 {
+		t.Errorf(`setupShimWrappers("runner") = %v, want all 6`, got)
 	}
 	if !setupNeedsShims("runner") {
 		t.Errorf(`setupNeedsShims("runner") = false, want true`)
@@ -639,8 +745,8 @@ func TestSetupRefreshesExistingEnrollmentBlocks(t *testing.T) {
 	if strings.Contains(text, "stale identity instructions") {
 		t.Fatalf("setup did not replace stale enrollment block:\n%s", text)
 	}
-	if !strings.Contains(text, "agentchute-enrollment v35 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
-		t.Fatalf("setup did not refresh CODEX.md to v35 env identity guidance:\n%s", text)
+	if !strings.Contains(text, "agentchute-enrollment v36 begin") || !strings.Contains(text, "AGENTCHUTE_AGENT_ID") {
+		t.Fatalf("setup did not refresh CODEX.md to v36 env identity guidance:\n%s", text)
 	}
 	if !strings.Contains(text, "Local notes.") {
 		t.Fatalf("setup lost non-enrollment content:\n%s", text)

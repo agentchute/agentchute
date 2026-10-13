@@ -458,7 +458,7 @@ func codexArgvDisablesMemories(args []string) bool {
 // (`codex <its -c/--enable/--disable> features list`), run from the control
 // repo. SKIP when there is no codex lane to inspect on this host. Never a
 // BLOCKER: a codex setting is not a pool fault.
-func checkCodexMemories(cfg *loop.Config, agentID string) doctorCheck {
+func checkCodexMemories(cfg *loop.Config, agentID string, opts doctorOptions) doctorCheck {
 	const name = "codex_memories"
 	servePID := codexLaneServePID(cfg, agentID)
 	if servePID == 0 {
@@ -478,11 +478,20 @@ func checkCodexMemories(cfg *loop.Config, agentID string) doctorCheck {
 	if lane == nil {
 		return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("%s's serve (pid %d) is not running codex", agentID, servePID)}
 	}
-	bin, args := lane.Argv[0], lane.Argv[1:]
+	args := lane.Argv[1:]
 	if codexArgvDisablesMemories(args) {
 		return doctorCheck{Name: name, Severity: severityOK, Message: fmt.Sprintf("codex pid %d runs with --disable memories", lane.PID)}
 	}
 	fix := "relaunch with `ac serve codex` (it adds --disable memories), or set `[features] memories = false` in ~/.codex/config.toml"
+	// Never execute the observed argv[0]: it is whatever the running process
+	// was started as — possibly relative, possibly not codex at all. Ask the
+	// codex serve itself would launch from this PATH (doctor's own
+	// resolution), never a path read off another process.
+	spec, _ := wrapperSpecForName("codex")
+	bin, rerr := resolveRealWrapperOnPath(spec, doctorShimDir(opts), opts.PathEnv)
+	if rerr != nil {
+		return doctorCheck{Name: name, Severity: severityWarn, Message: fmt.Sprintf("codex pid %d was launched without --disable memories, and no codex is on this PATH to ask whether memories are on (%v) — %s", lane.PID, rerr, fix)}
+	}
 	help, ok := codexHelpMemo(os.Environ())(bin)
 	if !ok {
 		return doctorCheck{Name: name, Severity: severityWarn, Message: fmt.Sprintf("could not run %s --help, so codex pid %d's memories state is unknown; it was launched without --disable memories — %s", bin, lane.PID, fix)}

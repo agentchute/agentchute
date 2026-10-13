@@ -43,6 +43,9 @@ const maxAncestryHops = 64
 // the value is not a pid. Any other error means the walk could not finish —
 // that proves nothing either way, and callers treat it as a warning.
 func runnerAncestryCheck() error {
+	if err := recoverServeIdentity(false); err != nil {
+		return err
+	}
 	raw := strings.TrimSpace(os.Getenv("AGENTCHUTE_RUNNER_PID"))
 	if raw == "" {
 		return nil

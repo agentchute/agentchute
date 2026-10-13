@@ -212,7 +212,9 @@ func dispatchExecRun(plan dispatchPlan, shimDir string) error {
 	}
 	wrapperArgs := append([]string{realWrapper}, plan.WrapperArgs...)
 	if os.Getenv("AGENTCHUTE_SHIM_BYPASS") == "1" || os.Getenv("AGENTCHUTE_RUNNER") == "1" {
-		return execReplace(realWrapper, wrapperArgs, os.Environ())
+		// The runner's own launch keeps the lane's identity; a launch typed
+		// inside the lane runs without it (lane_launch.go, opus-xhigh S7).
+		return execReplace(realWrapper, wrapperArgs, wrapperBypassEnv("ac"))
 	}
 	cwd, err := os.Getwd()
 	if err != nil {

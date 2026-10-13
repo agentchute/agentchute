@@ -28,7 +28,7 @@ func cmdBoot(args []string) error {
 	fs := flag.NewFlagSet("boot", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, host, controlRepo, loopDir, bio, codexHook, geminiHook, agyHook string
+	var agentID, vendor, host, controlRepo, loopDir, bio, codexHook, geminiHook, agyHook, museHook string
 	var quiet, jsonOut, contextOnly bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google, xai, local, human)")
@@ -42,6 +42,7 @@ func cmdBoot(args []string) error {
 	fs.StringVar(&codexHook, "codex-hook", "", "codex hook JSON shape for the named event (SessionStart)")
 	fs.StringVar(&geminiHook, "gemini-hook", "", "Gemini CLI hook JSON shape for the named event (SessionStart)")
 	fs.StringVar(&agyHook, "agy-hook", "", "Antigravity CLI hook JSON shape for the named event (PreInvocation)")
+	fs.StringVar(&museHook, "muse-hook", "", "Muse Code hook JSON shape for the named event (SessionStart)")
 
 	if err := fs.Parse(args); err != nil {
 		return bootUsage(err)
@@ -50,6 +51,13 @@ func cmdBoot(args []string) error {
 		return bootUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
 	}
 
+	if err := recoverServeIdentity(museHook != ""); err != nil {
+		if museHook != "" {
+			fmt.Fprintf(os.Stderr, "warning: agentchute boot: %v\n", err)
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{})
+		}
+		return err
+	}
 	opts := registerOpts{
 		Host:       host,
 		Bio:        bio,
@@ -104,7 +112,7 @@ func cmdBoot(args []string) error {
 	}
 
 	now := time.Now().UTC()
-	hookMode := contextOnly || codexHook == "SessionStart" || geminiHook == "SessionStart" || agyHook == "PreInvocation"
+	hookMode := contextOnly || codexHook == "SessionStart" || geminiHook == "SessionStart" || agyHook == "PreInvocation" || museHook == "SessionStart"
 	// A boot under a foreign runner's env (AGENTCHUTE_RUNNER_PID set but not
 	// an ancestor — a shared daemon or background host) would register the
 	// wrong lane's identity from the wrong process tree: fail closed, write
@@ -220,6 +228,8 @@ func cmdBoot(args []string) error {
 		return emitBootGeminiSessionStart(status)
 	case agyHook == "PreInvocation":
 		return emitBootAgyPreInvocation(status, os.Stdin)
+	case museHook == "SessionStart":
+		return emitBootCodexSessionStart(status)
 	case contextOnly:
 		return emitBootContextOnly(status)
 	case jsonOut:
@@ -391,7 +401,7 @@ Exit codes (interactive mode):
   2  unread direct mail present
   1  command failure (binary error, filesystem error, etc.)
 
-Exit codes (--context-only / --codex-hook / --gemini-hook / --agy-hook): always 0 unless command failure.
+Exit codes (--context-only / --codex-hook / --gemini-hook / --agy-hook / --muse-hook): always 0 unless command failure.
 
 Flags:
   --as <id>             agent id (or $AGENTCHUTE_AGENT_ID)
@@ -406,6 +416,7 @@ Flags:
   --codex-hook <event>  codex hook JSON shape (SessionStart)
   --gemini-hook <event> Gemini CLI hook JSON shape (SessionStart)
   --agy-hook <event>    Antigravity CLI hook JSON shape (PreInvocation)
+  --muse-hook <event>   Muse Code hook JSON shape (SessionStart)
 `)
 }
 
