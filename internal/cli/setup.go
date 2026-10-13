@@ -918,8 +918,13 @@ func setupEnsureShimPath(opts setupOptions) error {
 
 	profiles := setupPlausibleProfiles(opts.Profile)
 	if opts.NoProfile || len(profiles) == 0 {
-		if !onPath {
-			fmt.Printf("warning: add %s to PATH\n", opts.ShimDir)
+		// Name every dir the managed block would have written (#232) that is
+		// missing from PATH — the binary's own dir included (#234). When only
+		// the shim dir is missing this prints exactly the historical line.
+		for _, dir := range dirs {
+			if !pathContains(dir, os.Getenv("PATH")) {
+				fmt.Printf("warning: add %s to PATH\n", dir)
+			}
 		}
 		return nil
 	}
