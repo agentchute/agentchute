@@ -33,7 +33,7 @@ ac serve claude    # first window
 ac serve codex     # second window
 ```
 
-Then ask in your own words. For example, tell Claude: "ask Codex to review my last change". Gemini CLI, Antigravity and Grok start the same way: `ac serve gemini`, `ac serve agy`, `ac serve grok`.
+Then ask in your own words. For example, tell Claude: "ask Codex to review my last change". Gemini CLI, Antigravity, Grok and Muse Code start the same way: `ac serve gemini`, `ac serve agy`, `ac serve grok`, `ac serve muse`.
 
 Works on one computer, or across computers over SSH. Notes are plain text, so use it only with helpers you trust.
 
