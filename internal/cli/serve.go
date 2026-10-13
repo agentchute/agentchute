@@ -87,7 +87,7 @@ func cmdServe(args []string) error {
 	var opts runnerOptions
 	var idleGrace, busyGrace time.Duration
 	fs.StringVar(&opts.AgentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
-	fs.StringVar(&opts.Vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google, xai)")
+	fs.StringVar(&opts.Vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google, xai, meta)")
 	fs.StringVar(&opts.ControlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
 	fs.StringVar(&opts.LoopDir, "loop-dir", "", "loop dir path (or AGENTCHUTE_LOOP_DIR)")
 	fs.IntVar(&opts.IntervalSeconds, "interval", defaultRunnerIntervalSeconds, "inbox poll interval in seconds")
@@ -195,7 +195,7 @@ func cmdServe(args []string) error {
 		opts.Vendor = resolveAgentVendor(opts.Vendor, opts.AgentID, cfg)
 	}
 	if cfg.Remote == nil && opts.Vendor == "" {
-		return fmt.Errorf("missing --vendor (recommended values: anthropic, openai, google)")
+		return fmt.Errorf("missing --vendor (recommended values: anthropic, openai, google, meta)")
 	}
 	if opts.Vendor != "" {
 		if err := loop.ValidateAgentID(opts.Vendor); err != nil {
@@ -291,7 +291,7 @@ fence), inbox polling, and prompt injection when mail arrives.
 
 Flags:
   --as <id>                  agent id (or $AGENTCHUTE_AGENT_ID)
-  --vendor <vendor>          vendor or origin (anthropic, openai, google, xai)
+  --vendor <vendor>          vendor or origin (anthropic, openai, google, xai, meta)
   --interval <seconds>       inbox poll interval (minimum 5; default 5)
   --interrupt-policy <mode>  after-idle|after-grace|always (default after-idle; idle is heuristic)
   --prompt <text>            prompt injected on wake (default "[agentchute] check inbox")
@@ -563,6 +563,13 @@ func runWrapper(cfg *loop.Config, opts runnerOptions, cwd string) error {
 		return err
 	}
 
+	removeIdentity, err := writeServeIdentity(cfg, opts, lease.Token)
+	if err != nil {
+		_ = loop.ReleaseLease(lease)
+		return fmt.Errorf("write serve identity: %w", err)
+	}
+	defer removeIdentity()
+
 	// Lease admitted: now (and only now) probe codex for --no-daemon, with the
 	// env the child itself gets.
 	childEnv := runnerChildEnv(cfg, opts, lease.Token)
@@ -770,6 +777,12 @@ func runRemoteWrapperOnce(cfg *loop.Config, opts runnerOptions, cwd string) remo
 		return remoteRunResult{err: err}
 	}
 
+	removeIdentity, err := writeServeIdentity(cfg, opts, channel.Token())
+	if err != nil {
+		return remoteRunResult{err: fmt.Errorf("write serve identity: %w", err)}
+	}
+	defer removeIdentity()
+
 	// Lease admitted and registered: probe codex for --no-daemon with the
 	// child env (the deferred release covers a failure after this point).
 	childEnv := runnerChildEnv(cfg, opts, channel.Token())
@@ -880,7 +893,7 @@ func runnerChildEnv(cfg *loop.Config, opts runnerOptions, serveToken string) []s
 	// os.Environ() carries THIS process's discovery and guard context whenever a
 	// served child launches another lane. A remote child must inherit the hub URL
 	// and no loop-dir override; an unguarded child must not inherit the guard bit.
-	env := withoutEnv(os.Environ(), "AGENTCHUTE_GUARD", "AGENTCHUTE_CONTROL_REPO", "AGENTCHUTE_LOOP_DIR")
+	env := withoutEnv(os.Environ(), "AGENTCHUTE_GUARD", "AGENTCHUTE_CONTROL_REPO", "AGENTCHUTE_LOOP_DIR", "AGENTCHUTE_RECOVERED_VENDOR")
 	env = append(env,
 		"AGENTCHUTE_AGENT_ID="+opts.AgentID,
 		"AGENTCHUTE_RUNNER=1",
@@ -1325,7 +1338,7 @@ func (r *runnerRuntime) injectPrompt(a *wakeAttempt) {
 }
 
 func promptInjectionBytes(opts runnerOptions) []byte {
-	if shouldUseCodexSubmitSequence(opts) {
+	if shouldUseCodexSubmitSequence(opts) || (len(opts.WrapperArgs) > 0 && filepath.Base(opts.WrapperArgs[0]) == "muse") {
 		return []byte(bracketedPasteStart + opts.Prompt + bracketedPasteEnd + codexEnhancedEnter)
 	}
 	return []byte(opts.Prompt + "\r")

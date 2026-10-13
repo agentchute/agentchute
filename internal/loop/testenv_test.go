@@ -11,11 +11,13 @@ import (
 func TestStripTestEnvRemovesEveryAgentchuteVariable(t *testing.T) {
 	t.Setenv("AGENTCHUTE_CONTROL_REPO", "/live/pool")
 	t.Setenv("AGENTCHUTE_SERVE_TOKEN", "live-token")
+	t.Setenv("MUSE_SESSION_ID", "live-session")
+	t.Setenv("MUSE_THREAD_ID", "live-thread")
 	t.Setenv("ACTEST_KEEP", "1")
 	if err := StripTestEnv(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"AGENTCHUTE_CONTROL_REPO", "AGENTCHUTE_SERVE_TOKEN"} {
+	for _, name := range []string{"AGENTCHUTE_CONTROL_REPO", "AGENTCHUTE_SERVE_TOKEN", "MUSE_SESSION_ID", "MUSE_THREAD_ID"} {
 		if _, ok := os.LookupEnv(name); ok {
 			t.Fatalf("%s survived Strip", name)
 		}

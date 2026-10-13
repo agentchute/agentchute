@@ -22,7 +22,7 @@ func cmdSelfCheck(args []string) error {
 	fs := flag.NewFlagSet("self-check", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, host, controlRepo, loopDir, bio string
+	var agentID, vendor, host, controlRepo, loopDir, bio, museHook string
 	var quiet, jsonOut bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (e.g., anthropic, openai, google, xai, local)")
@@ -32,6 +32,7 @@ func cmdSelfCheck(args []string) error {
 	fs.StringVar(&bio, "bio", "", "short self-description for the registration body")
 	fs.BoolVar(&quiet, "quiet", false, "suppress success output")
 	fs.BoolVar(&jsonOut, "json", false, "structured JSON output")
+	fs.StringVar(&museHook, "muse-hook", "", "Muse Code hook JSON shape with pending context after self-repair (UserPromptSubmit)")
 
 	if err := fs.Parse(args); err != nil {
 		return selfCheckUsage(err)
@@ -41,6 +42,13 @@ func cmdSelfCheck(args []string) error {
 	}
 	// Fail open, but do not repair: rewriting a registration from another
 	// runner's env is exactly what the ancestry check exists to stop.
+	if err := recoverServeIdentity(museHook != ""); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: agentchute self-check: %v\n", err)
+		if museHook != "" {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{})
+		}
+		return nil
+	}
 	if !warnRunnerAncestry("self-check") {
 		return nil
 	}
@@ -92,6 +100,18 @@ func cmdSelfCheck(args []string) error {
 	// A new prompt is a new turn: a Stop block recorded in an earlier turn
 	// must never let this turn's first block through (turn-end, C3).
 	clearTurnEndLastBlock(cfg, agentID)
+	if museHook == "UserPromptSubmit" {
+		// Muse starts same-event hooks concurrently. Keep refresh + context
+		// ordered in one process, with no shell syntax in the template.
+		pendingArgs := []string{"--as", agentID, "--muse-hook", "UserPromptSubmit"}
+		if controlRepo != "" {
+			pendingArgs = append(pendingArgs, "--control-repo", controlRepo)
+		}
+		if loopDir != "" {
+			pendingArgs = append(pendingArgs, "--loop-dir", loopDir)
+		}
+		return cmdPending(pendingArgs)
+	}
 
 	status := selfCheckStatus{
 		Agent:    agentID,
@@ -188,8 +208,9 @@ func selfCheckHelp() string {
 Usage: agentchute self-check --as <id> --vendor <vendor> [flags]
 
 Hook-safe active self check. Refreshes/creates this agent's registration and
-updates last_seen. Pull-only: a registration publishes no wake state. Does not
-read, archive, quarantine, or send inbox messages.
+updates last_seen. Pull-only: a registration publishes no wake state. Muse hook
+mode then emits a read-only pending summary; other modes do not read mail.
+Never claims, archives, quarantines, or sends inbox messages.
 
 Flags:
   --as <id>              agent id (or $AGENTCHUTE_AGENT_ID)
@@ -200,5 +221,6 @@ Flags:
   --loop-dir <p>         loop dir path (or $AGENTCHUTE_LOOP_DIR)
   --quiet                suppress success output
   --json                 structured JSON output
+  --muse-hook <event>    Muse Code context after self-repair (UserPromptSubmit)
 `)
 }

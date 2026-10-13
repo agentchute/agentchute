@@ -64,6 +64,7 @@ var wrapperSpecs = []wrapperSpec{
 	// binary a lane runs and `ac serve gemini` never silently launches it.
 	{Key: "agy", Name: "ac-agy", Aliases: []string{"agy", "antigravity"}, AgentID: "agy", Vendor: "google", Candidates: []string{"agy"}, Guarded: true},
 	{Key: "grok", Name: "ac-grok", Aliases: []string{"grok"}, AgentID: "grok", Vendor: "xai", Candidates: []string{"grok"}, Guarded: false},
+	{Key: "muse", Name: "ac-muse", Aliases: []string{"muse", "muse-code"}, AgentID: "muse", Vendor: "meta", Candidates: []string{"muse"}, Guarded: true},
 }
 
 var legacyShimNamesBySetupWrapper = map[string][]string{
@@ -72,9 +73,10 @@ var legacyShimNamesBySetupWrapper = map[string][]string{
 	"gemini-cli":  {"ac-gemini", "gemini", "gemini-cli"},
 	"agy":         {"ac-agy", "agy"},
 	"grok":        {"ac-grok", "grok"},
+	"muse":        {"ac-muse", "muse", "muse-code"},
 }
 
-var legacyShimSetupWrapperOrder = []string{"claude-code", "codex", "gemini-cli", "agy", "grok"}
+var legacyShimSetupWrapperOrder = []string{"claude-code", "codex", "gemini-cli", "agy", "grok", "muse"}
 
 // wrapperForToken resolves a dispatcher wrapper token (`ac serve <token>`) by
 // canonical Key or alias. It deliberately does NOT match the legacy ac-* Name —

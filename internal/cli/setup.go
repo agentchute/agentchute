@@ -84,7 +84,7 @@ func cmdSetup(args []string) error {
 
 	var opts setupOptions
 	fs.StringVar(&opts.Wake, "wake", "", "wake path to install: runner (the only supported value)")
-	fs.StringVar(&opts.Wrappers, "wrappers", "all", "all (detected on PATH), none, or comma list: claude-code,codex,gemini-cli,agy,grok")
+	fs.StringVar(&opts.Wrappers, "wrappers", "all", "all (detected on PATH), none, or comma list: claude-code,codex,gemini-cli,agy,grok,muse")
 	fs.StringVar(&opts.ControlRepo, "control-repo", "", "control repo path (default: env or current git/cwd root)")
 	fs.StringVar(&opts.ShimDir, "shim-dir", "", "launcher shim directory (default: $HOME/.agentchute/bin)")
 	fs.StringVar(&opts.Profile, "profile", "", "shell profile to update for launcher shims")
@@ -215,7 +215,7 @@ Flags:
   --wake runner          install the runner wake path (the only supported value;
                          prompted when omitted).
   --wrappers <set>       all (detected on PATH), none, or comma list
-                         (claude-code,codex,gemini-cli,agy,grok; default all)
+                         (claude-code,codex,gemini-cli,agy,grok,muse; default all)
   --control-repo <path>  repo to initialize (default env or current git/cwd root)
   --shim-dir <path>      directory for the ac dispatcher (default $HOME/.agentchute/bin)
   --profile <path>       shell profile to update for the dispatcher PATH
@@ -372,6 +372,7 @@ var setupWrappers = []setupWrapper{
 	{Name: "gemini-cli", Candidates: []string{"gemini", "gemini-cli"}, Hookable: true},
 	{Name: "agy", Candidates: []string{"agy"}, Hookable: true},
 	{Name: "grok", Candidates: []string{"grok"}, Hookable: false},
+	{Name: "muse", Candidates: []string{"muse"}, Hookable: true},
 }
 
 func wrapperIsKnownForSetup(name string) bool {
