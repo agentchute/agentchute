@@ -373,13 +373,14 @@ func TestDoctorCanonicalInstalledTemplatesPassHookContentSanity(t *testing.T) {
 	// machines have `agentchute`/`ac` on PATH from local builds, but a clean
 	// CI runner does not — codex review, PR #89: this test passed locally by
 	// accident and failed both CI jobs deterministically). Point
-	// AGENTCHUTE_BIN at a stub, mirroring
-	// TestDoctorTemplatedBinaryReferenceIsOKWhenAGENTCHUTE_BINSet.
-	stub := filepath.Join(cfg.ControlRepo, "stub-agentchute")
+	// AGENTCHUTE_BIN at a stub and put it on PATH for Muse's portable bare
+	// command, so neither template form depends on a developer install.
+	stub := filepath.Join(cfg.ControlRepo, "agentchute")
 	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("AGENTCHUTE_BIN", stub)
+	t.Setenv("PATH", cfg.ControlRepo+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	r := runDoctorChecks(cfg, "", doctorOptions{Now: time.Now().UTC()})
 	got := findCheck(t, r, "hook_content_sanity")

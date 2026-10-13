@@ -703,7 +703,7 @@ func TestReadProcessArgv_Child(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("no exact argv source on " + runtime.GOOS)
 	}
-	if os.Getenv("AGENTCHUTE_TEST_ARGV_CHILD") == "1" {
+	if os.Getenv("ACTEST_ARGV_CHILD") == "1" {
 		time.Sleep(30 * time.Second)
 		return
 	}
@@ -712,7 +712,7 @@ func TestReadProcessArgv_Child(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(self, "-test.run", "^TestReadProcessArgv_Child$", "-test.v=false", "--", "--disable", "memories", "a prompt with spaces")
-	cmd.Env = append(os.Environ(), "AGENTCHUTE_TEST_ARGV_CHILD=1")
+	cmd.Env = append(os.Environ(), "ACTEST_ARGV_CHILD=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -728,6 +728,9 @@ func TestReadProcessArgv_Child(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(argv) != 8 {
+		t.Fatalf("child argv did not become available: %q", argv)
 	}
 	if got := strings.Join(argv[len(argv)-3:], "\x00"); got != "--disable\x00memories\x00a prompt with spaces" {
 		t.Fatalf("argv tail = %q", argv)

@@ -25,7 +25,7 @@ func cmdPending(args []string) error {
 	fs := flag.NewFlagSet("pending", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, vendor, controlRepo, loopDir, staleAfter, codexHook, claudeHook, geminiHook, agyHook string
+	var agentID, vendor, controlRepo, loopDir, staleAfter, codexHook, claudeHook, geminiHook, agyHook, museHook string
 	var jsonOut, failIfAny, showBody bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&vendor, "vendor", "", "vendor or origin (anthropic, openai, google, xai)")
@@ -40,12 +40,20 @@ func cmdPending(args []string) error {
 	fs.StringVar(&claudeHook, "claude-hook", "", "emit Claude-Code-specific hook JSON shape for the named event (UserPromptSubmit)")
 	fs.StringVar(&geminiHook, "gemini-hook", "", "emit Gemini CLI hook JSON shape for the named event (BeforeAgent)")
 	fs.StringVar(&agyHook, "agy-hook", "", "emit Antigravity CLI hook JSON shape for the named event (PreInvocation)")
+	fs.StringVar(&museHook, "muse-hook", "", "emit Muse Code hook JSON shape for the named event (UserPromptSubmit)")
 
 	if err := fs.Parse(args); err != nil {
 		return pendingUsage(err)
 	}
 	if fs.NArg() != 0 {
 		return pendingUsage(fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " ")))
+	}
+	if err := recoverServeIdentity(museHook != ""); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: agentchute pending: %v\n", err)
+		if museHook != "" {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{})
+		}
+		return nil
 	}
 	_ = warnRunnerAncestry("pending")
 
@@ -181,7 +189,7 @@ func cmdPending(args []string) error {
 	// designed to inject `additionalContext` into the model's developer
 	// context for that hook event. They never exit nonzero — the hook is
 	// for information, not lifecycle gating.
-	if claudeHook == "UserPromptSubmit" {
+	if claudeHook == "UserPromptSubmit" || museHook == "UserPromptSubmit" {
 		return emitClaudeUserPromptSubmit(entries, owedEntries, malformed, needsBoot, agentID)
 	}
 	if codexHook == "UserPromptSubmit" {
@@ -472,6 +480,7 @@ Flags:
   --codex-hook <event>  emit codex-specific hook JSON (UserPromptSubmit)
   --gemini-hook <event> emit Gemini CLI hook JSON (BeforeAgent)
   --agy-hook <event>    emit Antigravity CLI hook JSON (PreInvocation)
+  --muse-hook <event>   emit Muse Code hook JSON (UserPromptSubmit)
   --claude-hook <event> emit Claude-Code-specific hook JSON (UserPromptSubmit)
 `)
 }

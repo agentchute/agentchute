@@ -15,6 +15,7 @@ points so you don't call them by hand:
 | codex CLI | [`hooks/codex/.codex/hooks.json`](hooks/codex/.codex/hooks.json) |
 | Gemini CLI | [`hooks/gemini/.gemini/settings.json`](hooks/gemini/.gemini/settings.json) — commits on `AfterAgent`, context via `hookSpecificOutput.additionalContext` |
 | Antigravity CLI (`agy`, canonical id `agy`) | [`hooks/agy/.agents/hooks.json`](hooks/agy/.agents/hooks.json) — `PreInvocation`/`PreToolUse`/`Stop`, camelCase payloads; `ac serve agy`, never `ac serve gemini` |
+| Muse Code (`muse`, vendor `meta`) | [`hooks/muse/.muse/hooks.json`](hooks/muse/.muse/hooks.json) — `SessionStart`/`UserPromptSubmit` context, `PreToolUse` guard, `Stop` commit; ancestry recovers the scrubbed hook environment; plain PATH commands, no shell syntax |
 | Grok CLI | hookless — `ac serve grok` / `agentchute serve` handle startup + wake and set `GROK_CLAUDE_HOOKS_ENABLED=0` so grok does not run the Claude Code template above |
 
 **codex's shared daemon.** codex 0.161+ hosts every session on one per-user background

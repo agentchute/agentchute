@@ -19,11 +19,11 @@ func TestInitFreshEmpty(t *testing.T) {
 	}
 
 	expectAction(t, plan, "AGENTCHUTE.md", "create v1")
-	expectAction(t, plan, "CLAUDE.md", "create v35")
-	expectAction(t, plan, "CODEX.md", "create v35")
-	expectAction(t, plan, "GEMINI.md", "create v35")
-	expectAction(t, plan, "GROK.md", "create v35")
-	expectAction(t, plan, "AGENTS.md", "create v35")
+	expectAction(t, plan, "CLAUDE.md", "create v36")
+	expectAction(t, plan, "CODEX.md", "create v36")
+	expectAction(t, plan, "GEMINI.md", "create v36")
+	expectAction(t, plan, "GROK.md", "create v36")
+	expectAction(t, plan, "AGENTS.md", "create v36")
 	expectAction(t, plan, ".gitignore", "skip") // not in git
 	expectAction(t, plan, ".agentchute/loop/agents", "mkdir 0700")
 	expectAction(t, plan, ".agentchute/loop/inbox", "mkdir 0700")
@@ -82,14 +82,14 @@ func TestInitPrependsBlockWhenNoMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "prepend v35")
+	expectAction(t, plan, "CLAUDE.md", "prepend v36")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "agentchute-enrollment v35 begin") {
+	if !strings.Contains(string(got), "agentchute-enrollment v36 begin") {
 		t.Errorf("CLAUDE.md missing marker after prepend:\n%s", got)
 	}
 	if !strings.HasSuffix(string(got), originalContent) {
@@ -144,7 +144,7 @@ func TestInitReplacesDriftedV1Content(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CLAUDE.md", "replace v1→v35")
+	expectAction(t, plan, "CLAUDE.md", "replace v1→v36")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
@@ -168,7 +168,7 @@ func TestInitUpgradesV11EnrollmentBlockToV13(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectAction(t, plan, "CODEX.md", "replace v11→v35")
+	expectAction(t, plan, "CODEX.md", "replace v11→v36")
 	applyAll(t, plan)
 
 	got, err := os.ReadFile(filepath.Join(root, "CODEX.md"))
@@ -190,7 +190,7 @@ func TestInitUpgradesV11EnrollmentBlockToV13(t *testing.T) {
 // Existing file with a future version marker → leave alone with warning.
 func TestInitLeavesNewerVersionAlone(t *testing.T) {
 	root := t.TempDir()
-	future := "<!-- agentchute-enrollment v36 begin -->\nfuture\n<!-- agentchute-enrollment v36 end -->\n"
+	future := "<!-- agentchute-enrollment v37 begin -->\nfuture\n<!-- agentchute-enrollment v37 end -->\n"
 	mustWrite(t, filepath.Join(root, "CLAUDE.md"), []byte(future))
 
 	plan, err := computeInitPlan(root, "agentchute", false)
@@ -215,12 +215,12 @@ func TestInitLeavesNewerVersionAlone(t *testing.T) {
 // by the guard-latch-livelock fix as brief test case 12, and re-pinned at
 // every bump since): an older repo file re-renders its marked region to the
 // current template — reported as a clean version upgrade ("replace
-// v31→v35"), a distinct action string from planEnrollmentFile's same-version
+// v31→v36"), a distinct action string from planEnrollmentFile's same-version
 // "replace vN drift" branch, so the two never get confused in plan output.
-// TestInitLeavesNewerVersionAlone (this file, now pinned to a v35 fixture)
+// TestInitLeavesNewerVersionAlone (this file, now pinned to a v36 fixture)
 // already proves the complementary direction: an older binary encountering a
 // marker newer than its own enrollmentVersion skips with a warning rather than
-// rewriting — the same generic branch a literal v31 binary against a v35 file
+// rewriting — the same generic branch a literal v31 binary against a v36 file
 // would take, which cannot be built as a second binary within this same test
 // run.
 func TestInitUpgradesV31EnrollmentToV32(t *testing.T) {
@@ -236,8 +236,8 @@ func TestInitUpgradesV31EnrollmentToV32(t *testing.T) {
 		if a.Target != "CLAUDE.md" {
 			continue
 		}
-		if a.Action != "replace v31→v35" {
-			t.Errorf("action = %q, want %q", a.Action, "replace v31→v35")
+		if a.Action != "replace v31→v36" {
+			t.Errorf("action = %q, want %q", a.Action, "replace v31→v36")
 		}
 		if strings.Contains(a.Detail, "drift") {
 			t.Errorf("a clean older-version upgrade must not be reported as same-version drift: %+v", a)
@@ -248,8 +248,8 @@ func TestInitUpgradesV31EnrollmentToV32(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "agentchute-enrollment v35 begin") {
-		t.Errorf("CLAUDE.md was not upgraded to v35:\n%s", got)
+	if !strings.Contains(string(got), "agentchute-enrollment v36 begin") {
+		t.Errorf("CLAUDE.md was not upgraded to v36:\n%s", got)
 	}
 	if strings.Contains(string(got), "stale v31 content") {
 		t.Errorf("CLAUDE.md still contains stale v31 content after upgrade:\n%s", got)

@@ -74,6 +74,8 @@ func canonicalAgentIDForVendor(vendor string) string {
 		return "gemini-cli"
 	case "xai", "grok":
 		return "grok"
+	case "meta", "muse", "muse-code":
+		return "muse"
 	default:
 		return ""
 	}
@@ -87,6 +89,9 @@ func canonicalAgentIDForVendor(vendor string) string {
 func resolveAgentVendor(vendor, agentID string, cfg *loop.Config) string {
 	if strings.TrimSpace(vendor) != "" {
 		return strings.TrimSpace(vendor)
+	}
+	if agentID == os.Getenv("AGENTCHUTE_AGENT_ID") && os.Getenv("AGENTCHUTE_RECOVERED_VENDOR") != "" {
+		return os.Getenv("AGENTCHUTE_RECOVERED_VENDOR")
 	}
 	return op.ResolveVendor(cfg, agentID)
 }

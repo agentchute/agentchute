@@ -108,12 +108,15 @@ func TestNestedLaneLaunchIsDecidedByTheParent(t *testing.T) {
 			t.Setenv("AGENTCHUTE_RUNNER", "1")
 			t.Setenv("AGENTCHUTE_RUNNER_PID", row.runnerPID)
 			t.Setenv("AGENTCHUTE_CONTROL_REPO", "/pool")
+			t.Setenv("MUSE_SESSION_ID", "session")
+			t.Setenv("MUSE_THREAD_ID", "thread")
+			t.Setenv("AGENTCHUTE_RECOVERED_VENDOR", "meta")
 			laneParentPID = func() int { return row.parent }
 			if got := nestedLaneLaunch(); got != row.nested {
 				t.Fatalf("nestedLaneLaunch = %v, want %v", got, row.nested)
 			}
 			env := strings.Join(wrapperBypassEnv("test"), "\n")
-			for _, k := range []string{"AGENTCHUTE_AGENT_ID=", "AGENTCHUTE_SERVE_TOKEN=", "AGENTCHUTE_GUARD=", "AGENTCHUTE_RUNNER="} {
+			for _, k := range []string{"AGENTCHUTE_AGENT_ID=", "AGENTCHUTE_SERVE_TOKEN=", "AGENTCHUTE_GUARD=", "AGENTCHUTE_RUNNER=", "MUSE_SESSION_ID=", "MUSE_THREAD_ID=", "AGENTCHUTE_RECOVERED_VENDOR="} {
 				if strings.Contains(env, k) != row.keepsIdent {
 					t.Errorf("%s present = %v, want %v", k, strings.Contains(env, k), row.keepsIdent)
 				}

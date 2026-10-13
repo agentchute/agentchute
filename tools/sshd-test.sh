@@ -4,7 +4,7 @@
 # only AGENTCHUTE_SSHD_TEST=1, so a run from inside a serve session can never
 # reach the live pool.
 set -u
-strip_env=$(env | awk -F= '/^AGENTCHUTE_/{print "-u " $1}')
+strip_env=$(env | awk -F= '/^AGENTCHUTE_|^MUSE_SESSION_ID=|^MUSE_THREAD_ID=/{print "-u " $1}')
 # -race, deliberately. This milestone exists because in-process coverage hid
 # defects the real transport exposed; the harness itself runs sshd, a serve
 # lane, mux masters and the client concurrently, which is precisely the shape

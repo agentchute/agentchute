@@ -6,6 +6,7 @@ The repo follows a release-squash convention: each release lands on `main` as a 
 
 ## Unreleased
 
+- Muse Code (`ac serve muse`, vendor `meta`) gets guarded lifecycle hooks, ancestry-based recovery for its scrubbed hook environment, and a wake cue that submits in its TUI. Hook and submit contracts verified on Muse 1.4.7 (2026-10-13). Enrollment templates advance to v36.
 - `setup --no-profile`'s PATH warning now names the agentchute binary's own directory too when it is missing from PATH, matching the managed block (#232); when only `~/.agentchute/bin` is missing the warning is unchanged (#234).
 
 ## v1.7.1 (2026-10-09) — `agentchute` is found after setup

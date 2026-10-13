@@ -118,6 +118,7 @@ var guardHookConfigPaths = []string{
 	".gemini/config/hooks.json",
 	".gemini/antigravity-cli/settings.json",
 	".agents/hooks.json",
+	".muse/hooks.json",
 	".grok/hooks/",
 	".grok/config.toml",
 }
@@ -340,7 +341,7 @@ func runGuardHook(args []string, stdin io.Reader) error {
 	fs := flag.NewFlagSet("guard", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	var agentID, controlRepo, loopDir, codexHook, geminiHook, agyHook string
+	var agentID, controlRepo, loopDir, codexHook, geminiHook, agyHook, museHook string
 	var preToolUse bool
 	fs.StringVar(&agentID, "as", "", "agent id to act as (or $AGENTCHUTE_AGENT_ID)")
 	fs.StringVar(&controlRepo, "control-repo", "", "control repo path (or AGENTCHUTE_CONTROL_REPO)")
@@ -349,6 +350,7 @@ func runGuardHook(args []string, stdin io.Reader) error {
 	fs.StringVar(&codexHook, "codex-hook", "", "emit codex's PreToolUse-equivalent decision JSON")
 	fs.StringVar(&geminiHook, "gemini-hook", "", "emit Gemini's BeforeTool-family decision JSON")
 	fs.StringVar(&agyHook, "agy-hook", "", "emit Antigravity CLI's PreToolUse decision JSON")
+	fs.StringVar(&museHook, "muse-hook", "", "emit Muse Code's PreToolUse decision JSON")
 
 	if err := fs.Parse(args); err != nil {
 		return guardUsage(err)
@@ -371,7 +373,10 @@ func runGuardHook(args []string, stdin io.Reader) error {
 	// stderr warning is the only signal a lane gets that its hooks run on
 	// someone else's env.
 	decision := guardDecision{Allowed: true}
-	if warnRunnerAncestry("guard") {
+	identityErr := recoverServeIdentity(museHook != "")
+	if identityErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: agentchute guard: %v\n", identityErr)
+	} else if warnRunnerAncestry("guard") {
 		if codexHook == "PreToolUse" {
 			// Latched or not: a hidden codex thread is a hazard at any time.
 			toolName, inputText := guardAllInputStrings(stdinBody)
@@ -389,6 +394,11 @@ func runGuardHook(args []string, stdin io.Reader) error {
 		return emitGeminiGuardDecision(decision)
 	case agyHook == "PreToolUse":
 		return emitAgyGuardDecision(decision)
+	case museHook == "PreToolUse":
+		if decision.Allowed {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{})
+		}
+		return emitClaudeGuardDecision(decision)
 	default:
 		return emitClaudeGuardDecision(decision)
 	}
@@ -1008,7 +1018,7 @@ func parseGuardToolUse(body []byte) guardToolUse {
 			collect(args[k])
 			continue
 		}
-		if agyArgs && tool == "run_command" {
+		if (agyArgs && tool == "run_command") || name == "bash" || name == "bash_input" {
 			// Preserve the command runner's extra command arguments, without
 			// interpreting file content or read-tool paths as shell text.
 			collect(args[k])
@@ -1171,5 +1181,6 @@ Flags:
   --codex-hook <event>  emit codex's decision shape (PreToolUse)
   --gemini-hook <event> emit Gemini's decision shape (BeforeTool)
   --agy-hook <event>    emit Antigravity CLI's decision shape (PreToolUse)
+  --muse-hook <event>   emit Muse Code's decision shape (PreToolUse)
 `)
 }

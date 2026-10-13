@@ -7,7 +7,7 @@
 # lane under the runner) before gofmt/vet/test/build. Run from the repo root.
 set -u
 
-strip_env=$(env | awk -F= '/^AGENTCHUTE_/{print "-u " $1}')
+strip_env=$(env | awk -F= '/^AGENTCHUTE_|^MUSE_SESSION_ID=|^MUSE_THREAD_ID=/{print "-u " $1}')
 
 say() { printf '%s\n' "$*"; }
 
