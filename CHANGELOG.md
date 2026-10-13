@@ -4,6 +4,10 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
+## Unreleased
+
+- `setup --no-profile`'s PATH warning now names the agentchute binary's own directory too when it is missing from PATH, matching the managed block (#232); when only `~/.agentchute/bin` is missing the warning is unchanged (#234).
+
 ## v1.7.1 (2026-10-09) — `agentchute` is found after setup
 
 - Setup's PATH block now also carries the agentchute binary's own directory (the one the `ac` dispatcher runs), not only `~/.agentchute/bin`. Setup used to retire install.sh's `~/.local/bin` entry and leave `agentchute` itself off PATH in every new shell, so `agentchute doctor` and a lane's own `agentchute check`/`send` failed with "command not found". Each directory is prepended only when missing, for POSIX shells and fish, and a re-run leaves the profile byte-identical (#232).
