@@ -34,6 +34,9 @@ func serveIdentityDir() (string, error) {
 }
 
 func writeServeIdentity(cfg *loop.Config, opts runnerOptions, token string) (func(), error) {
+	if len(opts.WrapperArgs) == 0 || filepath.Base(opts.WrapperArgs[0]) != "muse" {
+		return func() {}, nil
+	}
 	dir, err := serveIdentityDir()
 	if err != nil {
 		return nil, err
@@ -97,6 +100,8 @@ func museProcess() bool {
 	return os.Getenv("MUSE_SESSION_ID") != "" || os.Getenv("MUSE_THREAD_ID") != ""
 }
 
+var serveIdentityArgv = readProcessArgv
+
 // Existing environment identity wins unchanged. Only a Muse hook/process
 // requires recovery; ordinary hand-run commands retain their explicit-ID path.
 func recoverServeIdentity(museHook bool) error {
@@ -108,10 +113,17 @@ func recoverServeIdentity(museHook bool) error {
 		return fmt.Errorf("%w: recover serve identity: %v", errForeignRunnerEnv, err)
 	}
 	pid := os.Getpid()
+	child, nearestMuse := 0, 0
 	for hop := 0; hop < maxAncestryHops; hop++ {
 		path := filepath.Join(dir, strconv.Itoa(pid)+".json")
 		data, readErr := os.ReadFile(path)
 		if readErr == nil {
+			// S7 strips identity from nested wrapper launches. Only the Muse
+			// directly launched by this serve may recover it; a nested Muse
+			// must never commit the parent lane's mail from its Stop hook.
+			if nearestMuse == 0 || child != nearestMuse {
+				return fmt.Errorf("%w: nearest Muse process is not a direct child of serve %d", errForeignRunnerEnv, pid)
+			}
 			var record serveIdentity
 			if json.Unmarshal(data, &record) != nil || loop.ValidateAgentID(record.AgentID) != nil || record.ServeToken == "" || record.ControlRepo == "" || record.StartedAt.IsZero() || !processAlive(pid) {
 				return fmt.Errorf("%w: invalid serve identity for ancestor %d", errForeignRunnerEnv, pid)
@@ -149,11 +161,19 @@ func recoverServeIdentity(museHook bool) error {
 		if pid <= 1 {
 			break
 		}
+		argv, err := serveIdentityArgv(pid)
+		if err != nil || len(argv) == 0 {
+			return fmt.Errorf("%w: Muse identity unavailable: cannot identify ancestor %d", errForeignRunnerEnv, pid)
+		}
+		name := filepath.Base(argv[0])
+		if nearestMuse == 0 && (name == "muse" || strings.HasPrefix(name, "muse-bin")) {
+			nearestMuse = pid
+		}
 		parent, err := parentPIDOf(pid)
 		if err != nil || parent == pid {
 			break
 		}
-		pid = parent
+		child, pid = pid, parent
 	}
 	return fmt.Errorf("%w: Muse identity unavailable; launch with ac serve muse", errForeignRunnerEnv)
 }

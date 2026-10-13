@@ -33,6 +33,9 @@ var laneIdentityKeys = []string{
 	"AGENTCHUTE_GUARD",
 	"AGENTCHUTE_RUNNER",
 	"AGENTCHUTE_RUNNER_PID",
+	"AGENTCHUTE_RECOVERED_VENDOR",
+	"MUSE_SESSION_ID",
+	"MUSE_THREAD_ID",
 }
 
 // laneParentPID is os.Getppid; a variable so tests can pose as either parent.

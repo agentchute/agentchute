@@ -24,20 +24,51 @@ func museIdentityFixture(t *testing.T) (string, *loop.Config, *loop.ServeLease, 
 	t.Helper()
 	root, cfg, lease := liveBob(t)
 	clearMuseIdentityEnv(t)
-	remove, err := writeServeIdentity(cfg, runnerOptions{AgentID: "bob", Vendor: "meta", Guarded: true}, lease.Token)
+	remove, err := writeServeIdentity(cfg, runnerOptions{AgentID: "bob", Vendor: "meta", Guarded: true, WrapperArgs: []string{"muse"}}, lease.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(remove)
 	dir, _ := serveIdentityDir()
-	return root, cfg, lease, filepath.Join(dir, strconv.Itoa(os.Getpid())+".json")
+	path := filepath.Join(dir, strconv.Itoa(os.Getpid())+".json")
+	// The test process is a hook, with a shell and Muse between it and a
+	// live parent PID standing in for serve. Keep the actual lease fenced.
+	parent := os.Getppid()
+	claim, err := loop.ReadServeClaim(cfg, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim.PID = parent
+	data, _ := json.Marshal(claim)
+	mustWrite(t, filepath.Join(cfg.AgentStateDir("bob"), "serve.claim"), data)
+	parentPath := filepath.Join(dir, strconv.Itoa(parent)+".json")
+	if err := os.Rename(path, parentPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(parentPath) })
+	fakeAncestry(t, 41000, 41001, parent)
+	fakeMuseProcesses(t, 41001)
+	return root, cfg, lease, parentPath
+}
+
+func fakeMuseProcesses(t *testing.T, musePIDs ...int) {
+	t.Helper()
+	orig := serveIdentityArgv
+	t.Cleanup(func() { serveIdentityArgv = orig })
+	serveIdentityArgv = func(pid int) ([]string, error) {
+		for _, musePID := range musePIDs {
+			if pid == musePID {
+				return []string{"/bin/muse-bin-1.4.7-R6101.1"}, nil
+			}
+		}
+		return []string{"/bin/sh"}, nil
+	}
 }
 
 func TestMuseIdentityMarkerAndEnvironmentPrecedence(t *testing.T) {
 	for _, marker := range []string{"", "MUSE_SESSION_ID", "MUSE_THREAD_ID", "--muse-hook"} {
 		t.Run(marker, func(t *testing.T) {
 			root, cfg, lease, _ := museIdentityFixture(t)
-			fakeAncestry(t, 41000)
 			if marker != "" && marker != "--muse-hook" {
 				t.Setenv(marker, "session")
 			}
@@ -71,25 +102,7 @@ func TestMuseIdentityMarkerAndEnvironmentPrecedence(t *testing.T) {
 
 func TestMuseIdentityAncestrySelectsNearestLiveRecord(t *testing.T) {
 	_, _, _, path := museIdentityFixture(t)
-	// Move the record to a real ancestor, so the walk must use parentPIDOf.
 	parent := os.Getppid()
-	var record serveIdentity
-	if err := json.Unmarshal(mustRead(t, path), &record); err != nil {
-		t.Fatal(err)
-	}
-	cfg := &loop.Config{ControlRepo: record.ControlRepo, LoopDir: record.LoopDir}
-	claim, err := loop.ReadServeClaim(cfg, record.AgentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	claim.PID = parent
-	data, _ := json.Marshal(claim)
-	mustWrite(t, filepath.Join(cfg.AgentStateDir(record.AgentID), "serve.claim"), data)
-	parentPath := filepath.Join(filepath.Dir(path), strconv.Itoa(parent)+".json")
-	if err := os.Rename(path, parentPath); err != nil {
-		t.Fatal(err)
-	}
-	fakeAncestry(t, parent)
 	t.Setenv("MUSE_SESSION_ID", "session")
 	if err := recoverServeIdentity(false); err != nil {
 		t.Fatal(err)
@@ -100,7 +113,7 @@ func TestMuseIdentityAncestrySelectsNearestLiveRecord(t *testing.T) {
 	clearMuseIdentityEnv(t)
 	t.Setenv("MUSE_SESSION_ID", "session")
 	// A broken nearer record must not fall through to an outer lane.
-	mustWrite(t, path, []byte(`{}`))
+	mustWrite(t, filepath.Join(filepath.Dir(path), "41000.json"), []byte(`{}`))
 	if err := recoverServeIdentity(false); !errors.Is(err, errForeignRunnerEnv) {
 		t.Fatalf("invalid nearest record fell through: %v", err)
 	}
@@ -111,7 +124,6 @@ func TestMuseIdentityRejectsStaleAndUnrelatedRecords(t *testing.T) {
 		t.Run(stale, func(t *testing.T) {
 			_, cfg, _, path := museIdentityFixture(t)
 			t.Setenv("MUSE_SESSION_ID", "session")
-			fakeAncestry(t, 41000)
 			switch stale {
 			case "unrelated", "dead pid":
 				other := 2147483647
@@ -144,11 +156,37 @@ func TestMuseIdentityRejectsStaleAndUnrelatedRecords(t *testing.T) {
 	}
 }
 
+func TestMuseIdentityRequiresReadableDirectMuseAncestor(t *testing.T) {
+	for _, name := range []string{"/bin/muse", "/bin/muse-bin-1.4.7-R6101.1", "/bin/claude", "unreadable"} {
+		t.Run(name, func(t *testing.T) {
+			_, _, _, _ = museIdentityFixture(t)
+			serveIdentityArgv = func(pid int) ([]string, error) {
+				if name == "unreadable" {
+					return nil, errors.New("process vanished")
+				}
+				if pid == 41001 {
+					return []string{name}, nil
+				}
+				return []string{"/bin/sh"}, nil
+			}
+			err := recoverServeIdentity(true)
+			wantOK := strings.HasPrefix(filepath.Base(name), "muse")
+			if (err == nil) != wantOK {
+				t.Fatalf("recovery with %s: %v", name, err)
+			}
+			if !wantOK && (os.Getenv("AGENTCHUTE_AGENT_ID") != "" || !errors.Is(err, errForeignRunnerEnv)) {
+				t.Fatal("unverified ancestry adopted the parent lane")
+			}
+		})
+	}
+}
+
 func TestMuseMissingIdentityCommandPolicies(t *testing.T) {
 	root, cfg := setupConsumeFixture(t)
 	clearMuseIdentityEnv(t)
 	t.Setenv("MUSE_SESSION_ID", "session")
 	fakeAncestry(t, 41000)
+	fakeMuseProcesses(t)
 	withCwd(t, root, func() {
 		for _, tc := range []struct {
 			name string
@@ -198,13 +236,62 @@ func TestServeIdentityPrivateWriteSweepAndRemove(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("live PID record was swept")
 	}
-	remove, err := writeServeIdentity(cfg, runnerOptions{AgentID: "bob", Vendor: "meta"}, lease.Token)
+	remove, err := writeServeIdentity(cfg, runnerOptions{AgentID: "bob", Vendor: "meta", WrapperArgs: []string{"muse"}}, lease.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
 	remove()
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
+	selfPath := filepath.Join(filepath.Dir(path), strconv.Itoa(os.Getpid())+".json")
+	if _, err := os.Stat(selfPath); !os.IsNotExist(err) {
 		t.Fatalf("sidecar not removed: %v", err)
+	}
+}
+
+func TestMuseNestedStopCannotCommitParentLane(t *testing.T) {
+	for _, mode := range []string{"inherited marker", "explicit Muse hook"} {
+		t.Run(mode, func(t *testing.T) {
+			_, cfg, _, _ := museIdentityFixture(t)
+			t.Setenv("MUSE_SESSION_ID", "parent-session")
+			if _, err := captureStdout(t, func() error { return cmdCheck(nil) }); err != nil {
+				t.Fatal(err)
+			}
+			clearMuseIdentityEnv(t)
+			// hook -> nested wrapper -> tool shell -> lane Muse -> serve.
+			fakeAncestry(t, 42000, 42001, 41001, os.Getppid())
+			args := []string{"--json"}
+			if mode == "explicit Muse hook" {
+				fakeMuseProcesses(t, 42000, 41001)
+				args = []string{"--muse-hook", "Stop"}
+			} else {
+				// Match S7's nested ac launch: every lane identity key is gone.
+				t.Setenv("AGENTCHUTE_RUNNER_PID", "12345")
+				t.Setenv("MUSE_SESSION_ID", "parent-session")
+				dropNestedLaneIdentity("nested-wrapper")
+			}
+			_, err := captureStdout(t, func() error { return cmdTurnEnd(args) })
+			if err == nil || os.Getenv("AGENTCHUTE_AGENT_ID") != "" {
+				t.Fatalf("nested wrapper recovered parent identity: %v", err)
+			}
+			if countMessageFiles(t, cfg.AgentClaimedDir("bob")) != 1 || countMessageFiles(t, cfg.ArchiveDir()) != 0 {
+				t.Fatal("nested Stop committed parent mail")
+			}
+			if _, err := loop.ReadGuardLatch(cfg, "bob"); err != nil {
+				t.Fatalf("nested Stop cleared parent latch: %v", err)
+			}
+		})
+	}
+}
+
+func TestNonMuseServeDoesNotNeedOrWriteIdentity(t *testing.T) {
+	for _, wrapper := range []string{"claude", "codex", "gemini", "agy", "grok"} {
+		t.Run(wrapper, func(t *testing.T) {
+			t.Setenv("HOME", "")
+			remove, err := writeServeIdentity(nil, runnerOptions{WrapperArgs: []string{wrapper}}, "token")
+			if err != nil {
+				t.Fatalf("non-Muse launch depends on HOME: %v", err)
+			}
+			remove()
+		})
 	}
 }
 
