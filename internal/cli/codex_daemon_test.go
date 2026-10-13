@@ -384,11 +384,15 @@ func TestDoctorCodexDaemonEnv(t *testing.T) {
 		return []codexDaemonProcess{{PID: 13818, Command: "codex app-server --managed-daemon", Env: env}}
 	}
 
+	serveLane := func(argv ...string) []laneProcess {
+		return []laneProcess{{PID: 777, Argv: argv}}
+	}
 	rows := []struct {
 		name         string
 		agent        string
 		daemons      []codexDaemonProcess
 		listErr      error
+		children     []laneProcess // nil: no serve process for the lane
 		wantSeverity string
 		wantContains []string
 	}{
@@ -457,6 +461,34 @@ func TestDoctorCodexDaemonEnv(t *testing.T) {
 			wantSeverity: severitySkip,
 			wantContains: []string{"token matches codex-l2's live serve", "cannot be verified against a specific lane"},
 		},
+		{
+			name: "foreign daemon but this lane's codex runs --no-daemon", agent: "codex",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": dead, "AGENTCHUTE_CONTROL_REPO": "/Users/alex/code"}),
+			children:     serveLane("codex", "--disable", "memories", "--no-daemon"),
+			wantSeverity: severityOK,
+			wantContains: []string{"777", "--no-daemon", "bypasses the shared codex app-server daemon", "13818", "/Users/alex/code"},
+		},
+		{
+			name: "--no-daemon after -- is a prompt word, not the flag", agent: "codex",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": dead, "AGENTCHUTE_CONTROL_REPO": "{repo}"}),
+			children:     serveLane("codex", "--disable", "memories", "--", "--no-daemon"),
+			wantSeverity: severityWarn,
+			wantContains: []string{"token mismatch: not codex's live serve token"},
+		},
+		{
+			name: "foreign daemon but this lane does not run codex", agent: "codex",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": dead, "AGENTCHUTE_CONTROL_REPO": "/Users/alex/code"}),
+			children:     serveLane("claude", "--model", "fable"),
+			wantSeverity: severitySkip,
+			wantContains: []string{"not running codex", "13818", "/Users/alex/code"},
+		},
+		{
+			name: "foreign daemon and this lane's codex has no --no-daemon", agent: "codex",
+			daemons:      daemon(map[string]string{"AGENTCHUTE_SERVE_TOKEN": dead, "AGENTCHUTE_CONTROL_REPO": "{repo}"}),
+			children:     serveLane("codex", "--disable", "memories"),
+			wantSeverity: severityWarn,
+			wantContains: []string{"token mismatch: not codex's live serve token", "codex sessions launched without --no-daemon"},
+		},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -473,6 +505,18 @@ func TestDoctorCodexDaemonEnv(t *testing.T) {
 				daemons = append(daemons, d)
 			}
 			listCodexDaemons = func() ([]codexDaemonProcess, error) { return daemons, row.listErr }
+			restoreChildren := listServeChildren
+			t.Cleanup(func() { listServeChildren = restoreChildren })
+			listServeChildren = func(pid int) ([]laneProcess, error) { return row.children, nil }
+			if row.children != nil {
+				// Inside the lane: codexLaneServePID takes the runner pid
+				// from the env, the way TestDoctorCodexMemories sets it up.
+				t.Setenv("AGENTCHUTE_AGENT_ID", row.agent)
+				t.Setenv("AGENTCHUTE_RUNNER_PID", "4242")
+			} else {
+				t.Setenv("AGENTCHUTE_AGENT_ID", "someone-else")
+				t.Setenv("AGENTCHUTE_RUNNER_PID", "")
+			}
 
 			r := runDoctorChecks(cfg, row.agent, doctorOptions{Now: time.Now().UTC()})
 			c := findCheck(t, r, "codex_daemon_env")
@@ -483,6 +527,11 @@ func TestDoctorCodexDaemonEnv(t *testing.T) {
 				if !strings.Contains(c.Message, want) {
 					t.Errorf("message lacks %q: %s", want, c.Message)
 				}
+			}
+			// A --no-daemon session is not hosted by the daemon, so the
+			// message must never claim every session on the host is.
+			if strings.Contains(strings.ToLower(c.Message), "every codex session on this host") {
+				t.Errorf("message overclaims daemon hosting: %s", c.Message)
 			}
 			// No token characters, ever: not the full token, not a prefix.
 			for _, tok := range []string{live, other, dead} {

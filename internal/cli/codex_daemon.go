@@ -350,10 +350,27 @@ func poolServeTokens(cfg *loop.Config) map[string]string {
 	return tokens
 }
 
+// codexArgvHasNoDaemon reports whether args (after argv[0]) carry
+// --no-daemon as its own word; scanning stops at `--`, past which the word
+// is prompt text, not a flag.
+func codexArgvHasNoDaemon(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		if a == codexNoDaemonFlag {
+			return true
+		}
+	}
+	return false
+}
+
 // checkCodexDaemonEnv reports whether a running shared codex daemon carries
 // THIS lane's live serve token and this pool's control repo. A daemon pinned
-// elsewhere hosts every codex session's hooks and shell commands under a stale
-// or foreign identity (the hazard above). Without --as there is no lane to
+// elsewhere hosts the hooks and shell commands of codex sessions launched
+// without --no-daemon under a stale or foreign identity (the hazard above) —
+// but a lane whose own codex runs --no-daemon, or that runs no codex at all,
+// is not hosted by it, however foreign the daemon is. Without --as there is no lane to
 // pin against, so the check only lists what it found (SKIP): a token that
 // matches some other lane's claim is exactly the cross-lane false-OK codex
 // reproduced (codex vs codex-l2). Never BLOCKER: the daemon is a per-user host
@@ -430,8 +447,30 @@ func checkCodexDaemonEnv(cfg *loop.Config, agentID string) doctorCheck {
 	if agentID == "" {
 		return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("shared codex app-server daemon running: %s. No --as / $AGENTCHUTE_AGENT_ID, so it cannot be verified against a specific lane's serve token; run doctor --as <codex lane>", table)}
 	}
-	if problems == 0 {
-		return doctorCheck{Name: name, Severity: severityOK, Message: fmt.Sprintf("shared codex app-server daemon is pinned to %s's live serve in this pool: %s. Hooks of every codex session on this host still run under that one env; --no-daemon (ac serve codex adds it) avoids the daemon entirely", agentID, table)}
+	// The daemon only matters to this lane if it hosts the lane's hooks.
+	// Resolve the lane's serve child the way checkCodexMemories does: a
+	// codex child with --no-daemon bypasses the daemon entirely, and a
+	// non-codex child was never hosted by it. Unknown (no serve process,
+	// unreadable or empty child list) falls through to the token verdict.
+	if servePID := codexLaneServePID(cfg, agentID); servePID != 0 {
+		if children, err := listServeChildren(servePID); err == nil && len(children) > 0 {
+			var lane *laneProcess
+			for i := range children {
+				if spec, ok := wrapperSpecForName(filepath.Base(children[i].Argv[0])); ok && spec.Key == "codex" {
+					lane = &children[i]
+					break
+				}
+			}
+			switch {
+			case lane == nil:
+				return doctorCheck{Name: name, Severity: severitySkip, Message: fmt.Sprintf("%s's serve (pid %d) is not running codex, so the shared codex app-server daemon cannot host this lane's hooks: %s", agentID, servePID, table)}
+			case codexArgvHasNoDaemon(lane.Argv[1:]):
+				return doctorCheck{Name: name, Severity: severityOK, Message: fmt.Sprintf("%s's codex (pid %d) runs with --no-daemon and bypasses the shared codex app-server daemon, so the daemon does not host this lane's hooks: %s", agentID, lane.PID, table)}
+			}
+		}
 	}
-	return doctorCheck{Name: name, Severity: severityWarn, Message: fmt.Sprintf("shared codex app-server daemon is not pinned to %s's live serve: %s. Every codex session on this host runs its hooks and shell commands as children of that daemon, inheriting its env — sends fence (token mismatch) and turn-end exits 1. Fix: `codex app-server daemon stop` (ends the sessions it hosts), then relaunch each codex lane with --no-daemon (ac serve codex adds it when codex advertises the flag)", agentID, table)}
+	if problems == 0 {
+		return doctorCheck{Name: name, Severity: severityOK, Message: fmt.Sprintf("shared codex app-server daemon is pinned to %s's live serve in this pool: %s. Hooks of codex sessions launched without --no-daemon still run under that one env; --no-daemon (ac serve codex adds it) avoids the daemon entirely", agentID, table)}
+	}
+	return doctorCheck{Name: name, Severity: severityWarn, Message: fmt.Sprintf("shared codex app-server daemon is not pinned to %s's live serve: %s. Hooks and shell commands of codex sessions launched without --no-daemon run as children of that daemon, inheriting its env — sends fence (token mismatch) and turn-end exits 1. Fix: `codex app-server daemon stop` (ends the sessions it hosts), then relaunch each codex lane with --no-daemon (ac serve codex adds it when codex advertises the flag)", agentID, table)}
 }
