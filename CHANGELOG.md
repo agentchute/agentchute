@@ -4,10 +4,13 @@ All releases of the agentchute reference CLI. The protocol spec itself ([`AGENTC
 
 The repo follows a release-squash convention: each release lands on `main` as a single squash commit, then is tagged. Intermediate tags between release squashes (e.g., feature branches) are not part of the main release history. (v0.9.0 was landed as a sequence of dual-gated PRs rather than one squash.)
 
-## Unreleased
+## v1.7.2 (2026-10-13) — Muse Code joins the wrappers
+
+Muse Code (`ac serve muse`, vendor `meta`) becomes a guarded wrapper, `setup --no-profile` names every missing PATH directory, and the front page is rewritten in plain words. See [docs/releases/v1.7.2.md](docs/releases/v1.7.2.md) for upgrade steps and known limitations.
 
 - Muse Code (`ac serve muse`, vendor `meta`) gets guarded lifecycle hooks, ancestry-based recovery for its scrubbed hook environment, and a wake cue that submits in its TUI. Hook and submit contracts verified on Muse 1.4.7 (2026-10-13). Enrollment templates advance to v36.
 - `setup --no-profile`'s PATH warning now names the agentchute binary's own directory too when it is missing from PATH, matching the managed block (#232); when only `~/.agentchute/bin` is missing the warning is unchanged (#234).
+- The README top and the agentchute.dev landing page are rewritten in plain words and list `ac serve muse` (#231).
 
 ## v1.7.1 (2026-10-09) — `agentchute` is found after setup
 
