@@ -196,62 +196,97 @@ func TestBootWithUnreadMailReturnsBlocked(t *testing.T) {
 	})
 }
 
-func TestBootInheritedMailNoteFiresOnlyForPredatingMail(t *testing.T) {
-	const want = `inbox contains mail from before this registration — a previous "claude-code" may have existed`
+// writeBootServeClaim drops a live serve.claim for id whose StartedAt is
+// startedAt — the instant boot's inherited-mail note measures unread mail
+// against — and pins the process's serve token to it, so boot runs as that
+// serve's own child rather than refusing the id as "live elsewhere".
+func writeBootServeClaim(t *testing.T, cfg *loop.Config, id string, startedAt time.Time) {
+	t.Helper()
+	t.Setenv("AGENTCHUTE_SERVE_TOKEN", "tok")
+	dir := cfg.AgentStateDir(id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c := loop.ServeClaim{ID: id, Host: "h", PID: 1, ServeToken: "tok", StartedAt: startedAt, LastSeen: time.Now()}
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "serve.claim"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
-	t.Run("predating mail", func(t *testing.T) {
+// The inherited-mail note means "someone wrote to this id before THIS serve
+// started, so a previous incarnation may have existed". The cutoff is the
+// lane's serve.claim StartedAt — NOT the registration's LastSeen, which boot
+// itself refreshes to now, so comparing against it flagged every unread
+// message on every first-turn boot (codex and muse both reported it as an
+// anomaly in the 1.7.2 live test). Without a serve.claim there is no cutoff
+// and no note.
+func TestBootInheritedMailNoteFiresOnlyForMailOlderThanThisServe(t *testing.T) {
+	const want = `inbox contains mail from before this serve started — a previous "claude-code" may have existed`
+
+	bootNotes := func(t *testing.T, root string) []string {
+		t.Helper()
+		out, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) })
+		if !errors.Is(err, errBlocked) {
+			t.Fatalf("err = %v, want errBlocked", err)
+		}
+		var got bootStatus
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.UnreadCount != 1 {
+			t.Fatalf("UnreadCount = %d, want 1 (the fixture message must be unread)", got.UnreadCount)
+		}
+		return got.Notes
+	}
+
+	t.Run("mail older than this serve", func(t *testing.T) {
 		root := setupBootFixture(t)
 		withCwd(t, root, func() {
-			if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) }); err != nil {
+			cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+			if err != nil {
 				t.Fatal(err)
 			}
+			writeBootServeClaim(t, cfg, "claude-code", time.Now())
+			mustWriteAgedInbox(t, cfg.AgentInboxDir("claude-code"), "codex", 1, []byte("---\nfrom: codex\n---\n\nold\n"), time.Hour)
+
+			if notes := bootNotes(t, root); len(notes) != 1 || notes[0] != want {
+				t.Fatalf("notes = %q, want [%q]", notes, want)
+			}
+		})
+	})
+
+	t.Run("mail newer than this serve", func(t *testing.T) {
+		root := setupBootFixture(t)
+		withCwd(t, root, func() {
+			cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeBootServeClaim(t, cfg, "claude-code", time.Now().Add(-2*time.Hour))
+			// An ordinary message: stamped in the past, like every real one.
+			mustWriteAgedInbox(t, cfg.AgentInboxDir("claude-code"), "codex", 1, []byte("---\nfrom: codex\n---\n\nnew\n"), time.Minute)
+
+			if notes := bootNotes(t, root); len(notes) != 0 {
+				t.Fatalf("notes = %q, want none", notes)
+			}
+		})
+	})
+
+	t.Run("no serve claim", func(t *testing.T) {
+		root := setupBootFixture(t)
+		withCwd(t, root, func() {
 			cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
 			if err != nil {
 				t.Fatal(err)
 			}
 			mustWriteAgedInbox(t, cfg.AgentInboxDir("claude-code"), "codex", 1, []byte("---\nfrom: codex\n---\n\nold\n"), time.Hour)
 
-			out, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) })
-			if !errors.Is(err, errBlocked) {
-				t.Fatalf("err = %v, want errBlocked", err)
-			}
-			var got bootStatus
-			if err := json.Unmarshal([]byte(out), &got); err != nil {
-				t.Fatal(err)
-			}
-			if len(got.Notes) != 1 || got.Notes[0] != want {
-				t.Fatalf("notes = %q, want [%q]", got.Notes, want)
-			}
-		})
-	})
-
-	t.Run("newer mail", func(t *testing.T) {
-		root := setupBootFixture(t)
-		withCwd(t, root, func() {
-			if _, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) }); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := loop.Discover(loop.DiscoverOpts{Cwd: root})
-			if err != nil {
-				t.Fatal(err)
-			}
-			mustWriteSeqInbox(t, cfg.AgentInboxDir("claude-code"), "codex", 1, []byte("---\nfrom: codex\n---\n\nnew\n"))
-			path := filepath.Join(cfg.AgentInboxDir("claude-code"), loop.MsgID{From: "codex", Seq: 1}.Filename())
-			future := time.Now().UTC().Add(time.Hour)
-			if err := os.Chtimes(path, future, future); err != nil {
-				t.Fatal(err)
-			}
-
-			out, err := captureStdout(t, func() error { return cmdBoot(bootArgs("--json")) })
-			if !errors.Is(err, errBlocked) {
-				t.Fatalf("err = %v, want errBlocked", err)
-			}
-			var got bootStatus
-			if err := json.Unmarshal([]byte(out), &got); err != nil {
-				t.Fatal(err)
-			}
-			if len(got.Notes) != 0 {
-				t.Fatalf("notes = %q, want none", got.Notes)
+			if notes := bootNotes(t, root); len(notes) != 0 {
+				t.Fatalf("notes = %q, want none", notes)
 			}
 		})
 	})

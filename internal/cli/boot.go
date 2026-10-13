@@ -155,6 +155,7 @@ func cmdBoot(args []string) error {
 	unread := make([]pendingEntry, 0)
 	malformedCount := 0
 	inheritedMail := false
+	cutoff, haveCutoff := inheritedMailCutoff(cfg, agentID)
 	if cfg.Remote != nil {
 		session, openErr := openRemoteOneShot(cfg, agentID)
 		if openErr != nil {
@@ -166,7 +167,7 @@ func cmdBoot(args []string) error {
 		sum, pendingErr := session.Pending(op.PendingReq{}, func(ev op.Event) error {
 			if ev.Message != nil {
 				stamp, _ := time.Parse(time.RFC3339Nano, ev.Message.Stamp)
-				if stamp.Before(result.Reg.LastSeen) {
+				if haveCutoff && stamp.Before(cutoff) {
 					inheritedMail = true
 				}
 				unread = append(unread, pendingEntry{From: ev.Message.Sender, Filename: ev.Message.Filename, Timestamp: ev.Message.Stamp, ReplyRequired: ev.Message.ReplyRequired})
@@ -187,7 +188,7 @@ func cmdBoot(args []string) error {
 		}
 		malformedCount = len(skipped)
 		for _, msg := range msgs {
-			if msg.Timestamp.Before(result.Reg.LastSeen) {
+			if haveCutoff && msg.Timestamp.Before(cutoff) {
 				inheritedMail = true
 			}
 			entry := pendingEntry{From: msg.Sender, Filename: msg.Filename, Timestamp: msg.Timestamp.UTC().Format(time.RFC3339Nano)}
@@ -199,7 +200,7 @@ func cmdBoot(args []string) error {
 	}
 	var notes []string
 	if inheritedMail {
-		notes = append(notes, fmt.Sprintf("inbox contains mail from before this registration — a previous %q may have existed", agentID))
+		notes = append(notes, fmt.Sprintf("inbox contains mail from before this serve started — a previous %q may have existed", agentID))
 	}
 
 	// Reply obligations are asker-owned only (v0.9.0): the recipient is never
@@ -452,4 +453,21 @@ func emitBootAgyPreInvocation(s bootStatus, stdin io.Reader) error {
 	var ctx strings.Builder
 	writeBootContext(&ctx, s)
 	return emitAgyInjectSteps(ctx.String())
+}
+
+// inheritedMailCutoff is the instant before which unread mail was addressed to
+// a previous incarnation of agentID: the StartedAt of the lane's serve.claim.
+// Boot used to compare against the registration's LastSeen, which boot itself
+// had just refreshed to now, so every unread message on a first-turn boot read
+// as "from before this registration" (1.7.2 live test, codex and muse both
+// reported the note as an anomaly). A lane without a serve.claim (hand-run
+// session, or a remote lane whose lease lives elsewhere) has no cutoff and
+// gets no note: the heuristic cannot tell a prior incarnation from ordinary
+// mail there.
+func inheritedMailCutoff(cfg *loop.Config, agentID string) (time.Time, bool) {
+	claim, err := loop.ReadServeClaim(cfg, agentID)
+	if err != nil || claim.StartedAt.IsZero() {
+		return time.Time{}, false
+	}
+	return claim.StartedAt, true
 }
