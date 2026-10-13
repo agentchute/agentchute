@@ -8,8 +8,8 @@ The repo follows a release-squash convention: each release lands on `main` as a 
 
 Hotfix. No wire change, no enrollment change. See [docs/releases/v1.7.3.md](docs/releases/v1.7.3.md).
 
-- `doctor`'s `codex_daemon_env` no longer warns a lane about a codex app-server daemon that cannot host it: a lane whose codex child runs `--no-daemon` reports OK, a lane whose serve child is not codex is skipped, and only a codex lane launched without `--no-daemon` (or one whose serve process cannot be found) keeps the token/repo verdict. The message no longer claims every codex session on the host runs under the daemon (#239).
-- `boot`'s "inbox contains mail from before this registration" note compared message stamps with the registration's `last_seen`, which boot had just refreshed, so it fired for every unread message on a first-turn boot. It now compares with the lane's `serve.claim` `started_at` and reads "from before this serve started"; a lane without a local serve.claim (hand-run sessions, hub lanes) gets no note (#238).
+- `doctor`'s `codex_daemon_env` no longer warns a lane about a codex app-server daemon that cannot host it: a lane whose codex child runs `--no-daemon` reports OK, a lane whose serve child is not codex is skipped, and a codex child without the flag, a missing serve process, or an unreadable or empty child list keeps the token/repo verdict. That verdict's messages no longer claim every codex session on the host runs under the daemon (#239).
+- `boot`'s "inbox contains mail from before this registration" note compared message stamps with the registration's `last_seen`, which boot had just refreshed, so ordinary mail already queued before a first-turn boot triggered it. It now compares with the lane's `serve.claim` `started_at` and reads "from before this serve started"; without a readable local claim (hand-run sessions without one, remote SSH lanes) there is no note (#238).
 - The repo's own `.gitignore` ignores `/.muse/` and `/.agents/`, the hook files `hooks install` writes for Muse Code and agy, like `/.codex/` and `/.gemini/` (#238).
 
 ## v1.7.2 (2026-10-13) — Muse Code joins the wrappers
